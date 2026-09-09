@@ -36,7 +36,7 @@ CLI_TARGET="/usr/local/bin/stackport"
 
 # Real StackPort source location/branch — overridable for testing via env, but this
 # is what a fresh `install` clones by default.
-STACKPORT_REPO="${STACKPORT_REPO:-https://github.com/vtmattedi/mwdevops.git}"
+STACKPORT_REPO="${STACKPORT_REPO:-https://github.com/vtmattedi/Stackport.git}"
 STACKPORT_BRANCH_DEFAULT="${STACKPORT_BRANCH:-main}"
 
 # ── Logging ─────────────────────────────────────────────────────────────────────
