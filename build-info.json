@@ -1,0 +1,8 @@
+{
+  "name": "stackport-mw-vps-manager",
+  "version": "1.0.27",
+  "builtAt": "2026-08-12T08:31:21.898Z",
+  "gitCommit": "caad9ed",
+  "gitBranch": "main",
+  "gitMessage": "feat: better metrics"
+}

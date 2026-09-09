@@ -1,0 +1,136 @@
+import { motion, type Variants } from "framer-motion";
+
+type StackPortAnimatedLogoProps = {
+  className?: string;
+  color?: string;
+  size?: number | string;
+  animated?: boolean;
+};
+
+const brand = "#6366f1";
+const snapEase = [0.22, 1, 0.36, 1] as const;
+
+const layerVariants: Variants = {
+  hidden: {
+    opacity: 0,
+    y: 18,
+    scale: 0.96,
+  },
+  visible: (i: number) => ({
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: {
+      delay: i * 0.12,
+      duration: 0.45,
+      ease: snapEase,
+    },
+  }),
+};
+
+const portVariants: Variants = {
+  hidden: {
+    opacity: 0,
+    pathLength: 0,
+  },
+  visible: {
+    opacity: 1,
+    pathLength: 1,
+    transition: {
+      delay: 0.34,
+      duration: 0.65,
+      ease: "easeOut",
+    },
+  },
+};
+
+const nodeVariants: Variants = {
+  hidden: {
+    opacity: 0,
+    scale: 0.4,
+  },
+  visible: {
+    opacity: 1,
+    scale: 1,
+    transition: {
+      delay: 0.82,
+      duration: 0.38,
+      ease: snapEase,
+    },
+  },
+};
+
+export function StackPortAnimatedLogo({
+  className,
+  color = brand,
+  size = 96,
+  animated = true,
+}: StackPortAnimatedLogoProps) {
+  const initial = animated ? "hidden" : "visible";
+
+  return (
+    <motion.svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="100 55 305 305"
+      width={size}
+      height={size}
+      className={className}
+      initial={initial}
+      animate="visible"
+      whileHover={{
+        scale: 1.04,
+        rotate: -1,
+        transition: { duration: 0.22 },
+      }}
+      aria-label="STACKPORT logo"
+      role="img"
+    >
+      {/* Bottom layer */}
+      <motion.path
+        custom={0}
+        variants={layerVariants}
+        fill={color}
+        d="M 288.69 320.77 C268.45,334.15 251.35,345.26 250.69,345.45 C249.42,345.81 246.75,344.27 210.00,322.01 C197.07,314.18 178.29,302.83 168.25,296.79 L 150.00,285.81 L 150.00,275.47 C150.00,269.77 150.42,264.86 150.93,264.54 C151.44,264.23 157.85,267.65 165.18,272.14 C172.51,276.63 185.25,284.45 193.50,289.50 C201.75,294.56 213.23,301.61 219.00,305.18 C242.11,319.47 250.18,324.01 251.32,323.34 C251.97,322.96 271.05,310.35 293.72,295.32 C316.40,280.29 335.18,268.00 335.47,268.00 C335.76,268.00 336.00,272.90 336.00,278.90 L 336.00,289.79 L 330.75,293.11 C327.86,294.94 308.94,307.38 288.69,320.77 Z"
+      />
+
+      {/* Middle layer */}
+      <motion.path
+        custom={1}
+        variants={layerVariants}
+        fill={color}
+        d="M 279.03 288.82 C264.47,298.44 251.87,306.46 251.03,306.65 C250.19,306.84 244.10,303.66 237.50,299.57 C230.90,295.49 224.38,291.51 223.00,290.73 C217.87,287.81 174.23,261.16 167.40,256.77 C163.50,254.26 158.87,251.46 157.10,250.55 C150.59,247.19 150.00,245.93 150.00,235.56 C150.00,230.37 150.35,225.90 150.78,225.64 C151.20,225.37 154.24,226.77 157.53,228.73 C165.12,233.28 193.38,250.59 198.00,253.52 C203.98,257.33 242.28,280.59 246.62,283.05 L 250.74,285.39 L 292.12,257.88 C314.88,242.75 334.06,230.04 334.75,229.63 C335.72,229.05 336.00,231.41 335.99,240.19 L 335.99,251.50 L 332.74,253.64 C330.96,254.82 324.10,259.29 317.50,263.56 C310.90,267.84 293.59,279.21 279.03,288.82 Z"
+      />
+
+      {/* Top stack / route body */}
+      <motion.path
+        custom={2}
+        variants={layerVariants}
+        fill={color}
+        d="M 272.07 252.59 C260.83,259.96 251.34,266.00 250.99,266.00 C250.28,266.00 224.30,250.39 185.50,226.65 C180.55,223.62 170.76,217.68 163.75,213.45 C156.74,209.22 151.00,205.60 151.00,205.41 C151.00,205.23 154.94,202.44 159.75,199.22 C164.56,196.00 187.06,180.89 209.75,165.64 L 251.00,137.91 L 251.00,160.75 L 233.75,172.18 C224.26,178.47 210.09,187.85 202.25,193.03 C194.41,198.21 188.02,202.91 188.04,203.47 C188.06,204.04 190.42,205.88 193.29,207.57 C196.15,209.26 203.45,213.71 209.50,217.47 C249.71,242.45 250.30,242.77 253.11,241.07 C254.54,240.21 269.28,230.54 285.86,219.60 L 316.00,199.69 L 316.00,121.24 L 313.24,120.10 C308.68,118.21 303.07,112.36 300.47,106.77 C294.51,93.96 299.40,78.54 311.71,71.33 C318.30,67.46 329.50,66.87 336.77,70.00 C342.64,72.52 349.13,78.99 351.51,84.68 C353.60,89.67 353.68,100.44 351.67,105.25 C349.29,110.94 345.16,115.82 340.34,118.64 L 336.00,121.19 L 336.00,210.87 L 327.25,216.54 C314.36,224.89 295.13,237.44 272.07,252.59 Z"
+      />
+
+      {/* Port/node highlight pulse */}
+      <motion.path
+        variants={nodeVariants}
+        fill={color}
+        d="M 322.21 108.03 C329.34,109.74 334.80,107.10 338.06,100.38 C340.54,95.25 340.16,90.75 336.89,86.58 C328.75,76.24 312.02,81.43 312.00,94.30 C312.00,100.98 316.16,106.57 322.21,108.03 Z"
+      />
+
+      {/* Optional subtle animated port ring */}
+      {animated && (
+        <motion.circle
+          cx="325"
+          cy="94"
+          r="28"
+          fill="none"
+          stroke={color}
+          strokeWidth="3"
+          variants={portVariants}
+          initial="hidden"
+          animate="visible"
+          opacity="0.35"
+        />
+      )}
+    </motion.svg>
+  );
+}

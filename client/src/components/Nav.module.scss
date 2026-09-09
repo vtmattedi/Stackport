@@ -1,0 +1,385 @@
+$w-collapsed: 54px;
+$w-expanded: 200px;
+
+// Keep in sync with SUBMENU_OPEN_DELAY_MS in Nav.tsx.
+$submenu-open-delay: 0.5s;
+
+.nav {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  width: $w-collapsed;
+  flex-shrink: 0;
+  z-index: 100;
+  transition: width 0.2s ease;
+}
+
+.nav.expanded {
+  width: $w-expanded;
+}
+
+// ── Edge toggle ───────────────────────────────────────────────────────────
+// Sits on the right border line, vertically centered
+.edge-toggle {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translate(50%, -50%);
+  width: 16px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  color: var(--dim);
+  cursor: pointer;
+  z-index: 101;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+
+  &:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+}
+
+// ── Header ────────────────────────────────────────────────────────────────
+.nav-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  min-height: 52px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: clip;
+}
+
+.nav-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  min-width: 0;
+
+  svg { flex-shrink: 0; color: var(--brand); }
+}
+
+.brand-logo {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.brand-text {
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-width 0.2s ease;
+  white-space: nowrap;
+}
+
+.nav.expanded .brand-text {
+  opacity: 1;
+  max-width: 140px;
+}
+
+// ── Links ─────────────────────────────────────────────────────────────────
+.nav-links {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+  overflow-y: auto;
+  overflow-x: clip;
+}
+
+.nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  padding-left: 17px;
+  color: var(--dim);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 13px;
+  width: 100%;
+  overflow: hidden;
+
+  // Hover highlight sweeps in from the left edge of the sidebar.
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.06);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.25s ease;
+    pointer-events: none;
+  }
+
+  svg,
+  .link-text {
+    position: relative;
+    z-index: 1;
+  }
+
+  svg { flex-shrink: 0; }
+
+  // Hover is the white sweep only — .active no longer drives ::before, so
+  // the sweep stays visible even on the currently selected page.
+  &:hover {
+    color: var(--text);
+
+    &::before { transform: scaleX(1); }
+  }
+
+  &.active {
+    color: var(--brand-hover);
+
+    // Selected state is visually distinct from hover: a brand-tinted wash
+    // plus an accent bar, instead of the white overlay.
+    background: rgba(255, 255, 255, 0.04);
+    background: color-mix(in srgb, var(--brand) 9%, transparent);
+
+    &::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 5px;
+      bottom: 5px;
+      width: 3px;
+      border-radius: 0 2px 2px 0;
+      background: var(--brand);
+      pointer-events: none;
+    }
+  }
+}
+
+// Submenu triggers: the hover sweep doubles as the open-delay countdown.
+// Its duration equals $submenu-open-delay, so the submenu wipe starts at the
+// exact moment the sweep reaches the sidebar's edge — one continuous motion
+// from the link into the panel. Hover-out still retracts at the base 0.25s.
+.has-submenu:hover::before {
+  transition-duration: $submenu-open-delay;
+  transition-timing-function: cubic-bezier(0.37, 0, 0.63, 1);
+}
+
+.link-text {
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  transition: opacity 0.15s ease, max-width 0.2s ease;
+  white-space: nowrap;
+}
+
+.nav.expanded .link-text {
+  opacity: 1;
+  max-width: 140px;
+}
+
+// ── Footer ────────────────────────────────────────────────────────────────
+.nav-footer {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+  overflow-x: clip;
+}
+
+.nav-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  padding-left: 17px;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+
+  svg { flex-shrink: 0; }
+
+  &.connected { color: var(--success); }
+}
+
+.logout-btn {
+  color: var(--dim);
+
+  &:hover {
+    color: var(--danger) !important;
+    background: rgba(248, 81, 73, 0.08) !important;
+  }
+}
+
+// ── Hover submenus ────────────────────────────────────────────────────────
+// The panel sits flush against the sidebar (sideOffset=0): its left edge is
+// square and its own left border lands exactly on the sidebar's right border,
+// so it reads as a drawer attached to the nav rather than a floating popover.
+//
+// The wipe animates clip-path only. The left inset stays pinned at 0 for the
+// whole animation (and is kept there via `forwards`), so the drop shadow can
+// never bleed back onto the sidebar — the seam stays clean. The other three
+// sides end at -64px so the shadow isn't clipped once the wipe completes
+// (this is what previously made the shadow "pop" in at animation end).
+@keyframes submenu-reveal {
+  from { clip-path: inset(-64px 100% -64px 0); }
+  to { clip-path: inset(-64px -64px -64px 0); }
+}
+
+@keyframes submenu-conceal {
+  from { clip-path: inset(-64px -64px -64px 0); }
+  to { clip-path: inset(-64px 100% -64px 0); }
+}
+
+.submenu {
+  z-index: 200;
+  width: 240px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--border);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: 14px 18px 48px rgba(0, 0, 0, 0.35);
+  padding: 6px;
+  outline: none;
+
+  &[data-state="open"] {
+    animation: submenu-reveal 0.32s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  &[data-state="closed"] {
+    animation: submenu-conceal 0.2s ease-in forwards;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    &[data-state="open"],
+    &[data-state="closed"] {
+      animation-duration: 0.01s;
+    }
+  }
+}
+
+.submenu-header {
+  padding: 6px 8px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.submenu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.submenu-scroll {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.submenu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 4px;
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+  font-size: 12.5px;
+  transition: background 0.12s, color 0.12s;
+
+  svg { flex-shrink: 0; color: var(--dim); }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+}
+
+// System submenu tab icons are colored by that integration's live state.
+.tab-icon-ok { color: var(--success); }
+.tab-icon-fail { color: var(--danger); }
+.tab-icon-unknown { color: var(--dim); }
+
+.submenu-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.submenu-badge {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: rgba(230, 168, 23, 0.15);
+  color: #e6a817;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.submenu-empty {
+  display: grid;
+  place-items: center;
+  padding: 18px 8px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.submenu-footer {
+  margin-top: 2px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.submenu-footer-link {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--brand-hover);
+  text-decoration: none;
+  font-size: 12px;
+  transition: background 0.12s;
+
+  &:hover { background: rgba(255, 255, 255, 0.06); }
+}
+
+// ── State indicators ──────────────────────────────────────────────────────
+.squircle {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 30%;
+}
+
+.squircle-up { background: var(--success); }
+.squircle-down { background: var(--danger); }
+.squircle-unknown { background: var(--dim); opacity: 0.5; }
+.squircle-paused { background: #e6a817; }
+
+// Project 4-state status (used via deriveProjectStatus)
+.squircle-ready        { background: var(--success); }
+.squircle-not-deployed { background: var(--dim); opacity: 0.5; }
+.squircle-problem      { background: #e6a817; }

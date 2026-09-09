@@ -1,0 +1,15 @@
+node_modules
+client/node_modules
+dist
+client/dist
+data
+logs
+.git
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
+.env.*
+!.example.env
+Dockerfile.test
+docker-compose.test.yml

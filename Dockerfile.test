@@ -1,0 +1,16 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# rsync is used by init.sh to copy the app to /opt/stackport - not in the base image
+RUN apt-get update -qq \
+ && apt-get install -y -qq rsync \
+ && rm -rf /var/lib/apt/lists/*
+
+# Docker has no init system; stub systemctl so init.sh doesn't fail on service calls
+RUN printf '#!/bin/sh\necho "[stub systemctl] $*" >&2\n' > /usr/local/bin/systemctl \
+ && chmod +x /usr/local/bin/systemctl
+
+WORKDIR /workspace
+
+CMD ["sleep", "infinity"]

@@ -1,0 +1,60 @@
+.root {
+  padding: 0;
+  overflow: hidden;
+}
+
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.025);
+  }
+}
+
+.trigger-icon {
+  display: flex;
+  align-items: center;
+  color: var(--dim);
+  flex-shrink: 0;
+}
+
+.trigger-title {
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.trigger-summary {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--dim);
+  min-width: 0;
+}
+
+.chevron {
+  flex-shrink: 0;
+  color: var(--dim);
+  margin-left: auto;
+  transition: transform 0.18s ease;
+}
+
+.chevron-open {
+  transform: rotate(90deg);
+}
+
+.body {
+  border-top: 1px solid var(--border);
+  padding: 14px 16px;
+}

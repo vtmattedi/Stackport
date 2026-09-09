@@ -1,0 +1,126 @@
+# StackPort's own system stack — the "stackport" Docker Compose project, distinct
+# from every managed project's own compose file (see systemResources.ts's system/
+# workload plane split). As of Phase 1.7/1.8, this is the actual deployment model:
+# no host-installed nginx/certbot, all public ingress goes through the nginx
+# service below, and the stackport service can rebuild+recreate itself (see
+# src/services/selfUpdate.ts). Still not the eventual `stackport` host-lifecycle
+# CLI-managed install (stackport_host_lifecycle.md) — that's a separate, later
+# migration of *how this compose project itself gets installed/bootstrapped*, not
+# of what it runs.
+#
+# See docs/dockerization/BASELINE.md §11 for the Phase 1.1-era gaps this file
+# has since closed.
+
+# Pinned explicitly (Phase 1.2) rather than left to Compose's default of the checkout
+# directory's basename — the system/workload plane boundary (src/services/
+# systemResources.ts) identifies "this is StackPort's own infrastructure" purely by
+# checking a container's com.docker.compose.project label against this fixed name,
+# so it must not vary by install location.
+name: stackport
+
+networks:
+  # Phase 1.7a — shared L2 network so nginx reaches managed-project containers by
+  # Docker DNS service name instead of a published host port. Given the literal
+  # `name:` (not project-prefixed), managed projects join it the same way via
+  # `external: true, name: "stackport-proxy"` (composeNetworking.ts) without needing
+  # to know this project is named "stackport".
+  stackport-proxy:
+    name: stackport-proxy
+
+services:
+  stackport:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stackport
+    restart: unless-stopped
+    ports:
+      # Both sides track the same $PORT (resolved from the auto-loaded .env at the
+      # compose-file level) so the published port always matches the app's own
+      # listen port (config.port, read from the bind-mounted .env below).
+      - "${PORT:-3000}:${PORT:-3000}"
+    # "default" must be listed explicitly alongside stackport-proxy or the implicit
+    # attachment to this project's own network is lost, not merely extended (same
+    # rule composeNetworking.ts applies to managed projects). Needed so nginx can
+    # reach this service by name (STACKPORT_APP_SERVICE, configWriter.ts) and so
+    # this container can reach itself at /health over the same network during
+    # Phase 1.8 self-update health checks.
+    networks: [default, stackport-proxy]
+    volumes:
+      # Grants control over the host's Docker daemon for managed-project actions —
+      # see docker-entrypoint.sh for how the container's `node` user gets access
+      # without running the app itself as root.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Host-side path is env-driven with a repo-relative default (Phase 1.9) so a
+      # dev/test checkout keeps working exactly as before with no override, while a
+      # real stackport.sh install sets STACKPORT_DATA_DIR to /var/lib/stackport/data
+      # — separating persistent state from the disposable app checkout, per
+      # stackport_host_lifecycle.md's directory layout. Covers SQLITE_PATH,
+      # DEPLOY_ROOT, and DOCKER_CONFIG, all of which default to subpaths of ./data
+      # (relative to the app's cwd, /app) per src/config/env.ts.
+      - ${STACKPORT_DATA_DIR:-./data}:/app/data
+      - ${STACKPORT_LOGS_DIR:-./logs}:/app/logs
+      # Bind-mounted (not `env_file:`) deliberately: this compose version applies
+      # `${...}`/`$VAR` interpolation to env_file-sourced values, which silently
+      # truncates any secret containing a literal `$` — bcrypt hashes always do
+      # (`$2b$12$...`). The app already loads .env itself via dotenv.config() in
+      # src/config/env.ts, which does no such expansion, so mounting the real file
+      # and letting the app read it directly is both correct and unchanged
+      # behavior from the host install.
+      - ./.env:/app/.env:ro
+      # Only meaningful once NGINX_PATH (.env) is pointed at ./nginx-data AND
+      # nginx_runtime is switched to "container" (System page toggle) — see the
+      # nginx service below. Harmless otherwise: while nginx_runtime stays at its
+      # default "host", NGINX_PATH stays pointed at the real host /etc/nginx (not
+      # reachable from in here regardless — see BASELINE.md §11's already-documented
+      # Phase 1.1 gap), so this mount just sits unused.
+      - ${STACKPORT_NGINX_DIR:-./nginx-data}:/etc/nginx
+      # Read-only — existence/expiry checks (src/services/certbot.ts) read
+      # fullchain.pem directly once mounted, falling back to sudo only if direct
+      # access fails. Certificate *issuance* itself never runs inside this container —
+      # see the nginx service's comment and certbot.ts's containerAction(), which
+      # spawns its own ephemeral `docker run --rm certbot/certbot` with its own
+      # (read-write) mount instead.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Phase 1.8 self-update — the `docker compose` CLI (invoked via the docker.sock
+      # DooD access above) reads this file from *its own* filesystem view, i.e. this
+      # exact in-container path; it is not baked into the image since it's deploy
+      # infra, not app code. See runContainerSelfUpdate() in src/routes/system.ts for
+      # why this path (what the CLI reads) and HOST_PROJECT_ROOT (what volume refs in
+      # it resolve against, via --project-directory) are deliberately kept separate.
+      - ./docker-compose.system.yml:/app/docker-compose.system.yml:ro
+    # SCRIPTS_DIR (from .env) is a host path for webhook-triggered scripts and is
+    # intentionally not mounted in this milestone — out of scope for Phase 1.1.
+
+  # Phase 1.5/1.6, opt-in — disabled by default (nginx_runtime app_meta flag defaults
+  # to "host", meaning StackPort keeps using the existing host-installed nginx/certbot
+  # exactly as before; this service simply isn't part of that path until explicitly
+  # switched over). See docs/dockerization/BASELINE.md §11 and stackport_yml.md.
+  #
+  # Phase 1.7a hard cutover: dropped `network_mode: host` — this container no longer
+  # reaches projects at 127.0.0.1:<port>, only by Docker DNS service name over
+  # stackport-proxy (configWriter.ts's proxy_pass), so host networking is no longer
+  # needed for that path. Host ingress now goes through the explicit port publication
+  # below instead.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: stackport-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    networks: [default, stackport-proxy]
+    volumes:
+      # Same host directory as the stackport service's mount above — both containers
+      # must see the exact same files at the exact same path for
+      # `docker exec stackport-nginx nginx -t/-s reload` (see configWriter.ts) to act
+      # on the config StackPort itself just wrote.
+      - ${STACKPORT_NGINX_DIR:-./nginx-data}:/etc/nginx
+      # Certs stay host-managed via the existing certbot.ts (host mode) or the
+      # ephemeral containerized certbot (container mode, Phase 1.6) — either way this
+      # container only needs read access to serve them.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # Serves ACME HTTP-01 challenges (configWriter.ts's acmeChallengeLocation()) —
+      # certbot.ts's containerAction() writes into the same fixed host path with its
+      # own read-write mount when issuing/renewing.
+      - /var/lib/stackport/certbot-webroot:/var/www/certbot:ro

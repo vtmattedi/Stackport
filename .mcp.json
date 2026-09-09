@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "stackport": {
+      "command": "npm",
+      "args": [
+        "run",
+        "--silent",
+        "dev:mcp"
+      ]
+    },
+    "shadcn": {
+      "command": "npx",
+      "args": [
+        "shadcn@latest",
+        "mcp"
+      ]
+    }
+  }
+}

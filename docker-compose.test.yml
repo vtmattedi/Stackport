@@ -1,0 +1,40 @@
+# Simulates a clean VPS to test init.sh and run the app manually.
+#
+# Workflow:
+#   1. Prepare a .env in this directory (copy .example.env, fill secrets, remove CHANGE_ME):
+#        cp .example.env .env && nano .env
+#
+#   2. Start the container:
+#        docker compose -f docker-compose.test.yml up -d
+#
+#   3. Shell in:
+#        docker exec -it stackport-vps-test bash
+#
+#   4. Inside the container, run init.sh (installs Node.js, Nginx, Certbot, copies app):
+#        bash /workspace/init.sh
+#      init.sh copies the source to /opt/stackport and prunes devDependencies.
+#
+#   5. Restore devDeps (root + client) and start in dev mode:
+#        cd /opt/stackport && npm install && npm install --prefix client && npm run dev
+#
+# Notes:
+#   - systemctl is stubbed — services are not managed by systemd in this environment.
+#   - Port 3000 → app (npm run dev). Port 8080 → nginx (if started manually).
+
+services:
+  vps:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: stackport-vps-test
+    volumes:
+      - .:/workspace
+      # Shadow Windows node_modules — Linux container needs its own native binaries
+      - /workspace/node_modules
+      - /workspace/client/node_modules
+    ports:
+      - "3000:3000"
+      - "8080:80"
+    working_dir: /workspace
+    stdin_open: true
+    tty: true

@@ -1,0 +1,138 @@
+.overlay {
+  --stackport-loading-brand: var(--brand, #6366f1);
+  --stackport-loading-port: var(--stackport-port-color, #ffffff);
+  --stackport-loading-copy: rgba(248, 250, 252, 0.74);
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  color: var(--stackport-loading-copy);
+  background:
+    radial-gradient(circle at 50% 38%, rgba(99, 102, 241, 0.2), transparent 28%),
+    rgba(10, 12, 15, 0.74);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+}
+
+.overlayVisible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.content {
+  display: grid;
+  justify-items: center;
+  gap: clamp(22px, 4vw, 38px);
+  width: min(680px, 88vw);
+}
+
+.logo {
+  width: min(560px, 82vw);
+  color: var(--stackport-loading-brand);
+  filter: drop-shadow(0 22px 42px rgba(0, 0, 0, 0.34));
+  opacity: 0;
+  transform-origin: center;
+  transform-style: preserve-3d;
+  will-change: filter, opacity, transform;
+}
+
+.logo svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.logo svg path {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.status {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  color: var(--stackport-loading-copy);
+  font-family: "Inter Variable", Inter, system-ui, sans-serif;
+  font-size: clamp(0.86rem, 1.6vw, 1rem);
+  font-weight: 800;
+  letter-spacing: 0;
+  opacity: 0.76;
+  animation: mw-loading-status-pulse 1.4s ease-in-out infinite;
+}
+
+.status svg {
+  width: 24px;
+  height: 24px;
+  color: var(--stackport-loading-brand);
+  animation: mw-loading-spin 1.05s linear infinite;
+}
+
+:global(.dark) .overlay {
+  --stackport-loading-port: #ffffff;
+  --stackport-loading-copy: rgba(248, 250, 252, 0.72);
+  background:
+    radial-gradient(circle at 50% 38%, rgba(99, 102, 241, 0.22), transparent 28%),
+    rgba(0, 0, 0, 0.82);
+}
+
+:global(.light) .overlay,
+:global([data-theme="light"]) .overlay {
+  --stackport-loading-port: #090909;
+}
+
+@media (max-width: 620px) {
+  .content {
+    gap: 24px;
+  }
+
+  .logo {
+    width: min(420px, 88vw);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay {
+    transition-duration: 1ms;
+  }
+
+  .logo {
+    opacity: 1;
+    transform: none;
+  }
+
+  .logo svg path {
+    fill: var(--stackport-loading-brand);
+    stroke-width: 0;
+    stroke-dashoffset: 0;
+  }
+
+  .logo svg :global(#port-text) path {
+    fill: var(--stackport-loading-port);
+  }
+
+  .status,
+  .status svg {
+    animation: none;
+  }
+}
+
+@keyframes mw-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes mw-loading-status-pulse {
+  0%,
+  100% {
+    opacity: 0.46;
+  }
+
+  50% {
+    opacity: 0.9;
+  }
+}

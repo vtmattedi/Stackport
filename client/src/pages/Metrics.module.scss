@@ -1,0 +1,419 @@
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+
+  @media (max-width: 860px) { grid-template-columns: repeat(2, 1fr); }
+  @media (max-width: 480px) { grid-template-columns: 1fr 1fr; }
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  transition: border-color 0.2s;
+}
+
+.stat-card-green { border-color: rgba(63, 185, 80, 0.45); }
+.stat-card-yellow { border-color: rgba(240, 180, 41, 0.45); }
+.stat-card-red { border-color: rgba(248, 81, 73, 0.45); }
+
+.stat-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.stat-info-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover { color: var(--fg); background: var(--border); }
+}
+
+.stat-info-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.stat-info-list {
+  margin: 0;
+  padding-left: 14px;
+
+  li + li { margin-top: 2px; }
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+// N/Total fraction display
+.stat-fraction {
+  display: flex;
+  align-items: baseline;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
+.stat-fraction-n {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.stat-fraction-sep {
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--dim);
+  opacity: 0.45;
+  margin: 0 1px;
+}
+
+.stat-fraction-total {
+  font-size: 22px;
+  font-weight: 500;
+  color: var(--dim);
+  opacity: 0.45;
+}
+
+.stat-color-green  { color: var(--success); }
+.stat-color-yellow { color: #f0b429; }
+.stat-color-red    { color: var(--danger); }
+
+.stat-sub {
+  font-size: 12px;
+  color: var(--dim);
+  margin-top: 4px;
+}
+
+.stat-success { color: var(--success); }
+.stat-danger  { color: var(--danger); }
+.stat-brand   { color: var(--brand); }
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+
+  @media (max-width: 860px) { grid-template-columns: 1fr; }
+}
+
+.nginx-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+
+  @media (max-width: 860px) { grid-template-columns: 1fr; }
+}
+
+.chart-wrap {
+  width: 100%;
+  overflow: hidden;
+}
+
+.resource-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.area-chart {
+  height: 260px;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+  background: var(--dim);
+}
+
+.status-up    { background: var(--success); }
+.status-down  { background: var(--danger); }
+
+.result-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.result-ok    { background: rgba(63,185,80,.12); color: var(--success); }
+.result-error { background: rgba(248,81,73,.12); color: var(--danger); }
+
+.empty-chart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 160px;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.no-data {
+  color: var(--dim);
+  font-size: 13px;
+  padding: 16px 0;
+  text-align: center;
+}
+
+.path-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.path-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+
+  > div {
+    height: 100%;
+    background: var(--brand);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+}
+
+.refresh-btn {
+  margin-left: auto;
+}
+
+.nginx-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ip-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.period-select {
+  height: 26px;
+  min-width: 66px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.resource-metric-select {
+  min-width: 120px;
+}
+
+.clear-btn {
+  color: var(--danger);
+  &:hover { background: rgba(248, 81, 73, 0.08); }
+}
+
+// ── Traffic insights row ────────────────────────────────────────────────────
+.nginx-insights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 10px 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.insight-item {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 16px;
+  border-right: 1px solid var(--border);
+  min-width: 0;
+
+  &:last-child { border-right: none; }
+}
+
+.insight-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin-bottom: 3px;
+}
+
+.insight-value {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.method-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--fg);
+}
+
+.method-pct {
+  color: var(--dim);
+  font-weight: 400;
+}
+
+// ── Domain rate badges ─────────────────────────────────────────────────────
+.rate-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-ok   { background: rgba(63, 185, 80, 0.1);  color: var(--success); }
+.rate-warn { background: rgba(240, 180, 41, 0.12); color: #f0b429; }
+.rate-err  { background: rgba(248, 81, 73, 0.1);   color: var(--danger); }
+
+// ── Domain drilldown ─────────────────────────────────────────────────────
+.domain-row {
+  cursor: pointer;
+
+  &:hover { background: rgba(255, 255, 255, 0.03); }
+}
+
+.domain-chevron {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 4px;
+  color: var(--dim);
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.domain-chevron-open {
+  transform: rotate(90deg);
+  color: var(--brand);
+  opacity: 1;
+}
+
+.domain-row-active {
+  background: rgba(99, 102, 241, 0.08);
+
+  td:first-child { color: var(--brand); font-weight: 600; }
+}
+
+.domain-detail {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.domain-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.domain-detail-close {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+
+  &:hover { color: var(--fg); background: var(--border); }
+}
+
+// ── Metrics tables: keep the identifying column (url/domain) and the count
+// column aligned and visible together on mobile — long paths/hosts wrap, so
+// cells must align to the top (not center) or the count drifts away from
+// its row; decorative columns (bar, bandwidth, avg RT) drop out first.
+.metrics-table {
+  :global(td), :global(th) { vertical-align: top; }
+}
+
+.col-domain, .col-path {
+  width: auto;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.col-requests, .col-count {
+  width: 64px;
+  white-space: nowrap;
+}
+
+.col-err-rate, .col-avg-rt, .col-bandwidth {
+  width: 76px;
+}
+
+.col-bar { width: 90px; }
+
+.col-secondary {
+  @media (max-width: 640px) { display: none; }
+}
+
+// ── Hint for missing extended format ──────────────────────────────────────
+.no-extended-hint {
+  font-size: 12px;
+  color: var(--dim);
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+}

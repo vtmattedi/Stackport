@@ -1,0 +1,84 @@
+.trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  // Matches AppSelect's size="sm" height (Radix data-[size=sm]:h-8) so it reads
+  // as the same visual weight next to other selectors.
+  height: 32px;
+  min-width: 170px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+
+  &:hover { border-color: var(--dim); }
+}
+
+.panel {
+  z-index: 50;
+  min-width: 220px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+
+  input { accent-color: var(--brand); flex-shrink: 0; }
+
+  &:hover { background: rgba(255, 255, 255, 0.04); }
+}
+
+.action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+
+  svg { color: var(--brand); flex-shrink: 0; }
+
+  &:hover { background: rgba(255, 255, 255, 0.04); }
+}
+
+.actionActive {
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.trunc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

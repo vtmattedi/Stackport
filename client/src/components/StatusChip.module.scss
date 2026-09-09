@@ -1,0 +1,21 @@
+.status-chip {
+  border-radius: 4px;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.status-ok {
+  border-color: rgba(63, 185, 80, 0.28);
+  background: rgba(63, 185, 80, 0.12);
+  color: var(--success);
+}
+
+.status-fail {
+  border-color: rgba(248, 81, 73, 0.28);
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--danger);
+}

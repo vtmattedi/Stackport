@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment — never commit real secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Local SQLite data
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Nginx runtime data (dev/test bind mount for docker-compose.system.yml's nginx
+# service — generated config, not source; mirrors data/ above)
+nginx-data/
+
+# Backups — stackport.sh writes real installs' backups to /var/lib/stackport/backups
+# (outside the repo entirely), but this guards any local backups/ dir too, e.g. from
+# dev-testing the update/rollback flow against this checkout.
+backups/
+
+# Archived pre-Dockerization host scripts (init.sh, rp_init.sh, etc.), superseded by
+# stackport.sh — kept locally for reference, not meant for history.
+oldSPScripts/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+
+# Editor
+.vscode/
+.idea/
+
+.claude

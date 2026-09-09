@@ -1,0 +1,45 @@
+.settings-form { display: grid; gap: 16px; }
+
+// ── VPS provider form ──────────────────────────────────────────────────────
+.vps-provider-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 20px;
+
+  @media (max-width: 860px) { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 560px) { grid-template-columns: 1fr; }
+}
+
+.provider-action-select {
+  min-width: min(360px, 100%);
+
+  @media (max-width: 640px) {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+// ── Toggle label ───────────────────────────────────────────────────────────
+.switch-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+
+  > span {
+    display: grid;
+    gap: 3px;
+  }
+
+  > span span:first-child {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  > span span:last-child {
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+}

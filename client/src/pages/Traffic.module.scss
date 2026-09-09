@@ -1,0 +1,465 @@
+// ── Top controls ────────────────────────────────────────────────────────────
+// AppSelect's trigger ships Tailwind defaults (h-9, text-sm) that share the
+// same specificity as these module classes — !important guarantees the
+// compact sizing wins regardless of stylesheet bundling order.
+.period-select {
+  min-width: 66px;
+  font-size: 12px !important;
+  padding: 0 8px !important;
+}
+
+.project-select {
+  min-width: 170px;
+}
+
+// Pairs the project selector and the timeframe selector as one visually
+// equal-weight unit, kept apart from the other filterBar controls so they
+// can't independently wrap onto separate lines from each other.
+.selectorGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ip-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────
+.tabsList {
+  margin-bottom: 16px;
+}
+
+.tabBadge {
+  margin-left: 4px;
+}
+
+// ── Stat cards ───────────────────────────────────────────────────────────
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+
+  @media (max-width: 1000px) { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 560px) { grid-template-columns: repeat(2, 1fr); }
+}
+
+.statCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.statLabel {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+
+.statValue {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.statSub {
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 4px;
+}
+
+.statDanger { color: var(--danger); }
+.statWarn { color: #f0b429; }
+
+// ── Health banner ────────────────────────────────────────────────────────
+.healthBanner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--danger);
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.25);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  margin-bottom: 12px;
+}
+
+// ── Charts ───────────────────────────────────────────────────────────────
+.nginxGrid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+
+  @media (max-width: 860px) { grid-template-columns: 1fr; }
+}
+
+.chartWrap {
+  width: 100%;
+  overflow: hidden;
+}
+
+.emptyChart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 160px;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.noData {
+  color: var(--dim);
+  font-size: 13px;
+  padding: 16px 0;
+  text-align: center;
+}
+
+// ── Project table ────────────────────────────────────────────────────────
+.metricsTable {
+  :global(td), :global(th) { vertical-align: top; }
+}
+
+.colDomain { width: auto; overflow-wrap: anywhere; }
+.colCount { width: 64px; white-space: nowrap; }
+.colSecondary { @media (max-width: 720px) { display: none; } }
+
+.domainRow { cursor: pointer; &:hover { background: rgba(255, 255, 255, 0.03); } }
+
+.domainChevron {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 4px;
+  color: var(--dim);
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.domainChevronOpen { transform: rotate(90deg); color: var(--brand); opacity: 1; }
+
+.domainRowActive {
+  background: rgba(99, 102, 241, 0.08);
+  td:first-child { color: var(--brand); font-weight: 600; }
+}
+
+.statusDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+  background: var(--dim);
+}
+
+.statusUp { background: var(--success); }
+.statusDown { background: var(--danger); }
+
+.projectCell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  vertical-align: middle;
+}
+
+.projectName { color: var(--fg); font-weight: 600; }
+
+.projectHost {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--dim);
+}
+
+.domainDetail {
+  padding: 14px;
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.015);
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+
+  @media (max-width: 720px) { grid-template-columns: 1fr; }
+}
+
+.detailColTitle {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+
+.pathItem {
+  margin-bottom: 8px;
+  &:last-child { margin-bottom: 0; }
+}
+
+.pathRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--fg);
+  margin-bottom: 3px;
+}
+
+.pathBar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+
+  > div {
+    height: 100%;
+    background: var(--brand);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+}
+
+.ipRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  margin-bottom: 4px;
+  color: var(--dim);
+}
+
+.ipRowFlagged { color: var(--danger); }
+
+.rateBadge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rateOk { background: rgba(63, 185, 80, 0.1); color: var(--success); }
+.rateWarn { background: rgba(240, 180, 41, 0.12); color: #f0b429; }
+.rateErr { background: rgba(248, 81, 73, 0.1); color: var(--danger); }
+
+// ── Filter bar ───────────────────────────────────────────────────────────
+.filterBar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.searchWrap {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+
+  input { width: 100%; padding-left: 30px; }
+
+  svg {
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--dim);
+    pointer-events: none;
+  }
+}
+
+.filterSelect {
+  font-size: 12px !important;
+  min-width: 110px;
+}
+
+// ── Log table ────────────────────────────────────────────────────────────
+.logMeta {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+
+.logRow {
+  display: grid;
+  grid-template-columns: 70px 110px 54px 1fr 46px minmax(90px, auto);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+
+  &:first-child { border-top: none; }
+  &:hover { background: rgba(255, 255, 255, 0.03); }
+}
+
+.logRowFlagged { background: rgba(248, 81, 73, 0.04); }
+
+.trunc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// ── Anomaly groups ───────────────────────────────────────────────────────
+.anomalyGroups { display: flex; flex-direction: column; gap: 10px; }
+
+.severityDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.sevHigh { background: var(--danger); }
+.sevMed { background: #f0b429; }
+.sevLow { background: var(--dim); }
+
+.anomalyItem {
+  display: grid;
+  grid-template-columns: 66px 110px 1fr 44px;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  border-top: 1px solid var(--border);
+
+  &:first-child { border-top: none; }
+  &:hover { color: var(--brand); }
+}
+
+.groupHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.groupCount { margin-left: auto; color: var(--dim); font-size: 11px; }
+
+// ── Request/config modals ───────────────────────────────────────────────
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-weight: 600;
+}
+
+.modalClose {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+
+  &:hover { color: var(--fg); background: var(--border); }
+}
+
+.flagBanner {
+  background: rgba(248, 81, 73, 0.07);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  border-radius: var(--radius);
+  padding: 10px;
+  margin-bottom: 12px;
+}
+
+.flagBannerTitle {
+  color: var(--danger);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.kvList { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+.kvRow {
+  display: flex;
+  gap: 12px;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+
+  &:first-child { border-top: none; }
+}
+
+.kvKey { width: 130px; flex: none; color: var(--dim); }
+
+.detailActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+// ── Config modal sections ───────────────────────────────────────────────
+.configSection {
+  margin-bottom: 18px;
+
+  &:last-child { margin-bottom: 0; }
+}
+
+.configSectionTitle {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+
+.switchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.ruleRow {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  margin-bottom: 6px;
+}
+
+.ruleRowHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ruleDesc {
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 4px;
+  padding-left: 15px;
+}
+
+.columnGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
