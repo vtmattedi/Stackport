@@ -382,10 +382,38 @@ ensure_env_file() {
     echo "STACKPORT_LOGS_DIR=$VAR_DIR/logs"
     echo "STACKPORT_NGINX_DIR=$VAR_DIR/nginx"
   } > "$target"
+  # This file is bind-mounted read-only into the stackport container and read by
+  # its unprivileged `node` user (UID/GID 1000, the same assumption ensure_directories/
+  # seed_nginx_data/repair_stackport already make elsewhere in this script) — not by
+  # root. ensure_secrets's chmod 600 on $SECRETS_ENV_FILE is correctly root-only
+  # (that file never leaves the host), but this *derived* file needs to be
+  # owner-readable by that container user specifically, or the app fails to boot
+  # with a cryptic "Missing required environment variable" several layers removed
+  # from this actual cause. root (which is what runs this script) can always
+  # read/write it regardless of this chown, so this doesn't weaken anything on the
+  # host side — chmod 600 still means nobody *else* on the host can read it.
+  chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$target"
   chmod 600 "$target"
+
+  # Fail fast and clearly here rather than letting the app crash-loop on a
+  # "Missing required environment variable" error several layers removed from
+  # any useful context (env.ts's require_env) — these two are always required.
+  local key
+  for key in JWT_SECRET WEBHOOK_SECRET; do
+    if ! grep -qE "^${key}=.+" "$target"; then
+      error "generated $target has no value for $key — check $SECRETS_ENV_FILE, then rerun 'sudo stackport repair'"
+      exit 1
+    fi
+  done
 }
 
 start_stackport() {
+  # Without this, a genuinely fresh $VAR_DIR/nginx has no nginx.conf at all and
+  # the nginx container crash-loops on its very first boot ("open() nginx.conf
+  # failed") — this was previously only wired into repair_stackport, so a first
+  # `install` never actually seeded it. seed_nginx_data is idempotent (no-ops if
+  # nginx.conf already exists), so it's safe on every start, not just first boot.
+  seed_nginx_data
   ensure_env_file
   log "building StackPort image"
   compose build
