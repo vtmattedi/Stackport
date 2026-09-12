@@ -35,7 +35,15 @@ export type NginxRuntime = "host" | "container";
 
 export function getNginxRuntime(): NginxRuntime {
   const row = getDatabase().prepare("SELECT value FROM app_meta WHERE key = ?").get(NGINX_RUNTIME_KEY) as { value: string } | undefined;
-  return row?.value === "container" ? "container" : "host";
+  // Defaults to "container", not "host": stackport.sh (the only install path as of
+  // Phase 1.9) never sets up a host nginx/certbot at all, so a fresh install with no
+  // explicit app_meta row must behave as "container" from first boot — otherwise
+  // ensureAppIngress() (appIngress.ts) silently no-ops on its "host" guard and the
+  // app is never actually reachable through nginx at all (no self-signed cert, no
+  // generated config) until someone manually flips this in a UI they can't yet
+  // reach. An explicit row (e.g. a dev checkout that intentionally opted into host
+  // mode before this default changed) is still honored either way.
+  return row?.value === "host" ? "host" : "container";
 }
 
 export function setNginxRuntime(runtime: NginxRuntime): void {
