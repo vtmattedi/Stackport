@@ -740,6 +740,11 @@ uninstall_stackport() {
   if [[ "$purge" == "--purge" ]]; then
     log "removing $ETC_DIR and $VAR_DIR"
     rm -rf "$ETC_DIR" "$VAR_DIR"
+    # The self-signed bootstrap cert (src/services/nginx/selfSignedCert.ts) lives
+    # under /etc/letsencrypt rather than $VAR_DIR, so the line above misses it. Only
+    # this StackPort-owned subdirectory goes — /etc/letsencrypt itself is left alone,
+    # since real Let's Encrypt certs there stay usable by any host-native certbot.
+    rm -rf /etc/letsencrypt/stackport-selfsigned
     rm -f "$CLI_TARGET"
     log "StackPort purged"
   else
