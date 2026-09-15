@@ -38,7 +38,7 @@ services:
       # Both sides track the same $PORT (resolved from the auto-loaded .env at the
       # compose-file level) so the published port always matches the app's own
       # listen port (config.port, read from the bind-mounted .env below).
-      - "${PORT:-3000}:${PORT:-3000}"
+      - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
     # "default" must be listed explicitly alongside stackport-proxy or the implicit
     # attachment to this project's own network is lost, not merely extended (same
     # rule composeNetworking.ts applies to managed projects). Needed so nginx can
@@ -106,6 +106,12 @@ services:
     image: nginx:1.27-alpine
     container_name: stackport-nginx
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
     ports:
       - "80:80"
       - "443:443"

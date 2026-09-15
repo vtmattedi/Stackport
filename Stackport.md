@@ -66,6 +66,10 @@ Unbounded image/build-cache growth on a long-running host is a real failure mode
 
 ## 2. Installation and host lifecycle — `stackport.sh`
 
+See [the first-install postmortem](docs/first-install-postmortem.md) for the
+bootstrap fixes, regression runner, and replacement-VPS checklist. Installation
+waits for HTTPS through nginx before reporting completion.
+
 Installation and ongoing host management go through one script, `stackport.sh`, which also installs itself as `/usr/local/bin/stackport`. Full command semantics live in `docs/deprecated/stackport_host_lifecycle.md` (the original design doc — commands below match what's actually implemented).
 
 ```bash

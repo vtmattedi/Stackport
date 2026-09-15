@@ -128,6 +128,21 @@ healthcheck_stackport() {
   return 1
 }
 
+# Process health alone does not prove that the first-login HTTPS route is ready.
+healthcheck_ingress() {
+  local attempts="${1:-${STACKPORT_INGRESS_ATTEMPTS:-180}}" domain i
+  domain="$(grep -m1 '^STACKPORT_DOMAIN=' "$STACKPORT_ENV_FILE" | cut -d= -f2-)"
+  for ((i = 0; i < attempts; i++)); do
+    if [[ -n "$domain" ]]; then
+      if curl --noproxy '*' --max-time 5 -fsS --resolve "$domain:443:127.0.0.1" -o /dev/null "https://$domain/health" 2>/dev/null; then return 0; fi
+    elif curl --noproxy '*' --max-time 5 -kfsS -o /dev/null https://127.0.0.1/health 2>/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 compose() {
   docker compose -f "$COMPOSE_FILE" --project-directory "$APP_DIR" "$@"
 }
@@ -159,6 +174,18 @@ ensure_docker() {
   log "installing Docker"
   curl -fsSL https://get.docker.com | sh
   systemctl enable --now docker >/dev/null 2>&1 || true
+}
+
+ensure_prerequisites() {
+  local cmd missing=0
+  for cmd in curl git openssl; do
+    command -v "$cmd" >/dev/null 2>&1 || missing=1
+  done
+  if [[ "$missing" == 1 ]]; then
+    command -v apt-get >/dev/null 2>&1 || { error "install curl, git and openssl before continuing"; exit 1; }
+    apt-get update
+    apt-get install -y curl git openssl ca-certificates
+  fi
 }
 
 ensure_directories() {
@@ -418,7 +445,7 @@ start_stackport() {
   log "building StackPort image"
   compose build
   log "starting StackPort"
-  compose up -d
+  compose up -d --force-recreate
 }
 
 # ── install ───────────────────────────────────────────────────────────────────
@@ -449,6 +476,7 @@ parse_install_args() {
 install_stackport() {
   parse_install_args "$@"
   ensure_supported_os
+  ensure_prerequisites
   ensure_docker
   ensure_directories
   ensure_configuration
@@ -461,6 +489,11 @@ install_stackport() {
 
   if healthcheck_stackport; then
     log "health check passed"
+    log "waiting for first-login HTTPS (certificate issuance may take several minutes)"
+    if ! healthcheck_ingress; then
+      error "app is running, but HTTPS is not ready; check DNS, inbound ports 80/443, and docker logs stackport. Fix the cause and rerun install."
+      exit 1
+    fi
     state_set current "$(git -C "$APP_DIR" rev-parse HEAD)"
     state_set lastUpdate success
   else
@@ -532,11 +565,12 @@ update_stackport() {
   state_set previous "$current"
   git -C "$APP_DIR" checkout --quiet "$target"
   ensure_env_file
-  compose up -d --build stackport
+  compose up -d --build
 
   if healthcheck_stackport; then
     state_set current "$target"
     state_set lastUpdate success
+    if [[ -f "$APP_DIR/stackport.sh" ]]; then install -m 0755 "$APP_DIR/stackport.sh" "$CLI_TARGET"; fi
     log "update complete"
   else
     error "health check failed after update — rolling back"
@@ -557,7 +591,7 @@ rollback_stackport() {
 
   git -C "$APP_DIR" checkout --quiet "$previous"
   ensure_env_file
-  compose up -d --build stackport
+  compose up -d --build
 
   if healthcheck_stackport; then
     state_set current "$previous"
@@ -672,13 +706,14 @@ repair_stackport() {
   chown -R "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$VAR_DIR/data" "$VAR_DIR/logs" "$VAR_DIR/nginx" 2>/dev/null || true
 
   if [[ -f "$COMPOSE_FILE" ]]; then
+    ensure_env_file
     log "validating compose configuration"
     compose config >/dev/null
 
     for name in stackport stackport-nginx; do
       if ! docker ps --format '{{.Names}}' | grep -qx "$name"; then
         log "starting missing container: $name"
-        compose up -d "$name" || true
+        if [[ "$name" == "stackport-nginx" ]]; then compose up -d nginx; else compose up -d stackport; fi
       fi
     done
   fi

@@ -348,10 +348,15 @@ function renderExtraBlocks(target: NginxTarget): string {
 
 function locationBlock(target: NginxTarget): string {
   const upstreamUrl = `http://${target.service}:${target.containerPort}`;
+  // Resolve at request time so a stopped/not-yet-deployed workload cannot prevent
+  // nginx from loading Stackport's own admin route. Also refresh DNS after recreation.
+  const proxy = getNginxRuntime() === "container"
+    ? `resolver 127.0.0.11 valid=10s ipv6=off;\n        set $stackport_upstream ${upstreamUrl};\n        proxy_pass $stackport_upstream;`
+    : `proxy_pass ${upstreamUrl};`;
 
   return `
     location / {
-        proxy_pass ${upstreamUrl};
+        ${proxy}
         proxy_http_version 1.1;
 
         proxy_set_header Upgrade $http_upgrade;
@@ -367,6 +372,11 @@ function locationBlock(target: NginxTarget): string {
 async function certificateExists(domain: string): Promise<boolean> {
   const certBase = path.join("/etc/letsencrypt/live", domain);
   const files = [path.join(certBase, "fullchain.pem"), path.join(certBase, "privkey.pem")];
+
+  if (getNginxRuntime() === "container") {
+    const checks = await Promise.all(files.map((file) => run("docker", ["exec", NGINX_CONTAINER_NAME, "test", "-f", file])));
+    return checks.every((check) => check.ok);
+  }
 
   const direct = await Promise.all(files.map((file) => fileExists(file)));
   if (direct.every(Boolean)) return true;
@@ -628,7 +638,7 @@ function projectRouteTargets(projects: Project[], domainsByProject: Map<number, 
       service: pd.service,
       containerPort: pd.containerPort,
       useSsl: pd.useSsl,
-      includeWwwRedirect: apexDomains.has(pd.domain),
+      includeWwwRedirect: apexDomains.has(pd.domain) && !allDomains.includes(`www.${pd.domain}`),
       extraConfig: project.nginxExtraConfig ?? "",
       extraBlocks: project.nginxExtraBlocks ?? "",
     }))

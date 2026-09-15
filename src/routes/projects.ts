@@ -13,6 +13,7 @@ import {
   createProjectEnvFile,
   deleteProjectEnvFile,
   deployProject,
+  ensureProjectProxyNetwork,
   getProjectById,
   getProjectComposeFileContent,
   getProjectLogs,
@@ -102,6 +103,7 @@ async function runProjectNginxFlow(source: string, project: { id: number; name: 
     message: `${project.name}: rebuilding nginx routes.`,
   });
   try {
+    await ensureProjectProxyNetwork(project.id);
     const result = await writeNginxConfig();
     emitNginxFlow({
       id,
@@ -714,6 +716,7 @@ router.post("/:id/domains/:domainId/ssl/issue", requireAuth, (req: Request<{ id:
     });
 
     setProjectDomainSsl(id, domainId, false);
+    await ensureProjectProxyNetwork(id);
     const preApply = await writeNginxConfig();
     if (!preApply.ok) {
       emitNginxFlow({

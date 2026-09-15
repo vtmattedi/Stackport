@@ -1,5 +1,4 @@
 import { execFile } from "child_process";
-import * as fs from "fs/promises";
 import * as path from "path";
 
 // Reuses the already-mounted /etc/letsencrypt volume (see docker-compose.system.yml)
@@ -22,10 +21,6 @@ function run(cmd: string, args: string[], timeoutMs = 30_000): Promise<{ ok: boo
   });
 }
 
-async function fileExistsDirect(filePath: string): Promise<boolean> {
-  return fs.access(filePath).then(() => true).catch(() => false);
-}
-
 /** Idempotent — generates a long-lived (10y) self-signed cert/key the very first
  *  time a domain-less (raw-IP) install boots, so the one-time bootstrap login
  *  (services/appIngress.ts) is always reachable over HTTPS even before any real
@@ -40,7 +35,9 @@ async function fileExistsDirect(filePath: string): Promise<boolean> {
  *  inside the long-lived app container, only from disposable `docker run --rm`
  *  ones), so writing the generated cert/key needs its own read-write mount. */
 export async function ensureSelfSignedCert(): Promise<{ ok: boolean; output: string }> {
-  if (await fileExistsDirect(SELF_SIGNED_CERT_PATH) && await fileExistsDirect(SELF_SIGNED_KEY_PATH)) {
+  const existing = await Promise.all([SELF_SIGNED_CERT_PATH, SELF_SIGNED_KEY_PATH].map((file) =>
+    run("docker", ["exec", "stackport-nginx", "test", "-f", file])));
+  if (existing.every((result) => result.ok)) {
     return { ok: true, output: "self-signed certificate already present" };
   }
 

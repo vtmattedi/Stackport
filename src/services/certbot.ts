@@ -4,7 +4,7 @@ import * as path from "path";
 import { getDatabase } from "../config/database";
 import { pollingCadenceS } from "../config/pollingCadence";
 import { SingleFlightCache } from "../utils/singleFlightCache";
-import { CERTBOT_WEBROOT_PATH, DOMAIN_RE, getNginxLayerStatus, getNginxRuntime } from "./nginx/configWriter";
+import { CERTBOT_WEBROOT_PATH, DOMAIN_RE, getNginxAppConfig, getNginxLayerStatus, getNginxRuntime } from "./nginx/configWriter";
 
 export type CertbotMode = "real";
 export type CertbotAction = "issue" | "renew" | "delete";
@@ -162,6 +162,9 @@ async function fileExistsDirect(filePath: string): Promise<boolean> {
 }
 
 async function checkFileExists(filePath: string): Promise<RunResult> {
+  if (getNginxRuntime() === "container") {
+    return run("docker", ["exec", "stackport-nginx", "test", "-f", filePath], 12_000);
+  }
   if (await fileExistsDirect(filePath)) return { stdout: "", stderr: "", ok: true, notFound: false };
   return runPrivileged("test", ["-f", filePath], 12_000);
 }
@@ -170,6 +173,10 @@ async function readOpenssl(args: string[]): Promise<RunResult> {
   const direct = await run("openssl", args, 12_000);
   if (direct.ok) return direct;
   if (direct.notFound) return direct; // openssl binary itself missing — sudo won't fix that
+  if (getNginxRuntime() === "container") {
+    // Read public certificate metadata only; private keys stay root-only.
+    return run("docker", ["exec", "stackport", "openssl", ...args], 12_000);
+  }
   return runPrivileged("openssl", args, 12_000); // ran but failed (e.g. permission) — retry with sudo
 }
 
@@ -252,7 +259,7 @@ async function resolveRoutedDomain(domain: string) {
 }
 
 function shouldIssueWwwAlias(domain: string, type: CertbotDomainType): boolean {
-  return type === "domain" && !domain.startsWith("www.");
+  return type === "domain" && !domain.startsWith("www.") && domain !== getNginxAppConfig().domain;
 }
 
 export async function getCertbotStatus(): Promise<CertbotStatus> {

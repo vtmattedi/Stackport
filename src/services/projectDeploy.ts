@@ -10,7 +10,7 @@ import { emitProjectDeploy, type ProjectDeployEvent } from "./realtime";
 import { actionRegistry, projectRepoKey } from "./actionRegistry";
 import { loadYamlDoc } from "./composeYaml";
 import { validateComposePolicy } from "./composePolicy";
-import { applyStackportProxyNetwork } from "./composeNetworking";
+import { applyStackportProxyNetwork, connectRunningProxyServices } from "./composeNetworking";
 import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
 import { recordFailedDeployment, recordSuccessfulDeployment, getPreviousSuccessfulDeployment } from "./projectDeployments";
@@ -95,6 +95,17 @@ export function deployRoot(): string {
 
 export function projectRepoDir(project: Pick<Project, "id" | "name">): string {
   return path.join(deployRoot(), expectedComposeProjectName(project));
+}
+
+export async function ensureProjectProxyNetwork(projectId: number): Promise<void> {
+  const project = getProjectById(projectId);
+  if (!project?.composeFile) return;
+  const services = listRoutedServiceNames(projectId);
+  if (!services.length) return;
+  const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services);
+  if (!result.ok) throw new Error(result.message);
+  await connectRunningProxyServices(expectedComposeProjectName(project), services);
+  invalidateContainers();
 }
 
 function dockerConfigDir(): string {

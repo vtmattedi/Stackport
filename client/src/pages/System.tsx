@@ -1294,12 +1294,10 @@ export default function System() {
               }}
             />
             <span>
-              <span>Use containerized nginx (Phase 1.5, opt-in)</span>
+              <span>Use containerized Nginx and Certbot</span>
               <span>
-                Validates/reloads against the stackport-nginx container (docker exec) instead of the host's
-                systemctl/nginx. Off by default — the existing host nginx keeps serving all traffic until this is
-                switched. Requires stackport-nginx already running and NGINX_PATH pointed at the same directory it
-                mounts (see docker-compose.system.yml).
+                Enabled by default for VPS installations. Nginx runs continuously in Docker;
+                Certbot runs in temporary containers when issuing or renewing certificates.
               </span>
             </span>
           </label>
