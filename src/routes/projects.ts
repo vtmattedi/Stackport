@@ -694,7 +694,10 @@ router.post("/:id/domains/:domainId/ssl/issue", requireAuth, (req: Request<{ id:
   if (!project) { res.status(404).json({ error: "Project not found" }); return; }
   const domainRow = getProjectDomain(id, domainId);
   if (!domainRow) { res.status(404).json({ error: "Domain not found" }); return; }
-  if (!project.internalPort) { res.status(400).json({ error: "Project needs an internal port before SSL can be issued" }); return; }
+  if (!domainRow.service || !domainRow.containerPort) {
+    res.status(400).json({ error: "Domain needs a Compose service and container port before SSL can be issued" });
+    return;
+  }
 
   const user = req.user ?? "unknown";
   const key = projectSslKey(id, domainId);
