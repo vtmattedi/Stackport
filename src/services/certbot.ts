@@ -211,6 +211,10 @@ const certbotVersionCache = new SingleFlightCache<RunResult>(
   () => runPrivileged("certbot", ["--version"], 12_000),
   null, // startup / explicit refresh only
 );
+const containerCertbotVersionCache = new SingleFlightCache<RunResult>(
+  () => run("docker", ["run", "--rm", "certbot/certbot", "--version"], 120_000),
+  null,
+);
 
 /** Called right after a successful certbot issue/renew/delete (see runCertbotAction
  *  below, and certbotRenewalMonitor.ts's automatic renewal sweep) — the set of certs
@@ -223,6 +227,7 @@ export function invalidateCertCaches(): void {
 /** Called right after installing certbot from the System page. */
 export function invalidateCertbotVersion(): void {
   certbotVersionCache.invalidate();
+  containerCertbotVersionCache.invalidate();
 }
 
 async function routedDomains() {
@@ -255,7 +260,7 @@ export async function getCertbotStatus(): Promise<CertbotStatus> {
   const [existence, expiry, version] = await Promise.all([
     certExistenceCache.get(),
     certExpiryCache.get(),
-    certbotVersionCache.get(),
+    (getNginxRuntime() === "container" ? containerCertbotVersionCache : certbotVersionCache).get(),
   ]);
 
   const entries: CertbotEntry[] = lists.domains.map((domain) => {
@@ -281,8 +286,10 @@ export async function getCertbotStatus(): Promise<CertbotStatus> {
   const emailConfig = getCertbotEmailConfig();
   return {
     mode: "real",
-    available: !version.notFound,
-    reason: version.notFound ? "certbot not installed" : version.ok ? undefined : (version.stderr || version.stdout).trim(),
+    available: version.ok,
+    reason: version.ok ? undefined : getNginxRuntime() === "container"
+      ? (version.stderr || version.stdout || "Certbot container unavailable").trim()
+      : version.notFound ? "certbot not installed" : (version.stderr || version.stdout).trim(),
     emailConfigured: emailConfig.emailConfigured,
     email: emailConfig.email,
     rootPath: "/etc/letsencrypt/live",

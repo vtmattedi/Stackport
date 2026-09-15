@@ -559,15 +559,16 @@ async function getNginxData() {
   const layer = await getNginxLayerStatus();
 
   const versionRes = await getNginxVersionCached();
-  if (versionRes.notFound) {
-    return { available: false, reason: "nginx not installed", layer };
+  if (!versionRes.ok) {
+    return { available: false, reason: getNginxRuntime() === "container"
+      ? (versionRes.stderr || "Nginx container unavailable").trim() : "nginx not installed", layer };
   }
 
   const activeRes = await getNginxActiveStatusCached();
 
   const versionLine = (versionRes.stderr || versionRes.stdout).trim();
   const version = versionLine.replace("nginx version: ", "");
-  const active = activeRes.stdout.trim() === "active";
+  const active = activeRes.ok && ["active", "true"].includes(activeRes.stdout.trim());
   // `nginx -t` only ever runs as part of an actual config apply (writeNginxConfig) —
   // routine status here reads the persisted result of the last real apply instead of
   // re-validating on every poll.

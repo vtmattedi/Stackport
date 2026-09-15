@@ -123,4 +123,4 @@ services:
       # Serves ACME HTTP-01 challenges (configWriter.ts's acmeChallengeLocation()) —
       # certbot.ts's containerAction() writes into the same fixed host path with its
       # own read-write mount when issuing/renewing.
-      - /var/lib/stackport/certbot-webroot:/var/www/certbot:ro
+      - /var/lib/stackport/certbot-webroot:/var/lib/stackport/certbot-webroot:ro

@@ -1,6 +1,7 @@
 import { execFile } from "child_process";
 import { pollingCadenceS } from "../../config/pollingCadence";
 import { SingleFlightCache } from "../../utils/singleFlightCache";
+import { getNginxRuntime } from "./configWriter";
 
 export interface RunResult {
   stdout: string;
@@ -27,12 +28,24 @@ const nginxActiveStatusCache = new SingleFlightCache<RunResult>(
   pollingCadenceS.nginxActiveStatus * 1000,
 );
 
-export const getNginxVersionCached = (): Promise<RunResult> => nginxVersionCache.get();
-export const getNginxActiveStatusCached = (): Promise<RunResult> => nginxActiveStatusCache.get();
+const containerVersionCache = new SingleFlightCache<RunResult>(
+  () => run("docker", ["exec", "stackport-nginx", "nginx", "-v"]),
+  pollingCadenceS.nginxActiveStatus * 1000,
+);
+const containerActiveCache = new SingleFlightCache<RunResult>(
+  () => run("docker", ["inspect", "--format", "{{.State.Running}}", "stackport-nginx"]),
+  pollingCadenceS.nginxActiveStatus * 1000,
+);
+
+export const getNginxVersionCached = (): Promise<RunResult> =>
+  (getNginxRuntime() === "container" ? containerVersionCache : nginxVersionCache).get();
+export const getNginxActiveStatusCached = (): Promise<RunResult> =>
+  (getNginxRuntime() === "container" ? containerActiveCache : nginxActiveStatusCache).get();
 
 /** Called right after installing nginx from the System page. */
 export function invalidateNginxVersion(): void {
   nginxVersionCache.invalidate();
+  containerVersionCache.invalidate();
 }
 
 /** Called after every real config apply (writeNginxConfig) — a reload can flip
@@ -40,4 +53,5 @@ export function invalidateNginxVersion(): void {
  *  validity is read from the persisted result of that same apply instead. */
 export function invalidateNginxActiveStatus(): void {
   nginxActiveStatusCache.invalidate();
+  containerActiveCache.invalidate();
 }

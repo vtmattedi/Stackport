@@ -379,10 +379,8 @@ async function certificateExists(domain: string): Promise<boolean> {
 }
 
 // `^~` gives this prefix match priority over both `location /`'s proxy and the plain
-// server-level `return 301` used once a domain has a certificate — a location block
-// always wins over a bare server-level directive for a matching path, so ACME HTTP-01
-// challenges are served correctly whether this is a brand-new domain's first issuance
-// (no cert yet, proxy body) or a renewal on an already-HTTPS domain (redirect body).
+// Redirects belong inside `location /` so server-level rewrite processing cannot
+// intercept ACME HTTP-01 challenges during issuance or renewal.
 function acmeChallengeLocation(): string {
   return `
     location ^~ /.well-known/acme-challenge/ {
@@ -394,7 +392,7 @@ function acmeChallengeLocation(): string {
 function httpServerBlock(target: NginxTarget, hasCertificate: boolean): string {
   const domain = target.domain;
   const body = hasCertificate
-    ? `    return 301 https://${domain}$request_uri;`
+    ? `    location / {\n        return 301 https://${domain}$request_uri;\n    }`
     : `    access_log /var/log/nginx/access.log ${NGINX_LOG_FORMAT_NAME};\n${locationBlock(target).replace(/^\n/, "").trimEnd()}`;
 
   return `server {
@@ -423,8 +421,10 @@ function wwwHttpRedirectBlock(target: NginxTarget, hasCertificate: boolean): str
     listen [::]:80;
 
     server_name ${www};
-
-    return 301 ${scheme}://${target.domain}$request_uri;
+${acmeChallengeLocation()}
+    location / {
+        return 301 ${scheme}://${target.domain}$request_uri;
+    }
 }`;
 }
 
