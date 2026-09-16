@@ -1,8 +1,7 @@
 import path from "path";
 import * as fs from "fs/promises";
 import { Router, Request, Response } from "express";
-import { execFile, spawn } from "child_process";
-import { config } from "../config/env";
+import { execFile } from "child_process";
 import { getDatabase } from "../config/database";
 import { requireAuth } from "../middleware/auth";
 import { auditLog } from "../utils/logger";
@@ -39,6 +38,8 @@ import { getNginxActiveStatusCached, getNginxVersionCached } from "../services/n
 import { isSystemComposeProject } from "../services/systemResources";
 import { getStorageState, getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../services/dockerStorage";
 
+import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../services/selfUpdate";
+
 const router = Router();
 
 function emitNginxGlobal(status: "started" | "success" | "failed", id: string, message: string, output?: string): void {
@@ -65,34 +66,6 @@ function emitDockerGlobal(status: "started" | "success" | "failed", id: string, 
   });
 }
 
-function emitSystemUpdateGlobal(
-  id: string,
-  mode: "full" | "frontend",
-  event: {
-    status: "started" | "running" | "success" | "failed";
-    stream?: "stdout" | "stderr" | "status";
-    message: string;
-    output?: string;
-    step?: string;
-    done?: boolean;
-  }
-): void {
-  emitGlobalEvent({
-    id,
-    type: "system:update",
-    status: event.status,
-    title: mode === "frontend" ? "Frontend update" : "System update",
-    message: event.message,
-    updateMode: mode,
-    output: event.output,
-    stream: event.stream,
-    step: event.step,
-    done: event.done,
-    createdAt: new Date().toISOString(),
-  });
-}
-
-
 // ── Shell helper ─────────────────────────────────────────────────────────────
 
 interface RunResult {
@@ -101,13 +74,6 @@ interface RunResult {
   ok: boolean;
   notFound: boolean;
 }
-
-interface StreamRunResult extends RunResult {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  timedOut: boolean;
-}
-
 
 interface BuildInfo {
   name: string;
@@ -143,77 +109,6 @@ function run(
     execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, cwd, env }, (err, stdout, stderr) => {
       const notFound = !!(err && (err as NodeJS.ErrnoException).code === "ENOENT");
       resolve({ stdout, stderr, ok: !err, notFound });
-    });
-  });
-}
-
-function runStreaming(
-  cmd: string,
-  args: string[],
-  opts: {
-    timeoutMs?: number;
-    cwd?: string;
-    env?: NodeJS.ProcessEnv;
-    onData?: (stream: "stdout" | "stderr", chunk: string) => void;
-  } = {}
-): Promise<StreamRunResult> {
-  const { timeoutMs = 12_000, cwd, env, onData } = opts;
-  let stdout = "";
-  let stderr = "";
-  let timedOut = false;
-  let settled = false;
-
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    const finish = (result: StreamRunResult): void => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
-    const append = (stream: "stdout" | "stderr", chunk: Buffer): void => {
-      const text = chunk.toString("utf8");
-      if (stream === "stdout") stdout += text;
-      else stderr += text;
-      onData?.(stream, text);
-    };
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!settled) child.kill("SIGKILL");
-      }, 5_000).unref();
-    }, timeoutMs);
-    timer.unref();
-
-    child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
-    child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
-    child.on("error", (err: NodeJS.ErrnoException) => {
-      clearTimeout(timer);
-      const message = err.message;
-      stderr += message;
-      onData?.("stderr", `${message}\n`);
-      finish({
-        stdout,
-        stderr,
-        ok: false,
-        notFound: err.code === "ENOENT",
-        code: null,
-        signal: null,
-        timedOut,
-      });
-    });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      finish({
-        stdout,
-        stderr,
-        ok: code === 0 && !timedOut,
-        notFound: false,
-        code,
-        signal,
-        timedOut,
-      });
     });
   });
 }
@@ -636,73 +531,21 @@ router.get("/nginx/runtime", requireAuth, (_req: Request, res: Response): void =
   res.json({ runtime: getNginxRuntime() });
 });
 
-// Rebuild the checked-out Docker image and reconcile system ingress before swapping the app.
-async function runContainerSelfUpdate(): Promise<StreamRunResult> {
-  const flowId = `system.update:container:${Date.now()}`;
-  const hostRoot = path.resolve(config.hostProjectRoot);
-  // Deliberately two different paths for the same file: the `docker compose` CLI
-  // (running inside *this* container via the docker.sock DooD access) can only
-  // read `-f` from its own filesystem view, so that stays container-relative —
-  // but `--project-directory` must be the real host path, since that's what every
-  // relative volume mount *inside* the compose file (./data, ./nginx-data, ...)
-  // resolves against when the daemon (running on the host) recreates the
-  // container. Passing the container-relative path for both would silently
-  // rebind every volume to a nonexistent /app/... path on the host.
-  const composeFileInContainer = path.join(process.cwd(), "docker-compose.system.yml");
+router.get("/update/status", requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  try { res.json(await getSelfUpdateStatus()); }
+  catch { res.status(503).json({error: "Cannot read the Stackport updater status."}); }
+});
 
-  emitSystemUpdateGlobal(flowId, "full", {
-    status: "started",
-    stream: "status",
-    message: "Rebuilding and recreating the stackport container…",
-  });
-
-  // `up -d --build` on this very service recreates the container this code is
-  // running in. Once the daemon starts tearing the old container down, this
-  // process — and the `docker compose` child spawned below — is killed mid
-  // command, before it can report a result the normal way. That's expected: the
-  // client falls back to polling /health instead of waiting for a "success"
-  // event a dying process may never get to send.
-  const ingress = await runStreaming("docker", ["compose", "-f", composeFileInContainer, "--project-directory", hostRoot, "up", "-d", "nginx"], {timeoutMs: 120_000, env: process.env});
-  if (!ingress.ok) {
-    emitSystemUpdateGlobal(flowId, "full", {
-      status: "failed", stream: "status", message: "Nginx reconciliation failed.",
-      output: [ingress.stdout, ingress.stderr].filter(Boolean).join("\n"), done: true,
-    });
-    return ingress;
+router.post("/update", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await startSelfUpdate();
+    auditLog(req.user ?? "unknown", "system.self-update-start", "stackport", "ok", {id: result.id});
+    res.json(result);
+  } catch (error) {
+    const busy = error instanceof SelfUpdateBusyError;
+    if (!busy) console.error("[selfUpdate] launch failed:", error instanceof Error ? error.message : "unknown error");
+    res.status(busy ? 409 : 500).json({error: busy ? error.message : "Cannot start the Stackport updater. Check Docker access and the installed host CLI."});
   }
-  const result = await runStreaming(
-    "docker",
-    ["compose", "-f", composeFileInContainer, "--project-directory", hostRoot, "up", "-d", "--build", config.appServiceName],
-    {
-      timeoutMs: 900_000,
-      env: process.env,
-      onData: (stream, chunk) => {
-        emitSystemUpdateGlobal(flowId, "full", { status: "running", stream, message: chunk, output: chunk });
-      },
-    }
-  );
-
-  const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-  emitSystemUpdateGlobal(flowId, "full", {
-    status: result.ok ? "success" : "failed",
-    stream: "status",
-    message: result.ok ? "Update triggered; container is restarting." : `Update failed${result.code == null ? "" : ` with exit code ${result.code}`}.`,
-    output,
-    done: true,
-  });
-
-  return result;
-}
-
-router.post("/update", requireAuth, (req: Request, res: Response): void => {
-  // Respond immediately — the update can take several minutes and nginx would
-  // time out (504) waiting for it. All progress is streamed via Socket.io (best
-  // effort in container mode — see runContainerSelfUpdate()).
-  res.json({ ok: true, output: "" });
-  const updater = runContainerSelfUpdate();
-  void updater.then((result) => {
-    auditLog(req.user ?? "unknown", "system.self-update", config.appServiceName, result.ok ? "ok" : "fail");
-  });
 });
 
 router.get("/update/check", requireAuth, async (_req: Request, res: Response): Promise<void> => {

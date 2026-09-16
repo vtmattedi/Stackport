@@ -97,7 +97,7 @@ On a fresh VPS, point the admin domain at the server and allow SSH, HTTP/80 and 
 
 Nginx always runs in `stackport-nginx`. Certbot runs in temporary containers for issuance and automatic renewal; neither needs a host package, systemd service, nor a runtime toggle. System status comes from Docker. Certificates stay under `/etc/letsencrypt`, and ACME files under `/var/lib/stackport/certbot-webroot`; preserve the system Compose mounts rather than changing generated nginx files or private-key permissions.
 
-Use `stackport update` for source updates and system-stack reconciliation. Traffic reads Docker's nginx stdout logs (including domain and request time), with bounded retention. Groups organize projects in the navigation submenu; they do not change routing or Compose isolation.
+Use Settings > **Update Stackport**, or `stackport update`, for source updates and system-stack reconciliation. The UI starts a detached Docker job and resumes progress after restart; it reports rollback and failures. Traffic reads Docker's nginx stdout logs (including domain and request time), with bounded retention. Groups organize projects in the navigation submenu; they do not change routing or Compose isolation.
 
 ## Interacting with a running Stackport instance
 

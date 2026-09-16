@@ -622,8 +622,9 @@ export interface NginxApplyResult {
 }
 
 
-export interface SystemUpdateResult {
-  ok: boolean;
+export interface SelfUpdateStatus {
+  id: string;
+  status: "running" | "success" | "failed" | "rolled-back";
   output: string;
 }
 

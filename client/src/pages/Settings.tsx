@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Settings as SettingsIcon, KeyRound, Eye, EyeOff, Check, RefreshCw, Loader, GitPullRequestArrow, Boxes, FolderSearch, AlertCircle, Eraser } from "lucide-react";
 import { api, ApiError } from "../api/client";
-import type { AppVersionInfo, GlobalRealtimeEvent, ProjectRepoFolderScanResult } from "../api/types";
-import { useSocket } from "../context/SocketContext";
+import type { AppVersionInfo, SelfUpdateStatus, ProjectRepoFolderScanResult } from "../api/types";
 import { useConfirm } from "../components/ConfirmDialog";
 import { cn } from "../lib/utils";
 import { notify } from "../lib/notify";
@@ -22,7 +21,6 @@ function folderStatusLabel(status: ProjectRepoFolderScanResult["folders"][number
 }
 
 export default function Settings() {
-  const { subscribeGlobal, unsubscribeGlobal } = useSocket();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -32,8 +30,8 @@ export default function Settings() {
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
   const [versionInfo, setVersionInfo] = useState<AppVersionInfo | null>(null);
+  const updateMounted = useRef(true);
   const [updatingApp, setUpdatingApp] = useState(false);
-  const [updatingFrontend, setUpdatingFrontend] = useState(false);
   const [updateError, setUpdateError] = useState("");
   const [updateSuccess, setUpdateSuccess] = useState("");
   const [updateOutput, setUpdateOutput] = useState("");
@@ -52,46 +50,16 @@ export default function Settings() {
 
 
   useEffect(() => {
-    const appendOutput = (text: string) => {
-      setUpdateOutput((prev) => `${prev}${text}`.slice(-120_000));
-    };
-    const handler = (event: GlobalRealtimeEvent) => {
-      if (event.type !== "system:update") return;
-
-      if (event.status === "started") {
-        setUpdateError("");
-        setUpdateSuccess("");
-        setUpdateOutput(`${event.message}\n`);
-        setUpdatingApp(event.updateMode === "full");
-        setUpdatingFrontend(event.updateMode === "frontend");
-        return;
-      }
-
-      if (event.status === "running") {
-        appendOutput(event.output ?? event.message);
-        return;
-      }
-
-      if (event.done) {
-        appendOutput(`\n${event.message}\n`);
-        setUpdatingApp(false);
-        setUpdatingFrontend(false);
-        if (event.status === "success") {
-          setUpdateSuccess(event.updateMode === "frontend"
-            ? "Frontend update completed. The service restart may briefly refresh this page."
-            : "Update completed. The service restart may briefly refresh this page.");
-          api.getVersion().then(setVersionInfo).catch(() => {});
-        } else {
-          setUpdateError(event.updateMode === "frontend"
-            ? "Frontend update failed. Review the command output below."
-            : "Update failed. Review the command output below.");
-        }
-      }
-    };
-
-    subscribeGlobal<GlobalRealtimeEvent>(handler);
-    return () => unsubscribeGlobal<GlobalRealtimeEvent>(handler);
-  }, [subscribeGlobal, unsubscribeGlobal]);
+    updateMounted.current = true;
+    let cancelled = false;
+    api.getSelfUpdateStatus().then(status => {
+      if (cancelled || !status) return;
+      setUpdateOutput(status.output);
+      if (status.status === "running") { setUpdatingApp(true); void monitorUpdate(status.id); }
+      else showUpdateResult(status);
+    }).catch(() => {});
+    return () => { cancelled = true; updateMounted.current = false; };
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -112,50 +80,48 @@ export default function Settings() {
 
 
 
-  // Container-mode self-update recreates the very container serving this page's
-  // Socket.io connection, so the "success" system:update event it would normally
-  // wait for may never arrive — the process delivering it is killed mid-flight.
-  // Poll /health directly instead (same origin, unauthenticated, no DB dependency).
-  async function waitForHealthy(maxWaitMs = 5 * 60_000, intervalMs = 3_000): Promise<boolean> {
-    const deadline = Date.now() + maxWaitMs;
-    // Give the old container a moment to actually start going down before the
-    // first check — otherwise it just hits the still-running old process and
-    // returns healthy before the swap has begun.
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch("/health", { cache: "no-store" });
-        if (res.ok) return true;
-      } catch {
-        // Connection refused/reset while the container swaps — expected, keep polling.
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  function showUpdateResult(status: SelfUpdateStatus) {
+    setUpdatingApp(false);
+    setUpdateOutput(status.output);
+    if (status.status === "success") {
+      setUpdateSuccess("Stackport is up to date.");
+      void api.getVersion().then(setVersionInfo).catch(() => {});
+    } else {
+      setUpdateError(status.status === "rolled-back"
+        ? "Update failed health checks. The previous version was restored."
+        : "Stackport update failed. Review the output below.");
     }
-    return false;
+  }
+
+  async function monitorUpdate(id: string) {
+    const deadline = Date.now() + 30 * 60_000;
+    while (updateMounted.current && Date.now() < deadline) {
+      try {
+        const status = await api.getSelfUpdateStatus();
+        if (!updateMounted.current) return;
+        if (status?.id === id) {
+          setUpdateOutput(status.output);
+          if (status.status !== "running") { showUpdateResult(status); return; }
+        }
+      } catch { /* The app can be unreachable while it is replaced. */ }
+      await new Promise(resolve => setTimeout(resolve, 3_000));
+    }
+    if (!updateMounted.current) return;
+    setUpdatingApp(false);
+    setUpdateError("The update is still unconfirmed. Reload this page to check its status.");
   }
 
   async function runSelfUpdate() {
     setUpdatingApp(true);
-    setUpdateError("");
-    setUpdateSuccess("");
-    setUpdateOutput("");
+    setUpdateError(""); setUpdateSuccess(""); setUpdateOutput("");
     try {
-      await api.runSelfUpdate();
-      {
-        setUpdateOutput("Update started — the container will rebuild and restart shortly. Waiting for it to come back...\n");
-        const healthy = await waitForHealthy();
-        setUpdatingApp(false);
-        if (healthy) {
-          setUpdateSuccess("Update completed. The service restarted.");
-          api.getVersion().then(setVersionInfo).catch(() => {});
-        } else {
-          setUpdateError("Timed out waiting for the service to come back after the update. Check the host directly.");
-        }
-        return;
-      }
-    } catch (err) {
+      const status = await api.runSelfUpdate();
+      if (!updateMounted.current) return;
+      setUpdateOutput(status.output);
+      await monitorUpdate(status.id);
+    } catch (error) {
       setUpdatingApp(false);
-      setUpdateError(err instanceof ApiError ? err.message : "Failed to start update");
+      setUpdateError(error instanceof ApiError ? error.message : "Failed to start update");
     }
   }
 
@@ -281,14 +247,14 @@ export default function Settings() {
 
           <div className="row-actions" style={{ marginTop: 14 }}>
 
-            <button className="btn btn-primary" type="button" onClick={() => void runSelfUpdate()} disabled={updatingApp || updatingFrontend}>
+            <button className="btn btn-primary" type="button" onClick={() => void runSelfUpdate()} disabled={updatingApp}>
               {updatingApp ? <Loader size={13} className="spin" /> : <GitPullRequestArrow size={13} />}
-              Rebuild & restart
+              Update Stackport
             </button>
           </div>
           {(
             <span className="hint" style={{ display: "block", marginTop: 8 }}>
-              Rebuilds the stackport image from the checkout on the host and recreates the container. The connection will drop briefly during the restart.
+              Pulls the latest source, backs up the database and updates Stackport. Failed health checks restore the previous version. Progress resumes after a restart or page reload.
             </span>
           )}
 

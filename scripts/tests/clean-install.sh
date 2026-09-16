@@ -2,7 +2,7 @@
 # Run only inside the disposable Docker-in-Docker container from test-clean-install.ps1.
 set -euo pipefail
 [[ "${STACKPORT_REGRESSION:-}" == 1 && -f /fixture/stackport.sh ]] || { echo 'Use scripts/test-clean-install.ps1'; exit 1; }
-apk add --no-cache bash curl git openssl coreutils >/dev/null
+apk add --no-cache bash curl git openssl coreutils jq >/dev/null
 for i in {1..30}; do docker info >/dev/null 2>&1 && break; sleep 1; done
 docker load -i /image.tar >/dev/null
 rm /image.tar
@@ -91,14 +91,70 @@ docker restart stackport-nginx >/dev/null
 curl --retry 15 --retry-all-errors --retry-delay 1 -fsS --resolve sp.install.test:443:127.0.0.1 https://sp.install.test/health >/dev/null
 echo 'PASS: stopped workload cannot block nginx startup or admin HTTPS'
 sed -i '/container_name: stackport-nginx/a\    environment:\n      - STACKPORT_TEST_MARKER=updated' /fixture/docker-compose.system.yml
+sed -i '/container_name: stackport$/a\    environment:\n      - STACKPORT_TEST_APP_MARKER=updated' /fixture/docker-compose.system.yml
 git -C /fixture add docker-compose.system.yml
 git -C /fixture commit -qm 'system nginx change'
-stackport update > /update.log 2>&1
+update_token=$(docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); console.log(require("./dist/services/authTokens").issueAuthToken("regression"));')
+app_container=$(docker inspect stackport --format '{{.Id}}')
+project_container=$(docker inspect 1-regression-web-1 --format '{{.Id}}')
+start_ui_update() {
+  if ! curl -fsS -H "Authorization: Bearer $update_token" -X POST http://localhost:3000/api/system/update > /job.json; then
+    docker logs --tail 20 stackport
+    exit 1
+  fi
+  update_job=$(jq -r .id /job.json)
+  [[ "$update_job" != null ]]
+}
+wait_ui_update() {
+  for attempt in {1..180}; do
+    if curl -fsS -H "Authorization: Bearer $update_token" http://localhost:3000/api/system/update/status > /job-status.json 2>/dev/null; then
+      [[ "$(jq -r .id /job-status.json)" == "$update_job" ]] || { sleep 1; continue; }
+      result=$(jq -r .status /job-status.json)
+      if [[ "$result" != running ]]; then
+        [[ "$result" == "$1" ]] || { cat /job-status.json; exit 1; }
+        return
+      fi
+    fi
+    sleep 1
+  done
+  echo 'FAIL: UI update did not finish'; exit 1
+}
+[[ "$(curl -sS -o /unauth.json -w '%{http_code}' -X POST http://localhost:3000/api/system/update)" == 401 ]]
+[[ "$(curl -sS -o /unauth.json -w '%{http_code}' http://localhost:3000/api/system/update/status)" == 401 ]]
+start_ui_update
+status=$(curl -sS -o /duplicate.json -w '%{http_code}' -H "Authorization: Bearer $update_token" -X POST http://localhost:3000/api/system/update)
+[[ "$status" == 409 ]] || { cat /duplicate.json; exit 1; }
+wait_ui_update success
+[[ "$(docker inspect stackport --format '{{.Id}}')" != "$app_container" ]]
+[[ "$(docker inspect 1-regression-web-1 --format '{{.Id}}')" == "$project_container" ]]
+[[ "$(jq -r .output /job-status.json)" == *'update complete'* ]]
+echo 'PASS: UI pulls source and updates system stack; detached job survives app replacement; duplicate starts rejected'
+start_ui_update
+wait_ui_update success
+[[ "$(jq -r .output /job-status.json)" == *'already up to date'* ]]
+echo 'PASS: UI reports a no-change update from the job result'
+
 docker inspect stackport-nginx --format '{{json .Config.Env}}' | grep -q STACKPORT_TEST_MARKER=updated
+# Source-fetch failure must remain a failed job, even while the old app is healthy.
+git -C /var/lib/stackport/app remote set-url origin /missing-regression-repository
+start_ui_update
+wait_ui_update failed
+git -C /var/lib/stackport/app remote set-url origin /fixture
+echo 'PASS: UI reports a source-fetch failure instead of old-app health success'
 stackport rollback > /rollback.log 2>&1
 if docker inspect stackport-nginx --format '{{json .Config.Env}}' | grep -q STACKPORT_TEST_MARKER=updated; then
   echo 'FAIL: rollback did not reconcile nginx'; exit 1
 fi
 curl --retry 15 --retry-all-errors --retry-delay 1 -fsS --resolve sp.install.test:443:127.0.0.1 https://sp.install.test/health >/dev/null
-echo 'PASS: CLI update and rollback reconcile nginx configuration and preserve HTTPS'
+echo 'PASS: CLI rollback reconciles nginx configuration and preserves HTTPS'
+# Force the target app to fail; the same CLI flow must restore the previous app.
+previous_commit=$(git -C /var/lib/stackport/app rev-parse HEAD)
+sed -i '/container_name: stackport$/a\    command: ["node", "-e", "process.exit(1)"]' /fixture/docker-compose.system.yml
+git -C /fixture add docker-compose.system.yml
+git -C /fixture commit -qm 'unhealthy target'
+start_ui_update
+wait_ui_update rolled-back
+[[ "$(git -C /var/lib/stackport/app rev-parse HEAD)" == "$previous_commit" ]]
+curl --retry 15 --retry-all-errors --retry-delay 1 -fsS --resolve sp.install.test:443:127.0.0.1 https://sp.install.test/health >/dev/null
+echo 'PASS: UI reports failed-health rollback and the previous app is restored'
 echo 'All clean-install regressions passed (test CA; no public ACME requests).'

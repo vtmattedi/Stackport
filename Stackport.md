@@ -98,7 +98,7 @@ Other commands:
 | `stackport admin-recovery` | Root + interactive-TTY only. Generates a temporary recovery credential (`docker exec ... dist/cli/adminRecovery.js`) for resetting the administrator password — see §3.2. No HTTP endpoint can trigger this; `docker exec` on the daemon socket *is* the authorization boundary. |
 | `stackport uninstall [--purge]` | Removes StackPort's own containers/network, preserving `/etc/stackport` and `/var/lib/stackport` by default so it can be reinstalled/recovered later. `--purge` also deletes that preserved state — requires typed confirmation, refuses to run non-interactively. |
 
-The CLI manages source updates and rollback. The UI rebuilds the current checkout and reconnects after the app container restarts.
+The CLI and Settings share the same source-update and rollback flow. A detached Docker updater runs the installed host CLI and survives app replacement.
 
 ---
 
@@ -130,7 +130,9 @@ A successful login stores a JWT client-side; every authenticated call rotates it
 
 ## 4. Managing StackPort itself (day to day)
 
-Settings offers "Rebuild & restart" for the checked-out Docker image. It reconciles nginx before recreating the app and polls health while reconnecting. Use `stackport update` to pull source changes, back up the database, and update the whole system stack with automatic rollback on failure.
+Settings offers **Update Stackport**. It runs the installed `stackport update` command in a detached system Docker helper: fetch latest source, back up the database, rebuild/recreate the system stack, verify health and roll back if health checks fail. Managed projects are untouched. The helper uses host networking and a chroot into the host filesystem so the CLI sees its existing configuration, credentials and Docker socket. No installation-script changes or additional host service are required.
+
+Authenticated `POST /api/system/update` starts the job; duplicate starts return 409. `GET /api/system/update/status` reports job ID, logs and running/success/failed/rolled-back status from Docker. The helper and its logs remain after completion until the next update. Settings resumes polling after app replacement or page reload and waits for the job result instead of assuming success from `/health`.
 
 ---
 

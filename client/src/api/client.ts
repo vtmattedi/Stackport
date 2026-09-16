@@ -34,7 +34,7 @@ import type {
   CertbotEmailConfig,
   NginxDocument,
   NginxDocumentKind,
-  SystemUpdateResult,
+  SelfUpdateStatus,
   AppUpdateCheck,
   SystemUpdateConfig,
   DockerStorageThresholds,
@@ -441,7 +441,8 @@ export const api = {
   // System
   getSystem: () => request<SystemData>("/system"),
   getVersion: () => request<AppVersionInfo>("/system/version"),
-  runSelfUpdate: () => request<SystemUpdateResult>("/system/update", { method: "POST" }),
+  getSelfUpdateStatus: () => request<SelfUpdateStatus | null>("/system/update/status"),
+  runSelfUpdate: () => request<SelfUpdateStatus>("/system/update", { method: "POST" }),
   checkAppUpdate: () => request<AppUpdateCheck>("/system/update/check"),
   getUpdateConfig: () => request<SystemUpdateConfig>("/system/update-config"),
   updateUpdateConfig: (credentialId: number | null) =>
