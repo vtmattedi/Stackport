@@ -7,6 +7,7 @@ export interface ProjectBranch {
 }
 
 export interface Project {
+  groupName: string | null;
   id: number;
   name: string;
   internalPort: number | null;
@@ -36,6 +37,7 @@ export interface Project {
 }
 
 export interface ProjectRow {
+  group_name: string | null;
   id: number;
   name: string;
   url: string | null;
@@ -69,6 +71,7 @@ export interface ProjectRow {
 export function rowToProject(row: ProjectRow): Project {
   const validStatus = ["up", "down", "unknown"];
   return {
+    groupName: row.group_name ?? null,
     id: row.id,
     name: row.name,
     internalPort: row.internal_port,

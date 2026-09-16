@@ -8,6 +8,8 @@ import { config } from "../config/env";
 import { closeDatabase, initializeDatabase } from "../config/database";
 import type { ProjectEnvFile } from "../services/projectDeploy";
 import {
+  getProjectIngressTargets,
+  ensureProjectProxyNetwork,
   buildProject,
   composeProject,
   createProjectEnvFile,
@@ -41,7 +43,6 @@ const projectIdSchema = z.coerce.number().int().positive();
 const credentialTypeSchema = z.enum(["github", "webhook", "api_key"]).optional();
 const nullableStringSchema = z.union([z.string(), z.null()]);
 const optionalNullableStringSchema = nullableStringSchema.optional();
-const optionalNullablePortSchema = z.union([z.coerce.number().int().min(1).max(65535), z.null()]).optional();
 const envVariableSchema = z.object({
   key: z.string().min(1),
   value: z.string(),
@@ -220,12 +221,11 @@ function registerTools(server: McpServer): void {
     "stackport_create_project",
     {
       title: "Create Project",
-      description: "Create a Stackport project record for a GitHub repository. domain, if given, becomes the project's first domain (use the project-domain tools to add more later). Optionally apply nginx after creation.",
+      description: "Create a Stackport project record for a GitHub repository. Set groupName to organize navigation. Pull/configure the repository, discover ingress targets, then add domains with service and containerPort. Optionally apply nginx after creation.",
       inputSchema: {
         name: z.string().min(1),
+        groupName: optionalNullableStringSchema,
         githubRepo: z.string().min(1),
-        internalPort: z.coerce.number().int().min(1).max(65535).optional(),
-        domain: z.string().optional(),
         healthCheckEndpoint: z.string().optional(),
         healthCheckIntervalS: z.coerce.number().int().min(0).optional(),
         credentialId: z.coerce.number().int().positive().optional(),
@@ -250,8 +250,8 @@ function registerTools(server: McpServer): void {
       inputSchema: {
         projectId: projectIdSchema,
         name: z.string().min(1).optional(),
+        groupName: optionalNullableStringSchema,
         githubRepo: optionalNullableStringSchema,
-        internalPort: optionalNullablePortSchema,
         healthCheckEndpoint: optionalNullableStringSchema,
         healthCheckIntervalS: z.coerce.number().int().min(0).optional(),
         credentialId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
@@ -293,7 +293,7 @@ function registerTools(server: McpServer): void {
     "stackport_list_project_domains",
     {
       title: "List Project Domains",
-      description: "List every domain routed to a project. Each gets its own full nginx block set (server_name/cert/www-redirect), all sharing the project's internalPort.",
+      description: "List every domain routed to a project. Each domain routes to its own Compose service and container port.",
       inputSchema: { projectId: projectIdSchema },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -303,20 +303,32 @@ function registerTools(server: McpServer): void {
     }
   );
 
+  server.registerTool("stackport_get_project_ingress_targets", {
+    title: "Get Project Ingress Targets",
+    description: "Discover Compose services and container ports after pulling the repository and configuring env files.",
+    inputSchema: {projectId: projectIdSchema, composeFile: z.string().optional()},
+    annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
+  }, async (input) => toolResult({targets: await getProjectIngressTargets(input.projectId, input.composeFile)}));
+
   server.registerTool(
     "stackport_add_project_domain",
     {
       title: "Add Project Domain",
-      description: "Route another domain to a project's existing internalPort (e.g. a.com and b.com both proxying to the same backend). Optionally apply nginx after adding.",
+      description: "Route a domain to a detected Compose service/container port. Pull the repository first and use the ingress-targets tool to discover valid targets.",
       inputSchema: {
         projectId: projectIdSchema,
         domain: z.string().min(1),
+        service: z.string().min(1),
+        containerPort: z.coerce.number().int().min(1).max(65535),
         applyNginx: z.boolean().optional().default(true),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async (input) => {
-      const domain = addProjectDomain(input.projectId, input.domain);
+      const targets = await getProjectIngressTargets(input.projectId);
+      if (!targets.some(target => target.service === input.service && target.containerPort === input.containerPort)) throw new Error("Choose a detected ingress target from the project Compose config.");
+      const domain = addProjectDomain(input.projectId, input.domain, false, input.service, input.containerPort);
+      await ensureProjectProxyNetwork(input.projectId);
       const nginx = await applyNginx(input.applyNginx);
       return toolResult({ domain, nginx });
     }

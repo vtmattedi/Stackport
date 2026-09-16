@@ -26,6 +26,7 @@ EOF
 cat > /fake-certbot/certbot.sh <<'EOF'
 set -eu
 [ "${1:-}" != --version ] || { echo 'certbot regression'; exit 0; }
+[ "${1:-}" != renew ] || { echo 'renewal sweep regression'; exit 0; }
 if [ -f /etc/letsencrypt/fail-once ]; then rm /etc/letsencrypt/fail-once; echo 'simulated CA outage' >&2; exit 1; fi
 domains=''; webroot=''
 while [ $# -gt 0 ]; do
@@ -74,8 +75,10 @@ services:
     expose: ["80"]
 EOF
 docker compose -p 1-regression -f /var/lib/stackport/data/repos/1-regression/compose.yml up -d >/dev/null
+docker exec 1-regression-web-1 cp /usr/share/nginx/html/index.html /usr/share/nginx/html/traffic-regression
 chown -R 1000:1000 /var/lib/stackport/data/repos
 docker exec --user node -w /app stackport node /app/scripts/tests/project-regressions.cjs
+docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); const assert=require("assert"); const n=require("./dist/services/nginx/configWriter"); (async()=>{const before=(await n.getNginxLayerStatus()).lastOperation.restartCount; await require("./dist/services/certbotRenewalMonitor").certbotRenewalMonitor.check(); const after=(await n.getNginxLayerStatus()).lastOperation.restartCount; assert(after>before,"successful renewal must reload nginx"); console.log("PASS: automatic renewal reloads nginx even with a legacy host setting")})().catch(e=>{console.error(e);process.exit(1)});'
 curl --retry 10 --retry-all-errors --retry-delay 1 -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
 curl -fsS -H 'Host: site.install.test' http://127.0.0.1/.well-known/acme-challenge/regression | grep -q verified
 curl -fsS -H 'Host: www.site.install.test' http://127.0.0.1/.well-known/acme-challenge/regression | grep -q verified

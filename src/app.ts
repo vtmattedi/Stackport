@@ -16,13 +16,8 @@ const app = express();
 // become one bucket shared by all traffic instead of per-client, and
 // routes/auth.ts's audit-log IP field records nginx's address for every login.
 //
-// "host" nginx_runtime still connects via loopback (127.0.0.1), same as before
-// Dockerization. "container" nginx_runtime (docker-compose.system.yml's nginx
-// service) reaches this app over the stackport-proxy Docker network instead —
-// Compose assigns that network's subnet from Docker's private-range pool (not
-// pinned to a fixed CIDR, so it can vary by host/reinstall), which falls under
-// "uniquelocal" (RFC1918 10/8, 172.16/12, 192.168/16), not "loopback". Trusting
-// both presets covers either runtime.
+// Nginx reaches the app over the private stackport-proxy Docker network.
+// Trust the private address range and local maintenance requests.
 //
 // Residual tradeoff: any other container joined to stackport-proxy (i.e. any
 // managed project's routed service, joined so nginx can reach it — see
@@ -61,6 +56,9 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api", router);
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "API route not found" });
+});
 
 // In production the compiled output lives at dist/app.js, so ../client/dist resolves correctly.
 // In development, Vite serves the frontend on its own port with a proxy to this server.

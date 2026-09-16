@@ -340,6 +340,9 @@ export function initializeDatabase(): Database.Database {
   }
 
   const projectCols = db.prepare("PRAGMA table_info(projects)").all() as { name: string }[];
+  if (!projectCols.some((c) => c.name === "group_name")) {
+    db.exec("ALTER TABLE projects ADD COLUMN group_name TEXT");
+  }
   if (!projectCols.some((c) => c.name === "github_repo")) {
     db.exec("ALTER TABLE projects ADD COLUMN github_repo TEXT");
   }

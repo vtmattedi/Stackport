@@ -1,10 +1,9 @@
 import { execFile } from "child_process";
-import * as fs from "fs/promises";
 import * as path from "path";
 import { getDatabase } from "../config/database";
 import { pollingCadenceS } from "../config/pollingCadence";
 import { SingleFlightCache } from "../utils/singleFlightCache";
-import { CERTBOT_WEBROOT_PATH, DOMAIN_RE, getNginxAppConfig, getNginxLayerStatus, getNginxRuntime } from "./nginx/configWriter";
+import { CERTBOT_WEBROOT_PATH, DOMAIN_RE, getNginxAppConfig, getNginxLayerStatus } from "./nginx/configWriter";
 
 export type CertbotMode = "real";
 export type CertbotAction = "issue" | "renew" | "delete";
@@ -51,6 +50,7 @@ interface RunResult {
   notFound: boolean;
 }
 
+const CERTBOT_IMAGE = "certbot/certbot";
 const CERTBOT_EMAIL_KEY = "certbot_email";
 
 function envCertbotEmail(): string {
@@ -112,17 +112,9 @@ async function run(cmd: string, args: string[], timeoutMs = 120_000): Promise<Ru
   });
 }
 
-function privileged(cmd: string, args: string[]): { cmd: string; args: string[] } {
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    return { cmd, args };
-  }
-  return { cmd: "sudo", args: ["-n", cmd, ...args] };
-}
 
-function runPrivileged(cmd: string, args: string[], timeoutMs = 120_000): Promise<RunResult> {
-  const command = privileged(cmd, args);
-  return run(command.cmd, command.args, timeoutMs);
-}
+
+
 
 function domainType(domain: string, domainList: string[], subdomainList: string[]): CertbotDomainType {
   if (subdomainList.includes(domain)) return "subdomain";
@@ -151,33 +143,14 @@ interface CertExpiryEntry {
 // re-running `test -f`/`openssl x509` per domain on every status poll: with N routed
 // domains, the old per-request approach meant `1 + 3N` subprocess spawns on every
 // single poll tick, the dominant cost in the whole system-status collection.
-// Tries direct (unprivileged) access first, falling back to sudo — mirrors
-// configWriter.ts's certificateExists() exactly. Once StackPort runs containerized
-// with /etc/letsencrypt bind-mounted in (see docker-compose.system.yml), the
-// unprivileged path works directly since fullchain.pem is normally world-readable
-// (it's a public certificate, not the private key); sudo remains the fallback for a
-// host-native install where the process user isn't in a group with read access.
-async function fileExistsDirect(filePath: string): Promise<boolean> {
-  return fs.access(filePath).then(() => true).catch(() => false);
-}
-
+// Root-only certificate directories are inspected through Docker. Only public
+// certificate metadata is read; private keys remain inaccessible to the app user.
 async function checkFileExists(filePath: string): Promise<RunResult> {
-  if (getNginxRuntime() === "container") {
-    return run("docker", ["exec", "stackport-nginx", "test", "-f", filePath], 12_000);
-  }
-  if (await fileExistsDirect(filePath)) return { stdout: "", stderr: "", ok: true, notFound: false };
-  return runPrivileged("test", ["-f", filePath], 12_000);
+  return run("docker", ["exec", "stackport-nginx", "test", "-f", filePath], 12_000);
 }
-
 async function readOpenssl(args: string[]): Promise<RunResult> {
   const direct = await run("openssl", args, 12_000);
-  if (direct.ok) return direct;
-  if (direct.notFound) return direct; // openssl binary itself missing — sudo won't fix that
-  if (getNginxRuntime() === "container") {
-    // Read public certificate metadata only; private keys stay root-only.
-    return run("docker", ["exec", "stackport", "openssl", ...args], 12_000);
-  }
-  return runPrivileged("openssl", args, 12_000); // ran but failed (e.g. permission) — retry with sudo
+  return direct.ok ? direct : run("docker", ["exec", "stackport", "openssl", ...args], 12_000);
 }
 
 async function fetchCertExistence(): Promise<Map<string, CertExistenceEntry>> {
@@ -214,10 +187,6 @@ const certExpiryCache = new SingleFlightCache<Map<string, CertExpiryEntry>>(
   fetchCertExpiry,
   pollingCadenceS.certExpiry * 1000,
 );
-const certbotVersionCache = new SingleFlightCache<RunResult>(
-  () => runPrivileged("certbot", ["--version"], 12_000),
-  null, // startup / explicit refresh only
-);
 const containerCertbotVersionCache = new SingleFlightCache<RunResult>(
   () => run("docker", ["run", "--rm", "certbot/certbot", "--version"], 120_000),
   null,
@@ -231,9 +200,8 @@ export function invalidateCertCaches(): void {
   certExpiryCache.invalidate();
 }
 
-/** Called right after installing certbot from the System page. */
+/** Refresh Certbot image availability. */
 export function invalidateCertbotVersion(): void {
-  certbotVersionCache.invalidate();
   containerCertbotVersionCache.invalidate();
 }
 
@@ -267,7 +235,7 @@ export async function getCertbotStatus(): Promise<CertbotStatus> {
   const [existence, expiry, version] = await Promise.all([
     certExistenceCache.get(),
     certExpiryCache.get(),
-    (getNginxRuntime() === "container" ? containerCertbotVersionCache : certbotVersionCache).get(),
+    containerCertbotVersionCache.get(),
   ]);
 
   const entries: CertbotEntry[] = lists.domains.map((domain) => {
@@ -294,9 +262,7 @@ export async function getCertbotStatus(): Promise<CertbotStatus> {
   return {
     mode: "real",
     available: version.ok,
-    reason: version.ok ? undefined : getNginxRuntime() === "container"
-      ? (version.stderr || version.stdout || "Certbot container unavailable").trim()
-      : version.notFound ? "certbot not installed" : (version.stderr || version.stdout).trim(),
+    reason: version.ok ? undefined : (version.stderr || version.stdout || "Certbot container unavailable").trim(),
     emailConfigured: emailConfig.emailConfigured,
     email: emailConfig.email,
     rootPath: "/etc/letsencrypt/live",
@@ -304,59 +270,6 @@ export async function getCertbotStatus(): Promise<CertbotStatus> {
   };
 }
 
-async function realAction(domain: string, type: CertbotDomainType, action: CertbotAction): Promise<CertbotActionResult> {
-  let args: string[];
-  let timeoutMs = 300_000;
-
-  if (action === "issue") {
-    const email = getCertbotEmailConfig().email;
-    if (!email) {
-      return {
-        ok: false,
-        mode: "real",
-        domain,
-        action,
-        output: "CERTBOT_EMAIL is required for real certbot issue actions.",
-      };
-    }
-    args = ["--nginx", "-d", domain];
-    if (shouldIssueWwwAlias(domain, type)) {
-      args.push("-d", `www.${domain}`);
-    }
-    args.push("--non-interactive", "--agree-tos", "-m", email);
-  } else if (action === "renew") {
-    args = ["renew", "--cert-name", domain, "--non-interactive"];
-    timeoutMs = 600_000;
-  } else {
-    args = ["delete", "--cert-name", domain, "--non-interactive"];
-  }
-
-  const result = await runPrivileged("certbot", args, timeoutMs);
-  return {
-    ok: result.ok,
-    mode: "real",
-    domain,
-    action,
-    output: [result.stdout, result.stderr].filter(Boolean).join("\n").trim() || (result.ok ? "certbot completed" : "certbot failed"),
-  };
-}
-
-const CERTBOT_IMAGE = "certbot/certbot";
-
-/** Container-mode certbot: unlike nginx (a long-running service StackPort talks to
- *  via `docker exec`), certbot is inherently a one-shot CLI tool, so there's no
- *  persistent certbot container to keep running — each action is a fresh
- *  `docker run --rm`, using the same docker.sock access StackPort's own container
- *  already has (Phase 1.1), no new privilege grant needed. Uses `--webroot` instead
- *  of the `--nginx` plugin: the plugin needs to directly parse/rewrite a *live* nginx
- *  process's config, which a certbot container has no access to; webroot mode only
- *  needs the shared directory nginx already serves /.well-known/acme-challenge/ from
- *  (see configWriter.ts's acmeChallengeLocation()). Reuses the real host
- *  /etc/letsencrypt directly (not a separate path) so certs already issued by a prior
- *  host-mode certbot stay valid — no migration needed switching modes.
- *  `staging` is intentionally not exposed through the public issue/renew UI — it
- *  exists for verifying the mechanism against Let's Encrypt's staging endpoint
- *  without spending real rate-limit quota. */
 async function containerAction(
   domain: string,
   type: CertbotDomainType,
@@ -408,9 +321,7 @@ export async function runCertbotAction(domain: string, action: CertbotAction, op
     };
   }
 
-  const result = getNginxRuntime() === "container"
-    ? await containerAction(resolved.domain, resolved.type, action, opts)
-    : await realAction(resolved.domain, resolved.type, action);
+  const result = await containerAction(resolved.domain, resolved.type, action, opts);
   if (result.ok) invalidateCertCaches();
   return result;
 }

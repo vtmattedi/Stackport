@@ -3,6 +3,7 @@ import type {
   AuditLogResult,
   Project,
   ProjectDomain,
+  ComposeIngressTarget,
   ActionStartResponse,
   ProjectActionsSnapshot,
   SystemActionsSnapshot,
@@ -33,7 +34,6 @@ import type {
   CertbotEmailConfig,
   NginxDocument,
   NginxDocumentKind,
-  SystemInstallResult,
   SystemUpdateResult,
   AppUpdateCheck,
   SystemUpdateConfig,
@@ -286,10 +286,12 @@ export const api = {
   getProject: (id: number) => request<Project>(`/projects/${id}`),
   createProject: (data: Omit<Partial<Project>, "id" | "createdAt" | "updatedAt" | "lastStatus" | "lastResponseMs" | "lastCheckedAt">) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(data) }),
-  updateProject: (id: number, data: Partial<Pick<Project, "name" | "internalPort" | "healthCheckEndpoint" | "healthCheckIntervalS" | "githubRepo" | "credentialId" | "githubCredentialId" | "autoDeployBranch" | "nginxExtraConfig" | "nginxExtraBlocks">>) =>
+  updateProject: (id: number, data: Partial<Pick<Project, "name" | "groupName" | "internalPort" | "healthCheckEndpoint" | "healthCheckIntervalS" | "githubRepo" | "credentialId" | "githubCredentialId" | "autoDeployBranch" | "nginxExtraConfig" | "nginxExtraBlocks">>) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   listProjectDomains: (projectId: number) =>
     request<ProjectDomain[]>(`/projects/${projectId}/domains`),
+  getProjectIngressTargets: (projectId: number, composeFile?: string) =>
+    request<ComposeIngressTarget[]>(`/projects/${projectId}/ingress-targets${buildQuery({composeFile})}`),
   addProjectDomain: (projectId: number, domain: string, service: string, containerPort: number) =>
     request<ProjectDomain>(`/projects/${projectId}/domains`, { method: "POST", body: JSON.stringify({ domain, service, containerPort }) }),
   removeProjectDomain: (projectId: number, domainId: number) =>
@@ -440,7 +442,6 @@ export const api = {
   getSystem: () => request<SystemData>("/system"),
   getVersion: () => request<AppVersionInfo>("/system/version"),
   runSelfUpdate: () => request<SystemUpdateResult>("/system/update", { method: "POST" }),
-  runFrontendUpdate: () => request<SystemUpdateResult>("/system/update/frontend", { method: "POST" }),
   checkAppUpdate: () => request<AppUpdateCheck>("/system/update/check"),
   getUpdateConfig: () => request<SystemUpdateConfig>("/system/update-config"),
   updateUpdateConfig: (credentialId: number | null) =>
@@ -448,9 +449,6 @@ export const api = {
   getDockerStorageThresholds: () => request<DockerStorageThresholds>("/system/docker/storage-thresholds"),
   updateDockerStorageThresholds: (thresholds: DockerStorageThresholds) =>
     request<DockerStorageThresholds>("/system/docker/storage-thresholds", { method: "PUT", body: JSON.stringify(thresholds) }),
-  getNginxRuntime: () => request<{ runtime: "host" | "container" }>("/system/nginx/runtime"),
-  updateNginxRuntime: (runtime: "host" | "container") =>
-    request<{ runtime: "host" | "container" }>("/system/nginx/runtime", { method: "PUT", body: JSON.stringify({ runtime }) }),
   reloadNginx: () => request<{ ok: boolean; output: string }>("/system/nginx/reload", { method: "POST" }),
   applyNginx: () => requestActionStart("/system/nginx/apply"),
   updateNginxAppConfig: (data: { enabled: boolean; domain: string; useSsl: boolean }) =>
@@ -477,9 +475,6 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ email }),
     }),
-  installSystemTool: (tool: "nginx" | "certbot") =>
-    request<SystemInstallResult>(`/system/install/${tool}`, { method: "POST" }),
-
   // GitHub Poller
   getGithubPollerConfig: () => request<GitHubPollerConfig>("/github-poller"),
   updateGithubPollerConfig: (data: { enabled?: boolean; credentialId?: number | null; pollIntervalS?: number }) =>

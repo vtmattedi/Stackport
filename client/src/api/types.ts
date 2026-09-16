@@ -1,4 +1,5 @@
 export interface Project {
+  groupName: string | null;
   id: number;
   name: string;
   internalPort: number | null;
@@ -39,6 +40,11 @@ export interface ProjectDomain {
   containerPort: number | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ComposeIngressTarget {
+  service: string;
+  containerPort: number;
 }
 
 export interface GitHubPollerConfig {
@@ -615,11 +621,6 @@ export interface NginxApplyResult {
   output: string;
 }
 
-export interface SystemInstallResult {
-  ok: boolean;
-  tool: "nginx" | "certbot";
-  output: string;
-}
 
 export interface SystemUpdateResult {
   ok: boolean;

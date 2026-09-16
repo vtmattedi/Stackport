@@ -58,10 +58,19 @@ and its temporary image archive afterward.
 
 This exercises real nginx, Docker networking, database and HTTPS, but does not
 test public ACME, production DNS, or Ubuntu's Docker installation/UFW steps.
-Those require verification on the replacement VPS. The deprecated nginx http2
-syntax is a non-blocking warning, unrelated to the observed failures.
+Those require verification on the replacement VPS. Nginx templates now use the current `http2 on` directive.
 
 Verification on 2026-09-15: backend `npm run typecheck`, production Docker build
 (backend and frontend), and the complete isolated regression runner passed.
 Transient connection errors immediately after nginx restart/reload were retried
 until HTTPS served successfully. The runner and its temporary files were removed.
+
+Follow-up changes align System status and certificate actions with Docker-only
+operation, remove host package-install/runtime-switch write APIs, reload nginx
+after automatic certificate renewal, and read Traffic from nginx Docker logs.
+The isolated regression also checks domain traffic totals, request timings,
+clearing the displayed history and continued logging afterward. Docker log
+retention is bounded; it is not a long-term traffic archive.
+
+Repository and local deployment skills now describe groups, detected Compose
+ingress targets and the installer-managed Docker workflow.

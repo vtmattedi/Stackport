@@ -1,13 +1,7 @@
 import { getContainerListCached } from "./dockerStatusCache";
 
-/** The Docker Compose project name StackPort's own infrastructure runs under (see
- *  docker-compose.system.yml's pinned `name:`). Everything in this compose project —
- *  the app itself today, nginx/certbot once Phase 1.5/1.6 add them as services in the
- *  same file — is the "system plane." Everything else is a managed project (the
- *  "workload plane"). Checking a container's own com.docker.compose.project label
- *  against this constant, rather than maintaining an enumerated container-name list,
- *  means nginx/certbot are automatically covered the moment they're added — no
- *  further changes needed here when those phases land. */
+/** The pinned Compose project containing Stackport and its persistent nginx.
+ * Generic workload actions exclude these system containers by Compose label. */
 export const SYSTEM_COMPOSE_PROJECT = "stackport";
 
 export function isSystemComposeProject(name: string): boolean {

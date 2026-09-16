@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   Cpu, RefreshCw, Loader, Box, Layers, CheckCircle, AlertCircle,
   RotateCw, Play, Square, Hammer, ChevronDown, ChevronRight, X, FileText, Save, Eye, Settings,
-  ShieldCheck, ShieldX, KeyRound, Trash2, Download, Mail, GitBranch, Shield, Plus, UploadCloud,
+  ShieldCheck, ShieldX, KeyRound, Trash2, Mail, GitBranch, Shield, Plus, UploadCloud,
   SquareTerminal, Radio,
 } from "lucide-react";
 import NginxCode from "../components/NginxCode";
@@ -401,8 +401,6 @@ export default function System() {
   const [reloading, setReloading] = useState(false);
   const [applyingNginx, setApplyingNginx] = useState(false);
   const [reloadResult, setReloadResult] = useState<{ ok: boolean; output: string } | null>(null);
-  const [installingTool, setInstallingTool] = useState<"nginx" | "certbot" | null>(null);
-  const [installResult, setInstallResult] = useState<{ ok: boolean; output: string } | null>(null);
   const [certbotEmailDraft, setCertbotEmailDraft] = useState("");
   const [certbotEmailDirty, setCertbotEmailDirty] = useState(false);
   const [savingCertbotEmail, setSavingCertbotEmail] = useState(false);
@@ -417,9 +415,6 @@ export default function System() {
   const [storageThresholdsDraft, setStorageThresholdsDraft] = useState<DockerStorageThresholds | null>(null);
   const [storageThresholdsDirty, setStorageThresholdsDirty] = useState(false);
   const [savingStorageThresholds, setSavingStorageThresholds] = useState(false);
-  const [nginxRuntimeDraft, setNginxRuntimeDraft] = useState<"host" | "container">("host");
-  const [nginxRuntimeDirty, setNginxRuntimeDirty] = useState(false);
-  const [savingNginxRuntime, setSavingNginxRuntime] = useState(false);
 
   // GitHub Poller state
   const [ghConfig, setGhConfig] = useState<GitHubPollerConfig | null>(null);
@@ -528,11 +523,6 @@ export default function System() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    api.getNginxRuntime()
-      .then((result) => setNginxRuntimeDraft(result.runtime))
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     if (activeTab !== "github") return;
@@ -815,41 +805,6 @@ export default function System() {
       notify.error(err, "Failed to update storage thresholds");
     } finally {
       setSavingStorageThresholds(false);
-    }
-  }
-
-  async function handleNginxRuntimeSave() {
-    setSavingNginxRuntime(true);
-    try {
-      const result = await api.updateNginxRuntime(nginxRuntimeDraft);
-      setNginxRuntimeDraft(result.runtime);
-      setNginxRuntimeDirty(false);
-      notify.success(result.runtime === "container" ? "Switched to the containerized nginx" : "Switched back to host nginx");
-    } catch (err) {
-      notify.error(err, "Failed to update nginx runtime");
-    } finally {
-      setSavingNginxRuntime(false);
-    }
-  }
-
-  async function handleInstallTool(tool: "nginx" | "certbot") {
-    const toastId = notify.loading(`Installing ${tool}...`);
-    setInstallingTool(tool);
-    setInstallResult(null);
-    try {
-      const result = await api.installSystemTool(tool);
-      setInstallResult({ ok: result.ok, output: result.output });
-      if (result.ok) {
-        notify.success(`${tool} installed.`, { id: toastId });
-      } else {
-        notify.error(new Error(result.output || `Failed to install ${tool}`), `Failed to install ${tool}`, { id: toastId });
-      }
-      refresh();
-    } catch (err) {
-      setInstallResult({ ok: false, output: err instanceof ApiError ? err.message : `Failed to install ${tool}` });
-      notify.error(err, `Failed to install ${tool}`, { id: toastId });
-    } finally {
-      setInstallingTool(null);
     }
   }
 
@@ -1247,7 +1202,7 @@ export default function System() {
         )}
         {nginx?.available !== undefined && (
           <span>
-            <StatusChip ok={!!nginx.available} labels={["installed", "not installed"]} />
+            <StatusChip ok={!!nginx.available} labels={["available", "unavailable"]} />
           </span>
         )}
         {nginx?.available && nginx.active !== undefined && (
@@ -1283,61 +1238,14 @@ export default function System() {
         )}
       </div>
 
-      <div className={styles.nginxAppPanel}>
-        <div className={styles.nginxAppHeader}>
-          <label className={styles.nginxAppSwitch}>
-            <Switch
-              checked={nginxRuntimeDraft === "container"}
-              onCheckedChange={(checked) => {
-                setNginxRuntimeDraft(checked ? "container" : "host");
-                setNginxRuntimeDirty(true);
-              }}
-            />
-            <span>
-              <span>Use containerized Nginx and Certbot</span>
-              <span>
-                Enabled by default for VPS installations. Nginx runs continuously in Docker;
-                Certbot runs in temporary containers when issuing or renewing certificates.
-              </span>
-            </span>
-          </label>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={() => void handleNginxRuntimeSave()}
-            disabled={savingNginxRuntime || !nginxRuntimeDirty}
-          >
-            {savingNginxRuntime ? <Loader size={12} className="spin" /> : <Save size={12} />}
-            Save
-          </Button>
-        </div>
-      </div>
+      <p className="muted-text">Nginx runs in the stackport-nginx container. Certbot uses temporary Docker containers for certificate issuance and renewal.</p>
 
       {!nginx?.available ? (
         <div>
           <Alert className={styles.softAlert}>
             <AlertCircle size={14} />
             <AlertDescription>{nginx?.reason ?? "Not available"}</AlertDescription>
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={() => void handleInstallTool("nginx")}
-              disabled={installingTool !== null}
-              title="Try to install nginx"
-            >
-              {installingTool === "nginx" ? <Loader size={12} className="spin" /> : <Download size={12} />}
-              Install
-            </Button>
           </Alert>
-          {installResult && (
-            <OutputBlock
-              output={installResult.output}
-              ok={installResult.ok}
-              onDismiss={() => setInstallResult(null)}
-            />
-          )}
         </div>
       ) : (
         <>
@@ -1346,7 +1254,7 @@ export default function System() {
               <div className={styles.nginxMetaGrid}>
                 <div>
                   <div className="muted-text">Layer</div>
-                  <span className="mono path-text">Real nginx</span>
+                  <span className="mono path-text">Docker Nginx</span>
                 </div>
                 <div>
                   <div className="muted-text">Generated file</div>
@@ -1679,7 +1587,7 @@ export default function System() {
         Certbot
         {certbot && (
           <span className={cn("mono", styles.titleMeta)}>
-            real
+            Docker
           </span>
         )}
         {certbot && (
@@ -1700,25 +1608,7 @@ export default function System() {
           <Alert className={styles.softAlert}>
             <AlertCircle size={14} />
             <AlertDescription>{certbot?.reason ?? "Certbot status unavailable"}</AlertDescription>
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={() => void handleInstallTool("certbot")}
-              disabled={installingTool !== null}
-              title="Try to install certbot"
-            >
-              {installingTool === "certbot" ? <Loader size={12} className="spin" /> : <Download size={12} />}
-              Install
-            </Button>
           </Alert>
-          {installResult && (
-            <OutputBlock
-              output={installResult.output}
-              ok={installResult.ok}
-              onDismiss={() => setInstallResult(null)}
-            />
-          )}
         </div>
       ) : certbot.entries.length === 0 ? (
         <>

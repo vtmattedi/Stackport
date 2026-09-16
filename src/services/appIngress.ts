@@ -1,26 +1,12 @@
 import { config } from "../config/env";
 import { getDatabase } from "../config/database";
-import { getNginxAppConfig, getNginxRuntime, setNginxAppConfig, writeNginxConfig } from "./nginx/configWriter";
+import { getNginxAppConfig, setNginxAppConfig, writeNginxConfig } from "./nginx/configWriter";
 import { runCertbotAction } from "./certbot";
 import { ensureSelfSignedCert } from "./nginx/selfSignedCert";
 import { execFile } from "child_process";
 
-/** Idempotent, called once at boot (src/index.ts) — makes sure StackPort's own
- *  ingress is ready before anyone can reach the login/bootstrap screen.
- *  Container-runtime only; nginx_runtime === "host" keeps today's fully manual
- *  app-domain configuration via the System page, unchanged.
- *
- *  - STACKPORT_DOMAIN set, no app domain configured yet: runs the same three-stage
- *    HTTP-then-issue-then-HTTPS flow routes/projects.ts's ssl/issue route already
- *    runs for projects (src/routes/projects.ts:688), just against the app's own
- *    domain instead of a project's.
- *  - STACKPORT_DOMAIN blank, no app domain configured: generates a self-signed
- *    cert so a raw-IP install still gets HTTPS — configWriter.ts's
- *    generateNginxConfig() picks it up automatically as the HTTPS default_server.
- *  - Successful prior bootstrap: reconcile without changing SSL settings.
- *  - Failed prior bootstrap: retry issuance on restart, preserving admin/secrets. */
+/** Reconcile the admin route at boot, then bootstrap certificates when needed. */
 export async function ensureAppIngress(): Promise<void> {
-  if (getNginxRuntime() !== "container") return;
   // Compose starts both services concurrently; don't issue certificates before nginx is up.
   let nginxReady = false;
   for (let attempt = 0; attempt < 30; attempt++) {

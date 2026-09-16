@@ -16,6 +16,7 @@ import { ensureBuildCapacity } from "./dockerStorage";
 import { recordFailedDeployment, recordSuccessfulDeployment, getPreviousSuccessfulDeployment } from "./projectDeployments";
 import { notifyDeployBlocked } from "./notificationService";
 import { invalidateContainers } from "./dockerStatusCache";
+import { extractComposeIngressTargets, type ComposeIngressTarget } from "./composeIngress";
 
 export interface EnvVariable {
   key: string;
@@ -106,6 +107,23 @@ export async function ensureProjectProxyNetwork(projectId: number): Promise<void
   if (!result.ok) throw new Error(result.message);
   await connectRunningProxyServices(expectedComposeProjectName(project), services);
   invalidateContainers();
+}
+
+export async function getProjectIngressTargets(projectId: number, selectedFile?: string): Promise<ComposeIngressTarget[]> {
+  const project = getProjectById(projectId);
+  if (!project?.composeFile) throw new Error("Pull or upload the project and select a Compose file first");
+  const repoPath = projectRepoDir(project);
+  const composeFile = selectedFile === undefined ? project.composeFile
+    : validateComposeFileChoice(selectedFile, await scanComposeFiles(repoPath));
+  if (!composeFile) throw new Error("Select a Compose file found in this project");
+  const compose = await composeCommand();
+  // Do not stream or return resolved config: it can contain environment secrets.
+  const raw = await new Promise<string>((resolve, reject) => {
+    execFile(compose.cmd, [...compose.argsPrefix, "-f", composeFile, "config", "--format", "json"],
+      { cwd: repoPath, env: dockerEnv(), timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout) => err ? reject(new Error("Could not resolve Compose config. Check the selected file and required environment variables.")) : resolve(stdout));
+  });
+  return extractComposeIngressTargets(JSON.parse(raw));
 }
 
 function dockerConfigDir(): string {

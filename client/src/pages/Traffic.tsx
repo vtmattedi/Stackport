@@ -302,7 +302,7 @@ export default function Traffic() {
   const flagged = useMemo(() => entries.map((entry) => ({ entry, flags: flagsFor(entry, rules) })).filter((x) => x.flags.length > 0), [entries, rules]);
 
   const scopedDomains = activeHosts ? (nginx?.domains ?? []).filter((d) => activeHosts.has(d.host)) : [];
-  const isScoped = scopedDomains.length > 0;
+  const isScoped = activeHosts !== null;
   const scopedProjects = activeHosts ? projectsWithDomain.filter((p) => p.domains!.some((d) => activeHosts.has(d.domain))) : [];
 
   const statusCodes = isScoped ? mergeStatusCodes(scopedDomains) : (nginx?.statusCodes ?? {});

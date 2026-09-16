@@ -6,6 +6,8 @@ import {
   SquareTerminal, Radio, RotateCw,
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
+import { ProjectGroupField } from "../components/ProjectGroupField";
+import { ProjectIngressSelect } from "../components/ProjectIngressSelect";
 import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
 import { ExpandableCard } from "../components/ExpandableCard";
 import { ProjectResourceCharts } from "../components/ProjectResourceCharts";
@@ -183,7 +185,7 @@ export default function ProjectDetails() {
     on,
     off,
   } = useSocket();
-  const { system: systemData, refreshSystem, systemActions, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, certbotAction, issueProjectDomainSsl } = useSystem();
+  const { system: systemData, projects: allProjects, refreshProjects, refreshSystem, systemActions, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, certbotAction, issueProjectDomainSsl } = useSystem();
   const projectId = Number(id);
   const [project, setProject] = useState<Project | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
@@ -228,6 +230,7 @@ export default function ProjectDetails() {
   const deployLogRef = useRef<HTMLPreElement | null>(null);
   const runtimeChangedRef = useRef(false);
   const [configRepo, setConfigRepo] = useState("");
+  const [configGroupName, setConfigGroupName] = useState("");
   const [configGithubCredentialId, setConfigGithubCredentialId] = useState<number | null>(null);
   const [domains, setDomains] = useState<ProjectDomain[]>([]);
   const [newDomainInput, setNewDomainInput] = useState("");
@@ -312,6 +315,7 @@ export default function ProjectDetails() {
 
   function syncConfig(projectData: Project) {
     setConfigRepo(projectData.githubRepo ?? "");
+    setConfigGroupName(projectData.groupName ?? "");
     setConfigGithubCredentialId(projectData.githubCredentialId);
     setConfigComposeFile(projectData.composeFile ?? "");
     setConfigHealthEndpoint(projectData.healthCheckEndpoint ?? "");
@@ -735,6 +739,7 @@ export default function ProjectDetails() {
     setConfigError("");
     try {
       const updated = await api.updateProject(project.id, {
+        groupName: configGroupName.trim() || null,
         githubRepo: configRepo || null,
         githubCredentialId: configGithubCredentialId,
         healthCheckEndpoint: configHealthEndpoint || null,
@@ -748,6 +753,7 @@ export default function ProjectDetails() {
         : updated;
       setProject(withComposeFile);
       syncConfig(withComposeFile);
+      await refreshProjects();
       notify.success("Project runtime settings saved.", { id: toastId });
     } catch (err) {
       setConfigError(err instanceof ApiError ? err.message : "Failed to save project settings");
@@ -815,6 +821,7 @@ export default function ProjectDetails() {
   }
 
   const runtimeChanged = project ? (
+    configGroupName.trim() !== (project.groupName ?? "") ||
     configRepo !== (project.githubRepo ?? "") ||
     configGithubCredentialId !== project.githubCredentialId ||
     configHealthEndpoint !== (project.healthCheckEndpoint ?? "") ||
@@ -1359,6 +1366,7 @@ export default function ProjectDetails() {
               {configError && <div className="alert alert-error">{configError}</div>}
 
               <form id={runtimeFormId} className={styles.runtimeForm} onSubmit={(e) => void saveProjectConfig(e)}>
+                <ProjectGroupField value={configGroupName} onValueChange={setConfigGroupName} projects={allProjects ?? []} disabled={savingConfig} />
                 <div className={styles.runtimeSection}>
                   <div className={styles.runtimeSectionHeader}>
                     <span>Repository</span>
@@ -1425,26 +1433,10 @@ export default function ProjectDetails() {
                         onChange={(e) => setNewDomainInput(e.target.value)}
                         style={{ maxWidth: 220 }}
                       />
-                      <Input
-                        type="text"
-                        placeholder="service (e.g. web)"
-                        value={newDomainService}
-                        onChange={(e) => setNewDomainService(e.target.value)}
-                        style={{ maxWidth: 160 }}
-                      />
-                      <Input
-                        type="number"
-                        placeholder="port"
-                        value={newDomainPort}
-                        onChange={(e) => setNewDomainPort(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            void addDomain();
-                          }
-                        }}
-                        style={{ maxWidth: 90 }}
-                      />
+                      <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
+                        refreshKey={project.updatedAt} disabled={addingDomain}
+                        value={newDomainService && newDomainPort ? `${newDomainService}:${newDomainPort}` : ""}
+                        onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewDomainService(service); setNewDomainPort(port); }} />
                       <Button
                         type="button"
                         variant="outline"

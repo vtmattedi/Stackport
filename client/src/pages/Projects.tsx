@@ -22,6 +22,8 @@ import {
   X,
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
+import { ProjectGroupField } from "../components/ProjectGroupField";
+import { ProjectIngressSelect } from "../components/ProjectIngressSelect";
 import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
 import { Switch } from "../components/ui/switch";
 import { Button } from "../components/ui/button";
@@ -151,6 +153,9 @@ export default function Projects() {
   const { projects: projectsData, refreshProjects: refresh, startProjectAction, issueProjectDomainSsl, system } = useSystem();
   const projects = projectsData ?? [];
   const loading = projectsData === null;
+  const [groupFilter, setGroupFilter] = useState("");
+  const groupNames = [...new Set(projects.map(project => project.groupName).filter((name): name is string => !!name))].sort((a, b) => a.localeCompare(b));
+  const visibleProjects = projects.filter(project => !groupFilter || (groupFilter === "ungrouped" ? !project.groupName : project.groupName === groupFilter.slice(6)));
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const githubCredentials = credentials.filter((credential) => credential.type === "github");
   const [togglingFavoriteId, setTogglingFavoriteId] = useState<number | null>(null);
@@ -172,6 +177,7 @@ export default function Projects() {
   const [wizardStep, setWizardStep] = useState<WizardStepId>(1);
   const [wizardSource, setWizardSource] = useState<WizardSource>("github");
   const [wizardName, setWizardName] = useState("");
+  const [wizardGroupName, setWizardGroupName] = useState("");
   const [wizardRepo, setWizardRepo] = useState("");
   const [wizardGithubCredentialId, setWizardGithubCredentialId] = useState<number | null>(null);
   const [createdProject, setCreatedProject] = useState<Project | null>(null);
@@ -239,6 +245,7 @@ export default function Projects() {
     setWizardStep(1);
     setWizardSource("github");
     setWizardName("");
+    setWizardGroupName("");
     setWizardRepo("");
     setWizardGithubCredentialId(null);
     setCreatedProject(null);
@@ -344,8 +351,9 @@ export default function Projects() {
     setPullLog("");
     try {
       const project = wizardSource === "upload"
-        ? await api.createProject({ name: wizardName, sourceType: "upload" })
+        ? await api.createProject({ name: wizardName, groupName: wizardGroupName.trim() || null, sourceType: "upload" })
         : await api.createProject({
+          groupName: wizardGroupName.trim() || null,
           name: wizardName,
           githubRepo: wizardRepo,
           githubCredentialId: wizardGithubCredentialId ?? undefined,
@@ -661,23 +669,28 @@ export default function Projects() {
 
         <TooltipProvider>
           <div className="card">
-            <div className="card-title"><FolderDot size={12} />Projects</div>
+            <div className="card-title" style={{justifyContent: "space-between"}}>
+              <span><FolderDot size={12} />Projects</span>
+              <AppSelect value={groupFilter} onValueChange={setGroupFilter} size="sm"
+                options={[{value: "", label: "All groups"}, {value: "ungrouped", label: "Ungrouped"}, ...groupNames.map(group => ({value: `group:${group}`, label: group}))]} />
+            </div>
             {loading ? (
               <div className="empty">Loading...</div>
-            ) : projects.length === 0 ? (
-              <div className="empty">No projects yet.</div>
+            ) : visibleProjects.length === 0 ? (
+              <div className="empty">{projects.length ? "No projects in this group." : "No projects yet."}</div>
             ) : (
               <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
                       <th>Name</th>
+                      <th>Group</th>
                       <th>Repository</th>
                       <th>Domain</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {projects.map((p) => {
+                    {visibleProjects.map((p) => {
                       const tokenLabel = githubTokenLabel(p, githubCredentials);
                       const dockerAvailable = system?.docker?.available ?? false;
                       const pDockerStack = system?.docker ? findProjectStack(p, system.docker.stacks) : null;
@@ -707,6 +720,7 @@ export default function Projects() {
                               </Link>
                             </div>
                           </td>
+                          <td>{p.groupName || "Ungrouped"}</td>
                           <td>
                             {p.githubRepo ? (
                               <div className="url-row">
@@ -802,6 +816,7 @@ export default function Projects() {
                     <label>Name</label>
                     <input type="text" placeholder="My API" value={wizardName} onChange={(e) => setWizardName(e.target.value)} required />
                   </div>
+                  <ProjectGroupField value={wizardGroupName} onValueChange={setWizardGroupName} projects={projects} disabled={creatingProject} />
                   {wizardSource === "github" ? (
                     <>
                       <div className="field">
@@ -1209,7 +1224,7 @@ export default function Projects() {
             )}
 
             {wizardStep === 5 && (
-              <WizardScreen title="Project configuration" description="Choose the route, internal port, auto-deploy branch, and SSL behavior before nginx is rebuilt." icon={<Settings2 size={16} />}>
+              <WizardScreen title="Project configuration" description="Choose the domain, detected service and port, auto-deploy branch, and SSL behavior." icon={<Settings2 size={16} />}>
                 <form onSubmit={(event) => void applyProjectConfig(event)} className="wizard-form">
                   {wizardSource === "github" && composeFiles.length > 0 && (
                     <div className="form-row">
@@ -1228,13 +1243,12 @@ export default function Projects() {
                       <label><Globe size={12} />Domain</label>
                       <input type="text" placeholder="myapp.example.com" value={wizardDomain} onChange={(e) => setWizardDomain(e.target.value)} />
                     </div>
-                    <div className="field">
-                      <label>Service</label>
-                      <input type="text" placeholder="web" value={wizardDomainService} onChange={(e) => setWizardDomainService(e.target.value)} />
-                    </div>
-                    <div className="field">
-                      <label>Container port</label>
-                      <input type="number" placeholder="3000" value={wizardDomainPort} onChange={(e) => setWizardDomainPort(e.target.value)} />
+                    <div className="field field-wide">
+                      <label>Service and container port</label>
+                      {createdProject && <ProjectIngressSelect projectId={createdProject.id} composeFile={wizardComposeFileChoice || createdProject.composeFile}
+                        value={wizardDomainService && wizardDomainPort ? `${wizardDomainService}:${wizardDomainPort}` : ""}
+                        disabled={configStatus === "running"}
+                        onValueChange={value => { const [service = "", port = ""] = value.split(":"); setWizardDomainService(service); setWizardDomainPort(port); }} />}
                     </div>
                   </div>
 
@@ -1274,7 +1288,7 @@ export default function Projects() {
 
                   <div className="wizard-actions">
                     <button type="button" className="btn btn-ghost" onClick={() => setWizardStep(wizardSource === "upload" ? 3 : 4)} disabled={configStatus === "running"}>Back</button>
-                    <button type="submit" className="btn btn-primary" disabled={configStatus === "running" || !createdProject}>
+                    <button type="submit" className="btn btn-primary" disabled={configStatus === "running" || !createdProject || (!!wizardDomain && (!wizardDomainService || !wizardDomainPort))}>
                       {configStatus === "running" ? <Loader size={14} className="spin" /> : <Lock size={14} />}
                       Next: Apply nginx
                     </button>

@@ -6,6 +6,14 @@ import { addProjectDomain } from "./projectDomains";
 
 const GITHUB_REPO_RE = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
+export function parseProjectGroupName(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" || value.trim().length > 100 || /[\r\n\x00-\x1f]/.test(value)) {
+    throw new ProjectAdminError(400, "groupName must be a name of at most 100 characters, or null");
+  }
+  return value.trim() || null;
+}
+
 export class ProjectAdminError extends Error {
   constructor(public readonly statusCode: number, message: string) {
     super(message);
@@ -14,6 +22,7 @@ export class ProjectAdminError extends Error {
 }
 
 export interface CreateProjectInput {
+  groupName?: unknown;
   name?: unknown;
   internalPort?: unknown;
   healthCheckEndpoint?: unknown;
@@ -28,6 +37,7 @@ export interface CreateProjectInput {
 }
 
 export interface UpdateProjectInput {
+  groupName?: unknown;
   name?: unknown;
   internalPort?: unknown;
   healthCheckEndpoint?: unknown;
@@ -76,6 +86,7 @@ function parseSourceType(value: unknown): "github" | "upload" {
 export function createProject(input: CreateProjectInput): Project {
   const sourceType = parseSourceType(input.sourceType);
   const name = parseProjectName(input.name);
+  const groupName = parseProjectGroupName(input.groupName);
   const internalPort = parseOptionalPortForCreate(input.internalPort);
   const healthCheckEndpoint = parseOptionalHealthEndpointForCreate(input.healthCheckEndpoint);
   const healthCheckIntervalS = parseHealthCheckInterval(input.healthCheckIntervalS, 0);
@@ -93,11 +104,11 @@ export function createProject(input: CreateProjectInput): Project {
   const result = db
     .prepare(
       `INSERT INTO projects
-        (name, internal_port, health_check_endpoint, health_check_interval_s, github_repo,
+        (name, group_name, internal_port, health_check_endpoint, health_check_interval_s, github_repo,
          credential_id, github_credential_id, auto_deploy_branch, source_type, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(name, internalPort, healthCheckEndpoint, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, sourceType, now, now);
+    .run(name, groupName, internalPort, healthCheckEndpoint, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, sourceType, now, now);
 
   const projectId = Number(result.lastInsertRowid);
   // Convenience: the wizard collects one domain at creation time. Additional domains
@@ -114,6 +125,7 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
   if (!existing) throw new ProjectAdminError(404, "Project not found");
 
   const name = input.name !== undefined ? parseProjectName(input.name) : existing.name;
+  const groupName = input.groupName !== undefined ? parseProjectGroupName(input.groupName) : existing.group_name;
   const internalPort = input.internalPort !== undefined
     ? parseOptionalPortForUpdate(input.internalPort)
     : existing.internal_port;
@@ -149,11 +161,11 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE projects
-     SET name = ?, internal_port = ?, health_check_endpoint = ?, health_check_interval_s = ?,
+     SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_interval_s = ?,
          github_repo = ?, credential_id = ?, github_credential_id = ?,
          auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
      WHERE id = ?`
-  ).run(name, internalPort, healthCheckEndpoint, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
+  ).run(name, groupName, internalPort, healthCheckEndpoint, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
 
   // Routing changes (domain add/remove/ssl-toggle) go through the /projects/:id/domains
   // routes, which trigger their own nginx apply — this only covers fields that live on

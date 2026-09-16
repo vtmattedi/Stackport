@@ -15,6 +15,7 @@ import {
   deployProject,
   ensureProjectProxyNetwork,
   getProjectById,
+  getProjectIngressTargets,
   getProjectComposeFileContent,
   getProjectLogs,
   isValidBranchName,
@@ -41,7 +42,7 @@ import { getProjectBranches } from "../services/githubPoller";
 import { runCertbotAction } from "../services/certbot";
 import { actionRegistry, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../services/actionRegistry";
 import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "./projectResources";
-import { createProject as adminCreateProject, ProjectAdminError } from "../services/projectAdmin";
+import { createProject as adminCreateProject, parseProjectGroupName, ProjectAdminError } from "../services/projectAdmin";
 import {
   addProjectDomain,
   attachDomains,
@@ -586,6 +587,15 @@ router.post("/:id/deploy", requireAuth, (req: Request<{ id: string }>, res: Resp
   respondActionStarted(res, started);
 });
 
+router.get("/:id/ingress-targets", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  if (req.query.composeFile !== undefined && typeof req.query.composeFile !== "string") { res.status(400).json({ error: "Invalid Compose file" }); return; }
+  try { res.json(await getProjectIngressTargets(id, req.query.composeFile as string | undefined)); }
+  catch (err) { res.status(400).json({ error: (err as Error).message }); }
+});
+
 router.get("/:id/domains", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
@@ -606,6 +616,12 @@ async function validateDomainRoute(project: { id: number; name: string; composeF
   const repoPath = projectRepoDir(project);
   const exists = await serviceExistsInCompose(repoPath, project.composeFile, parsedService);
   if (!exists) return { ok: false, error: `Service "${parsedService}" was not found in ${project.composeFile}` };
+  try {
+    const targets = await getProjectIngressTargets(project.id);
+    if (!targets.some(target => target.service === parsedService && target.containerPort === parsedPort)) {
+      return { ok: false, error: `Port ${parsedPort} is not declared for service "${parsedService}" in ${project.composeFile}` };
+    }
+  } catch (err) { return { ok: false, error: (err as Error).message }; }
 
   return { ok: true, service: parsedService, containerPort: parsedPort };
 }
@@ -988,6 +1004,11 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
     req.body as Record<string, unknown>;
 
   const newName = typeof name === "string" && name.trim() ? name.trim().slice(0, 100) : existing.name;
+  let newGroupName = existing.group_name;
+  if (req.body.groupName !== undefined) {
+    try { newGroupName = parseProjectGroupName(req.body.groupName); }
+    catch (err) { res.status(400).json({ error: (err as Error).message }); return; }
+  }
   let newInternalPort = existing.internal_port;
   if (internalPort !== undefined) {
     if (internalPort === null || internalPort === "") {
@@ -1114,11 +1135,11 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE projects
-     SET name = ?, internal_port = ?, health_check_endpoint = ?, health_check_interval_s = ?,
+     SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_interval_s = ?,
          github_repo = ?, credential_id = ?, github_credential_id = ?,
          auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
      WHERE id = ?`
-  ).run(newName, newInternalPort, newHcEndpoint, newIntervalS, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
+  ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newIntervalS, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
 
   const updated = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow;
   const project = rowToProject(updated);

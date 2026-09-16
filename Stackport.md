@@ -31,7 +31,7 @@ Host OS
 
 Managed projects never publish a host port. `docker-compose.system.yml` declares a shared bridge network, `stackport-proxy`; the `stackport` app and `stackport-nginx` both join it, and every project's compose file gets an **ephemeral, never-committed** rewrite (`src/services/composeNetworking.ts`) adding `networks: [default, stackport-proxy]` to whichever service(s) a domain is routed to. Nginx reaches a project by Docker DNS service name over that network (`http://<service>:<containerPort>`), not `127.0.0.1:<port>`.
 
-`docker-compose.system.yml`'s `nginx` service is the only thing that publishes host ports — `80:80` and `443:443`. A managed project's compose file that includes a `ports:` entry (any form) or `network_mode: host` is **rejected outright** by `src/services/composePolicy.ts` at deploy time, with an actionable error pointing at `expose:` instead. This is a hard, fail-closed invariant, not a default that can be silently bypassed: StackPort decides what the host exposes publicly, not the application being deployed.
+`docker-compose.system.yml`'s `nginx` service publishes the public HTTP/HTTPS ports (the app port is bound only to host loopback) — `80:80` and `443:443`. A managed project's compose file that includes a `ports:` entry (any form) or `network_mode: host` is **rejected outright** by `src/services/composePolicy.ts` at deploy time, with an actionable error pointing at `expose:` instead. This is a hard, fail-closed invariant, not a default that can be silently bypassed: StackPort decides what the host exposes publicly, not the application being deployed.
 
 ### 1.3 Domain routing model
 
@@ -58,7 +58,7 @@ Every successful `up` records a `project_deployments` row: the resolved git comm
 
 Unbounded image/build-cache growth on a long-running host is a real failure mode, so StackPort manages it actively (`src/services/dockerStorage.ts`, `dockerStorageMonitor.ts`):
 
-- A background monitor periodically checks `docker system df` against configurable thresholds and surfaces storage state (ok/warning/critical) on the System page.
+- A background monitor (`certbotRenewalMonitor.ts`) sweeps temporary Certbot containers daily and reloads nginx after successful renewal.
 - A pre-build disk-pressure guard runs before every build — if free space is critically low, the build is blocked with a clear message rather than being allowed to run the host out of disk mid-build.
 - Manual build-cache pruning is one click on the System → Docker tab.
 
@@ -73,7 +73,7 @@ waits for HTTPS through nginx before reporting completion.
 Installation and ongoing host management go through one script, `stackport.sh`, which also installs itself as `/usr/local/bin/stackport`. Full command semantics live in `docs/deprecated/stackport_host_lifecycle.md` (the original design doc — commands below match what's actually implemented).
 
 ```bash
-curl -fsSL <stackport-install-url> -o stackport.sh
+curl -fsSL https://raw.githubusercontent.com/vtmattedi/Stackport/main/stackport.sh -o stackport.sh
 chmod +x stackport.sh
 sudo ./stackport.sh install
 ```
@@ -81,7 +81,7 @@ sudo ./stackport.sh install
 `install` is fully idempotent — safe to rerun; it never regenerates secrets, never recreates the bootstrap admin on an already-initialized install, and never wipes data. It:
 
 1. Detects the OS, ensures Docker is installed.
-2. Creates `/etc/stackport` (config/secrets) and `/var/lib/stackport/{data,logs,nginx,backups,update,certbot-webroot}` (persistent state) and `/etc/letsencrypt` (standard system certbot path — kept separate from `/var/lib/stackport` so certs stay interoperable with any host-native certbot tooling).
+2. Creates `/etc/stackport` (config/secrets) and `/var/lib/stackport/{data,logs,nginx,backups,update,certbot-webroot}` (persistent state) and `/etc/letsencrypt` (persistent certificate storage — kept separate from `/var/lib/stackport` for sharing with nginx and temporary Certbot containers).
 3. Writes `/etc/stackport/stackport.env` — asks **only** for a domain (optional — blank means a raw-IP install) and, if a domain was given, a Certbot/ACME email. Everything else is generated, derived, or defaulted; no hand-written `.env` is required.
 4. Writes `/etc/stackport/secrets.env` — generates `JWT_SECRET`/`WEBHOOK_SECRET` (`openssl rand -hex 32`) and, on a genuinely fresh install, a one-time bootstrap credential (`openssl rand | base32`, ~80 bits, dash-formatted), **printed to the terminal exactly once**.
 5. Configures `ufw` (SSH detected and allowed first, then 80/443/8883, default-deny the rest) if `ufw` is present.
@@ -98,7 +98,7 @@ Other commands:
 | `stackport admin-recovery` | Root + interactive-TTY only. Generates a temporary recovery credential (`docker exec ... dist/cli/adminRecovery.js`) for resetting the administrator password — see §3.2. No HTTP endpoint can trigger this; `docker exec` on the daemon socket *is* the authorization boundary. |
 | `stackport uninstall [--purge]` | Removes StackPort's own containers/network, preserving `/etc/stackport` and `/var/lib/stackport` by default so it can be reinstalled/recovered later. `--purge` also deletes that preserved state — requires typed confirmation, refuses to run non-interactively. |
 
-The same update/rollback mechanism backs both the CLI and the UI's Settings → "Rebuild & restart" button (`src/routes/system.ts`'s `runContainerSelfUpdate()`) — there's one update engine, not two.
+The CLI manages source updates and rollback. The UI rebuilds the current checkout and reconnects after the app container restarts.
 
 ---
 
@@ -130,22 +130,19 @@ A successful login stores a JWT client-side; every authenticated call rotates it
 
 ## 4. Managing StackPort itself (day to day)
 
-Settings → Version Control mirrors `stackport update`/`rollback` (§2) through the UI — the button available depends on `nginx_runtime` (§5.1): host-mode installs keep the original git-pull-and-restart flow (`bootstrap.sh`); container-mode installs get "Rebuild & restart", which triggers the same `docker compose up -d --build stackport` the CLI uses and polls `/health` to reconnect once the container swap completes (the WebSocket connection necessarily drops mid-swap — this is expected, not an error state).
+Settings offers "Rebuild & restart" for the checked-out Docker image. It reconciles nginx before recreating the app and polls health while reconnecting. Use `stackport update` to pull source changes, back up the database, and update the whole system stack with automatic rollback on failure.
 
 ---
 
 ## 5. Nginx and certificates
 
-### 5.1 `nginx_runtime`: host vs. container
+### 5.1 Docker services
 
-A single toggle (System page) governs both nginx control and certificate issuance mode, since they're coupled:
-
-- **`container`** (the target/default model) — nginx runs as `stackport-nginx` (`docker-compose.system.yml`), controlled via `docker exec`. Certificates are issued via ephemeral `docker run --rm certbot/certbot certonly --webroot ...` containers using the shared `/var/lib/stackport/certbot-webroot` (mounted into both `stackport-nginx` and each ephemeral certbot run) — no persistent certbot container needed, no new privilege beyond the Docker socket access StackPort already has.
-- **`host`** — legacy/dev path: host-installed nginx via `systemctl`, host-installed certbot via the `--nginx` plugin.
+Nginx runs continuously in `stackport-nginx`, controlled through `docker exec`. Certbot runs in temporary containers using the shared ACME webroot. System reports Docker availability; there is no host installation button or runtime switch. Legacy stored `nginx_runtime=host` values are ignored.
 
 ### 5.2 Config generation, validation, and rollback
 
-StackPort owns one generated file, `<NGINX_PATH>/sites-available/default`, rebuilt from two editable templates (`templates/general.conf`, `templates/project.conf`) plus live project/domain state on every apply. Every apply validates the candidate (`nginx -t`, run against whichever runtime is active) **before** touching the live file; a validation failure leaves the live config untouched and saves the bad candidate to a "Failed" document for inspection. A successful validate-and-replace backs up the previous live file first; if the post-replace test or reload fails, the backup is restored automatically. Both templates are directly editable from System → Nginx.
+StackPort owns one generated file, `<NGINX_PATH>/sites-available/default`, rebuilt from two editable templates (`templates/general.conf`, `templates/project.conf`) plus live project/domain state on every apply. Every apply validates the candidate (`nginx -t`, run inside `stackport-nginx`) **before** touching the live file; a validation failure leaves the live config untouched and saves the bad candidate to a "Failed" document for inspection. A successful validate-and-replace backs up the previous live file first; if the post-replace test or reload fails, the backup is restored automatically. Both templates are directly editable from System → Nginx.
 
 ### 5.3 HTTPS with no domain — self-signed bootstrap
 
@@ -159,7 +156,7 @@ Issuance is sequenced to avoid the chicken-and-egg problem of needing a live HTT
 2. Certificate issued.
 3. SSL flag flipped on, nginx applied again with the final HTTPS block.
 
-A background monitor (`certbotRenewalMonitor.ts`) sweeps `docker run --rm certbot/certbot renew` on a daily cadence once `nginx_runtime` is `container` — no in-app scheduler is needed for the host-mode path since the host's own `certbot.timer` handles it.
+A background monitor (`certbotRenewalMonitor.ts`) sweeps temporary Certbot containers daily and reloads nginx after successful renewal.
 
 ---
 
@@ -167,7 +164,19 @@ A background monitor (`certbotRenewalMonitor.ts`) sweeps `docker run --rm certbo
 
 ### 6.1 Creating a project
 
-Projects → "Add new project" — GitHub repo or manually-uploaded compose file. The wizard's domain step asks for the domain **and** which compose service + container port it should route to (§1.3) — there is no internal-port field anywhere in the UI; ports are never published to the host at all.
+Projects can belong to a named group, selected or created in the creation wizard
+and changed in project settings. Existing projects remain ungrouped until assigned.
+Groups appear as collapsible sections in the Projects submenu, and the projects
+table can be filtered by group. Clearing a project's group does not affect deployment.
+
+Ingress uses the shared select component to choose detected `service:port` targets
+from the selected, resolved Compose configuration. TCP `expose`/container-target
+ports are read, with `PORT`/`HTTP_PORT` environment values as a fallback. Host ports
+are never routing targets. Add `expose` and refresh if no target is detected;
+selecting another Compose file refreshes the wizard's options. The server also
+checks that the chosen port is declared for its service before saving a route.
+
+Projects → "Add new project" — GitHub repo or manually-uploaded compose file. The wizard's domain step asks for the domain and a detected Compose service/container port from the select (§1.3) — there is no internal-port field anywhere in the UI; ports are never published to the host at all.
 
 ### 6.2 Compose requirements
 
@@ -216,8 +225,16 @@ Unchanged in shape from earlier versions of the system: named `.env` files per p
 ├── update/state.env      # current/previous version, last update result
 └── certbot-webroot/      # ACME HTTP-01 challenge webroot
 
-/etc/letsencrypt/          # standard system certbot path (not under /var/lib/stackport)
+/etc/letsencrypt/          # persistent certificate storage (not under /var/lib/stackport)
 /usr/local/bin/stackport   # the host lifecycle CLI
 ```
 
 The application checkout (`/var/lib/stackport/app`) is disposable and rebuildable at any time via `stackport update`/`rollback`; persistent state never lives inside it or inside a container image.
+
+## Traffic and Docker logs
+
+Traffic uses authenticated `/api/metrics/nginx` and `/api/metrics/nginx/requests` endpoints to read `docker logs stackport-nginx`. Generated access logs include host, user agent and request duration for domain filters, health-check exclusion and response-time statistics. No host log mount or sudo is needed.
+
+Docker retains three rotated 10 MB files. Traffic reads at most 20,000 recent lines and a bounded byte window; selected periods filter retained history and do not guarantee archival coverage. Container recreation starts new log history. Clearing Traffic stores a persistent cutoff without deleting Docker logs. Custom templates must preserve the `stackport` access-log format and stdout destination.
+
+Host installation and runtime-switch write APIs are removed. Nginx config/template, reload, certificate actions and Docker log APIs remain authenticated and operate on Docker containers.

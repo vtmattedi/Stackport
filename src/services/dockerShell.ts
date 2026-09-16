@@ -63,9 +63,7 @@ export async function startSession(args: ShellStartArgs): Promise<ShellStartResu
   if (!CONTAINER_REF_RE.test(args.containerId)) {
     return { ok: false, error: "Invalid container id" };
   }
-  // System-plane containers (StackPort itself, and nginx/certbot once Phase 1.5/1.6
-  // add them) don't receive generic workload actions like an interactive shell — see
-  // src/services/systemResources.ts.
+  // System containers do not receive generic workload shell access.
   if (await isSystemContainer(args.containerId)) {
     return { ok: false, error: "Interactive shell access isn't available for StackPort's own infrastructure" };
   }

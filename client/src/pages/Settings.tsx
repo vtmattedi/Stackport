@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Settings as SettingsIcon, KeyRound, Eye, EyeOff, Check, Monitor, RefreshCw, Loader, GitPullRequestArrow, Boxes, FolderSearch, AlertCircle, Eraser } from "lucide-react";
-import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
+import { Settings as SettingsIcon, KeyRound, Eye, EyeOff, Check, RefreshCw, Loader, GitPullRequestArrow, Boxes, FolderSearch, AlertCircle, Eraser } from "lucide-react";
 import { api, ApiError } from "../api/client";
-import type { AppVersionInfo, Credential, AppUpdateCheck, GlobalRealtimeEvent, ProjectRepoFolderScanResult } from "../api/types";
+import type { AppVersionInfo, GlobalRealtimeEvent, ProjectRepoFolderScanResult } from "../api/types";
 import { useSocket } from "../context/SocketContext";
 import { useConfirm } from "../components/ConfirmDialog";
 import { cn } from "../lib/utils";
@@ -35,16 +34,9 @@ export default function Settings() {
   const [versionInfo, setVersionInfo] = useState<AppVersionInfo | null>(null);
   const [updatingApp, setUpdatingApp] = useState(false);
   const [updatingFrontend, setUpdatingFrontend] = useState(false);
-  const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
   const [updateError, setUpdateError] = useState("");
   const [updateSuccess, setUpdateSuccess] = useState("");
   const [updateOutput, setUpdateOutput] = useState("");
-  const [appUpdateCheck, setAppUpdateCheck] = useState<AppUpdateCheck | null>(null);
-  const [updateCredentialId, setUpdateCredentialId] = useState<number | null>(null);
-  const [updateCredentialIdDraft, setUpdateCredentialIdDraft] = useState<number | null>(null);
-  const [githubCredentials, setGithubCredentials] = useState<Credential[]>([]);
-  const [savingUpdateCredential, setSavingUpdateCredential] = useState(false);
-  const [nginxRuntime, setNginxRuntime] = useState<"host" | "container">("host");
 
   const confirmDialog = useConfirm();
   const [repoScan, setRepoScan] = useState<ProjectRepoFolderScanResult | null>(null);
@@ -57,19 +49,7 @@ export default function Settings() {
     api.getVersion().then(setVersionInfo).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    api.getNginxRuntime().then((r) => setNginxRuntime(r.runtime)).catch(() => {});
-  }, []);
 
-  useEffect(() => {
-    Promise.all([api.getUpdateConfig(), api.listCredentials()])
-      .then(([cfg, creds]) => {
-        setUpdateCredentialId(cfg.credentialId);
-        setUpdateCredentialIdDraft(cfg.credentialId);
-        setGithubCredentials(creds.filter((c) => c.type === "github"));
-      })
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     const appendOutput = (text: string) => {
@@ -101,9 +81,6 @@ export default function Settings() {
             ? "Frontend update completed. The service restart may briefly refresh this page."
             : "Update completed. The service restart may briefly refresh this page.");
           api.getVersion().then(setVersionInfo).catch(() => {});
-          if (event.updateMode === "frontend") {
-            api.checkAppUpdate().then(setAppUpdateCheck).catch(() => {});
-          }
         } else {
           setUpdateError(event.updateMode === "frontend"
             ? "Frontend update failed. Review the command output below."
@@ -133,19 +110,7 @@ export default function Settings() {
     }
   }
 
-  async function saveUpdateCredential() {
-    setSavingUpdateCredential(true);
-    setUpdateError("");
-    try {
-      const cfg = await api.updateUpdateConfig(updateCredentialIdDraft);
-      setUpdateCredentialId(cfg.credentialId);
-      setUpdateCredentialIdDraft(cfg.credentialId);
-    } catch (err) {
-      setUpdateError(err instanceof ApiError ? err.message : "Failed to save git credential");
-    } finally {
-      setSavingUpdateCredential(false);
-    }
-  }
+
 
   // Container-mode self-update recreates the very container serving this page's
   // Socket.io connection, so the "success" system:update event it would normally
@@ -176,7 +141,7 @@ export default function Settings() {
     setUpdateOutput("");
     try {
       await api.runSelfUpdate();
-      if (nginxRuntime === "container") {
+      {
         setUpdateOutput("Update started — the container will rebuild and restart shortly. Waiting for it to come back...\n");
         const healthy = await waitForHealthy();
         setUpdatingApp(false);
@@ -188,27 +153,11 @@ export default function Settings() {
         }
         return;
       }
-      // Host mode: progress and final status arrive via Socket.io (system:update events).
     } catch (err) {
       setUpdatingApp(false);
       setUpdateError(err instanceof ApiError ? err.message : "Failed to start update");
     }
   }
-
-  async function runFrontendUpdate() {
-    setUpdatingFrontend(true);
-    setUpdateError("");
-    setUpdateSuccess("");
-    setUpdateOutput("");
-    try {
-      await api.runFrontendUpdate();
-      // Progress and final status arrive via Socket.io (system:update events).
-    } catch (err) {
-      setUpdatingFrontend(false);
-      setUpdateError(err instanceof ApiError ? err.message : "Failed to start frontend update");
-    }
-  }
-
 
   async function handleRepoScan() {
     setScanError("");
@@ -282,25 +231,7 @@ export default function Settings() {
     }
   }
 
-  async function checkAppUpdate() {
-    setCheckingAppUpdate(true);
-    setUpdateError("");
-    setUpdateSuccess("");
-    try {
-      const result = await api.checkAppUpdate();
-      setAppUpdateCheck(result);
-      if (result.ok) {
-        setUpdateSuccess(result.hasUpdate ? "New app commit available." : "App is up to date.");
-      } else {
-        setUpdateError("Could not check the app repository.");
-        setUpdateOutput(result.output);
-      }
-    } catch (err) {
-      setUpdateError(err instanceof ApiError ? err.message : "Failed to check app repository");
-    } finally {
-      setCheckingAppUpdate(false);
-    }
-  }
+
 
   function formatBuild(value: string | null | undefined) {
     if (!value) return "Not built yet";
@@ -308,9 +239,7 @@ export default function Settings() {
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
   }
 
-  function shortCommit(value: string | null | undefined) {
-    return value ? value.slice(0, 7) : "-";
-  }
+
 
   return (
     <>
@@ -349,64 +278,20 @@ export default function Settings() {
               )}
             </div>
           </div>
-          {nginxRuntime === "host" && (
-            <div className="field" style={{ marginTop: 14, maxWidth: 360 }}>
-              <label>Git credential</label>
-              <div className="app-action-select">
-                <GitHubTokenSelect
-                  credentials={githubCredentials}
-                  value={updateCredentialIdDraft}
-                  onValueChange={setUpdateCredentialIdDraft}
-                  noneLabel="None - use system git config"
-                />
-                <button
-                  className="btn btn-ghost btn-sm"
-                  type="button"
-                  onClick={() => void saveUpdateCredential()}
-                  disabled={savingUpdateCredential || updateCredentialIdDraft === updateCredentialId}
-                >
-                  {savingUpdateCredential ? <Loader size={13} className="spin" /> : <Check size={13} />}
-                  Save
-                </button>
-              </div>
-              {githubCredentials.length === 0 && (
-                <span className="hint">Add a GitHub credential in the Credentials page first.</span>
-              )}
-            </div>
-          )}
+
           <div className="row-actions" style={{ marginTop: 14 }}>
-            {nginxRuntime === "host" && (
-              <>
-                <button className="btn btn-ghost" type="button" onClick={() => void checkAppUpdate()} disabled={checkingAppUpdate}>
-                  {checkingAppUpdate ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}
-                  Check commits
-                </button>
-                <button className="btn btn-ghost" type="button" onClick={() => void runFrontendUpdate()} disabled={updatingFrontend || updatingApp}>
-                  {updatingFrontend ? <Loader size={13} className="spin" /> : <Monitor size={13} />}
-                  Frontend only
-                </button>
-              </>
-            )}
+
             <button className="btn btn-primary" type="button" onClick={() => void runSelfUpdate()} disabled={updatingApp || updatingFrontend}>
               {updatingApp ? <Loader size={13} className="spin" /> : <GitPullRequestArrow size={13} />}
-              {nginxRuntime === "container" ? "Rebuild & restart" : "Pull, build, restart"}
+              Rebuild & restart
             </button>
           </div>
-          {nginxRuntime === "container" && (
+          {(
             <span className="hint" style={{ display: "block", marginTop: 8 }}>
               Rebuilds the stackport image from the checkout on the host and recreates the container. The connection will drop briefly during the restart.
             </span>
           )}
-          {appUpdateCheck && nginxRuntime === "host" && (
-            <div className="muted-text" style={{ marginTop: 10, fontSize: "0.82rem" }}>
-              <span className="mono">{appUpdateCheck.branch ?? "branch"}</span>
-              {" local "}
-              <span className="mono">{shortCommit(appUpdateCheck.localCommit)}</span>
-              {" / remote "}
-              <span className="mono">{shortCommit(appUpdateCheck.remoteCommit)}</span>
-              {appUpdateCheck.hasUpdate && <strong style={{ marginLeft: 8 }}>update available</strong>}
-            </div>
-          )}
+
           {updateOutput && <pre className={styles.updateOutput}>{updateOutput}</pre>}
         </div>
 

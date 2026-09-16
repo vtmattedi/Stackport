@@ -84,11 +84,20 @@ If the app has no health endpoint, validate the home page or another stable unau
 
 Prepare these values:
 
-- **Project**: `name` (display name, ≤100 chars), `githubRepo` (`owner/repo`), `githubCredentialId` (private repos only), `autoDeployBranch` (branch to poll for auto-deploy).
-- **Per domain**: `domain` (valid FQDN, unique across the host), `service` (must match a service name that actually exists in the project's compose file), `containerPort` (the port that service `expose:`s), `useSsl`.
-- **Optional**: `healthCheckEndpoint` (path like `/health`), `healthCheckIntervalS` (30s minimum is enforced).
+- **Project**: `name` (display name, ≤100 chars), `groupName` (optional group, e.g. `Mw Control`; null means ungrouped), `githubRepo` (`owner/repo`), `githubCredentialId` (private repos only), `autoDeployBranch` (branch to poll for auto-deploy).
+- **Per domain**: `domain` (valid FQDN, unique across the host), `service` (must match a service name that actually exists in the project's compose file), `containerPort` (the declared container port), `useSsl`. After pulling/uploading the project and configuring env files, choose the detected `service:port` from the existing select component. Detection reads resolved `docker compose config --format json`: TCP `expose`/port targets, with `PORT` or `HTTP_PORT` as a fallback. Host-published `ports` remain prohibited by deployment policy.
+- **Optional**: `healthCheckEndpoint` (path like `/health`), `healthCheckIntervalS` (0 disables checks; use 30s or longer for routine monitoring).
 
-There is no `internalPort` field — a project can route multiple domains to different services/ports, and nothing is ever published to the host regardless.
+Do not configure the legacy `internalPort` field — a project can route multiple domains to different services/ports, and nothing is ever published to the host regardless.
+
+
+## Installing and operating Stackport itself
+
+On a fresh VPS, point the admin domain at the server and allow SSH, HTTP/80 and HTTPS/443. Run `stackport.sh install`; it installs Docker and missing curl/git/openssl prerequisites, generates configuration and bootstrap credentials, and waits for admin HTTPS before reporting success. Enter the printed bootstrap credential in the browser and set the administrator identity.
+
+Nginx always runs in `stackport-nginx`. Certbot runs in temporary containers for issuance and automatic renewal; neither needs a host package, systemd service, nor a runtime toggle. System status comes from Docker. Certificates stay under `/etc/letsencrypt`, and ACME files under `/var/lib/stackport/certbot-webroot`; preserve the system Compose mounts rather than changing generated nginx files or private-key permissions.
+
+Use `stackport update` for source updates and system-stack reconciliation. Traffic reads Docker's nginx stdout logs (including domain and request time), with bounded retention. Groups organize projects in the navigation submenu; they do not change routing or Compose isolation.
 
 ## Interacting with a running Stackport instance
 

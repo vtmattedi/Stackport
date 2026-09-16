@@ -9,10 +9,8 @@ import { HEALTH_CHECK_USER_AGENT } from "../services/healthChecker";
 const router = Router();
 router.use(requireAuth);
 
-const NGINX_ACCESS_LOG_PATHS = [
-  "/var/log/nginx/access.log",
-  "/var/log/nginx/stackport.access.log",
-];
+const NGINX_LOG_SOURCE = "docker:stackport-nginx";
+const CLEARED_AT_KEY = "nginx_traffic_cleared_at";
 
 const NGINX_LOG_MONTHS: Record<string, number> = {
   Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
@@ -346,17 +344,20 @@ function parseNginxContent(
   };
 }
 
-function readNginxLog(logPath: string, bytes: number, cb: (err: Error | null, stdout: string) => void): void {
-  const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
-  const tailArgs = ["-c", String(bytes), logPath];
-
-  execFile("tail", tailArgs, { maxBuffer: bytes + 65_536 }, (err, stdout) => {
-    if (!err) return cb(null, stdout);
-    if (isRoot) return cb(err, "");
-    execFile("sudo", ["-n", "tail", ...tailArgs], { maxBuffer: bytes + 65_536 }, (err2, stdout2) => {
-      cb(err2, stdout2);
+function readNginxLog(periodHours: number, bytes: number, cb: (err: Error | null, stdout: string) => void): void {
+  const row = getDatabase().prepare("SELECT value FROM app_meta WHERE key = ?").get(CLEARED_AT_KEY) as { value: string } | undefined;
+  const cutoff = row ? Date.parse(row.value) : 0;
+  const since = new Date(Math.max(Date.now() - periodHours * 3600_000, Number.isFinite(cutoff) ? cutoff : 0)).toISOString();
+  // Official nginx writes access logs to stdout and errors to stderr. Reading the
+  // Docker API works as the app user without host log permissions or sudo.
+  execFile("docker", ["logs", "--since", since, "--tail", "20000", "stackport-nginx"],
+    { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+      if (err) { cb(new Error("Cannot read stackport-nginx Docker logs. Check the container and Docker access."), ""); return; }
+      // Preserve complete lines when bounding the returned window.
+      const content = Buffer.from(stdout);
+      const tail = content.length > bytes ? content.subarray(content.length - bytes).toString("utf8") : stdout;
+      cb(null, content.length > bytes ? tail.slice(tail.indexOf("\n") + 1) : tail);
     });
-  });
 }
 
 router.get("/nginx", (req, res) => {
@@ -371,26 +372,18 @@ router.get("/nginx", (req, res) => {
   const excludeSelf = excludeServerIp || excludeHealthChecks;
   const excludeIps = excludeServerIp ? serverIps : new Set<string>();
 
-  const [primary, fallback] = NGINX_ACCESS_LOG_PATHS;
   const parse = (stdout: string, logPath: string) =>
     res.json({
       available: true,
       logPath,
       period: periodKey,
       serverIps: Array.from(serverIps),
-      ...parseNginxContent(stdout, true, periodHours, excludeIps, excludeSelf),
+      ...parseNginxContent(stdout, false, periodHours, excludeIps, excludeSelf),
     });
 
-  readNginxLog(primary, tailBytes, (err, stdout) => {
-    if (!err) { parse(stdout, primary); return; }
-    if (!fallback || !err.message.includes("No such file")) {
-      res.json({ available: false, error: err.message, serverIps: Array.from(serverIps) });
-      return;
-    }
-    readNginxLog(fallback, tailBytes, (err2, stdout2) => {
-      if (err2) { res.json({ available: false, error: err2.message, serverIps: Array.from(serverIps) }); return; }
-      parse(stdout2, fallback);
-    });
+  readNginxLog(periodHours, tailBytes, (err, stdout) => {
+    if (err) { res.json({ available: false, error: err.message, serverIps: Array.from(serverIps) }); return; }
+    parse(stdout, NGINX_LOG_SOURCE);
   });
 });
 
@@ -467,44 +460,27 @@ router.get("/nginx/requests", (req, res) => {
   const hostFilter = typeof req.query.host === "string" && req.query.host ? req.query.host : undefined;
   const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "500"), 10) || 500, 1), 2000);
 
-  const [primary, fallback] = NGINX_ACCESS_LOG_PATHS;
   const parse = (stdout: string, logPath: string) =>
     res.json({
       available: true,
       logPath,
       period: periodKey,
       serverIps: Array.from(serverIps),
-      ...extractNginxEntries(stdout, true, periodHours, excludeIps, excludeSelf, hostFilter, limit),
+      ...extractNginxEntries(stdout, false, periodHours, excludeIps, excludeSelf, hostFilter, limit),
     });
 
-  readNginxLog(primary, tailBytes, (err, stdout) => {
-    if (!err) { parse(stdout, primary); return; }
-    if (!fallback || !err.message.includes("No such file")) {
-      res.json({ available: false, error: err.message, serverIps: Array.from(serverIps) });
-      return;
-    }
-    readNginxLog(fallback, tailBytes, (err2, stdout2) => {
-      if (err2) { res.json({ available: false, error: err2.message, serverIps: Array.from(serverIps) }); return; }
-      parse(stdout2, fallback);
-    });
+  readNginxLog(periodHours, tailBytes, (err, stdout) => {
+    if (err) { res.json({ available: false, error: err.message, serverIps: Array.from(serverIps) }); return; }
+    parse(stdout, NGINX_LOG_SOURCE);
   });
 });
 
+// Clearing the Traffic view stores a cutoff; Docker owns and rotates its logs.
 router.post("/nginx/clear", (_req, res) => {
-  const logPath = NGINX_ACCESS_LOG_PATHS[0];
-  const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
-
-  const run = (cmd: string, args: string[]) =>
-    execFile(cmd, args, (err) => {
-      if (err) { res.status(500).json({ ok: false, error: err.message }); return; }
-      res.json({ ok: true });
-    });
-
-  if (isRoot) {
-    run("truncate", ["-s", "0", logPath]);
-  } else {
-    run("sudo", ["-n", "truncate", "-s", "0", logPath]);
-  }
+  getDatabase().prepare(`INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`)
+    .run(CLEARED_AT_KEY, new Date().toISOString());
+  res.json({ ok: true });
 });
 
 export default router;

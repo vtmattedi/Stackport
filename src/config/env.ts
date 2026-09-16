@@ -42,11 +42,6 @@ export const config = {
   hostingerVmId: process.env["HOSTINGER_VM_ID"] ?? "",
   nginxPath: process.env["NGINX_PATH"] ?? "/etc/nginx",
   appServiceName: process.env["APP_SERVICE_NAME"] ?? "stackport",
-  selfUpdateScript: process.env["SELF_UPDATE_SCRIPT"] ?? "./bootstrap.sh",
-  // Absolute path to this checkout as seen by the *host* Docker daemon — only
-  // meaningful when nginx_runtime is "container" (Phase 1.8 self-update). Running
-  // natively, process.cwd() already *is* the host path, so no override is needed;
-  // running containerized, the operator must set this in .env since a container
-  // can't introspect the host-side source path of its own bind mounts.
+  // Real host checkout path used by Docker Compose to resolve system mounts.
   hostProjectRoot: process.env["HOST_PROJECT_ROOT"] ?? process.cwd(),
 } as const;

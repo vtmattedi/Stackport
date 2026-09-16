@@ -1,16 +1,10 @@
 import { execFile } from "child_process";
 import { pollingCadenceS } from "../config/pollingCadence";
 import { auditLog } from "../utils/logger";
-import { getNginxRuntime, CERTBOT_WEBROOT_PATH } from "./nginx/configWriter";
+import { reloadNginx, CERTBOT_WEBROOT_PATH } from "./nginx/configWriter";
 import { invalidateCertCaches } from "./certbot";
 
-/** Phase 1.6 — once cut over to containerized certbot, the host's own `certbot.timer`
- *  (which drove renewal before) is no longer in the picture, so something needs to
- *  replace it. `certbot renew` is a single system-wide sweep (it scans every cert
- *  under /etc/letsencrypt/renewal/ itself and renews whichever are due) — no
- *  per-domain looping needed, matching exactly what certbot.timer already did. No-ops
- *  entirely while nginx_runtime stays "host" (the default) — certbot.timer keeps
- *  owning renewal in that mode, unchanged. */
+/** Periodically renew all due certificates in a temporary Certbot container. */
 class CertbotRenewalMonitor {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -28,7 +22,7 @@ class CertbotRenewalMonitor {
   }
 
   private async check(): Promise<void> {
-    if (this.running || getNginxRuntime() !== "container") return;
+    if (this.running) return;
     this.running = true;
     try {
       const result = await new Promise<{ ok: boolean; output: string }>((resolve) => {
@@ -43,6 +37,10 @@ class CertbotRenewalMonitor {
         });
       });
       invalidateCertCaches();
+      if (result.ok) {
+        const reload = await reloadNginx();
+        if (!reload.ok) auditLog("system", "system.certbot-auto-renew-reload", "nginx", "fail", {output: reload.output.slice(0, 2000)});
+      }
       auditLog("system", "system.certbot-auto-renew", "certbot", result.ok ? "ok" : "fail", { output: result.output.slice(0, 2000) });
     } catch {
       // best-effort background maintenance — a failed check just tries again next tick

@@ -14,15 +14,12 @@ import {
   readNginxDocument,
   reloadNginx,
   setNginxAppConfig,
-  setNginxRuntime,
   writeNginxConfig,
   writeNginxTemplate,
   type NginxDocumentKind,
-  type NginxRuntime,
 } from "../services/nginx/configWriter";
 import {
   getCertbotStatus,
-  invalidateCertbotVersion,
   runCertbotAction,
   setCertbotEmail,
   type CertbotAction,
@@ -38,7 +35,7 @@ import {
   invalidateDiskUsage,
   pruneBuildCache,
 } from "../services/dockerStatusCache";
-import { getNginxActiveStatusCached, getNginxVersionCached, invalidateNginxVersion } from "../services/nginx/statusCache";
+import { getNginxActiveStatusCached, getNginxVersionCached } from "../services/nginx/statusCache";
 import { isSystemComposeProject } from "../services/systemResources";
 import { getStorageState, getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../services/dockerStorage";
 
@@ -95,7 +92,6 @@ function emitSystemUpdateGlobal(
   });
 }
 
-const BOOTSTRAP_STEP_RE = /^\[bootstrap:step\] (.+)$/;
 
 // ── Shell helper ─────────────────────────────────────────────────────────────
 
@@ -112,11 +108,6 @@ interface StreamRunResult extends RunResult {
   timedOut: boolean;
 }
 
-interface InstallResult {
-  ok: boolean;
-  tool: "nginx" | "certbot";
-  output: string;
-}
 
 interface BuildInfo {
   name: string;
@@ -234,10 +225,6 @@ export function privileged(cmd: string, args: string[]): { cmd: string; args: st
   return { cmd: "sudo", args: ["-n", cmd, ...args] };
 }
 
-function formatRun(label: string, result: RunResult): string {
-  const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-  return [`$ ${label}`, output || (result.ok ? "ok" : "failed")].join("\n");
-}
 
 async function readJson<T>(filePath: string): Promise<T | null> {
   try {
@@ -295,19 +282,6 @@ function setAppUpdateCredentialId(id: number | null): void {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
       `)
       .run(APP_UPDATE_CREDENTIAL_KEY, String(id));
-  }
-}
-
-function gitCredentialEnv(credentialId: number | null): NodeJS.ProcessEnv {
-  if (credentialId == null) return {};
-  const row = getDatabase()
-    .prepare("SELECT username, secret_enc FROM credentials WHERE id = ? AND type = 'github'")
-    .get(credentialId) as { username: string | null; secret_enc: string } | undefined;
-  if (!row) return {};
-  try {
-    return { GITHUB_USERNAME: row.username ?? "x-access-token", GITHUB_TOKEN: decryptSecret(row.secret_enc) };
-  } catch {
-    return {};
   }
 }
 
@@ -560,8 +534,7 @@ async function getNginxData() {
 
   const versionRes = await getNginxVersionCached();
   if (!versionRes.ok) {
-    return { available: false, reason: getNginxRuntime() === "container"
-      ? (versionRes.stderr || "Nginx container unavailable").trim() : "nginx not installed", layer };
+    return { available: false, reason: (versionRes.stderr || "Nginx container unavailable").trim(), layer };
   }
 
   const activeRes = await getNginxActiveStatusCached();
@@ -578,73 +551,6 @@ async function getNginxData() {
 
   return { available: true, version, active, configTest, layer };
 }
-
-async function commandAvailable(cmd: string): Promise<boolean> {
-  const result = await run(cmd, ["--version"]);
-  return !result.notFound;
-}
-
-async function detectPackageManager(): Promise<"apt-get" | "dnf" | "yum" | null> {
-  if (await commandAvailable("apt-get")) return "apt-get";
-  if (await commandAvailable("dnf")) return "dnf";
-  if (await commandAvailable("yum")) return "yum";
-  return null;
-}
-
-async function runPrivilegedForInstall(cmd: string, args: string[], timeoutMs = 600_000): Promise<{ label: string; result: RunResult }> {
-  const command = privileged(cmd, args);
-  return {
-    label: [command.cmd, ...command.args].join(" "),
-    result: await run(command.cmd, command.args, { timeoutMs }),
-  };
-}
-
-async function tryInstallSystemTool(tool: "nginx" | "certbot"): Promise<InstallResult> {
-  const manager = await detectPackageManager();
-  if (!manager) {
-    return {
-      ok: false,
-      tool,
-      output: "No supported package manager found. Install manually with apt-get, dnf, or yum.",
-    };
-  }
-
-  const commands: Array<{ cmd: string; args: string[]; timeoutMs?: number }> = [];
-  if (manager === "apt-get") {
-    commands.push({ cmd: "apt-get", args: ["update"], timeoutMs: 600_000 });
-    commands.push({
-      cmd: "apt-get",
-      args: ["install", "-y", ...(tool === "nginx" ? ["nginx"] : ["certbot", "python3-certbot-nginx", "openssl"])],
-      timeoutMs: 600_000,
-    });
-  } else {
-    commands.push({
-      cmd: manager,
-      args: ["install", "-y", ...(tool === "nginx" ? ["nginx"] : ["certbot", "python3-certbot-nginx", "openssl"])],
-      timeoutMs: 600_000,
-    });
-  }
-
-  if (tool === "nginx") {
-    commands.push({ cmd: "systemctl", args: ["enable", "--now", "nginx"], timeoutMs: 120_000 });
-  }
-
-  const output: string[] = [];
-  for (const command of commands) {
-    const step = await runPrivilegedForInstall(command.cmd, command.args, command.timeoutMs);
-    output.push(formatRun(step.label, step.result));
-    if (!step.result.ok) {
-      return { ok: false, tool, output: output.join("\n\n") };
-    }
-  }
-
-  const verifyArgs = tool === "nginx" ? ["-v"] : ["--version"];
-  const verify = await run(tool, verifyArgs);
-  output.push(formatRun(`${tool} ${verifyArgs.join(" ")}`, verify));
-  return { ok: verify.ok, tool, output: output.join("\n\n") };
-}
-
-// ── Compose stack lookup (used by action endpoints) ───────────────────────────
 
 const STACK_RE = /^[a-z0-9][a-z0-9_-]*$/i;
 
@@ -730,90 +636,7 @@ router.get("/nginx/runtime", requireAuth, (_req: Request, res: Response): void =
   res.json({ runtime: getNginxRuntime() });
 });
 
-router.put("/nginx/runtime", requireAuth, (req: Request, res: Response): void => {
-  const { runtime } = req.body as { runtime?: unknown };
-  if (runtime !== "host" && runtime !== "container") {
-    res.status(400).json({ error: 'runtime must be "host" or "container"' });
-    return;
-  }
-  setNginxRuntime(runtime as NginxRuntime);
-  auditLog(req.user ?? "unknown", "system.nginx-runtime", "app_meta", "ok", { runtime });
-  res.json({ runtime });
-});
-
-async function runAppUpdate(mode: "full" | "frontend"): Promise<StreamRunResult> {
-  const flowId = `system.update:${mode}:${Date.now()}`;
-  const scriptPath = path.resolve(process.cwd(), config.selfUpdateScript);
-  const env = {
-    ...process.env,
-    ...gitCredentialEnv(getAppUpdateCredentialId()),
-    ...(mode === "frontend" ? { BOOTSTRAP_FRONTEND_ONLY: "1" } : {}),
-  };
-
-  emitSystemUpdateGlobal(flowId, mode, {
-    status: "started",
-    stream: "status",
-    message: mode === "frontend" ? "Frontend update started." : "System update started.",
-  });
-
-  // bootstrap.sh logs each milestone as a "[bootstrap:step] ..." line (backing
-  // up, pulling, installing deps, building, restarting, ...) — pull those out
-  // of the raw stdout stream so clients can show a clean current step instead
-  // of the full npm/git output.
-  let currentStep: string | undefined;
-  let lineBuffer = "";
-
-  const result = await runStreaming("bash", [scriptPath], {
-    timeoutMs: 900_000,
-    cwd: process.cwd(),
-    env,
-    onData: (stream, chunk) => {
-      if (stream === "stdout") {
-        lineBuffer += chunk;
-        const lines = lineBuffer.split("\n");
-        lineBuffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const match = BOOTSTRAP_STEP_RE.exec(line.trim());
-          if (match) currentStep = match[1];
-        }
-      }
-      emitSystemUpdateGlobal(flowId, mode, {
-        status: "running",
-        stream,
-        message: chunk,
-        output: chunk,
-        step: currentStep,
-      });
-    },
-  });
-
-  const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
-  const statusMessage = result.timedOut
-    ? "Update timed out."
-    : result.ok
-      ? mode === "frontend" ? "Frontend update completed." : "System update completed."
-      : `Update failed${result.code == null ? "" : ` with exit code ${result.code}`}.`;
-
-  emitSystemUpdateGlobal(flowId, mode, {
-    status: result.ok ? "success" : "failed",
-    stream: "status",
-    message: statusMessage,
-    output,
-    step: currentStep,
-    done: true,
-  });
-
-  return result;
-}
-
-/** Phase 1.8 — image-based self-update, used once nginx_runtime is "container"
- *  (reused as the same toggle as certbot mode, per Phase 1.6: both are only
- *  meaningful once the app is actually running containerized). Deliberately does
- *  not `git pull` the StackPort source itself first (unlike bootstrap.sh's host
- *  flow) — that would need its own credential plumbing for a repo that isn't a
- *  managed `projects` row. Rebuilds+recreates whatever is currently checked out
- *  at HOST_PROJECT_ROOT; the operator/CI is responsible for updating that
- *  checkout first, matching the "minimal image-based update" scope. */
+// Rebuild the checked-out Docker image and reconcile system ingress before swapping the app.
 async function runContainerSelfUpdate(): Promise<StreamRunResult> {
   const flowId = `system.update:container:${Date.now()}`;
   const hostRoot = path.resolve(config.hostProjectRoot);
@@ -839,6 +662,14 @@ async function runContainerSelfUpdate(): Promise<StreamRunResult> {
   // command, before it can report a result the normal way. That's expected: the
   // client falls back to polling /health instead of waiting for a "success"
   // event a dying process may never get to send.
+  const ingress = await runStreaming("docker", ["compose", "-f", composeFileInContainer, "--project-directory", hostRoot, "up", "-d", "nginx"], {timeoutMs: 120_000, env: process.env});
+  if (!ingress.ok) {
+    emitSystemUpdateGlobal(flowId, "full", {
+      status: "failed", stream: "status", message: "Nginx reconciliation failed.",
+      output: [ingress.stdout, ingress.stderr].filter(Boolean).join("\n"), done: true,
+    });
+    return ingress;
+  }
   const result = await runStreaming(
     "docker",
     ["compose", "-f", composeFileInContainer, "--project-directory", hostRoot, "up", "-d", "--build", config.appServiceName],
@@ -868,16 +699,9 @@ router.post("/update", requireAuth, (req: Request, res: Response): void => {
   // time out (504) waiting for it. All progress is streamed via Socket.io (best
   // effort in container mode — see runContainerSelfUpdate()).
   res.json({ ok: true, output: "" });
-  const updater = getNginxRuntime() === "container" ? runContainerSelfUpdate() : runAppUpdate("full");
+  const updater = runContainerSelfUpdate();
   void updater.then((result) => {
     auditLog(req.user ?? "unknown", "system.self-update", config.appServiceName, result.ok ? "ok" : "fail");
-  });
-});
-
-router.post("/update/frontend", requireAuth, (req: Request, res: Response): void => {
-  res.json({ ok: true, output: "" });
-  void runAppUpdate("frontend").then((result) => {
-    auditLog(req.user ?? "unknown", "system.frontend-update", config.appServiceName, result.ok ? "ok" : "fail");
   });
 });
 
@@ -1048,22 +872,6 @@ router.get("/actions", requireAuth, (_req: Request, res: Response): void => {
     certbot: actionRegistry.list("system:certbot:"),
     docker: actionRegistry.get(dockerPruneKey()) ?? null,
   });
-});
-
-router.post("/install/:tool", requireAuth, async (req: Request<{ tool: string }>, res: Response): Promise<void> => {
-  const tool = req.params.tool;
-  if (tool !== "nginx" && tool !== "certbot") {
-    res.status(400).json({ error: "Tool must be one of: nginx, certbot" });
-    return;
-  }
-
-  const result = await tryInstallSystemTool(tool);
-  if (result.ok) {
-    if (tool === "nginx") invalidateNginxVersion();
-    else invalidateCertbotVersion();
-  }
-  auditLog(req.user ?? "unknown", `system.install-${tool}`, tool, result.ok ? "ok" : "fail");
-  res.json(result);
 });
 
 // POST /api/system/docker/compose/:name/up|down|build

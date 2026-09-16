@@ -73,6 +73,28 @@ function SystemSubmenu({ system, github, vps }: { system: SystemData | null; git
 
 function ProjectsSubmenu({ projects }: { projects: Project[] | null }) {
   const { system } = useSystem();
+  const groups = [...new Set((projects ?? []).map(project => project.groupName).filter((name): name is string => !!name))].sort((a, b) => a.localeCompare(b));
+  const renderProject = (project: Project) => {
+    const status = deriveProjectStatus(
+      project,
+      system?.docker ? findProjectStack(project, system.docker.stacks) : null,
+      system?.docker?.available ?? false,
+    );
+    return (
+      <Link key={project.id} to={`/projects/${project.id}`} className={styles.submenuItem}>
+        <span
+          className={cn(styles.squircle, squircleClass(status))}
+          title={projectStatusLabel(status)}
+        />
+        {project.favorite && (
+          <Star size={11} fill="currentColor" style={{ color: "var(--brand)", flexShrink: 0 }} />
+        )}
+        <span className={styles.submenuItemLabel}>{project.name}</span>
+        {project.paused && <span className={styles.submenuBadge}>Paused</span>}
+      </Link>
+    );
+  };
+
   return (
     <>
       <div className={styles.submenuHeader}>Projects</div>
@@ -84,25 +106,16 @@ function ProjectsSubmenu({ projects }: { projects: Project[] | null }) {
         <div className={styles.submenuEmpty}>No projects yet.</div>
       ) : (
         <div className={cn(styles.submenuList, styles.submenuScroll)}>
-          {projects.map((project) => {
-            const status = deriveProjectStatus(
-              project,
-              system?.docker ? findProjectStack(project, system.docker.stacks) : null,
-              system?.docker?.available ?? false,
-            );
-            return (
-              <Link key={project.id} to={`/projects/${project.id}`} className={styles.submenuItem}>
-                <span
-                  className={cn(styles.squircle, squircleClass(status))}
-                  title={projectStatusLabel(status)}
-                />
-                {project.favorite && (
-                  <Star size={11} fill="currentColor" style={{ color: "var(--brand)", flexShrink: 0 }} />
-                )}
-                <span className={styles.submenuItemLabel}>{project.name}</span>
-                {project.paused && <span className={styles.submenuBadge}>Paused</span>}
-              </Link>
-            );
+          {(projects.filter(project => !project.groupName)).map(renderProject)}
+          {groups.map(group => {
+            const members = projects.filter(project => project.groupName === group);
+            return <details key={group} className={styles.projectGroup} open>
+              <summary className={styles.submenuItem}>
+                <ChevronRight size={12} /><span className={styles.submenuItemLabel}>{group}</span>
+                <span className={styles.submenuBadge}>{members.length}</span>
+              </summary>
+              <div className={styles.projectGroupItems}>{members.map(renderProject)}</div>
+            </details>;
           })}
         </div>
       )}

@@ -12,12 +12,18 @@ try {
     Invoke-Docker save -o (Join-Path $testDir 'image.tar') stackport-regression:local
     Invoke-Docker run -d --privileged --name $runner -e DOCKER_TLS_CERTDIR= -e STACKPORT_REGRESSION=1 docker:28-dind
     Invoke-Docker exec $runner mkdir -p /fixture
-    Invoke-Docker cp (Join-Path $repoRoot 'stackport.sh') "${runner}:/fixture/stackport.sh"
-    Invoke-Docker cp (Join-Path $repoRoot 'docker-compose.system.yml') "${runner}:/fixture/docker-compose.system.yml"
+    foreach ($fixtureFile in @('stackport.sh', 'docker-compose.system.yml')) {
+        $normalizedFile = Join-Path $testDir $fixtureFile
+        $content = [IO.File]::ReadAllText((Join-Path $repoRoot $fixtureFile)).Replace("`r`n", "`n")
+        [IO.File]::WriteAllText($normalizedFile, $content, [Text.UTF8Encoding]::new($false))
+        Invoke-Docker cp $normalizedFile "${runner}:/fixture/$fixtureFile"
+    }
     Invoke-Docker cp (Join-Path $testDir 'image.tar') "${runner}:/image.tar"
-    Invoke-Docker cp (Join-Path $PSScriptRoot 'tests/clean-install.sh') "${runner}:/test.sh"
-    # Normalize Windows checkout line endings before running Bash.
-    Invoke-Docker exec $runner sh -c 'sed -i "s/\r$//" /test.sh /fixture/stackport.sh /fixture/docker-compose.system.yml; apk add --no-cache bash >/dev/null; bash /test.sh'
+    $normalizedTest = Join-Path $testDir 'test.sh'
+    $testContent = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'tests/clean-install.sh')).Replace("`r`n", "`n")
+    [IO.File]::WriteAllText($normalizedTest, $testContent, [Text.UTF8Encoding]::new($false))
+    Invoke-Docker cp $normalizedTest "${runner}:/test.sh"
+    Invoke-Docker exec $runner sh -c 'apk add --no-cache bash >/dev/null; bash /test.sh'
 } finally {
     & docker rm -fv $runner 2>$null | Out-Null
     $resolvedTestDir = [IO.Path]::GetFullPath($testDir)

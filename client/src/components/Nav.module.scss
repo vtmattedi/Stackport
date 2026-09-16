@@ -321,6 +321,18 @@ $submenu-open-delay: 0.5s;
 .tab-icon-fail { color: var(--danger); }
 .tab-icon-unknown { color: var(--dim); }
 
+.project-group {
+  summary { list-style: none; cursor: pointer; }
+  summary::-webkit-details-marker { display: none; }
+  &[open] > summary > svg { transform: rotate(90deg); }
+}
+
+.project-group-items {
+  padding-left: 14px;
+  margin-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
 .submenu-item-label {
   flex: 1;
   min-width: 0;

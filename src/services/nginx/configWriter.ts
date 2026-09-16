@@ -20,40 +20,10 @@ const APP_NGINX_DOMAIN_KEY = "nginx_app_domain";
 const APP_NGINX_USE_SSL_KEY = "nginx_app_use_ssl";
 const APP_ROUTE_NAME = "StackPort: MW VPS Manager";
 
-// Phase 1.5 — which nginx instance StackPort validates/reloads against. "host"
-// (default, unchanged today's behavior) uses systemctl/host nginx via sudo; a
-// "container" switch uses `docker exec` against stackport-nginx (docker-compose.
-// system.yml) instead — StackPort already has full Docker-socket access (Phase 1.1),
-// so this needs no new privilege grant at all. Config *generation* (writing the
-// actual files under config.nginxPath) is identical either way; only how validation/
-// reload commands are issued changes. Switching requires NGINX_PATH to already point
-// at the same host directory bind-mounted into the stackport-nginx container — see
-// docker-compose.system.yml's comments.
-const NGINX_RUNTIME_KEY = "nginx_runtime";
+// Public ingress is always managed by the system Docker stack.
 const NGINX_CONTAINER_NAME = "stackport-nginx";
-export type NginxRuntime = "host" | "container";
-
-export function getNginxRuntime(): NginxRuntime {
-  const row = getDatabase().prepare("SELECT value FROM app_meta WHERE key = ?").get(NGINX_RUNTIME_KEY) as { value: string } | undefined;
-  // Defaults to "container", not "host": stackport.sh (the only install path as of
-  // Phase 1.9) never sets up a host nginx/certbot at all, so a fresh install with no
-  // explicit app_meta row must behave as "container" from first boot — otherwise
-  // ensureAppIngress() (appIngress.ts) silently no-ops on its "host" guard and the
-  // app is never actually reachable through nginx at all (no self-signed cert, no
-  // generated config) until someone manually flips this in a UI they can't yet
-  // reach. An explicit row (e.g. a dev checkout that intentionally opted into host
-  // mode before this default changed) is still honored either way.
-  return row?.value === "host" ? "host" : "container";
-}
-
-export function setNginxRuntime(runtime: NginxRuntime): void {
-  getDatabase()
-    .prepare(`
-      INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-    `)
-    .run(NGINX_RUNTIME_KEY, runtime);
-}
+export type NginxRuntime = "container";
+export function getNginxRuntime(): NginxRuntime { return "container"; }
 
 // Phase 1.6 — fixed, absolute host path (not repo-relative): both nginx (which serves
 // from it) and certbot's `docker run` invocations (which write into it) need to agree
@@ -101,8 +71,9 @@ server {
 // ensureTemplates() below for any general.conf written before this change.
 const REJECT_UNKNOWN_TLS_BLOCK = `# HTTPS fallback: reject unknown TLS hosts.
 server {
-    listen 443 ssl http2 default_server;
-    listen [::]:443 ssl http2 default_server;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    http2 on;
 
     server_name _;
 
@@ -124,8 +95,9 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
 
     server_name {{domain}};
 
@@ -284,6 +256,11 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+function modernHttp2(content: string): string {
+  return content.replace(/listen 443 ssl http2/g, "listen 443 ssl")
+    .replace(/listen \[::\]:443 ssl http2([^;]*);/g, "listen [::]:443 ssl$1;\n    http2 on;");
+}
+
 async function ensureTemplates(): Promise<void> {
   const p = paths();
   await fs.mkdir(path.dirname(p.generalTemplate), { recursive: true });
@@ -291,7 +268,8 @@ async function ensureTemplates(): Promise<void> {
     await fs.writeFile(p.generalTemplate, DEFAULT_GENERAL_TEMPLATE + "\n", "utf8");
   } else {
     let existing = await fs.readFile(p.generalTemplate, "utf8");
-    let migrated = false;
+    let migrated = modernHttp2(existing) !== existing;
+    existing = modernHttp2(existing);
     // Upgrade: prepend log_format block if the template predates this feature
     if (!existing.includes(`log_format ${NGINX_LOG_FORMAT_NAME}`)) {
       existing = NGINX_LOG_FORMAT_BLOCK + "\n\n" + existing;
@@ -311,9 +289,12 @@ async function ensureTemplates(): Promise<void> {
   if (!(await fileExists(p.projectTemplate))) {
     await fs.writeFile(p.projectTemplate, DEFAULT_PROJECT_TEMPLATE + "\n", "utf8");
   } else {
-    const existing = await fs.readFile(p.projectTemplate, "utf8");
+    const original = await fs.readFile(p.projectTemplate, "utf8");
+    const existing = modernHttp2(original);
     if (existing.trim() === LEGACY_PROJECT_TEMPLATE.trim() || existing.trim() === PREVIOUS_DEFAULT_PROJECT_TEMPLATE.trim()) {
       await fs.writeFile(p.projectTemplate, DEFAULT_PROJECT_TEMPLATE + "\n", "utf8");
+    } else if (existing !== original) {
+      await fs.writeFile(p.projectTemplate, existing, "utf8");
     }
   }
 }
@@ -350,9 +331,7 @@ function locationBlock(target: NginxTarget): string {
   const upstreamUrl = `http://${target.service}:${target.containerPort}`;
   // Resolve at request time so a stopped/not-yet-deployed workload cannot prevent
   // nginx from loading Stackport's own admin route. Also refresh DNS after recreation.
-  const proxy = getNginxRuntime() === "container"
-    ? `resolver 127.0.0.11 valid=10s ipv6=off;\n        set $stackport_upstream ${upstreamUrl};\n        proxy_pass $stackport_upstream;`
-    : `proxy_pass ${upstreamUrl};`;
+  const proxy = `resolver 127.0.0.11 valid=10s ipv6=off;\n        set $stackport_upstream ${upstreamUrl};\n        proxy_pass $stackport_upstream;`;
 
   return `
     location / {
@@ -373,18 +352,7 @@ async function certificateExists(domain: string): Promise<boolean> {
   const certBase = path.join("/etc/letsencrypt/live", domain);
   const files = [path.join(certBase, "fullchain.pem"), path.join(certBase, "privkey.pem")];
 
-  if (getNginxRuntime() === "container") {
-    const checks = await Promise.all(files.map((file) => run("docker", ["exec", NGINX_CONTAINER_NAME, "test", "-f", file])));
-    return checks.every((check) => check.ok);
-  }
-
-  const direct = await Promise.all(files.map((file) => fileExists(file)));
-  if (direct.every(Boolean)) return true;
-
-  const checks = await Promise.all(files.map((file) => {
-    const command = privileged("test", ["-f", file]);
-    return run(command.cmd, command.args);
-  }));
+  const checks = await Promise.all(files.map((file) => run("docker", ["exec", NGINX_CONTAINER_NAME, "test", "-f", file])));
   return checks.every((check) => check.ok);
 }
 
@@ -461,8 +429,9 @@ function selfSignedDefaultServerBlock(): string {
 # the self-signed bootstrap certificate so first login is still HTTPS. Superseded
 # automatically once a real app domain is configured (see appRouteTarget()).
 server {
-    listen 443 ssl http2 default_server;
-    listen [::]:443 ssl http2 default_server;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    http2 on;
 
     server_name _;
 
@@ -483,8 +452,9 @@ function httpsServerBlock(target: NginxTarget): string {
   const certBase = `/etc/letsencrypt/live/${domain}`;
 
   return `server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
 
     server_name ${domain};
 
@@ -506,8 +476,9 @@ function wwwHttpsRedirectBlock(target: NginxTarget): string {
   const certBase = `/etc/letsencrypt/live/${target.domain}`;
 
   return `server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
 
     server_name ${www};
 
@@ -719,23 +690,8 @@ async function run(cmd: string, args: string[], timeoutMs = 12_000): Promise<Run
   });
 }
 
-function privileged(cmd: string, args: string[]): { cmd: string; args: string[] } {
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    return { cmd, args };
-  }
-  return { cmd: "sudo", args: ["-n", cmd, ...args] };
-}
-
-/** Wraps an already-built nginx CLI invocation for either runtime: "host" runs it
- *  (possibly sudo-wrapped) directly against the host's own nginx/systemctl, exactly
- *  as before; "container" runs the identical nginx-side arguments through
- *  `docker exec` against stackport-nginx instead — using the docker.sock access
- *  StackPort's own container already has, not sudo. */
 function nginxCommand(cmd: string, args: string[]): { cmd: string; args: string[] } {
-  if (getNginxRuntime() === "container") {
-    return { cmd: "docker", args: ["exec", NGINX_CONTAINER_NAME, cmd, ...args] };
-  }
-  return privileged(cmd, args);
+  return { cmd: "docker", args: ["exec", NGINX_CONTAINER_NAME, cmd, ...args] };
 }
 
 async function validateCurrentFile(): Promise<RunResult> {
@@ -766,12 +722,7 @@ ${includeMimeTypes}    include ${candidatePath};
 }
 
 async function restartNginx(): Promise<RunResult> {
-  // Reload itself isn't just a differently-wrapped version of the same command here
-  // (unlike validate, above) — the container has no systemd/systemctl at all, so
-  // "container" mode reloads nginx directly via its own `-s reload` instead.
-  const command = getNginxRuntime() === "container"
-    ? { cmd: "docker", args: ["exec", NGINX_CONTAINER_NAME, "nginx", "-s", "reload"] }
-    : privileged("systemctl", ["reload", "nginx"]);
+  const command = nginxCommand("nginx", ["-s", "reload"]);
   return run(command.cmd, command.args);
 }
 
