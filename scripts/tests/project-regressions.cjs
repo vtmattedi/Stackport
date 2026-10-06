@@ -44,11 +44,20 @@ async function main() {
   assert.equal(response.status, 400);
   response = await fetch(`http://localhost:3000/api/projects/${project.id}/ingress-targets`, {headers});
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), [{service: 'web', containerPort: 80}]);
+  assert.deepEqual(await response.json(), [{service: 'mqtt', containerPort: 8883}, {service: 'web', containerPort: 80}]);
   response = await fetch(`http://localhost:3000/api/projects/${project.id}/domains`, {method: 'POST', headers: jsonHeaders,
     body: JSON.stringify({domain: 'invalid.install.test', service: 'web', containerPort: 9000})});
   assert.equal(response.status, 400);
-  console.log('PASS: group migration/create/update/clear; detected ingress API; undeclared ports rejected');
+  response = await fetch(`http://localhost:3000/api/projects/${project.id}/tcp-exposures`, {method: 'POST', headers: jsonHeaders,
+    body: JSON.stringify({publicPort: 18883, service: 'web', containerPort: 9000})});
+  assert.equal(response.status, 400);
+  const tcp = require(`${root}/services/tcpExposures`);
+  const exposure = tcp.insertTcpExposure(project.id, 18883, 'mqtt', 8883);
+  assert.deepEqual(tcp.listTcpExposures(project.id).map(row => [row.publicPort, row.service, row.containerPort]), [[18883, 'mqtt', 8883]]);
+  assert.deepEqual(domains.listRoutedServiceNames(project.id), ['mqtt', 'web']);
+  assert.throws(() => tcp.insertTcpExposure(grouped.id, 18883, 'other', 8883), err => err.statusCode === 409);
+  database.getDatabase().prepare('DELETE FROM tcp_exposures WHERE id = ?').run(exposure.id);
+  console.log('PASS: group migration/create/update/clear; detected HTTP/TCP targets; TCP desired-state uniqueness; undeclared ports rejected');
   // Old runtime settings must not restore removed host behavior.
   database.getDatabase().prepare("INSERT OR REPLACE INTO app_meta(key,value) VALUES('nginx_runtime','host')").run();
   assert.equal(nginx.getNginxRuntime(), 'container');
@@ -123,6 +132,9 @@ async function main() {
     web: {expose: [3000, '3000/tcp', '3001-3002/tcp', '53/udp'], ports: [{target: 443, published: '8192'}, {target: 53, protocol: 'udp'}]},
     api: {environment: {PORT: '4000'}}, db: {environment: {PASSWORD: 'private'}}, invalid: {expose: ['${PORT}', 0, 65536]},
   }}), [{service: 'api', containerPort: 4000}, ...[443, 3000, 3001, 3002].map(containerPort => ({service: 'web', containerPort}))]);
+  const policy = require(`${root}/services/composePolicy`).validateComposePolicy({services: {mqtt: {ports: ['8883:8883']}}});
+  assert.equal(policy.ok, false);
+  assert.match(policy.violations[0], /host port publication is not allowed/);
   console.log('PASS: port ranges, TCP/UDP, duplicates, environment ports and private values');
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});

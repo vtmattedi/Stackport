@@ -39,7 +39,7 @@ services:
       - "3000"
 ```
 
-The app must serve plain HTTP on the exposed container port. Stackport's nginx handles HTTPS and certificate renewal, and reaches this service by its Compose service name over Stackport's internal Docker network — not by any host-published port.
+Web entrypoints must serve plain HTTP on their exposed container port. Stackport's nginx handles HTTPS and certificate renewal, and reaches the selected service over Stackport's internal Docker network — not by any host-published port. Non-HTTP services may also declare TCP ports with `expose:` and use an explicit Stackport TCP exposure; those connections are passed through unchanged, so the project owns protocol security and any TLS termination.
 
 Use named volumes for persistent runtime data. Avoid bind mounts to machine-specific local paths unless the project explicitly requires host files — and avoid mounting sensitive host paths (`/`, `/etc`, the Docker socket, etc.); Stackport's compose policy rejects those outright.
 
@@ -86,6 +86,7 @@ Prepare these values:
 
 - **Project**: `name` (display name, ≤100 chars), `groupName` (optional group, e.g. `Mw Control`; null means ungrouped), `githubRepo` (`owner/repo`), `githubCredentialId` (private repos only), `autoDeployBranch` (branch to poll for auto-deploy).
 - **Per domain**: `domain` (valid FQDN, unique across the host), `service` (must match a service name that actually exists in the project's compose file), `containerPort` (the declared container port), `useSsl`. After pulling/uploading the project and configuring env files, choose the detected `service:port` from the existing select component. Detection reads resolved `docker compose config --format json`: TCP `expose`/port targets, with `PORT` or `HTTP_PORT` as a fallback. Host-published `ports` remain prohibited by deployment policy.
+- **Per TCP exposure**: `publicPort` (unique on the host), `service`, and `containerPort` (a detected declared TCP target). Stackport creates and reconciles the public listener; do not add a Compose `ports:` entry. Raw TCP passthrough does not provide TLS, authentication, or authorization for the application.
 - **Optional**: `healthCheckEndpoint` (path like `/health`), `healthCheckIntervalS` (0 disables checks; use 30s or longer for routine monitoring).
 
 Do not configure the legacy `internalPort` field — a project can route multiple domains to different services/ports, and nothing is ever published to the host regardless.

@@ -3,6 +3,7 @@ import type {
   AuditLogResult,
   Project,
   ProjectDomain,
+  TcpExposure,
   ComposeIngressTarget,
   ActionStartResponse,
   ProjectActionsSnapshot,
@@ -300,6 +301,12 @@ export const api = {
     request<ProjectDomain>(`/projects/${projectId}/domains/${domainId}`, { method: "PATCH", body: JSON.stringify({ useSsl }) }),
   setProjectDomainRoute: (projectId: number, domainId: number, service: string, containerPort: number) =>
     request<ProjectDomain>(`/projects/${projectId}/domains/${domainId}/route`, { method: "PATCH", body: JSON.stringify({ service, containerPort }) }),
+  listTcpExposures: (projectId: number) =>
+    request<TcpExposure[]>(`/projects/${projectId}/tcp-exposures`),
+  addTcpExposure: (projectId: number, publicPort: number, service: string, containerPort: number) =>
+    request<TcpExposure>(`/projects/${projectId}/tcp-exposures`, { method: "POST", body: JSON.stringify({ publicPort, service, containerPort }) }),
+  removeTcpExposure: (projectId: number, exposureId: number) =>
+    request<{ ok: boolean }>(`/projects/${projectId}/tcp-exposures/${exposureId}`, { method: "DELETE" }),
   deleteProject: (id: number) => request<void>(`/projects/${id}`, { method: "DELETE" }),
   pauseProject: (id: number) => request<Project>(`/projects/${id}/pause`, { method: "POST" }),
   resumeProject: (id: number) => request<Project>(`/projects/${id}/resume`, { method: "POST" }),

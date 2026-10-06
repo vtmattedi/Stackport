@@ -134,6 +134,23 @@ export function initializeDatabase(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_project_domains_project_id
       ON project_domains (project_id);
 
+    CREATE TABLE IF NOT EXISTS tcp_exposures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      public_port INTEGER NOT NULL CHECK (public_port BETWEEN 1 AND 65535),
+      service TEXT NOT NULL,
+      container_port INTEGER NOT NULL CHECK (container_port BETWEEN 1 AND 65535),
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tcp_exposures_public_port
+      ON tcp_exposures (public_port);
+
+    CREATE INDEX IF NOT EXISTS idx_tcp_exposures_project_id
+      ON tcp_exposures (project_id);
+
     -- Phase 1.7 — one row per deploy attempt. 'active' is the currently-running
     -- revision (at most one per project); a new successful deploy flips the previous
     -- 'active' row to 'superseded' and inserts a new 'active' row. Failed/rejected

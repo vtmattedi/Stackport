@@ -58,6 +58,16 @@ import {
 } from "../services/projectDomains";
 import { stageAndApplyUpload } from "../services/projectUpload";
 import { listProjectDeployments } from "../services/projectDeployments";
+import {
+  deleteTcpExposure,
+  findPublishedPortConflict,
+  insertTcpExposure,
+  listTcpExposures,
+  reconcileTcpExposure,
+  removeProjectTcpRuntime,
+  type TcpExposure,
+  TcpExposureError,
+} from "../services/tcpExposures";
 import multer from "multer";
 
 const router = Router();
@@ -603,6 +613,13 @@ router.get("/:id/domains", requireAuth, (req: Request<{ id: string }>, res: Resp
   res.json(listProjectDomains(id));
 });
 
+router.get("/:id/tcp-exposures", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  res.json(listTcpExposures(id));
+});
+
 /** Phase 1.7 — confirms `service` is a real service in the project's current compose
  *  file before it's ever written to a domain row, same protection
  *  serviceExistsInCompose already gives every other single-service action. */
@@ -625,6 +642,57 @@ async function validateDomainRoute(project: { id: number; name: string; composeF
 
   return { ok: true, service: parsedService, containerPort: parsedPort };
 }
+
+router.post("/:id/tcp-exposures", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+
+  const publicPort = parseContainerPort((req.body as Record<string, unknown>).publicPort);
+  if (!publicPort) { res.status(400).json({ error: "publicPort must be a TCP port from 1 to 65535" }); return; }
+  const { service, containerPort } = req.body as Record<string, unknown>;
+  const route = await validateDomainRoute(project, service, containerPort);
+  if (!route.ok) { res.status(400).json({ error: route.error }); return; }
+
+  let created: TcpExposure | undefined;
+  try {
+    const conflict = await findPublishedPortConflict(publicPort);
+    if (conflict) throw new TcpExposureError(409, `Port ${publicPort} is already published by ${conflict}.`);
+    const exposure = insertTcpExposure(id, publicPort, route.service, route.containerPort);
+    created = exposure;
+    await ensureProjectProxyNetwork(id);
+    await reconcileTcpExposure(exposure);
+    created = listTcpExposures(id).find((item) => item.id === exposure.id) ?? exposure;
+  } catch (err) {
+    if (created) await deleteTcpExposure(id, created.id).catch(() => undefined);
+    if (err instanceof TcpExposureError) { res.status(err.statusCode).json({ error: err.message }); return; }
+    res.status(502).json({ error: err instanceof Error ? err.message : "Failed to create TCP exposure" });
+    return;
+  }
+
+  auditLog(req.user ?? "unknown", "project.tcp-exposure-add", `${project.name}:${publicPort}`, "ok", {
+    service: route.service, containerPort: route.containerPort,
+  });
+  res.status(201).json(created);
+});
+
+router.delete("/:id/tcp-exposures/:exposureId", requireAuth, async (req: Request<{ id: string; exposureId: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  const exposureId = Number(req.params.exposureId);
+  if (!Number.isInteger(id) || id < 1 || !Number.isInteger(exposureId) || exposureId < 1) {
+    res.status(400).json({ error: "Invalid id" }); return;
+  }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  try {
+    if (!(await deleteTcpExposure(id, exposureId))) { res.status(404).json({ error: "TCP exposure not found" }); return; }
+  } catch (err) {
+    res.status(502).json({ error: err instanceof Error ? err.message : "Failed to remove TCP proxy" }); return;
+  }
+  auditLog(req.user ?? "unknown", "project.tcp-exposure-remove", project.name, "ok", { exposureId });
+  res.json({ ok: true });
+});
 
 router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
   const id = parseInt(req.params.id, 10);
@@ -1157,7 +1225,7 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
   }
 });
 
-router.delete("/:id", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
 
@@ -1165,6 +1233,12 @@ router.delete("/:id", requireAuth, (req: Request<{ id: string }>, res: Response)
   const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
   if (!row) { res.status(404).json({ error: "Project not found" }); return; }
 
+  try {
+    await removeProjectTcpRuntime(id);
+  } catch (err) {
+    res.status(502).json({ error: `Could not remove project TCP proxies: ${err instanceof Error ? err.message : String(err)}` });
+    return;
+  }
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   healthChecker.unschedule(id);
 

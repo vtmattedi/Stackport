@@ -48,13 +48,19 @@ A domain doesn't route to "a project" — it routes to a specific `(service, con
 
 A rejected compose file blocks the deploy entirely — StackPort never silently rewrites a project's `ports:` into something "safe" the way earlier iterations of this system did (the retired `SP:AUTO`/port-hiding mechanisms). If your compose file needs a container-internal port reachable, use `expose:`, and register the public route via a domain (§1.3).
 
-### 1.5 Deployment revisions & rollback
+### 1.5 Generic TCP exposure
+
+Projects can explicitly expose a declared TCP target as `public port -> service:container port` from the project page. StackPort persists that desired state and owns one `stackport-tcp-<id>` proxy container per exposure. The proxy publishes only the selected port, joins `stackport-proxy`, and forwards bytes unchanged; TLS, authentication, authorization, and protocol hardening remain the project's responsibility. This supports MQTTS and other TCP protocols without adding protocol-specific deployment modes or allowing managed Compose files to publish host ports.
+
+TCP proxies use `alpine/socat:1.8.0.3`, are independently reconciled at StackPort startup, and carry StackPort ownership/route labels. A port collision fails only the new exposure. Deleting an exposure removes only its proxy; deleting a project removes all of that project's TCP proxies and desired-state rows.
+
+### 1.6 Deployment revisions & rollback
 
 Every successful `up` records a `project_deployments` row: the resolved git commit SHA, branch, compose file name, and both the *source* compose content (as pulled from git) and the *effective* compose content (after StackPort's own network-augmentation rewrite) — the exact bytes that actually ran. A failed/rejected deploy records a `failed` row with the blocking reason instead, without touching the currently-active revision. `ensureRepo` pins each deploy to an exact commit SHA (detached HEAD), not a floating branch — deploys are reproducible, not "whatever `git pull` happened to bring in."
 
 `rollbackProject()` finds the previous successful revision, checks out its exact SHA, restores its stored *effective* compose content directly (not a fresh git checkout + re-augmentation), and redeploys from that artifact. Exposed as `POST /:id/rollback` and a "Roll back" button on the project detail page's deployment history list.
 
-### 1.6 Docker storage management
+### 1.7 Docker storage management
 
 Unbounded image/build-cache growth on a long-running host is a real failure mode, so StackPort manages it actively (`src/services/dockerStorage.ts`, `dockerStorageMonitor.ts`):
 
@@ -84,7 +90,7 @@ sudo ./stackport.sh install
 2. Creates `/etc/stackport` (config/secrets) and `/var/lib/stackport/{data,logs,nginx,backups,update,certbot-webroot}` (persistent state) and `/etc/letsencrypt` (persistent certificate storage — kept separate from `/var/lib/stackport` for sharing with nginx and temporary Certbot containers).
 3. Writes `/etc/stackport/stackport.env` — asks **only** for a domain (optional — blank means a raw-IP install) and, if a domain was given, a Certbot/ACME email. Everything else is generated, derived, or defaulted; no hand-written `.env` is required.
 4. Writes `/etc/stackport/secrets.env` — generates `JWT_SECRET`/`WEBHOOK_SECRET` (`openssl rand -hex 32`) and, on a genuinely fresh install, a one-time bootstrap credential (`openssl rand | base32`, ~80 bits, dash-formatted), **printed to the terminal exactly once**.
-5. Configures `ufw` (SSH detected and allowed first, then 80/443/8883, default-deny the rest) if `ufw` is present.
+5. Configures `ufw` (SSH detected and allowed first, then 80/443, default-deny the rest) if `ufw` is present. Additional public TCP listeners exist only through explicit project TCP exposure records.
 6. Clones/updates the StackPort source into `/var/lib/stackport/app`, regenerates a merged `.env` for the compose stack from `stackport.env` + `secrets.env` + fixed host-path variables, builds and starts the system stack, and health-checks it. If the source repo is private, the first credential-less clone attempt fails the way GitHub/most forges now always fail plain password auth over HTTPS — `install` prompts once for a GitHub personal access token and retries, then persists it to `secrets.env` (`STACKPORT_REPO_TOKEN`) so `update` never needs to ask again. A public repo never triggers this prompt at all.
 
 Other commands:

@@ -30,6 +30,7 @@ import type {
   ProjectActionsSnapshot,
   ProjectDeployEvent,
   ProjectDomain,
+  TcpExposure,
   ProjectEnvFile,
   ProjectResourceData,
   ProjectResourceSampleEvent,
@@ -238,6 +239,12 @@ export default function ProjectDetails() {
   const [newDomainPort, setNewDomainPort] = useState("");
   const [addingDomain, setAddingDomain] = useState(false);
   const [domainError, setDomainError] = useState("");
+  const [tcpExposures, setTcpExposures] = useState<TcpExposure[]>([]);
+  const [newTcpPublicPort, setNewTcpPublicPort] = useState("");
+  const [newTcpService, setNewTcpService] = useState("");
+  const [newTcpContainerPort, setNewTcpContainerPort] = useState("");
+  const [addingTcpExposure, setAddingTcpExposure] = useState(false);
+  const [tcpExposureError, setTcpExposureError] = useState("");
   const [configHealthEndpoint, setConfigHealthEndpoint] = useState("");
   const [configIntervalS, setConfigIntervalS] = useState(0);
   const [configComposeFile, setConfigComposeFile] = useState("");
@@ -266,15 +273,17 @@ export default function ProjectDetails() {
     setError("");
     setLoading(true);
     try {
-      const [projectData, credentialData, domainData] = await Promise.all([
+      const [projectData, credentialData, domainData, tcpExposureData] = await Promise.all([
         api.getProject(projectId),
         api.listCredentials(),
         api.listProjectDomains(projectId),
+        api.listTcpExposures(projectId),
       ]);
       const envFileData = await api.listProjectEnvFiles(projectId);
       setProject(projectData);
       syncConfig(projectData);
       setDomains(domainData);
+      setTcpExposures(tcpExposureData);
       setCredentials(credentialData);
       setEnvFiles(envFileData);
       void syncActions(projectId);
@@ -782,6 +791,44 @@ export default function ProjectDetails() {
       setDomainError(err instanceof ApiError ? err.message : "Failed to add domain");
     } finally {
       setAddingDomain(false);
+    }
+  }
+
+  async function addTcpExposure() {
+    const publicPort = Number(newTcpPublicPort);
+    const containerPort = Number(newTcpContainerPort);
+    if (!project || !Number.isInteger(publicPort) || !newTcpService || !Number.isInteger(containerPort)) return;
+    setAddingTcpExposure(true);
+    setTcpExposureError("");
+    try {
+      const created = await api.addTcpExposure(project.id, publicPort, newTcpService, containerPort);
+      setTcpExposures((current) => [...current, created].sort((a, b) => a.publicPort - b.publicPort));
+      setNewTcpPublicPort("");
+      setNewTcpService("");
+      setNewTcpContainerPort("");
+      notify.success(`TCP port ${publicPort} is exposed.`);
+    } catch (err) {
+      setTcpExposureError(err instanceof ApiError ? err.message : "Failed to add TCP exposure");
+    } finally {
+      setAddingTcpExposure(false);
+    }
+  }
+
+  async function removeTcpExposureRow(exposure: TcpExposure) {
+    if (!project) return;
+    const ok = await confirm({
+      title: `Remove public TCP port ${exposure.publicPort}?`,
+      description: `This removes only the StackPort TCP proxy to ${exposure.service}:${exposure.containerPort}.`,
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await api.removeTcpExposure(project.id, exposure.id);
+      setTcpExposures((current) => current.filter((item) => item.id !== exposure.id));
+      notify.success(`TCP port ${exposure.publicPort} removed.`);
+    } catch (err) {
+      notify.error(err, `Failed to remove TCP port ${exposure.publicPort}`);
     }
   }
 
@@ -1514,6 +1561,57 @@ export default function ProjectDetails() {
                             </div>
                           );
                         })}
+                      </div>
+                    )}
+                  </div>
+                  <div className="field field-wide" style={{ gridColumn: "1 / -1" }}>
+                    <label>TCP Exposures <span className="hint">(raw TCP passthrough to a declared compose service port)</span></label>
+                    <div className="alert" style={{ marginBottom: 10, fontSize: 12 }}>
+                      Public TCP ports are reachable outside the VPS. Authentication, TLS, and protocol security remain the application's responsibility.
+                    </div>
+                    <div className="row-actions" style={{ marginBottom: tcpExposures.length > 0 ? 10 : 0 }}>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        placeholder="Public port"
+                        value={newTcpPublicPort}
+                        onChange={(e) => setNewTcpPublicPort(e.target.value)}
+                        style={{ maxWidth: 140 }}
+                      />
+                      <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
+                        refreshKey={project.updatedAt} disabled={addingTcpExposure}
+                        value={newTcpService && newTcpContainerPort ? `${newTcpService}:${newTcpContainerPort}` : ""}
+                        onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewTcpService(service); setNewTcpContainerPort(port); }} />
+                      <Button type="button" variant="outline" size="xs" onClick={() => void addTcpExposure()}
+                        disabled={addingTcpExposure || !newTcpPublicPort || !newTcpService || !newTcpContainerPort}>
+                        {addingTcpExposure ? <Loader size={12} className="spin" /> : <Plus size={12} />}
+                        Expose
+                      </Button>
+                    </div>
+                    {tcpExposureError && <div style={{ fontSize: "0.78rem", color: "var(--danger)", marginBottom: 8 }}>{tcpExposureError}</div>}
+                    {tcpExposures.length === 0 ? (
+                      <div className="muted-text" style={{ fontSize: 13 }}>No public TCP ports configured.</div>
+                    ) : (
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {tcpExposures.map((exposure) => (
+                          <div key={exposure.id} className={cn(styles.runtimeSection, styles.certSection)} style={{ marginBottom: 0 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", width: "100%" }}>
+                              <span className="mono" style={{ fontSize: 13 }}>:{exposure.publicPort}</span>
+                              <span className="mono muted-text" style={{ fontSize: 11 }}>→ {exposure.service}:{exposure.containerPort}</span>
+                              {exposure.lastError ? (
+                                <span className={cn(styles.statusPill, styles.statusDown)} style={{ fontSize: 11 }} title={exposure.lastError}>error</span>
+                              ) : (
+                                <span className={cn(styles.statusPill, styles.statusUp)} style={{ fontSize: 11 }}>configured</span>
+                              )}
+                              <Button type="button" variant="outline" size="xs" className={styles.dangerAction}
+                                style={{ marginLeft: "auto" }} onClick={() => void removeTcpExposureRow(exposure)}>
+                                <Trash2 size={12} /> Remove
+                              </Button>
+                            </div>
+                            {exposure.lastError && <div style={{ color: "var(--danger)", fontSize: 11 }}>{exposure.lastError}</div>}
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>

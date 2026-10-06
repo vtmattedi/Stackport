@@ -42,6 +42,17 @@ export interface ProjectDomain {
   updatedAt: string;
 }
 
+export interface TcpExposure {
+  id: number;
+  projectId: number;
+  publicPort: number;
+  service: string;
+  containerPort: number;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ComposeIngressTarget {
   service: string;
   containerPort: number;

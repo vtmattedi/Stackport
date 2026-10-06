@@ -55,6 +55,9 @@ EOF
 docker build -q -t certbot/certbot /fake-certbot >/dev/null
 export STACKPORT_REPO=/fixture STACKPORT_INGRESS_ATTEMPTS=15
 bash -n /fixture/stackport.sh
+if grep -q "ufw allow 8883/tcp" /fixture/stackport.sh; then
+  echo 'FAIL: clean install still opens 8883 unconditionally'; exit 1
+fi
 mkdir -p /etc/letsencrypt
 touch /etc/letsencrypt/fail-once
 if bash /fixture/stackport.sh install --domain=sp.install.test --email=regression@example.test --yes > /first-install.log 2>&1; then
@@ -73,11 +76,35 @@ services:
   web:
     image: nginx:1.27-alpine
     expose: ["80"]
+  mqtt:
+    image: alpine/socat:1.8.0.3
+    command: ["-d", "-d", "TCP-LISTEN:8883,fork,reuseaddr", "EXEC:/bin/cat"]
+    expose: ["8883"]
 EOF
 docker compose -p 1-regression -f /var/lib/stackport/data/repos/1-regression/compose.yml up -d >/dev/null
 docker exec 1-regression-web-1 cp /usr/share/nginx/html/index.html /usr/share/nginx/html/traffic-regression
 chown -R 1000:1000 /var/lib/stackport/data/repos
 docker exec --user node -w /app stackport node /app/scripts/tests/project-regressions.cjs
+tcp_token=$(docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); console.log(require("./dist/services/authTokens").issueAuthToken("tcp-regression"));')
+tcp_payload='{"publicPort":18883,"service":"mqtt","containerPort":8883}'
+curl -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
+curl -fsS -H "Authorization: Bearer $tcp_token" -H 'Content-Type: application/json' -d "$tcp_payload" http://localhost:3000/api/projects/1/tcp-exposures > /tcp-exposure.json
+tcp_exposure_id=$(jq -r .id /tcp-exposure.json)
+[[ "$tcp_exposure_id" =~ ^[0-9]+$ ]]
+[[ "$(printf 'mqtt-regression\n' | nc -w 3 127.0.0.1 18883)" == mqtt-regression ]]
+conflict_status=$(curl -sS -o /tcp-conflict.json -w '%{http_code}' -H "Authorization: Bearer $tcp_token" -H 'Content-Type: application/json' -d "$tcp_payload" http://localhost:3000/api/projects/1/tcp-exposures)
+[[ "$conflict_status" == 409 ]] || { cat /tcp-conflict.json; exit 1; }
+[[ "$(printf 'mqtt-after-conflict\n' | nc -w 3 127.0.0.1 18883)" == mqtt-after-conflict ]]
+tcp_proxy_before=$(docker inspect "stackport-tcp-$tcp_exposure_id" --format '{{.Id}}')
+docker restart stackport >/dev/null
+sleep 5
+[[ "$(docker inspect "stackport-tcp-$tcp_exposure_id" --format '{{.Id}}')" == "$tcp_proxy_before" ]]
+[[ "$(printf 'mqtt-after-restart\n' | nc -w 3 127.0.0.1 18883)" == mqtt-after-restart ]]
+curl -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
+curl -fsS -H "Authorization: Bearer $tcp_token" -X DELETE "http://localhost:3000/api/projects/1/tcp-exposures/$tcp_exposure_id" >/dev/null
+if docker inspect "stackport-tcp-$tcp_exposure_id" >/dev/null 2>&1; then echo 'FAIL: deleted TCP proxy still exists'; exit 1; fi
+if printf 'removed\n' | nc -w 1 127.0.0.1 18883 >/dev/null 2>&1; then echo 'FAIL: deleted TCP port is still reachable'; exit 1; fi
+echo 'PASS: MQTT-shaped TCP exposure, conflict isolation, restart reconciliation, portal continuity, and deletion'
 docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); const assert=require("assert"); const n=require("./dist/services/nginx/configWriter"); (async()=>{const before=(await n.getNginxLayerStatus()).lastOperation.restartCount; await require("./dist/services/certbotRenewalMonitor").certbotRenewalMonitor.check(); const after=(await n.getNginxLayerStatus()).lastOperation.restartCount; assert(after>before,"successful renewal must reload nginx"); console.log("PASS: automatic renewal reloads nginx even with a legacy host setting")})().catch(e=>{console.error(e);process.exit(1)});'
 curl --retry 10 --retry-all-errors --retry-delay 1 -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
 curl -fsS -H 'Host: site.install.test' http://127.0.0.1/.well-known/acme-challenge/regression | grep -q verified

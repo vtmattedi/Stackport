@@ -94,8 +94,10 @@ export function getFirstProjectDomain(projectId: number): string | null {
  *  still "") are excluded — nothing to attach yet. */
 export function listRoutedServiceNames(projectId: number): string[] {
   const rows = getDatabase()
-    .prepare("SELECT DISTINCT service FROM project_domains WHERE project_id = ? AND service <> ''")
-    .all(projectId) as { service: string }[];
+    .prepare(`SELECT service FROM project_domains WHERE project_id = ? AND service <> ''
+              UNION SELECT service FROM tcp_exposures WHERE project_id = ? AND service <> ''
+              ORDER BY service`)
+    .all(projectId, projectId) as { service: string }[];
   return rows.map((row) => row.service);
 }
 

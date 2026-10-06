@@ -321,11 +321,10 @@ ensure_firewall() {
   ufw allow "$ssh_port"/tcp comment 'SSH' >/dev/null
   ufw allow 80/tcp comment 'HTTP' >/dev/null
   ufw allow 443/tcp comment 'HTTPS' >/dev/null
-  ufw allow 8883/tcp comment 'MQTTS' >/dev/null
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
   ufw --force enable >/dev/null
-  log "firewall enabled (SSH:$ssh_port, HTTP:80, HTTPS:443, MQTTS:8883 allowed; rest denied)"
+  log "firewall enabled (SSH:$ssh_port, HTTP:80, HTTPS:443 allowed; rest denied)"
 }
 
 ensure_cli() {

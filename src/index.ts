@@ -12,11 +12,13 @@ import { dockerStorageMonitor } from "./services/dockerStorageMonitor";
 import { certbotRenewalMonitor } from "./services/certbotRenewalMonitor";
 import { ensureBootstrapCredential } from "./services/installation";
 import { ensureAppIngress } from "./services/appIngress";
+import { reconcileAllTcpExposures } from "./services/tcpExposures";
 
 try {
   initializeDatabase();
   ensureBootstrapCredential();
   void ensureAppIngress();
+  void reconcileAllTcpExposures();
   healthChecker.start();
   githubPoller.start();
   hardwareSampler.start();
