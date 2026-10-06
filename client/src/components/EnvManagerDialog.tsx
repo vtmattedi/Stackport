@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Copy, Eye, EyeOff, FileText, Loader, Plus, Save, Search, Trash2, Upload, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Copy, Eye, EyeOff, FileText, Loader, Plus, Save, Search, Trash2, Upload, WandSparkles, X } from "lucide-react";
 import type { EnvVariable, ProjectEnvFile } from "../api/types";
 import { api, ApiError } from "../api/client";
 import { EMPTY_VARIABLE, normalizeEnvRelativePath, parseEnvText } from "../lib/env";
@@ -8,7 +8,16 @@ import { cn } from "../lib/utils";
 import { useConfirm } from "./ConfirmDialog";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import styles from "./EnvManagerDialog.module.scss";
+
+type KeyFormat = "base64" | "base64url" | "hex";
+
+interface PendingImport {
+  sourceName: string;
+  relativePath: string;
+  variables: EnvVariable[];
+}
 
 interface EnvManagerDialogProps {
   projectId: number;
@@ -22,8 +31,68 @@ function editableVariables(envFile: ProjectEnvFile | undefined): EnvVariable[] {
   return envFile?.variables.length ? envFile.variables.map((variable) => ({ ...variable })) : [{ ...EMPTY_VARIABLE }];
 }
 
+function generateRandomValue(size: number, format: KeyFormat): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(size));
+  if (format === "hex") return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  const base64 = btoa(binary);
+  return format === "base64url" ? base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : base64;
+}
+
+function RandomValueButton({ onGenerate }: { onGenerate: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [size, setSize] = useState("32");
+  const [format, setFormat] = useState<KeyFormat>("base64");
+  const parsedSize = Number(size);
+  const validSize = Number.isInteger(parsedSize) && parsedSize >= 1 && parsedSize <= 65536;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="ghost" size="icon-xs" title="Generate random value" aria-label="Generate random value">
+          <WandSparkles size={13} />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className={styles.generatorPopover}>
+        <div className={styles.generatorTitle}>Generate with kg settings</div>
+        <div className={styles.generatorGrid}>
+          <div className="field">
+            <label>Bytes</label>
+            <Input type="number" min="1" max="65536" value={size} onChange={(event) => setSize(event.target.value)} />
+          </div>
+          <div className="field">
+            <label>Format</label>
+            <select
+              className={styles.generatorSelect}
+              value={format}
+              onChange={(event) => setFormat(event.target.value as KeyFormat)}
+            >
+              <option value="base64">base64</option>
+              <option value="base64url">base64url</option>
+              <option value="hex">hex</option>
+            </select>
+          </div>
+        </div>
+        <Button
+          type="button"
+          size="xs"
+          disabled={!validSize}
+          onClick={() => {
+            onGenerate(generateRandomValue(parsedSize, format));
+            setOpen(false);
+          }}
+        >
+          <WandSparkles size={12} /> Generate
+        </Button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesChange, onClose }: EnvManagerDialogProps) {
   const confirm = useConfirm();
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const firstFile = envFiles[0];
   const [editingEnvId, setEditingEnvId] = useState<number | null>(firstFile?.id ?? null);
   const [envPath, setEnvPath] = useState(firstFile?.relativePath ?? "");
@@ -32,11 +101,9 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
   const [visibleValues, setVisibleValues] = useState<Set<number>>(() => new Set());
   const [envError, setEnvError] = useState("");
   const [savingEnv, setSavingEnv] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
-  const [importPath, setImportPath] = useState("");
-  const [importText, setImportText] = useState("");
-  const [importFileName, setImportFileName] = useState("");
   const [importError, setImportError] = useState("");
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [dragActive, setDragActive] = useState(false);
 
   const selectedEnvFile = editingEnvId == null ? undefined : envFiles.find((file) => file.id === editingEnvId);
   const filledEnvVariables = envVariables.filter((variable) => variable.key.trim() || variable.value);
@@ -58,14 +125,13 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
   }, [envFiles, normalizedSearch]);
   const visibleFiles = normalizedSearch ? searchMatches.map((match) => match.file) : envFiles;
   const variableMatchCount = searchMatches.reduce((total, match) => total + match.variableMatches.length, 0);
-
-  function closeImportPanel() {
-    setImportOpen(false);
-    setImportPath("");
-    setImportText("");
-    setImportFileName("");
-    setImportError("");
-  }
+  const hiddenFileCount = envFiles.length - visibleFiles.length;
+  const visibleVariableEntries = envVariables
+    .map((variable, index) => ({ variable, index }))
+    .filter(({ variable }) => !normalizedSearch || (
+      variable.key.toLowerCase().includes(normalizedSearch) || variable.value.toLowerCase().includes(normalizedSearch)
+    ));
+  const hiddenVariableCount = envVariables.length - visibleVariableEntries.length;
 
   function editEnvFile(envFile: ProjectEnvFile) {
     setEditingEnvId(envFile.id);
@@ -73,16 +139,19 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
     setEnvVariables(editableVariables(envFile));
     setVisibleValues(new Set());
     setEnvError("");
-    closeImportPanel();
+    setImportError("");
+    setPendingImport(null);
   }
 
   function beginNewEnvFile() {
     setEditingEnvId(null);
     setEnvPath(".env");
     setEnvVariables([{ ...EMPTY_VARIABLE }]);
+    setSearch("");
     setVisibleValues(new Set());
     setEnvError("");
-    closeImportPanel();
+    setImportError("");
+    setPendingImport(null);
   }
 
   async function confirmDiscardDraft(): Promise<boolean> {
@@ -113,7 +182,8 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
       setEnvVariables([{ ...EMPTY_VARIABLE }]);
       setVisibleValues(new Set());
       setEnvError("");
-      closeImportPanel();
+      setImportError("");
+      setPendingImport(null);
     }
   }
 
@@ -148,30 +218,34 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
     }
   }
 
-  async function readImportFile(file: File) {
-    setImportFileName(file.name);
+  async function prepareImportFile(file: File) {
+    if (!(await confirmDiscardDraft())) return;
+    const parsed = parseEnvText(await file.text());
+    if (parsed.length === 0) {
+      notify.error(new Error("No KEY=value pairs found in the selected file."), "Could not import env file");
+      return;
+    }
+    const suggestedPath = file.name.endsWith(".env") ? file.name : ".env";
     setImportError("");
-    if (!importPath && !envPath) setImportPath(file.name.endsWith(".env") ? file.name : ".env");
-    setImportText(await file.text());
+    setPendingImport({ sourceName: file.name, relativePath: suggestedPath, variables: parsed });
   }
 
-  function applyEnvImport() {
-    const normalizedPath = normalizeEnvRelativePath(importPath || envPath);
+  function applyPendingImport() {
+    if (!pendingImport) return;
+    const normalizedPath = normalizeEnvRelativePath(pendingImport.relativePath);
     if (!normalizedPath) {
       setImportError("Path must be a relative .env file and cannot contain ..");
       return;
     }
-    const parsed = parseEnvText(importText);
-    if (parsed.length === 0) {
-      setImportError("No KEY=value pairs found to import");
-      return;
-    }
+    setEditingEnvId(null);
     setEnvPath(normalizedPath);
-    setEnvVariables(parsed);
+    setEnvVariables(pendingImport.variables);
     setVisibleValues(new Set());
     setEnvError("");
-    notify.success(`Imported ${parsed.length} variables from .env text.`);
-    closeImportPanel();
+    setSearch("");
+    notify.success(`Parsed ${pendingImport.variables.length} variables from ${pendingImport.sourceName}.`);
+    setPendingImport(null);
+    setImportError("");
   }
 
   async function saveEnvFile(event: React.FormEvent) {
@@ -236,7 +310,12 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") void requestClose();
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (pendingImport) {
+        setPendingImport(null);
+        return;
+      }
+      void requestClose();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -245,12 +324,24 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
   return (
     <div className="confirm-backdrop" role="presentation" onMouseDown={() => void requestClose()}>
       <section
-        className={styles.panel}
+        className={cn(styles.panel, dragActive && styles.panelDragActive)}
         role="dialog"
         aria-modal="true"
         aria-label={`Environment manager — ${projectName}`}
         onMouseDown={(event) => event.stopPropagation()}
+        onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }}
+        onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDragActive(true); }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragActive(false);
+          const file = event.dataTransfer.files[0];
+          if (file) void prepareImportFile(file);
+        }}
       >
+        {dragActive && <div className={styles.dropOverlay}><Upload size={24} /> Drop an env file to import</div>}
         <header className={styles.header}>
           <div className={styles.heading}>
             <FileText size={16} />
@@ -275,11 +366,6 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
               aria-label="Search all project environment files"
               autoFocus
             />
-            {search && (
-              <Button type="button" variant="ghost" size="icon-xs" onClick={() => setSearch("")} title="Clear search" aria-label="Clear search">
-                <X size={12} />
-              </Button>
-            )}
           </label>
           {normalizedSearch && (
             <span className={styles.searchSummary}>{searchMatches.length} files · {variableMatchCount} variable matches</span>
@@ -292,13 +378,21 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
               type="button"
               variant="outline"
               size="xs"
-              onClick={() => {
-                if (!importOpen && !importPath) setImportPath(envPath || ".env");
-                setImportOpen((open) => !open);
-              }}
+              onClick={() => importInputRef.current?.click()}
             >
               <Upload size={12} /> Import
             </Button>
+            <input
+              ref={importInputRef}
+              className={styles.hiddenFileInput}
+              type="file"
+              accept=".env,text/plain"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void prepareImportFile(file);
+              }}
+            />
           </div>
         </div>
 
@@ -306,7 +400,7 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
           <aside className={styles.fileRail}>
             <div className={styles.railHeader}>
               <span>{normalizedSearch ? "Matches" : "Configured files"}</span>
-              <span>{visibleFiles.length}</span>
+              <span>{visibleFiles.length}{normalizedSearch && hiddenFileCount > 0 ? ` +${hiddenFileCount}` : ""}</span>
             </div>
             {visibleFiles.length === 0 ? (
               <div className={styles.railEmpty}>{normalizedSearch ? "No matching env files or variables." : "No env files yet."}</div>
@@ -321,7 +415,9 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
                 >
                   <span className={styles.fileName}><FileText size={13} /><span>{envFile.relativePath}</span></span>
                   <span className={styles.fileMeta}>
-                    {normalizedSearch ? `${match?.variableMatches.length ?? 0} matching variables` : `${envFile.variables.length} variables`}
+                    {normalizedSearch
+                      ? `${match?.variableMatches.length ?? 0} matches${envFile.variables.length - (match?.variableMatches.length ?? 0) > 0 ? ` · +${envFile.variables.length - (match?.variableMatches.length ?? 0)} not matching` : ""}`
+                      : `${envFile.variables.length} variables`}
                   </span>
                 </button>
               );
@@ -348,47 +444,25 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
                 <label>Relative .env path</label>
                 <Input type="text" placeholder="services/api/.env" value={envPath} onChange={(event) => setEnvPath(event.target.value)} required />
               </div>
-              <Button type="button" variant="outline" size="xs" onClick={() => setEnvVariables((variables) => [...variables, { ...EMPTY_VARIABLE }])}>
+              <Button type="button" variant="outline" size="xs" onClick={() => {
+                setSearch("");
+                setEnvVariables((variables) => [...variables, { ...EMPTY_VARIABLE }]);
+              }}>
                 <Plus size={12} /> Variable
               </Button>
             </div>
 
-            {importOpen && (
-              <div className={styles.importPanel}>
-                {importError && <div className="alert alert-error">{importError}</div>}
-                <div className={styles.importGrid}>
-                  <div className="field">
-                    <label>Import path</label>
-                    <Input type="text" placeholder="services/api/.env" value={importPath} onChange={(event) => setImportPath(event.target.value)} />
-                  </div>
-                  <label className={styles.dropZone} onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
-                    event.preventDefault();
-                    const file = event.dataTransfer.files[0];
-                    if (file) void readImportFile(file);
-                  }}>
-                    <input type="file" accept=".env,text/plain" onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) void readImportFile(file);
-                    }} />
-                    <Upload size={14} /> <span>{importFileName || "Drop .env"}</span>
-                  </label>
-                </div>
-                <textarea
-                  className={styles.importTextarea}
-                  placeholder={"API_URL=https://example.com\nNODE_ENV=production"}
-                  value={importText}
-                  onChange={(event) => setImportText(event.target.value)}
-                />
-                <div className={styles.editorActions}>
-                  <Button type="button" variant="ghost" size="xs" onClick={closeImportPanel}>Cancel</Button>
-                  <Button type="button" size="xs" onClick={applyEnvImport} disabled={!importText.trim()}>Parse</Button>
-                </div>
-              </div>
-            )}
-
             <div className={styles.variableTable}>
-              <div className={styles.variableHeader}><span>Key</span><span>Value</span><span>Actions</span></div>
-              {envVariables.map((variable, index) => (
+              {normalizedSearch && (
+                <div className={styles.variableMatchSummary}>
+                  {visibleVariableEntries.length} matching{hiddenVariableCount > 0 ? ` · +${hiddenVariableCount} not matching` : ""}
+                </div>
+              )}
+              <div className={styles.variableHeader}><span>Key</span><span>Value</span><span aria-hidden="true" /></div>
+              {visibleVariableEntries.length === 0 && normalizedSearch && (
+                <div className={styles.noVariableMatches}>No variables in this file match the search.</div>
+              )}
+              {visibleVariableEntries.map(({ variable, index }) => (
                 <div className={styles.variableRow} key={index}>
                   <Input type="text" placeholder="KEY" value={variable.key} onChange={(event) => updateEnvVariable(index, "key", event.target.value)} />
                   <div className={styles.valueField}>
@@ -404,6 +478,7 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
                     <Button type="button" variant="ghost" size="icon-xs" onClick={() => void copyValue(variable)} disabled={!variable.value} title="Copy value" aria-label={`Copy ${variable.key || "value"}`}>
                       <Copy size={13} />
                     </Button>
+                    {!variable.value && <RandomValueButton onGenerate={(value) => updateEnvVariable(index, "value", value)} />}
                   </div>
                   <Button type="button" variant="ghost" size="icon-xs" onClick={() => removeEnvVariable(index)} title="Remove variable" aria-label={`Remove ${variable.key || "variable"}`}>
                     <Trash2 size={13} />
@@ -423,6 +498,36 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
             </footer>
           </form>
         </div>
+        {pendingImport && (
+          <div className={styles.importPromptBackdrop} role="presentation" onMouseDown={() => setPendingImport(null)}>
+            <div className={styles.importPrompt} role="dialog" aria-modal="true" aria-label="Name imported env file" onMouseDown={(event) => event.stopPropagation()}>
+              <div>
+                <h3>Name imported env file</h3>
+                <p>Parsed {pendingImport.variables.length} variables from <span className="mono">{pendingImport.sourceName}</span>.</p>
+              </div>
+              {importError && <div className="alert alert-error">{importError}</div>}
+              <div className="field field-wide">
+                <label>Relative .env path</label>
+                <Input
+                  type="text"
+                  value={pendingImport.relativePath}
+                  onChange={(event) => {
+                    setImportError("");
+                    setPendingImport((current) => current ? { ...current, relativePath: event.target.value } : null);
+                  }}
+                  placeholder="services/api/.env"
+                  autoFocus
+                />
+              </div>
+              <div className={styles.editorActions}>
+                <Button type="button" variant="outline" size="xs" onClick={() => setPendingImport(null)}>Cancel</Button>
+                <Button type="button" size="xs" onClick={applyPendingImport}>
+                  <Upload size={12} /> Import parsed values
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );
