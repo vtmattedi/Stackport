@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Box, EllipsisVertical, ExternalLink, FileText, FolderDot, GitBranch,
   Hammer, Loader, Lock, Pause, Play, Plus, RefreshCw, Save, ScrollText, Square, Trash2, Upload, X, GitCommit, Activity, Zap, FlameKindling,
-  SquareTerminal, Radio, RotateCw,
+  SquareTerminal, Radio, RotateCw, KeyRound,
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
 import { ProjectGroupField } from "../components/ProjectGroupField";
@@ -14,6 +14,7 @@ import { ProjectResourceCharts } from "../components/ProjectResourceCharts";
 import { ContainerShellDialog } from "../components/ContainerShellDialog";
 import { ContainerLogDialog } from "../components/ContainerLogDialog";
 import { ComposeFileDialog } from "../components/ComposeFileDialog";
+import { EnvManagerDialog } from "../components/EnvManagerDialog";
 import { Switch } from "../components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
@@ -25,7 +26,6 @@ import type {
   ActionRecord,
   ContainerInfo,
   Credential,
-  EnvVariable,
   Project,
   ProjectActionsSnapshot,
   ProjectDeployEvent,
@@ -46,7 +46,6 @@ import { parseAnsi } from "../lib/ansi";
 import { deriveProjectStatus, expectedComposeProjectName, explainProjectStatus, findProjectStack, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
 import { cn } from "../lib/utils";
 import { notify } from "../lib/notify";
-import { EMPTY_VARIABLE, normalizeEnvRelativePath, parseEnvText } from "../lib/env";
 import styles from "./ProjectDetails.module.scss";
 
 const INTERVALS = [
@@ -191,18 +190,9 @@ export default function ProjectDetails() {
   const [project, setProject] = useState<Project | null>(null);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [envFiles, setEnvFiles] = useState<ProjectEnvFile[]>([]);
+  const [envManagerOpen, setEnvManagerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [envError, setEnvError] = useState("");
-  const [savingEnv, setSavingEnv] = useState(false);
-  const [editingEnvId, setEditingEnvId] = useState<number | null>(null);
-  const [envPath, setEnvPath] = useState("");
-  const [envVariables, setEnvVariables] = useState<EnvVariable[]>([{ ...EMPTY_VARIABLE }]);
-  const [importOpen, setImportOpen] = useState(false);
-  const [importPath, setImportPath] = useState("");
-  const [importText, setImportText] = useState("");
-  const [importFileName, setImportFileName] = useState("");
-  const [importError, setImportError] = useState("");
   const [deploying, setDeploying] = useState(false);
   const [pullingRepo, setPullingRepo] = useState(false);
   const [pullBranch, setPullBranch] = useState("");
@@ -391,124 +381,6 @@ export default function ProjectDetails() {
       refreshSystem();
     } finally {
       setRollingBack(false);
-    }
-  }
-
-  function resetEnvForm() {
-    setEditingEnvId(null);
-    setEnvPath("");
-    setEnvVariables([{ ...EMPTY_VARIABLE }]);
-    setEnvError("");
-    closeImportPanel();
-  }
-
-  function editEnvFile(envFile: ProjectEnvFile) {
-    setEditingEnvId(envFile.id);
-    setEnvPath(envFile.relativePath);
-    setEnvVariables(envFile.variables.length > 0 ? envFile.variables : [{ ...EMPTY_VARIABLE }]);
-    setEnvError("");
-    closeImportPanel();
-  }
-
-  function newEnvFile() {
-    setEditingEnvId(null);
-    setEnvPath("front/.env");
-    setEnvVariables([{ ...EMPTY_VARIABLE }]);
-    setEnvError("");
-    closeImportPanel();
-  }
-
-  function updateEnvVariable(index: number, key: keyof EnvVariable, value: string) {
-    setEnvVariables((items) => items.map((item, itemIndex) => (
-      itemIndex === index ? { ...item, [key]: value } : item
-    )));
-  }
-
-  function removeEnvVariable(index: number) {
-    setEnvVariables((items) => items.length === 1 ? [{ ...EMPTY_VARIABLE }] : items.filter((_item, itemIndex) => itemIndex !== index));
-  }
-
-  function closeImportPanel() {
-    setImportOpen(false);
-    setImportPath("");
-    setImportText("");
-    setImportFileName("");
-    setImportError("");
-  }
-
-  async function readImportFile(file: File) {
-    setImportFileName(file.name);
-    setImportError("");
-    if (!importPath && !envPath) setImportPath(file.name.endsWith(".env") ? file.name : "front/.env");
-    setImportText(await file.text());
-  }
-
-  function applyEnvImport() {
-    const normalizedPath = normalizeEnvRelativePath(importPath || envPath);
-    if (!normalizedPath) {
-      setImportError("Path must be a relative .env file and cannot contain ..");
-      return;
-    }
-    const parsed = parseEnvText(importText);
-    if (parsed.length === 0) {
-      setImportError("No KEY=value pairs found to import");
-      return;
-    }
-    setEnvPath(normalizedPath);
-    setEnvVariables(parsed);
-    setEnvError("");
-    notify.success(`Imported ${parsed.length} variables from .env text.`);
-    closeImportPanel();
-  }
-
-  async function saveEnvFile(e: React.FormEvent) {
-    e.preventDefault();
-    if (!project) return;
-    const variables = envVariables
-      .map((item) => ({ key: item.key.trim(), value: item.value }))
-      .filter((item) => item.key || item.value);
-
-    setSavingEnv(true);
-    setEnvError("");
-    const toastId = notify.loading(editingEnvId ? "Saving env file..." : "Creating env file...");
-    try {
-      const payload = { relativePath: envPath, variables };
-      const saved = editingEnvId
-        ? await api.updateProjectEnvFile(project.id, editingEnvId, payload)
-        : await api.createProjectEnvFile(project.id, payload);
-      setEnvFiles((items) => {
-        if (!editingEnvId) return [...items, saved].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-        return items.map((item) => item.id === saved.id ? saved : item).sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-      });
-      setEditingEnvId(saved.id);
-      setEnvPath(saved.relativePath);
-      setEnvVariables(saved.variables.length > 0 ? saved.variables : [{ ...EMPTY_VARIABLE }]);
-      notify.success(`${saved.relativePath} saved.`, { id: toastId });
-    } catch (err) {
-      setEnvError(err instanceof ApiError ? err.message : "Failed to save env file");
-      notify.error(err, "Failed to save env file", { id: toastId });
-    } finally {
-      setSavingEnv(false);
-    }
-  }
-
-  async function deleteEnvFile(envFile: ProjectEnvFile) {
-    if (!project) return;
-    const ok = await confirm({
-      title: `Delete ${envFile.relativePath}?`,
-      description: "This removes the saved .env configuration from this project.",
-      confirmLabel: "Delete",
-      destructive: true,
-    });
-    if (!ok) return;
-    const toastId = notify.loading(`Deleting ${envFile.relativePath}...`);
-    try {
-      await api.deleteProjectEnvFile(project.id, envFile.id);
-      setEnvFiles((items) => items.filter((item) => item.id !== envFile.id));
-      if (editingEnvId === envFile.id) resetEnvForm();
-      notify.success(`${envFile.relativePath} deleted.`, { id: toastId });
-    } catch (err) {
-      notify.error(err, "Failed to delete env file", { id: toastId });
     }
   }
 
@@ -1001,11 +873,6 @@ export default function ProjectDetails() {
   const displayStatusReason = project
     ? explainProjectStatus(project, dockerStack, docker?.available ?? false, displayStatus)
     : "";
-  const selectedEnvFile = editingEnvId != null ? envFiles.find((file) => file.id === editingEnvId) ?? null : null;
-  const filledEnvVariables = envVariables.filter((variable) => variable.key.trim() || variable.value.trim());
-  const envDraftChanged = selectedEnvFile
-    ? envPath !== selectedEnvFile.relativePath || JSON.stringify(envVariables) !== JSON.stringify(selectedEnvFile.variables.length > 0 ? selectedEnvFile.variables : [{ ...EMPTY_VARIABLE }])
-    : !!envPath || filledEnvVariables.length > 0;
 
   return (
     <>
@@ -1109,6 +976,11 @@ export default function ProjectDetails() {
                       Re-upload files
                     </Button>
                   )}
+                  <Button type="button" variant="outline" onClick={() => setEnvManagerOpen(true)}>
+                    <KeyRound size={13} />
+                    Env Manager
+                    <span className={styles.actionCount}>{envFiles.length}</span>
+                  </Button>
                   <Button
                     type="button"
                     onClick={() => void runProjectCommand("compose")}
@@ -1827,200 +1699,6 @@ export default function ProjectDetails() {
               <ProjectResourceCharts resources={resources} chartHeight={180} />
             </div>
 
-            <div className={cn("card", styles.envCard)}>
-              <div className={styles.envCardHeader}>
-                <div className="card-title">
-                  <FileText size={13} />
-                  Env Files
-                  <span className={styles.envCount}>{envFiles.length}</span>
-                  {envDraftChanged && <span className={styles.envUnsaved}>Unsaved</span>}
-                </div>
-                <div className="row-actions">
-                  <Button type="button" variant="outline" size="xs" onClick={newEnvFile}>
-                    <Plus size={12} />
-                    New
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    onClick={() => {
-                      if (!importOpen && !importPath) setImportPath(envPath || "front/.env");
-                      setImportOpen((open) => !open);
-                    }}
-                  >
-                    <Upload size={12} />
-                    Import
-                  </Button>
-                </div>
-              </div>
-
-              {envError && <div className="alert alert-error">{envError}</div>}
-
-              <div className={styles.envWorkspace}>
-                <aside className={styles.envFileRail}>
-                  <div className={styles.envRailHeader}>
-                    <span>Configured</span>
-                    <span>{envFiles.reduce((total, file) => total + file.variables.length, 0)} vars</span>
-                  </div>
-                  {envFiles.length === 0 ? (
-                    <div className={styles.envRailEmpty}>No files yet.</div>
-                  ) : envFiles.map((envFile) => (
-                    <button
-                      type="button"
-                      className={cn(styles.envFileButton, editingEnvId === envFile.id && styles.envFileButtonActive)}
-                      key={envFile.id}
-                      onClick={() => editEnvFile(envFile)}
-                    >
-                      <span className={styles.envFileName}>
-                        <FileText size={13} />
-                        <span>{envFile.relativePath}</span>
-                      </span>
-                      <span className={styles.envFileMeta}>{envFile.variables.length} variables</span>
-                    </button>
-                  ))}
-                </aside>
-
-                <form onSubmit={(e) => void saveEnvFile(e)} className={styles.envEditorPanel}>
-                  <div className={styles.envEditorTopbar}>
-                    <div>
-                      <div className={styles.envEditorTitle}>{selectedEnvFile ? selectedEnvFile.relativePath : "New env file"}</div>
-                      <div className="muted-text">{filledEnvVariables.length} populated variables</div>
-                    </div>
-                    {selectedEnvFile && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="xs"
-                        className={styles.envDeleteButton}
-                        onClick={() => void deleteEnvFile(selectedEnvFile)}
-                      >
-                        <Trash2 size={12} />
-                        Delete
-                      </Button>
-                    )}
-                  </div>
-
-                  <div className={styles.envPathRow}>
-                    <div className="field field-wide">
-                      <label>Path</label>
-                      <Input
-                        type="text"
-                        placeholder="front/.env"
-                        value={envPath}
-                        onChange={(e) => setEnvPath(e.target.value)}
-                        required
-                      />
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="xs"
-                      onClick={() => setEnvVariables((items) => [...items, { ...EMPTY_VARIABLE }])}
-                    >
-                      <Plus size={12} />
-                      Variable
-                    </Button>
-                  </div>
-
-                  {importOpen && (
-                    <div className={styles.envImportPanel}>
-                      {importError && <div className="alert alert-error">{importError}</div>}
-                      <div className={styles.envImportGrid}>
-                        <div className="field">
-                          <label>Import path</label>
-                          <Input
-                            type="text"
-                            placeholder="front/.env"
-                            value={importPath}
-                            onChange={(e) => setImportPath(e.target.value)}
-                          />
-                        </div>
-                        <label
-                          className={styles.envDropZone}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            const file = e.dataTransfer.files[0];
-                            if (file) void readImportFile(file);
-                          }}
-                        >
-                          <input
-                            type="file"
-                            accept=".env,text/plain"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) void readImportFile(file);
-                            }}
-                          />
-                          <Upload size={14} />
-                          <span>{importFileName || "Drop .env"}</span>
-                        </label>
-                      </div>
-                      <textarea
-                        className={styles.envImportTextarea}
-                        placeholder={"API_URL=https://example.com\nNODE_ENV=production"}
-                        value={importText}
-                        onChange={(e) => setImportText(e.target.value)}
-                      />
-                      <div className={styles.envImportActions}>
-                        <Button type="button" variant="ghost" size="xs" onClick={closeImportPanel}>
-                          Cancel
-                        </Button>
-                        <Button type="button" size="xs" onClick={applyEnvImport} disabled={!importText.trim()}>
-                          Parse
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className={styles.envVarTable}>
-                    <div className={styles.envVarHeader}>
-                      <span>Key</span>
-                      <span>Value</span>
-                      <span />
-                    </div>
-                    {envVariables.map((variable, index) => (
-                      <div className={styles.envVarRow} key={index}>
-                        <Input
-                          type="text"
-                          placeholder="KEY"
-                          value={variable.key}
-                          onChange={(e) => updateEnvVariable(index, "key", e.target.value)}
-                        />
-                        <Input
-                          type="text"
-                          placeholder="value"
-                          value={variable.value}
-                          onChange={(e) => updateEnvVariable(index, "value", e.target.value)}
-                        />
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={() => removeEnvVariable(index)}
-                          title="Remove variable"
-                        >
-                          <X size={13} />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className={styles.envEditorActions}>
-                    <Button type="button" variant="outline" size="xs" onClick={resetEnvForm} disabled={!envDraftChanged && !editingEnvId}>
-                      <X size={12} />
-                      Clear
-                    </Button>
-                    <Button type="submit" size="xs" disabled={savingEnv || !envPath.trim()}>
-                      {savingEnv ? <Loader size={12} className="spin" /> : <Save size={12} />}
-                      {editingEnvId ? "Save" : "Create"}
-                    </Button>
-                  </div>
-                </form>
-              </div>
-            </div>
-
             <div className="card">
               <div className="card-title">
                 <GitBranch size={13} />
@@ -2044,6 +1722,15 @@ export default function ProjectDetails() {
       )}
       {composeFileDialogOpen && project && (
         <ComposeFileDialog projectId={project.id} projectName={project.name} onClose={() => setComposeFileDialogOpen(false)} />
+      )}
+      {envManagerOpen && project && (
+        <EnvManagerDialog
+          projectId={project.id}
+          projectName={project.name}
+          envFiles={envFiles}
+          onEnvFilesChange={setEnvFiles}
+          onClose={() => setEnvManagerOpen(false)}
+        />
       )}
     </>
   );
