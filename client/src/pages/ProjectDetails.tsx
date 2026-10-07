@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Box, EllipsisVertical, ExternalLink, FileText, FolderDot, GitBranch,
   Hammer, Loader, Lock, Pause, Play, Plus, RefreshCw, Save, ScrollText, Square, Trash2, Upload, X, GitCommit, Activity, Zap, FlameKindling,
-  SquareTerminal, Radio, RotateCw, KeyRound,
+  SquareTerminal, Radio, RotateCw, KeyRound, AlertTriangle,
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
 import { ProjectGroupField } from "../components/ProjectGroupField";
@@ -1438,8 +1438,12 @@ export default function ProjectDetails() {
                   </div>
                   <div className="field field-wide" style={{ gridColumn: "1 / -1" }}>
                     <label>TCP Exposures <span className="hint">(raw TCP passthrough to a declared compose service port)</span></label>
-                    <div className="alert" style={{ marginBottom: 10, fontSize: 12 }}>
-                      Public TCP ports are reachable outside the VPS. Authentication, TLS, and protocol security remain the application's responsibility.
+                    <div className={styles.tcpWarningCard} role="note" aria-label="Public TCP security warning">
+                      <AlertTriangle size={17} />
+                      <div>
+                        <strong>Public TCP security boundary</strong>
+                        <span>Public TCP ports are reachable outside the VPS. Authentication, TLS, and protocol security remain the application's responsibility.</span>
+                      </div>
                     </div>
                     <div className="row-actions" style={{ marginBottom: tcpExposures.length > 0 ? 10 : 0 }}>
                       <Input

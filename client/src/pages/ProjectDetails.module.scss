@@ -342,3 +342,20 @@
   font-size: 10px;
   line-height: 1;
 }
+
+.tcp-warning-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 10px;
+  border: 1px solid rgba(230, 168, 23, 0.38);
+  border-radius: var(--radius);
+  background: rgba(230, 168, 23, 0.09);
+  color: #e6a817;
+  padding: 11px 12px;
+
+  svg { margin-top: 1px; }
+  strong { display: block; font-size: 12px; line-height: 1.35; }
+  span { display: block; margin-top: 3px; color: var(--text); font-size: 12px; line-height: 1.45; }
+}
