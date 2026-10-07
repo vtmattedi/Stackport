@@ -12,6 +12,9 @@ const PROGRESS_CAP_WHILE_RUNNING = 0.95;
 // Matches both `#N [1/5] ...` (unnamed/default stage) and `#N [stage-name 3/7] ...`
 // (named stage) BuildKit step-start lines.
 const STEP_LINE_RE = /^#\d+\s+\[[^\]]*?(\d+)\/(\d+)\]/;
+// Docker's classic builder fallback emits `Step 3/17 : RUN ...`. StackPort must
+// understand this too because Compose uses it whenever the buildx plugin is absent.
+const CLASSIC_STEP_LINE_RE = /^Step\s+(\d+)\/(\d+)\s*:/i;
 const GIT_COMMAND_RE = /^\$\s+git\b/;
 const DOCKER_BUILD_COMMAND_RE = /^\$\s+docker\b.*\b(?:build|up)\b/;
 // docker compose v2's human-readable container lifecycle lines, e.g.
@@ -76,7 +79,7 @@ class BuildProgressTracker {
       changed = true;
     }
 
-    const stepMatch = STEP_LINE_RE.exec(line);
+    const stepMatch = STEP_LINE_RE.exec(line) ?? CLASSIC_STEP_LINE_RE.exec(line);
     if (stepMatch) {
       const current = Number(stepMatch[1]);
       const total = Number(stepMatch[2]);
