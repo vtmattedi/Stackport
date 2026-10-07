@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Copy, Eye, EyeOff, FileText, Loader, Plus, Save, Search, Trash2, Upload, WandSparkles, X } from "lucide-react";
+import { ClipboardPaste, Copy, Eye, EyeOff, FileText, Loader, Plus, Save, Search, Trash2, Upload, WandSparkles, X } from "lucide-react";
 import type { EnvVariable, ProjectEnvFile } from "../api/types";
 import { api, ApiError } from "../api/client";
 import { EMPTY_VARIABLE, normalizeEnvRelativePath, parseEnvText } from "../lib/env";
@@ -104,6 +104,9 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
   const [importError, setImportError] = useState("");
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteError, setPasteError] = useState("");
 
   const selectedEnvFile = editingEnvId == null ? undefined : envFiles.find((file) => file.id === editingEnvId);
   const filledEnvVariables = envVariables.filter((variable) => variable.key.trim() || variable.value);
@@ -141,6 +144,9 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
     setEnvError("");
     setImportError("");
     setPendingImport(null);
+    setPasteOpen(false);
+    setPasteText("");
+    setPasteError("");
   }
 
   function beginNewEnvFile() {
@@ -152,6 +158,9 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
     setEnvError("");
     setImportError("");
     setPendingImport(null);
+    setPasteOpen(false);
+    setPasteText("");
+    setPasteError("");
   }
 
   async function confirmDiscardDraft(): Promise<boolean> {
@@ -184,6 +193,9 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
       setEnvError("");
       setImportError("");
       setPendingImport(null);
+      setPasteOpen(false);
+      setPasteText("");
+      setPasteError("");
     }
   }
 
@@ -246,6 +258,41 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
     notify.success(`Parsed ${pendingImport.variables.length} variables from ${pendingImport.sourceName}.`);
     setPendingImport(null);
     setImportError("");
+  }
+
+  function applyPastedVariables() {
+    const parsed = parseEnvText(pasteText);
+    if (parsed.length === 0) {
+      setPasteError("No KEY=value pairs found to parse.");
+      return;
+    }
+
+    const next = envVariables
+      .filter((variable) => variable.key.trim() || variable.value)
+      .map((variable) => ({ ...variable, key: variable.key.trim() }));
+    const indexByKey = new Map(next.map((variable, index) => [variable.key, index]));
+    let added = 0;
+    let updated = 0;
+
+    for (const variable of parsed) {
+      const existingIndex = indexByKey.get(variable.key);
+      if (existingIndex === undefined) {
+        indexByKey.set(variable.key, next.length);
+        next.push(variable);
+        added += 1;
+      } else {
+        next[existingIndex] = variable;
+        updated += 1;
+      }
+    }
+
+    setEnvVariables(next.length > 0 ? next : [{ ...EMPTY_VARIABLE }]);
+    setSearch("");
+    setVisibleValues(new Set());
+    setPasteText("");
+    setPasteError("");
+    setPasteOpen(false);
+    notify.success(`Parsed env content: ${added} added${updated ? `, ${updated} updated` : ""}.`);
   }
 
   async function saveEnvFile(event: React.FormEvent) {
@@ -382,6 +429,17 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
             >
               <Upload size={12} /> Import
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={() => {
+                setPasteError("");
+                setPasteOpen((open) => !open);
+              }}
+            >
+              <ClipboardPaste size={12} /> Parse
+            </Button>
             <input
               ref={importInputRef}
               className={styles.hiddenFileInput}
@@ -451,6 +509,36 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
                 <Plus size={12} /> Variable
               </Button>
             </div>
+
+            {pasteOpen && (
+              <div className={styles.pastePanel}>
+                <div className={styles.pasteHeader}>
+                  <div>
+                    <strong>Paste env contents</strong>
+                    <span>New keys are added; matching keys are updated.</span>
+                  </div>
+                  <Button type="button" variant="ghost" size="icon-xs" onClick={() => {
+                    setPasteOpen(false);
+                    setPasteError("");
+                  }} title="Close parser" aria-label="Close parser">
+                    <X size={12} />
+                  </Button>
+                </div>
+                {pasteError && <div className="alert alert-error">{pasteError}</div>}
+                <textarea
+                  className={styles.pasteTextarea}
+                  value={pasteText}
+                  onChange={(event) => { setPasteText(event.target.value); setPasteError(""); }}
+                  placeholder={"API_URL=https://example.com\nJWT_SECRET=..."}
+                  autoFocus
+                />
+                <div className={styles.editorActions}>
+                  <Button type="button" size="xs" onClick={applyPastedVariables} disabled={!pasteText.trim()}>
+                    <ClipboardPaste size={12} /> Add parsed variables
+                  </Button>
+                </div>
+              </div>
+            )}
 
             <div className={styles.variableTable}>
               {normalizedSearch && (

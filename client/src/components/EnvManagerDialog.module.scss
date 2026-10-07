@@ -153,6 +153,32 @@
   @media (max-width: 640px) { grid-template-columns: 1fr; }
 }
 
+.paste-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(13, 17, 23, 0.34);
+  padding: 12px;
+}
+
+.paste-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+
+  strong { display: block; font-size: 13px; }
+  span { display: block; margin-top: 3px; color: var(--dim); font-size: 12px; }
+}
+
+.paste-textarea {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  font-family: var(--mono);
+}
+
 .variable-table { display: grid; gap: 7px; min-width: 0; }
 .variable-header,
 .variable-row { display: grid; grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr) 28px; gap: 8px; align-items: center; min-width: 0; }
