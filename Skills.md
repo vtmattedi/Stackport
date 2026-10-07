@@ -61,7 +61,7 @@ Do not require ports below `1024` inside the application container. Do not expos
 | Certificate lifecycle | Stackport/Let's Encrypt | Project/operator |
 | Application target | `service:containerPort` | `service:containerPort` |
 | Protocol visibility | HTTP-aware reverse proxy | Opaque byte stream |
-| Stackport health monitor | HTTPS URL on the project's first domain | Not supported; use container health checks/external monitoring |
+| Stackport health monitor | HTTPS URL on the project's selected health-check domain | Not supported; use container health checks/external monitoring |
 
 For TLS protocols such as MQTTS, SMTPS, or a TLS database endpoint, mount or initialize the certificate inside the project and make the service itself listen with TLS. The TCP proxy must remain passthrough; do not configure an HTTP domain or expect nginx/Certbot to secure that stream. Stackport's HTTP certificates under `/etc/letsencrypt` are system-plane assets and are not mounted into managed projects. Deliver TCP-service certificates through project-owned, policy-compliant configuration (for example, Stackport env files plus an init service and named volume). DNS is still the operator's responsibility and should point the protocol hostname at the Stackport host.
 
@@ -90,6 +90,20 @@ Good health checks verify the web process is alive. Avoid checks that depend on 
 
 Stackport's project health monitor is HTTPS/domain based; it is not a generic TCP probe. Set `healthCheckIntervalS` to `0` for a TCP-only project and use a Compose container health check plus an external protocol-aware check.
 
+When a project has multiple HTTP domains, select the intended domain with `healthCheckDomainId`; Stackport combines that domain with the relative `healthCheckEndpoint`. The first-added domain is selected automatically for compatibility, and removing the selected domain falls back to the next available domain. Because checks use HTTPS, issue and enable SSL for the selected domain before relying on its health result.
+
+Stackport also derives project readiness from the running state of the project's Compose containers. Mark a one-shot or optional helper service so its stopped/exited container does not make the project appear down:
+
+```yaml
+services:
+  init-certs:
+    image: alpine:3.20
+    labels:
+      com.stackport.health.ignore: "true"
+```
+
+The service remains visible in Stackport's Docker views and its logs/actions remain available; the label only excludes it from the project-level container health calculation. Do not apply it to the long-running application, worker, database, or other services whose absence should make the project unhealthy.
+
 ## Local Validation
 
 Run these from the application repo before onboarding — note there is no host-side port to curl against here, since the whole point is that nothing is published to the host; validate against the container network directly:
@@ -113,7 +127,7 @@ Prepare these values:
 - **Project**: `name` (display name, ≤100 chars), `groupName` (optional group, e.g. `Mw Control`; null means ungrouped), and source type. GitHub projects also need `githubRepo` (`owner/repo`), `githubCredentialId` (private repos only), and `autoDeployBranch` (branch to poll for auto-deploy). Upload projects use the UI upload flow instead.
 - **Per domain**: `domain` (valid FQDN, unique across the host), `service` (must match a service name that actually exists in the project's compose file), `containerPort` (the declared container port), `useSsl`. After pulling/uploading the project and configuring env files, choose the detected `service:port` from the existing select component. Detection reads resolved `docker compose config --format json`: TCP `expose`/port targets, with `PORT` or `HTTP_PORT` as a fallback. Host-published `ports` remain prohibited by deployment policy.
 - **Per TCP exposure**: `publicPort` (unique on the host), `service`, and `containerPort` (a detected declared TCP target). Stackport creates and reconciles the public listener; do not add a Compose `ports:` entry. Raw TCP passthrough does not provide TLS, authentication, or authorization for the application.
-- **Optional**: `healthCheckEndpoint` (path like `/health`), `healthCheckIntervalS` (0 disables checks; use 30s or longer for routine monitoring).
+- **Optional**: `healthCheckDomainId` (one of the project's domain IDs), `healthCheckEndpoint` (path like `/health`), `healthCheckIntervalS` (0 disables checks; use 30s or longer for routine monitoring).
 
 Do not configure the legacy `internalPort` field — a project can route multiple domains to different services/ports, and nothing is ever published to the host regardless.
 

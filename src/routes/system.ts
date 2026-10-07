@@ -283,6 +283,10 @@ function parseLabels(s: string): Record<string, string> {
   return out;
 }
 
+function labelIsTrue(value: string | undefined): boolean {
+  return value !== undefined && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
+
 function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
@@ -343,6 +347,7 @@ async function getDockerData() {
     status: string;
     ports: string;
     composeProject: string | null;
+    healthCheckIgnored: boolean;
     stats: typeof statsMap[string] | null;
   }
 
@@ -358,6 +363,7 @@ async function getDockerData() {
       status:         String(c.Status ?? ""),
       ports:          String(c.Ports ?? ""),
       composeProject: labels["com.docker.compose.project"] ?? null,
+      healthCheckIgnored: labelIsTrue(labels["com.stackport.health.ignore"]),
       stats:          statsMap[id] ?? null,
     };
   });

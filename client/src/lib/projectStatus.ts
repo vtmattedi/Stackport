@@ -26,15 +26,21 @@ export function findProjectStack(
   )) ?? null;
 }
 
+/** Containers that participate in project readiness. One-shot/helper services can
+ * opt out with the Compose label com.stackport.health.ignore=true. */
+export function healthMonitoredContainers(dockerStack: ComposeStack | null) {
+  return dockerStack?.containers.filter((container) => !container.healthCheckIgnored) ?? [];
+}
+
 /**
  * Derives a unified 4-state project status from docker state + health check.
  *
  * States (in priority order):
  *  paused       — project is explicitly paused by the user
- *  not-deployed — no docker stack found or no containers
- *  down         — stack exists but not all containers are running
- *  problem      — all containers running but health check fails (only when HC configured)
- *  ready        — all containers running + health check passes (or no HC configured)
+ *  not-deployed — no docker stack found or no monitored containers
+ *  down         — stack exists but not all monitored containers are running
+ *  problem      — all monitored containers running but health check fails (only when HC configured)
+ *  ready        — all monitored containers running + health check passes (or no HC configured)
  */
 export function deriveProjectStatus(
   project: Pick<Project, "paused" | "lastStatus" | "healthCheckIntervalS">,
@@ -49,9 +55,10 @@ export function deriveProjectStatus(
     return "not-deployed";
   }
 
-  if (!dockerStack || dockerStack.containers.length === 0) return "not-deployed";
+  const monitored = healthMonitoredContainers(dockerStack);
+  if (!dockerStack || monitored.length === 0) return "not-deployed";
 
-  const allRunning = dockerStack.containers.every((c) => c.state === "running");
+  const allRunning = monitored.every((c) => c.state === "running");
   if (!allRunning) return "down";
 
   if (project.healthCheckIntervalS === 0) return "ready";
@@ -72,19 +79,26 @@ export function explainProjectStatus(
   if (status === "paused") return "Manually stopped — health checks and auto-deploy are off.";
 
   if (status === "not-deployed") {
+    const ignored = dockerStack?.containers.filter((container) => container.healthCheckIgnored).length ?? 0;
+    if (dockerAvailable && ignored > 0 && dockerStack?.containers.length === ignored) {
+      return `No health-monitored containers found — ${ignored} helper container${ignored === 1 ? " is" : "s are"} excluded.`;
+    }
     return dockerAvailable
       ? "No docker containers found for this project — it hasn't been deployed yet."
       : "Docker isn't available on this host, so deployment state can't be confirmed.";
   }
 
-  const total = dockerStack?.containers.length ?? 0;
-  const running = dockerStack?.containers.filter((c) => c.state === "running").length ?? 0;
+  const monitored = healthMonitoredContainers(dockerStack);
+  const total = monitored.length;
+  const running = monitored.filter((c) => c.state === "running").length;
+  const ignored = dockerStack?.containers.filter((container) => container.healthCheckIgnored).length ?? 0;
+  const ignoredFact = ignored > 0 ? `, ${ignored} helper${ignored === 1 ? "" : "s"} ignored` : "";
   const dockerFact = dockerAvailable
-    ? `docker: ${running}/${total} container${total === 1 ? "" : "s"} running`
+    ? `docker: ${running}/${total} monitored container${total === 1 ? "" : "s"} running${ignoredFact}`
     : "docker: unavailable, showing last known status";
 
   if (status === "down") {
-    const stopped = (dockerStack?.containers ?? []).filter((c) => c.state !== "running").map((c) => c.service ?? c.name);
+    const stopped = monitored.filter((c) => c.state !== "running").map((c) => c.service ?? c.name);
     return `${dockerFact}${stopped.length > 0 ? ` (stopped: ${stopped.join(", ")})` : ""}.`;
   }
 

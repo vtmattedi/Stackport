@@ -92,6 +92,7 @@ export function initializeDatabase(): Database.Database {
       internal_port INTEGER,
       health_check_url TEXT,
       health_check_endpoint TEXT,
+      health_check_domain_id INTEGER,
       health_check_interval_s INTEGER NOT NULL DEFAULT 0,
       last_status TEXT NOT NULL DEFAULT 'unknown',
       last_response_ms INTEGER,
@@ -398,6 +399,9 @@ export function initializeDatabase(): Database.Database {
       }
     }
   }
+  if (!projectCols.some((c) => c.name === "health_check_domain_id")) {
+    db.exec("ALTER TABLE projects ADD COLUMN health_check_domain_id INTEGER");
+  }
   if (!projectCols.some((c) => c.name === "auto_deploy_branch")) {
     db.exec("ALTER TABLE projects ADD COLUMN auto_deploy_branch TEXT");
   }
@@ -467,6 +471,27 @@ export function initializeDatabase(): Database.Database {
   if (!domainCols.some((c) => c.name === "container_port")) {
     db.exec("ALTER TABLE project_domains ADD COLUMN container_port INTEGER");
   }
+
+  // Preserve the historical health-check behavior for existing projects by
+  // selecting their first-added domain. Domain lifecycle operations keep this
+  // preference valid after startup.
+  db.exec(`
+    UPDATE projects
+    SET health_check_domain_id = (
+      SELECT pd.id
+      FROM project_domains pd
+      WHERE pd.project_id = projects.id
+      ORDER BY pd.id ASC
+      LIMIT 1
+    )
+    WHERE (health_check_domain_id IS NULL OR NOT EXISTS (
+        SELECT 1
+        FROM project_domains selected
+        WHERE selected.id = projects.health_check_domain_id
+          AND selected.project_id = projects.id
+      ))
+      AND EXISTS (SELECT 1 FROM project_domains pd WHERE pd.project_id = projects.id)
+  `);
 
   const resourceSampleCols = db.prepare("PRAGMA table_info(project_resource_samples)").all() as { name: string }[];
   if (!resourceSampleCols.some((c) => c.name === "net_rx_mb")) {

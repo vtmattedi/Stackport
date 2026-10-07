@@ -79,13 +79,31 @@ export function attachDomains<T extends { id: number }>(projects: T[]): (T & { d
   return projects.map((project) => ({ ...project, domains: byProject.get(project.id) ?? [] }));
 }
 
-/** ORDER BY id ASC LIMIT 1 — a monitoring convenience for health checks, not a routing
- *  concern. Every domain gets its own full nginx block set regardless of order. */
-export function getFirstProjectDomain(projectId: number): string | null {
-  const row = getDatabase()
-    .prepare("SELECT domain FROM project_domains WHERE project_id = ? ORDER BY id ASC LIMIT 1")
-    .get(projectId) as { domain: string } | undefined;
-  return row?.domain ?? null;
+/** Resolves the domain selected for project health checks. The first domain is a
+ *  compatibility fallback for records created before explicit selection existed. */
+export function getProjectHealthCheckDomain(projectId: number, preferredDomainId: number | null): ProjectDomain | null {
+  if (preferredDomainId !== null) {
+    const preferred = getProjectDomain(projectId, preferredDomainId);
+    if (preferred) return preferred;
+  }
+  return listProjectDomains(projectId)[0] ?? null;
+}
+
+/** Ensures a project's stored health-check selection points to one of its domains. */
+export function reconcileProjectHealthCheckDomain(projectId: number): number | null {
+  const db = getDatabase();
+  const project = db.prepare("SELECT health_check_domain_id FROM projects WHERE id = ?").get(projectId) as
+    | { health_check_domain_id: number | null }
+    | undefined;
+  if (!project) return null;
+
+  const selected = getProjectHealthCheckDomain(projectId, project.health_check_domain_id);
+  const selectedId = selected?.id ?? null;
+  if (selectedId !== project.health_check_domain_id) {
+    db.prepare("UPDATE projects SET health_check_domain_id = ?, updated_at = ? WHERE id = ?")
+      .run(selectedId, new Date().toISOString(), projectId);
+  }
+  return selectedId;
 }
 
 /** Distinct compose service names this project's domains actually route to — the set
@@ -153,6 +171,8 @@ export function addProjectDomain(
     "INSERT INTO project_domains (project_id, domain, use_ssl, service, container_port, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
   ).run(projectId, domain, useSsl ? 1 : 0, service, containerPort, now, now);
   const row = db.prepare("SELECT * FROM project_domains WHERE id = ?").get(result.lastInsertRowid) as ProjectDomainRow;
+  db.prepare("UPDATE projects SET health_check_domain_id = COALESCE(health_check_domain_id, ?), updated_at = ? WHERE id = ?")
+    .run(row.id, now, projectId);
   return rowToProjectDomain(row);
 }
 
@@ -175,6 +195,7 @@ export function removeProjectDomain(projectId: number, domainId: number): boolea
   const result = getDatabase()
     .prepare("DELETE FROM project_domains WHERE id = ? AND project_id = ?")
     .run(domainId, projectId);
+  if (result.changes > 0) reconcileProjectHealthCheckDomain(projectId);
   return result.changes > 0;
 }
 

@@ -12,6 +12,7 @@ export interface Project {
   name: string;
   internalPort: number | null;
   healthCheckEndpoint: string | null;
+  healthCheckDomainId: number | null;
   healthCheckIntervalS: number;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
@@ -44,6 +45,7 @@ export interface ProjectRow {
   internal_port: number | null;
   health_check_url: string | null;
   health_check_endpoint: string | null;
+  health_check_domain_id: number | null;
   health_check_interval_s: number;
   last_status: string;
   last_response_ms: number | null;
@@ -76,6 +78,7 @@ export function rowToProject(row: ProjectRow): Project {
     name: row.name,
     internalPort: row.internal_port,
     healthCheckEndpoint: row.health_check_endpoint,
+    healthCheckDomainId: row.health_check_domain_id,
     healthCheckIntervalS: row.health_check_interval_s,
     lastStatus: (validStatus.includes(row.last_status) ? row.last_status : "unknown") as
       | "up"

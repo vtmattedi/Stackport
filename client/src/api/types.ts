@@ -4,6 +4,7 @@ export interface Project {
   name: string;
   internalPort: number | null;
   healthCheckEndpoint: string | null;
+  healthCheckDomainId: number | null;
   healthCheckIntervalS: number;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
@@ -450,6 +451,8 @@ export interface ContainerInfo {
   state: string;
   status: string;
   ports: string;
+  /** True when the Compose service has com.stackport.health.ignore=true. */
+  healthCheckIgnored: boolean;
   stats: ContainerStats | null;
 }
 

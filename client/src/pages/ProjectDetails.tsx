@@ -43,7 +43,7 @@ import { useSocket } from "../context/SocketContext";
 import { pollProjectAction, useSystem } from "../context/SystemContext";
 import { formatShortDateTime, formatTimeAgo } from "../lib/format";
 import { parseAnsi } from "../lib/ansi";
-import { deriveProjectStatus, expectedComposeProjectName, explainProjectStatus, findProjectStack, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
+import { deriveProjectStatus, expectedComposeProjectName, explainProjectStatus, findProjectStack, healthMonitoredContainers, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
 import { cn } from "../lib/utils";
 import { notify } from "../lib/notify";
 import styles from "./ProjectDetails.module.scss";
@@ -113,6 +113,11 @@ function DockerContainerRow({
       <span className={styles.dockerContainerName}>
         <span className={cn(styles.dockerStateDot, containerStateClass(container.state))} />
         <span className="mono">{name}</span>
+        {container.healthCheckIgnored && (
+          <span className="muted-text" style={{ fontSize: 10 }} title="Excluded from project health status by com.stackport.health.ignore=true">
+            helper
+          </span>
+        )}
       </span>
       <span className="mono">{container.state}</span>
       <span className="path-text">{container.status}</span>
@@ -236,6 +241,7 @@ export default function ProjectDetails() {
   const [addingTcpExposure, setAddingTcpExposure] = useState(false);
   const [tcpExposureError, setTcpExposureError] = useState("");
   const [configHealthEndpoint, setConfigHealthEndpoint] = useState("");
+  const [configHealthDomainId, setConfigHealthDomainId] = useState<number | null>(null);
   const [configIntervalS, setConfigIntervalS] = useState(0);
   const [configComposeFile, setConfigComposeFile] = useState("");
   const [composeFileDialogOpen, setComposeFileDialogOpen] = useState(false);
@@ -318,6 +324,7 @@ export default function ProjectDetails() {
     setConfigGithubCredentialId(projectData.githubCredentialId);
     setConfigComposeFile(projectData.composeFile ?? "");
     setConfigHealthEndpoint(projectData.healthCheckEndpoint ?? "");
+    setConfigHealthDomainId(projectData.healthCheckDomainId);
     setConfigIntervalS(projectData.healthCheckIntervalS);
     setConfigAutoDeployBranch(projectData.autoDeployBranch ?? "");
     setConfigNginxExtra(projectData.nginxExtraConfig ?? "");
@@ -624,6 +631,7 @@ export default function ProjectDetails() {
         githubRepo: configRepo || null,
         githubCredentialId: configGithubCredentialId,
         healthCheckEndpoint: configHealthEndpoint || null,
+        healthCheckDomainId: configHealthDomainId,
         healthCheckIntervalS: configIntervalS,
         autoDeployBranch: configAutoDeployBranch || null,
         nginxExtraConfig: configNginxExtra.trim() || null,
@@ -656,6 +664,10 @@ export default function ProjectDetails() {
     try {
       const created = await api.addProjectDomain(project.id, newDomainInput.trim(), newDomainService.trim(), port);
       setDomains((current) => [...current, created]);
+      if (project.healthCheckDomainId === null) {
+        setProject((current) => current ? { ...current, healthCheckDomainId: created.id } : current);
+        setConfigHealthDomainId((current) => current ?? created.id);
+      }
       setNewDomainInput("");
       setNewDomainService("");
       setNewDomainPort("");
@@ -715,7 +727,11 @@ export default function ProjectDetails() {
     if (!ok) return;
     try {
       await api.removeProjectDomain(project.id, domain.id);
-      setDomains((current) => current.filter((d) => d.id !== domain.id));
+      const remainingDomains = domains.filter((d) => d.id !== domain.id);
+      const nextDomainId = project.healthCheckDomainId === domain.id ? remainingDomains[0]?.id ?? null : project.healthCheckDomainId;
+      setDomains(remainingDomains);
+      setProject((current) => current ? { ...current, healthCheckDomainId: nextDomainId } : current);
+      if (configHealthDomainId === domain.id) setConfigHealthDomainId(nextDomainId);
     } catch (err) {
       notify.error(err, `Failed to remove ${domain.domain}`);
     }
@@ -744,6 +760,7 @@ export default function ProjectDetails() {
     configRepo !== (project.githubRepo ?? "") ||
     configGithubCredentialId !== project.githubCredentialId ||
     configHealthEndpoint !== (project.healthCheckEndpoint ?? "") ||
+    configHealthDomainId !== project.healthCheckDomainId ||
     configIntervalS !== project.healthCheckIntervalS ||
     configAutoDeployBranch !== (project.autoDeployBranch ?? "") ||
     configNginxExtra !== (project.nginxExtraConfig ?? "") ||
@@ -860,12 +877,20 @@ export default function ProjectDetails() {
   const docker = systemData?.docker ?? null;
   const expectedStackName = project ? expectedComposeProjectName(project) : "";
   const dockerStack = (docker?.available && project) ? findProjectStack(project, docker.stacks) : null;
-  const dockerRunningCount = dockerStack?.containers.filter((c) => c.state === "running").length ?? 0;
-  const dockerTotalCount = dockerStack?.containers.length ?? 0;
+  const monitoredContainers = healthMonitoredContainers(dockerStack);
+  const ignoredContainerCount = dockerStack?.containers.filter((container) => container.healthCheckIgnored).length ?? 0;
+  const dockerRunningCount = monitoredContainers.filter((c) => c.state === "running").length;
+  const dockerTotalCount = monitoredContainers.length;
   const dockerAllRunning = dockerTotalCount > 0 && dockerRunningCount === dockerTotalCount;
   const dockerAnyRunning = dockerRunningCount > 0;
-  const dockerStackStatusClass = dockerAllRunning ? styles.statusUp : dockerAnyRunning ? styles.statusUnknown : styles.statusDown;
-  const dockerStackStatus = dockerStack ? (dockerAllRunning ? "Running" : dockerAnyRunning ? "Partial" : "Stopped") : "Not found";
+  const dockerStackStatusClass = dockerTotalCount === 0 && ignoredContainerCount > 0
+    ? styles.statusUnknown
+    : dockerAllRunning ? styles.statusUp : dockerAnyRunning ? styles.statusUnknown : styles.statusDown;
+  const dockerStackStatus = dockerStack
+    ? dockerTotalCount === 0 && ignoredContainerCount > 0
+      ? "Helpers only"
+      : dockerAllRunning ? "Running" : dockerAnyRunning ? "Partial" : "Stopped"
+    : "Not found";
   const dockerPorts = dockerStack?.containers.flatMap((c) => c.ports ? [c.ports] : []) ?? [];
   const displayStatus: ProjectStatusKind = project
     ? deriveProjectStatus(project, dockerStack, docker?.available ?? false)
@@ -1173,6 +1198,7 @@ export default function ProjectDetails() {
                     {dockerStack && (
                       <span className="mono" style={{ fontSize: 12, color: "var(--dim)" }}>
                         {dockerRunningCount}/{dockerTotalCount}
+                        {ignoredContainerCount > 0 && ` +${ignoredContainerCount} helper${ignoredContainerCount === 1 ? "" : "s"}`}
                       </span>
                     )}
                     {dockerPorts.length > 0 && (
@@ -1590,7 +1616,22 @@ export default function ProjectDetails() {
                     <span>Health check</span>
                   </div>
                   <div className="field">
-                    <label>Endpoint</label>
+                    <label>Domain <span className="hint">(HTTPS target)</span></label>
+                    <AppSelect
+                      value={configHealthDomainId === null ? "" : String(configHealthDomainId)}
+                      onValueChange={(value) => setConfigHealthDomainId(value ? Number(value) : null)}
+                      disabled={domains.length === 0}
+                      placeholder="Select a domain"
+                      options={domains.length > 0
+                        ? domains.map((domain) => ({
+                            value: String(domain.id),
+                            label: domain.useSsl ? domain.domain : `${domain.domain} (SSL off)`,
+                          }))
+                        : [{ value: "", label: "No domains available", disabled: true }]}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Path</label>
                     <input type="text" placeholder="/health" value={configHealthEndpoint} onChange={(e) => setConfigHealthEndpoint(e.target.value)} />
                   </div>
                   <div className="field" style={{ minWidth: 120, flex: "none" }}>

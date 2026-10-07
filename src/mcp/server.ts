@@ -246,13 +246,14 @@ function registerTools(server: McpServer): void {
     "stackport_update_project",
     {
       title: "Update Project",
-      description: "Update Stackport project metadata. Use null to clear nullable fields. Domains are managed separately — see the project-domain tools. Optionally apply nginx when routing fields change.",
+      description: "Update Stackport project metadata. Use healthCheckDomainId to choose which project domain the relative healthCheckEndpoint runs against. Use null to clear nullable fields. Domains are managed separately — see the project-domain tools. Optionally apply nginx when routing fields change.",
       inputSchema: {
         projectId: projectIdSchema,
         name: z.string().min(1).optional(),
         groupName: optionalNullableStringSchema,
         githubRepo: optionalNullableStringSchema,
         healthCheckEndpoint: optionalNullableStringSchema,
+        healthCheckDomainId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
         healthCheckIntervalS: z.coerce.number().int().min(0).optional(),
         credentialId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
         githubCredentialId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),

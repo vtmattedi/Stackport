@@ -2,7 +2,7 @@ import { getDatabase } from "../config/database";
 import { rowToCredential, type Credential, type CredentialRow } from "../entities/Credential";
 import { rowToProject, type Project, type ProjectRow } from "../entities/Project";
 import { getNginxAppConfig } from "./nginx/configWriter";
-import { addProjectDomain } from "./projectDomains";
+import { addProjectDomain, getProjectDomain } from "./projectDomains";
 
 const GITHUB_REPO_RE = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
@@ -41,6 +41,7 @@ export interface UpdateProjectInput {
   name?: unknown;
   internalPort?: unknown;
   healthCheckEndpoint?: unknown;
+  healthCheckDomainId?: unknown;
   healthCheckIntervalS?: unknown;
   githubRepo?: unknown;
   credentialId?: unknown;
@@ -132,6 +133,9 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
   const healthCheckEndpoint = input.healthCheckEndpoint !== undefined
     ? parseOptionalHealthEndpointForUpdate(input.healthCheckEndpoint)
     : existing.health_check_endpoint;
+  const healthCheckDomainId = input.healthCheckDomainId !== undefined
+    ? parseHealthCheckDomainId(input.healthCheckDomainId, projectId)
+    : existing.health_check_domain_id;
   const healthCheckIntervalS = input.healthCheckIntervalS !== undefined
     ? parseHealthCheckInterval(input.healthCheckIntervalS, existing.health_check_interval_s)
     : existing.health_check_interval_s;
@@ -161,11 +165,11 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE projects
-     SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_interval_s = ?,
+     SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_domain_id = ?, health_check_interval_s = ?,
          github_repo = ?, credential_id = ?, github_credential_id = ?,
          auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
      WHERE id = ?`
-  ).run(name, groupName, internalPort, healthCheckEndpoint, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
+  ).run(name, groupName, internalPort, healthCheckEndpoint, healthCheckDomainId, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
 
   // Routing changes (domain add/remove/ssl-toggle) go through the /projects/:id/domains
   // routes, which trigger their own nginx apply — this only covers fields that live on
@@ -317,6 +321,18 @@ function parseOptionalHealthEndpointForUpdate(value: unknown): string | null {
   const parsed = parseHealthCheckEndpoint(value);
   if (value !== null && value !== "" && parsed === null) {
     throw new ProjectAdminError(400, "healthCheckEndpoint must be a relative path like /health or null to clear");
+  }
+  return parsed;
+}
+
+function parseHealthCheckDomainId(value: unknown, projectId: number): number | null {
+  if (value === null || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new ProjectAdminError(400, "healthCheckDomainId must be a positive integer or null");
+  }
+  if (!getProjectDomain(projectId, parsed)) {
+    throw new ProjectAdminError(400, "Health check domain must belong to this project");
   }
   return parsed;
 }

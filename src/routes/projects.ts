@@ -46,7 +46,6 @@ import { createProject as adminCreateProject, parseProjectGroupName, ProjectAdmi
 import {
   addProjectDomain,
   attachDomains,
-  getFirstProjectDomain,
   getProjectDomain,
   listProjectDomains,
   parseContainerPort,
@@ -713,7 +712,7 @@ router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, re
   }
 
   auditLog(req.user ?? "unknown", "project.domain-add", `${project.name}:${created.domain}`, "ok", { service: route.service, containerPort: route.containerPort });
-  healthChecker.schedule({ ...project, domain: getFirstProjectDomain(id) });
+  healthChecker.schedule(project);
   res.json(created);
   void runProjectNginxFlow("project.domain-add", project);
 });
@@ -748,7 +747,7 @@ router.delete("/:id/domains/:domainId", requireAuth, (req: Request<{ id: string;
   if (!removed) { res.status(404).json({ error: "Domain not found" }); return; }
 
   auditLog(req.user ?? "unknown", "project.domain-remove", project.name, "ok", { domainId });
-  healthChecker.schedule({ ...project, domain: getFirstProjectDomain(id) });
+  healthChecker.schedule(project);
   res.json({ ok: true });
   void runProjectNginxFlow("project.domain-remove", project);
 });
@@ -988,7 +987,7 @@ router.post("/", requireAuth, (req: Request, res: Response): void => {
     throw err;
   }
 
-  healthChecker.schedule({ ...project, domain: getFirstProjectDomain(project.id) });
+  healthChecker.schedule(project);
   auditLog(req.user ?? "unknown", "project.create", project.name, "ok");
   res.status(201).json(project);
   void runProjectNginxFlow("project.create", project);
@@ -1068,7 +1067,7 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
   const existing = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
   if (!existing) { res.status(404).json({ error: "Project not found" }); return; }
 
-  const { name, internalPort, healthCheckEndpoint, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks } =
+  const { name, internalPort, healthCheckEndpoint, healthCheckDomainId, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks } =
     req.body as Record<string, unknown>;
 
   const newName = typeof name === "string" && name.trim() ? name.trim().slice(0, 100) : existing.name;
@@ -1107,6 +1106,24 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
   const newIntervalS = typeof healthCheckIntervalS === "number"
     ? Math.max(0, Math.floor(healthCheckIntervalS))
     : existing.health_check_interval_s;
+
+  let newHealthCheckDomainId = existing.health_check_domain_id;
+  if (healthCheckDomainId !== undefined) {
+    if (healthCheckDomainId === null || healthCheckDomainId === "") {
+      newHealthCheckDomainId = null;
+    } else {
+      const parsed = typeof healthCheckDomainId === "number" ? healthCheckDomainId : Number(healthCheckDomainId);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        res.status(400).json({ error: "healthCheckDomainId must be a positive integer or null" });
+        return;
+      }
+      if (!getProjectDomain(id, parsed)) {
+        res.status(400).json({ error: "Health check domain must belong to this project" });
+        return;
+      }
+      newHealthCheckDomainId = parsed;
+    }
+  }
 
   let newGhRepo = existing.github_repo;
   if (githubRepo !== undefined) {
@@ -1203,15 +1220,15 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
   const now = new Date().toISOString();
   db.prepare(
     `UPDATE projects
-     SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_interval_s = ?,
+     SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_domain_id = ?, health_check_interval_s = ?,
          github_repo = ?, credential_id = ?, github_credential_id = ?,
          auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
      WHERE id = ?`
-  ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newIntervalS, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
+  ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newHealthCheckDomainId, newIntervalS, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
 
   const updated = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow;
   const project = rowToProject(updated);
-  healthChecker.schedule({ ...project, domain: getFirstProjectDomain(id) });
+  healthChecker.schedule(project);
   const shouldRebuildNginx = nginxFieldsChanged(existing, {
     internalPort: newInternalPort,
     nginxExtraConfig: newNginxExtraConfig,
@@ -1307,7 +1324,7 @@ function setProjectPaused(req: Request<{ id: string }>, res: Response, paused: b
     healthChecker.unschedule(id);
   } else {
     const resumed = rowToProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow);
-    healthChecker.schedule({ ...resumed, domain: getFirstProjectDomain(id) });
+    healthChecker.schedule(resumed);
     healthChecker.check(id).catch(console.error);
   }
   const updated = rowToProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow);

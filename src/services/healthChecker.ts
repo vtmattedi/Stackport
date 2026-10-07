@@ -2,7 +2,7 @@ import { getDatabase } from "../config/database";
 import { auditLog } from "../utils/logger";
 import { rowToProject, type ProjectRow } from "../entities/Project";
 import { notifyHealthCheckFailure } from "./notificationService";
-import { getFirstProjectDomain } from "./projectDomains";
+import { getProjectHealthCheckDomain } from "./projectDomains";
 
 const MIN_INTERVAL_S = 30;
 
@@ -24,17 +24,16 @@ class HealthChecker {
       .all(MIN_INTERVAL_S) as ProjectRow[];
 
     for (const row of rows) {
-      const project = rowToProject(row);
-      this.schedule({ ...project, domain: getFirstProjectDomain(project.id) });
+      this.schedule(rowToProject(row));
     }
   }
 
-  /** domain is a monitoring convenience (the project's first domain) — not a routing
-   *  concern, so this checks one URL per project regardless of how many domains it has. */
-  schedule(project: { id: number; domain: string | null; healthCheckEndpoint: string | null; healthCheckIntervalS: number; paused?: boolean }): void {
+  /** Checks one explicitly selected domain per project, independent of routing. */
+  schedule(project: { id: number; healthCheckDomainId: number | null; healthCheckEndpoint: string | null; healthCheckIntervalS: number; paused?: boolean }): void {
     this.unschedule(project.id);
     if (project.paused) return;
-    if (!project.domain || !project.healthCheckEndpoint || project.healthCheckIntervalS < MIN_INTERVAL_S) return;
+    const domain = getProjectHealthCheckDomain(project.id, project.healthCheckDomainId);
+    if (!domain || !project.healthCheckEndpoint || project.healthCheckIntervalS < MIN_INTERVAL_S) return;
     const ms = project.healthCheckIntervalS * 1000;
     const timer = setInterval(() => void this.check(project.id), ms);
     this.timers.set(project.id, timer);
@@ -48,10 +47,10 @@ class HealthChecker {
   async check(id: number): Promise<void> {
     const db = getDatabase();
     const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
-    const domain = getFirstProjectDomain(id);
+    const domain = row ? getProjectHealthCheckDomain(id, row.health_check_domain_id) : null;
     if (!row || !domain || !row.health_check_endpoint || row.paused) return;
 
-    const url = `https://${domain}${row.health_check_endpoint}`;
+    const url = `https://${domain.domain}${row.health_check_endpoint}`;
 
     const start = Date.now();
     let status: "up" | "down" = "down";
