@@ -22,7 +22,7 @@ type ToastId = string | number;
 type ProjectActionKind = "pull" | "compose" | "deploy" | "stop" | "stop-purge" | "build" | "recreate" | "force-rebuild" | "rollback";
 type CertbotOp = "issue" | "renew" | "delete";
 interface ProjectActionOpts {
-  /** "pull" only — checks out this branch before pulling instead of staying on whatever's checked out. */
+  /** "pull"/"deploy" only — checks out this branch before pulling instead of the default one. */
   branch?: string;
 }
 
@@ -62,7 +62,7 @@ function cancelToastAction(projectId: number, kind: string, prefix: string, labe
 const PROJECT_ACTION_REQUEST: Record<ProjectActionKind, (projectId: number, opts?: ProjectActionOpts) => Promise<ActionStartResponse>> = {
   pull: (projectId, opts) => api.pullProject(projectId, opts?.branch),
   compose: (projectId) => api.composeProject(projectId),
-  deploy: (projectId) => api.deployProject(projectId),
+  deploy: (projectId, opts) => api.deployProject(projectId, opts?.branch),
   stop: (projectId) => api.stopProject(projectId),
   "stop-purge": (projectId) => api.stopAndPurgeProject(projectId),
   build: (projectId) => api.buildProject(projectId),

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Box, EllipsisVertical, ExternalLink, FileText, FolderDot, GitBranch,
   Hammer, Loader, Lock, Pause, Play, Plus, RefreshCw, Save, ScrollText, Square, Trash2, Upload, X, GitCommit, Activity, Zap, FlameKindling,
-  SquareTerminal, Radio, RotateCw, KeyRound, AlertTriangle,
+  SquareTerminal, Radio, RotateCw, KeyRound, AlertTriangle, ChevronRight, Rocket,
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
 import { ProjectGroupField } from "../components/ProjectGroupField";
@@ -63,6 +63,51 @@ function DetailRow({ label, value }: { label: string; value: ReactNode }) {
     <div className={styles.detailRow}>
       <span className="muted-text">{label}</span>
       <span>{value}</span>
+    </div>
+  );
+}
+
+/** A collapsible group inside the Project Config form; open state is remembered per section. */
+function ConfigSection({
+  title,
+  actions,
+  storageKey,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  actions?: ReactNode;
+  storageKey: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const key = `stackport:config-section:${storageKey}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      return stored === null ? defaultOpen : stored === "1";
+    } catch {
+      return defaultOpen;
+    }
+  });
+  function toggle() {
+    setOpen(!open);
+    try {
+      localStorage.setItem(key, open ? "0" : "1");
+    } catch {
+      // storage unavailable — state just won't persist
+    }
+  }
+  return (
+    <div className={cn(styles.runtimeSection, !open && styles.runtimeSectionCollapsed)}>
+      <div className={styles.runtimeSectionHeader}>
+        <button type="button" className={styles.sectionToggle} onClick={toggle} aria-expanded={open}>
+          <ChevronRight size={12} className={cn(styles.sectionChevron, open && styles.sectionChevronOpen)} />
+          {title}
+        </button>
+        {actions}
+      </div>
+      {open && children}
     </div>
   );
 }
@@ -333,12 +378,12 @@ export default function ProjectDetails() {
     if (projectData.branches.length > 0) setBranches(projectData.branches);
   }
 
-  async function loadBranches() {
+  async function loadBranches(refresh = true) {
     if (!project?.githubRepo) return;
     setLoadingBranches(true);
     setBranchError("");
     try {
-      const data = await api.getProjectBranches(project.id);
+      const data = await api.getProjectBranches(project.id, refresh);
       setBranches(data.branches);
       setConfigAutoDeployBranch((current) => current || data.autoDeployBranch || "");
     } catch (err) {
@@ -619,8 +664,8 @@ export default function ProjectDetails() {
     }
   }
 
-  async function saveProjectConfig(e: React.FormEvent) {
-    e.preventDefault();
+  async function saveProjectConfig(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!project) return;
     const toastId = notify.loading("Saving project runtime settings...");
     setSavingConfig(true);
@@ -789,6 +834,9 @@ export default function ProjectDetails() {
     if (!project) return;
     void loadDeploys();
     void loadRevisions();
+    // Branch list is cached server-side (refreshed by the GitHub poller), so this is
+    // normally instant; it only reaches GitHub when nothing has been cached yet.
+    if (project.githubRepo && project.branches.length === 0) void loadBranches(false);
   }, [project?.id]);
 
   // Latest cpu/mem/net numbers arrive live over WS the instant the sampler writes
@@ -870,6 +918,10 @@ export default function ProjectDetails() {
     deployLogRef.current.scrollTop = deployLogRef.current.scrollHeight;
   }, [deployLog]);
 
+  const repoBusy = pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding ||
+    stoppingProject || purgingProject || uploadingFiles || redeployingService !== null || droppingVolumesService !== null;
+  /** Branch a Pull/Redeploy will check out: the explicit pick, else the auto-deploy branch. */
+  const selectedBranch = pullBranch || project?.autoDeployBranch || "";
   const certbotAvailable = !!(systemData?.certbot?.available && systemData?.certbot?.emailConfigured);
   function certbotEntryFor(domain: string) {
     return systemData?.certbot?.entries?.find((e) => e.domain === domain) ?? null;
@@ -966,57 +1018,101 @@ export default function ProjectDetails() {
                 ) : (
                   <span className="muted-text" style={{ fontSize: 13 }}>No domain</span>
                 )}
-                <div className={styles.statusActions}>
-                  {project.sourceType === "github" && (
-                    <>
-                      <AppSelect
-                        value={pullBranch}
-                        onValueChange={setPullBranch}
-                        disabled={pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding || stoppingProject || project.paused}
-                        options={[
-                          { value: "", label: "Current branch" },
-                          ...branches.map((b) => ({ value: b.name, label: b.name })),
-                        ]}
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => void runProjectCommand("pull", pullBranch ? { branch: pullBranch } : undefined)}
-                        disabled={pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding || stoppingProject || !project.githubRepo || project.paused}
-                        title={pullBranch ? `Pull and switch to ${pullBranch}` : "Pull the currently checked-out branch"}
-                      >
-                        {pullingRepo ? <Loader size={13} className="spin" /> : <GitBranch size={13} />}
-                        Pull from GitHub
-                      </Button>
-                    </>
-                  )}
-                  {project.sourceType === "upload" && (
+                {project.lastCommitSha && (
+                  <span className={styles.statusCommit} title={project.lastCommitMessage ?? undefined}>
+                    <GitCommit size={12} />
+                    <span className="mono">{project.lastCommitSha.slice(0, 7)}</span>
+                    {project.lastCommitAt && <span className="muted-text">{formatTimeAgo(project.lastCommitAt)}</span>}
+                  </span>
+                )}
+              </div>
+
+              <div className={styles.toolbar}>
+                {project.sourceType === "github" && (
+                  <div className={styles.branchGroup} role="group" aria-label="Branch">
+                    <GitBranch size={13} className={styles.branchGroupIcon} />
+                    <AppSelect
+                      value={pullBranch}
+                      onValueChange={setPullBranch}
+                      disabled={repoBusy || project.paused}
+                      triggerClassName={styles.branchSelect}
+                      placeholder="Select a branch"
+                      options={[
+                        ...(project.autoDeployBranch
+                          ? [{ value: "", label: `${project.autoDeployBranch} (auto-deploy)` }]
+                          : [{ value: "", label: "Select a branch", disabled: true }]),
+                        ...branches
+                          .filter((b) => b.name !== project.autoDeployBranch)
+                          .map((b) => ({ value: b.name, label: b.name })),
+                      ]}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => void loadBranches(true)}
+                      disabled={loadingBranches || !project.githubRepo}
+                      title="Refresh branch list from GitHub"
+                      aria-label="Refresh branch list"
+                    >
+                      {loadingBranches ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}
+                    </Button>
+                    <span className={styles.toolbarDivider} />
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => setReuploadOpen((open) => !open)}
-                      disabled={uploadingFiles || deploying || composingProject || recreatingProject || forceRebuilding || stoppingProject || project.paused}
+                      size="sm"
+                      onClick={() => void runProjectCommand("pull", pullBranch ? { branch: pullBranch } : undefined)}
+                      disabled={repoBusy || !project.githubRepo || !selectedBranch || project.paused}
+                      title={selectedBranch ? `Pull ${selectedBranch} from GitHub (no rebuild)` : "Pick a branch first"}
                     >
-                      {uploadingFiles ? <Loader size={13} className="spin" /> : <Upload size={13} />}
-                      Re-upload files
+                      {pullingRepo ? <Loader size={13} className="spin" /> : <GitBranch size={13} />}
+                      Pull
                     </Button>
-                  )}
-                  <Button type="button" variant="outline" onClick={() => setEnvManagerOpen(true)}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void runProjectCommand("deploy", pullBranch ? { branch: pullBranch } : undefined)}
+                      disabled={repoBusy || !project.githubRepo || !selectedBranch || project.paused}
+                      title={selectedBranch ? `Pull ${selectedBranch}, then docker compose up -d --build` : "Pick a branch first"}
+                    >
+                      {deploying ? <Loader size={13} className="spin" /> : <Rocket size={13} />}
+                      Redeploy
+                    </Button>
+                  </div>
+                )}
+                {project.sourceType === "upload" && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setReuploadOpen((open) => !open)}
+                    disabled={repoBusy || project.paused}
+                  >
+                    {uploadingFiles ? <Loader size={13} className="spin" /> : <Upload size={13} />}
+                    Re-upload files
+                  </Button>
+                )}
+                <div className={styles.toolbarActions}>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setEnvManagerOpen(true)}>
                     <KeyRound size={13} />
-                    Env Manager
+                    Env
                     <span className={styles.actionCount}>{envFiles.length}</span>
                   </Button>
                   <Button
                     type="button"
+                    variant={project.sourceType === "github" ? "outline" : "default"}
+                    size="sm"
                     onClick={() => void runProjectCommand("compose")}
-                    disabled={composingProject || recreatingProject || forceRebuilding || deploying || pullingRepo || stoppingProject || (project.sourceType === "github" && !project.githubRepo) || project.paused}
+                    disabled={repoBusy || (project.sourceType === "github" && !project.githubRepo) || project.paused}
+                    title="docker compose up -d --build on the current checkout (no git pull)"
                   >
                     {composingProject ? <Loader size={13} className="spin" /> : <Box size={13} />}
-                    Docker Compose
+                    Compose up
                   </Button>
                   <Popover>
                     <PopoverTrigger asChild>
-                      <Button type="button" variant="outline">
+                      <Button type="button" variant="outline" size="sm">
                         <EllipsisVertical size={13} />
                         Actions
                       </Button>
@@ -1110,23 +1206,6 @@ export default function ProjectDetails() {
                 </div>
               </div>
 
-              {(project.lastCommitSha || project.lastCommitAt) && (
-                <div className={styles.commitInfo}>
-                  {project.lastCommitSha && (
-                    <span className={cn("mono", styles.commitSha)}>{project.lastCommitSha.slice(0, 7)}</span>
-                  )}
-                  {project.lastCommitMessage && (
-                    <span className={styles.commitMsg}>{project.lastCommitMessage}</span>
-                  )}
-                  {project.lastCommitAuthor && (
-                    <span className={cn("mono", styles.commitMeta)}>{project.lastCommitAuthor}</span>
-                  )}
-                  {project.lastCommitAt && (
-                    <span className={cn("mono", styles.commitMeta)}>{formatShortDateTime(project.lastCommitAt, "")}</span>
-                  )}
-                </div>
-              )}
-
               {reuploadOpen && project.sourceType === "upload" && (
                 <div className={styles.commitInfo} style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
                   <div className="field field-wide">
@@ -1185,6 +1264,7 @@ export default function ProjectDetails() {
             <ExpandableCard
               icon={<Box size={13} />}
               title="Docker"
+              storageKey="project.docker"
               summary={
                 systemData === null ? (
                   <Loader size={11} className="spin" />
@@ -1294,28 +1374,29 @@ export default function ProjectDetails() {
             </ExpandableCard>
 
             {/* ── Project config card ──────────────────────────────────── */}
-            <div className={cn("card", styles.runtimeCard)}>
-              <div className="card-title">
-                Project Config
+            <ExpandableCard
+              icon={<FileText size={13} />}
+              title="Project Config"
+              storageKey="project.config"
+              className={styles.runtimeCard}
+              summary={runtimeChanged ? <span className={styles.unsavedHint}>Unsaved changes</span> : undefined}
+              actions={(
                 <Button
-                  type="submit"
-                  form={runtimeFormId}
+                  type="button"
                   size="xs"
-                  style={{ marginLeft: "auto" }}
+                  onClick={() => void saveProjectConfig()}
                   disabled={savingConfig || !runtimeChanged}
                 >
                   {savingConfig ? <Loader size={12} className="spin" /> : <Save size={12} />}
                   Save
                 </Button>
-              </div>
+              )}
+            >
               {configError && <div className="alert alert-error">{configError}</div>}
 
               <form id={runtimeFormId} className={styles.runtimeForm} onSubmit={(e) => void saveProjectConfig(e)}>
                 <ProjectGroupField value={configGroupName} onValueChange={setConfigGroupName} projects={allProjects ?? []} disabled={savingConfig} />
-                <div className={styles.runtimeSection}>
-                  <div className={styles.runtimeSectionHeader}>
-                    <span>Repository</span>
-                  </div>
+                <ConfigSection title="Repository" storageKey="repository">
                   <div className="field field-wide">
                     <label>GitHub repo <span className="hint mono">(owner/repo)</span></label>
                     <input type="text" value={configRepo} onChange={(e) => setConfigRepo(e.target.value)} />
@@ -1362,12 +1443,9 @@ export default function ProjectDetails() {
                     />
                     {branchError && <div style={{ fontSize: "0.78rem", color: "var(--danger)", marginTop: 4 }}>{branchError}</div>}
                   </div>
-                </div>
+                </ConfigSection>
 
-                <div className={styles.runtimeSection}>
-                  <div className={styles.runtimeSectionHeader}>
-                    <span>Ingress</span>
-                  </div>
+                <ConfigSection title="Ingress" storageKey="ingress">
                   <div className="field field-wide" style={{ gridColumn: "1 / -1" }}>
                     <label>Domains <span className="hint">(each domain routes to its own compose service + container port over the stackport-proxy network)</span></label>
                     <div className="row-actions" style={{ marginBottom: domains.length > 0 ? 10 : 0 }}>
@@ -1517,6 +1595,9 @@ export default function ProjectDetails() {
                       </div>
                     )}
                   </div>
+                </ConfigSection>
+
+                <ConfigSection title="Compose & Nginx" storageKey="compose-nginx" defaultOpen={false}>
                   {(project.availableComposeFiles.length > 0 || project.composeFile) && (
                     <div className="field">
                       <label>Compose file</label>
@@ -1569,11 +1650,12 @@ export default function ProjectDetails() {
                       onChange={(e) => setConfigNginxExtraBlocks(e.target.value)}
                     />
                   </div>
-                </div>
+                </ConfigSection>
 
-                <div className={styles.runtimeSection}>
-                  <div className={styles.runtimeSectionHeader}>
-                    <span>Deployment history</span>
+                <ConfigSection
+                  title="Deployment history"
+                  storageKey="deployment-history"
+                  actions={(
                     <Button
                       type="button"
                       variant="outline"
@@ -1585,7 +1667,8 @@ export default function ProjectDetails() {
                       {rollingBack ? <Loader size={12} className="spin" /> : <RotateCw size={12} />}
                       Roll back
                     </Button>
-                  </div>
+                  )}
+                >
                   {revisions.length === 0 ? (
                     <div className="muted-text" style={{ fontSize: 13 }}>No recorded deployments yet.</div>
                   ) : (
@@ -1609,12 +1692,9 @@ export default function ProjectDetails() {
                       ))}
                     </div>
                   )}
-                </div>
+                </ConfigSection>
 
-                <div className={styles.runtimeSection}>
-                  <div className={styles.runtimeSectionHeader}>
-                    <span>Health check</span>
-                  </div>
+                <ConfigSection title="Health check" storageKey="health-check">
                   <div className="field">
                     <label>Domain <span className="hint">(HTTPS target)</span></label>
                     <AppSelect
@@ -1645,28 +1725,37 @@ export default function ProjectDetails() {
                       }))}
                     />
                   </div>
-                </div>
-
+                </ConfigSection>
               </form>
-            </div>
+            </ExpandableCard>
 
             {project.githubRepo && (
-              <div className="card">
-                <div className="card-title">
-                  <GitBranch size={13} />
-                  GitHub
-                  <div className="row-actions" style={{ marginLeft: "auto" }}>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => void loadBranches()}
-                      disabled={loadingBranches}
-                    >
-                      {loadingBranches ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
-                      Refresh branches
-                    </button>
-                  </div>
-                </div>
+              <ExpandableCard
+                icon={<GitBranch size={13} />}
+                title="GitHub"
+                storageKey="project.github"
+                defaultOpen
+                summary={(
+                  <span className="mono" style={{ fontSize: 12 }}>
+                    {project.githubRepo}
+                    {project.autoDeployBranch && ` · ${project.autoDeployBranch}`}
+                    {project.lastCommitSha && ` @ ${project.lastCommitSha.slice(0, 7)}`}
+                  </span>
+                )}
+                actions={(
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => void loadBranches(true)}
+                    disabled={loadingBranches}
+                    title={project.branchesFetchedAt ? `Branch list updated ${formatTimeAgo(project.branchesFetchedAt)}` : "Fetch branches from GitHub"}
+                  >
+                    {loadingBranches ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
+                    Refresh branches
+                  </Button>
+                )}
+              >
 
                 <div className={styles.detailGrid}>
                   <DetailRow label="Repository" value={<a className="ext-link mono" href={`https://github.com/${project.githubRepo}`} target="_blank" rel="noopener noreferrer">{project.githubRepo} <ExternalLink size={10} /></a>} />
@@ -1683,12 +1772,15 @@ export default function ProjectDetails() {
 
                 {branches.length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: "0.78rem", color: "var(--dim)", marginBottom: 6 }}>Branches</div>
+                    <div style={{ fontSize: "0.78rem", color: "var(--dim)", marginBottom: 6 }}>
+                      Branches ({branches.length})
+                      {project.branchesFetchedAt && <span> · updated {formatTimeAgo(project.branchesFetchedAt)}</span>}
+                    </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {branches.map((b) => (
                         <div key={b.name} style={{ display: "flex", gap: 10, alignItems: "baseline", fontSize: "0.82rem" }}>
-                          <span className="mono" style={{ minWidth: 140, color: b.name === project.autoDeployBranch ? "var(--primary)" : "inherit" }}>
-                            <GitCommit size={11} style={{ marginRight: 4 }} />
+                          <span className="mono" style={{ minWidth: 140, display: "inline-flex", alignItems: "center", gap: 4, color: b.name === project.autoDeployBranch ? "var(--primary)" : "inherit" }}>
+                            <GitCommit size={11} />
                             {b.name}
                             {b.name === project.autoDeployBranch && <span style={{ marginLeft: 4, fontSize: "0.75em", color: "var(--primary)" }}>▶ auto-deploy</span>}
                           </span>
@@ -1723,15 +1815,22 @@ export default function ProjectDetails() {
                     {loadingDeploys && <Loader size={12} className="spin" style={{ marginTop: 6 }} />}
                   </div>
                 )}
-              </div>
+              </ExpandableCard>
             )}
 
-            <div className="card">
-              <div className="card-title">
-                <Activity size={13} />
-                Resource usage
-                <span className="muted-text" style={{ fontWeight: 400, marginLeft: 4 }}>5-min avg, last 24h</span>
-              </div>
+            <ExpandableCard
+              icon={<Activity size={13} />}
+              title="Resource usage"
+              storageKey="project.resources"
+              defaultOpen
+              summary={(
+                <span className="mono" style={{ fontSize: 12 }}>
+                  {resources?.latest
+                    ? `CPU ${resources.latest.cpuPercent.toFixed(1)}% · Mem ${resources.latest.memPercent.toFixed(1)}%`
+                    : "5-min avg, last 24h"}
+                </span>
+              )}
+            >
               <div className={styles.detailGrid} style={{ marginBottom: 12 }}>
                 <DetailRow label="CPU" value={resources?.latest ? `${resources.latest.cpuPercent.toFixed(1)}%` : "—"} />
                 <DetailRow
@@ -1742,19 +1841,20 @@ export default function ProjectDetails() {
                 />
               </div>
               <ProjectResourceCharts resources={resources} chartHeight={180} />
-            </div>
+            </ExpandableCard>
 
-            <div className="card">
-              <div className="card-title">
-                <GitBranch size={13} />
-                Project Metadata
-              </div>
+            <ExpandableCard
+              icon={<FolderDot size={13} />}
+              title="Project Metadata"
+              storageKey="project.metadata"
+              summary={<span className="mono" style={{ fontSize: 12 }}>#{project.id}</span>}
+            >
               <div className={styles.detailGrid}>
                 <DetailRow label="Project ID" value={<span className="mono">{project.id}</span>} />
                 <DetailRow label="Created" value={<span className="mono">{formatShortDateTime(project.createdAt)}</span>} />
                 <DetailRow label="Updated" value={<span className="mono">{formatShortDateTime(project.updatedAt)}</span>} />
               </div>
-            </div>
+            </ExpandableCard>
           </>
         ) : null}
 

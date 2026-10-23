@@ -20,6 +20,7 @@ export interface Project {
   lastCommitAuthor: string | null;
   lastCommitAt: string | null;
   branches: GitHubBranch[];
+  branchesFetchedAt: string | null;
   sourceType: "github" | "upload";
   nginxExtraConfig: string | null;
   nginxExtraBlocks: string | null;
@@ -169,6 +170,7 @@ export interface ProjectUpdateEvent {
 export interface ProjectBranchesResult {
   branches: GitHubBranch[];
   autoDeployBranch: string | null;
+  fetchedAt: string | null;
 }
 
 export interface ProjectDeployEvent {

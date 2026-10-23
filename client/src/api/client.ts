@@ -343,8 +343,10 @@ export const api = {
     requestActionStart(`/projects/${projectId}/containers/${encodeURIComponent(service)}/redeploy`),
   dropProjectServiceVolumes: (projectId: number, service: string) =>
     requestActionStart(`/projects/${projectId}/containers/${encodeURIComponent(service)}/drop-volumes`),
-  deployProject: (projectId: number) =>
-    requestActionStart(`/projects/${projectId}/deploy`),
+  deployProject: (projectId: number, branch?: string | null) =>
+    requestActionStart(`/projects/${projectId}/deploy`, branch
+      ? { method: "POST", body: JSON.stringify({ branch }) }
+      : undefined),
   stopProject: (projectId: number) =>
     requestActionStart(`/projects/${projectId}/stop`),
   stopAndPurgeProject: (projectId: number) =>
@@ -369,8 +371,9 @@ export const api = {
     request<RunningProjectAction[]>("/projects/actions/running"),
   cancelProjectAction: (projectId: number) =>
     request<{ ok: boolean }>(`/projects/${projectId}/actions/cancel`, { method: "POST" }),
-  getProjectBranches: (projectId: number) =>
-    request<ProjectBranchesResult>(`/projects/${projectId}/branches`),
+  /** Cached branch list (kept fresh by the GitHub poller); `refresh` forces a live GitHub fetch. */
+  getProjectBranches: (projectId: number, refresh = false) =>
+    request<ProjectBranchesResult>(`/projects/${projectId}/branches${refresh ? "?refresh=1" : ""}`),
   issueProjectDomainSsl: (projectId: number, domainId: number) =>
     requestActionStart(`/projects/${projectId}/domains/${domainId}/ssl/issue`),
   getProjectDeploys: (projectId: number) =>
