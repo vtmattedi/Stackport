@@ -38,6 +38,13 @@ function trimLog(log: string): string {
 class ActionRegistry {
   private actions = new Map<string, ActionRecord>();
   private cancelers = new Map<string, () => void>();
+  private finishListeners = new Set<(record: ActionRecord) => void>();
+
+  /** Called after any action finishes (success or failure). Returns an unsubscribe function. */
+  onFinish(listener: (record: ActionRecord) => void): () => void {
+    this.finishListeners.add(listener);
+    return () => this.finishListeners.delete(listener);
+  }
 
   tryStart(
     key: string,
@@ -103,6 +110,9 @@ class ActionRegistry {
     if (output !== undefined) record.log = trimLog(output);
     if (meta) record.meta = { ...record.meta, ...meta };
     this.cancelers.delete(key);
+    for (const listener of this.finishListeners) {
+      try { listener(record); } catch { /* a listener must not break finishing */ }
+    }
   }
 
   /** Registers the kill-switch for the process currently backing a running action. Overwritten as a multi-step action (e.g. pull's git fetch → checkout) moves from one child process to the next. */

@@ -423,6 +423,18 @@ export function initializeDatabase(): Database.Database {
   if (!projectCols.some((c) => c.name === "branches_fetched_at")) {
     db.exec("ALTER TABLE projects ADD COLUMN branches_fetched_at TEXT");
   }
+  if (!projectCols.some((c) => c.name === "deploy_trigger")) {
+    db.exec("ALTER TABLE projects ADD COLUMN deploy_trigger TEXT NOT NULL DEFAULT 'poller'");
+  }
+  if (!projectCols.some((c) => c.name === "pending_deploy_sha")) {
+    db.exec("ALTER TABLE projects ADD COLUMN pending_deploy_sha TEXT");
+  }
+  if (!projectCols.some((c) => c.name === "github_checked_at")) {
+    db.exec("ALTER TABLE projects ADD COLUMN github_checked_at TEXT");
+  }
+  if (!projectCols.some((c) => c.name === "github_check_error")) {
+    db.exec("ALTER TABLE projects ADD COLUMN github_check_error TEXT");
+  }
   if (!projectCols.some((c) => c.name === "source_type")) {
     db.exec("ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'github'");
   }
