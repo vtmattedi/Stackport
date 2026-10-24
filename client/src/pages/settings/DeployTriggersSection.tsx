@@ -18,6 +18,7 @@ export default function DeployTriggersSection() {
   const [ghCredentialIdDraft, setGhCredentialIdDraft] = useState<number | null>(null);
   const [ghIntervalDraft, setGhIntervalDraft] = useState("300");
   const [ghEnabledDraft, setGhEnabledDraft] = useState(false);
+  const [safetyDraft, setSafetyDraft] = useState(true);
   const [savingGh, setSavingGh] = useState(false);
   const [pollingGh, setPollingGh] = useState(false);
   const [loadingGhConfig, setLoadingGhConfig] = useState(false);
@@ -31,6 +32,8 @@ export default function DeployTriggersSection() {
       .then(([cfg, creds]) => {
         setGhConfig(cfg);
         setGhEnabledDraft(cfg.enabled);
+    setSafetyDraft(cfg.webhookSafetyCheck);
+        setSafetyDraft(cfg.webhookSafetyCheck);
         setGhIntervalDraft(String(cfg.pollIntervalS));
         setGhCredentialIdDraft(cfg.credentialId);
         setGhCredentials(creds.filter((c) => c.type === "github"));
@@ -54,6 +57,7 @@ export default function DeployTriggersSection() {
         enabled: ghEnabledDraft,
         credentialId: ghCredentialIdDraft,
         pollIntervalS: Number(ghIntervalDraft) || 300,
+        webhookSafetyCheck: safetyDraft,
       });
       syncGhConfig(cfg);
       notify.success("GitHub poller config saved.", { id: toastId });
@@ -91,6 +95,7 @@ export default function DeployTriggersSection() {
 
   const ghChanged = ghConfig ? (
     ghEnabledDraft !== ghConfig.enabled ||
+    safetyDraft !== ghConfig.webhookSafetyCheck ||
     ghCredentialIdDraft !== ghConfig.credentialId ||
     ghIntervalDraft !== String(ghConfig.pollIntervalS)
   ) : true;
@@ -172,6 +177,26 @@ export default function DeployTriggersSection() {
                 </div>
               )}
             </div>
+          </div>
+
+          <p className="muted-text" style={{ margin: 0, fontSize: "0.82rem" }}>
+            Each project picks its trigger on its own page: Poller, Webhook or Manual. The poller checks projects set to Poller on this interval.
+          </p>
+
+          <div className={styles.webhookSettings}>
+            <strong>Webhooks</strong>
+            {ghConfig?.webhookBaseUrl ? (
+              <span className="muted-text">GitHub will call <span className="mono">{ghConfig.webhookBaseUrl}/api/hooks/github/…</span></span>
+            ) : (
+              <span className={styles.webhookUnavailable}>{ghConfig?.webhookUnavailableReason ?? "Webhooks are unavailable."}</span>
+            )}
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: "0.85rem", cursor: "pointer" }}>
+              <Switch checked={safetyDraft} onCheckedChange={setSafetyDraft} />
+              Safety check webhook projects every 30 minutes
+            </label>
+            <span className="muted-text" style={{ fontSize: "0.78rem" }}>
+              Catches pushes whose delivery was lost while Stackport was down. Runs with the poller, so the poller must be enabled.
+            </span>
           </div>
 
           {ghConfig && (

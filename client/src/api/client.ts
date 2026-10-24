@@ -3,6 +3,8 @@ import type {
   AuditLogResult,
   Project,
   DeployTrigger,
+  DeployTriggerResult,
+  ProjectWebhookInfo,
   ProjectDomain,
   TcpExposure,
   ComposeIngressTarget,
@@ -314,7 +316,10 @@ export const api = {
   favoriteProject: (id: number) => request<Project>(`/projects/${id}/favorite`, { method: "POST" }),
   unfavoriteProject: (id: number) => request<Project>(`/projects/${id}/unfavorite`, { method: "POST" }),
   setDeployTrigger: (id: number, trigger: DeployTrigger) =>
-    request<Project>(`/projects/${id}/deploy-trigger`, { method: "PUT", body: JSON.stringify({ trigger }) }),
+    request<DeployTriggerResult>(`/projects/${id}/deploy-trigger`, { method: "PUT", body: JSON.stringify({ trigger }) }),
+  getProjectWebhook: (id: number) => request<ProjectWebhookInfo>(`/projects/${id}/webhook`),
+  pingProjectWebhook: (id: number) => request<{ ok: boolean }>(`/projects/${id}/webhook/ping`, { method: "POST" }),
+  reinstallProjectWebhook: (id: number) => request<DeployTriggerResult>(`/projects/${id}/webhook/reinstall`, { method: "POST" }),
   checkProject: (id: number) => request<Project>(`/projects/${id}/check`, { method: "POST" }),
   listProjectEnvFiles: (projectId: number) =>
     request<ProjectEnvFile[]>(`/projects/${projectId}/env-files`),
@@ -491,7 +496,7 @@ export const api = {
     }),
   // GitHub Poller
   getGithubPollerConfig: () => request<GitHubPollerConfig>("/github-poller"),
-  updateGithubPollerConfig: (data: { enabled?: boolean; credentialId?: number | null; pollIntervalS?: number }) =>
+  updateGithubPollerConfig: (data: { enabled?: boolean; credentialId?: number | null; pollIntervalS?: number; webhookSafetyCheck?: boolean }) =>
     request<GitHubPollerConfig>("/github-poller", { method: "PUT", body: JSON.stringify(data) }),
   triggerGithubPoll: () => request<{ ok: boolean }>("/github-poller/poll", { method: "POST" }),
 

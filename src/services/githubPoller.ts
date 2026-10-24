@@ -12,6 +12,8 @@ export interface GitHubPollerConfig {
   lastPolledAt: string | null;
   lastError: string | null;
   lastPollOutput: string | null;
+  /** Also check webhook projects every WEBHOOK_SAFETY_INTERVAL_MS, to catch pushes whose delivery was lost. */
+  webhookSafetyCheck: boolean;
   updatedAt: string | null;
 }
 
@@ -31,6 +33,7 @@ interface GithubPollerRow {
   last_polled_at: string | null;
   last_error: string | null;
   last_poll_output: string | null;
+  webhook_safety_check?: number;
   updated_at: string;
 }
 
@@ -134,6 +137,11 @@ function projectToken(project: Project, globalCredentialId: number | null): stri
   const credId = project.githubCredentialId ?? project.credentialId;
   if (credId != null) return resolveToken(credId);
   return resolveToken(globalCredentialId);
+}
+
+/** The token used for GitHub API calls on this project's repo (project credential, else the poller's). */
+export function tokenForProject(project: Project): string | null {
+  return projectToken(project, globalCredentialId());
 }
 
 function globalCredentialId(): number | null {
@@ -248,6 +256,7 @@ export function resetGithubTrackingIfChanged(
 }
 
 const FIRST_POLL_DELAY_MS = 15_000;
+const WEBHOOK_SAFETY_INTERVAL_MS = 30 * 60_000;
 
 class GitHubPoller {
   private timer: NodeJS.Timeout | null = null;
@@ -256,7 +265,7 @@ class GitHubPoller {
   getConfig(): GitHubPollerConfig {
     const db = getDatabase();
     const row = db.prepare("SELECT * FROM github_poller_config WHERE id = 1").get() as GithubPollerRow | undefined;
-    if (!row) return { enabled: false, credentialId: null, pollIntervalS: 300, lastPolledAt: null, lastError: null, lastPollOutput: null, updatedAt: null };
+    if (!row) return { enabled: false, credentialId: null, pollIntervalS: 300, lastPolledAt: null, lastError: null, lastPollOutput: null, webhookSafetyCheck: true, updatedAt: null };
     return {
       enabled: !!row.enabled,
       credentialId: row.credential_id,
@@ -264,11 +273,12 @@ class GitHubPoller {
       lastPolledAt: row.last_polled_at,
       lastError: row.last_error,
       lastPollOutput: row.last_poll_output,
+      webhookSafetyCheck: row.webhook_safety_check !== 0,
       updatedAt: row.updated_at,
     };
   }
 
-  saveConfig(data: { enabled?: boolean; credentialId?: number | null; pollIntervalS?: number }): GitHubPollerConfig {
+  saveConfig(data: { enabled?: boolean; credentialId?: number | null; pollIntervalS?: number; webhookSafetyCheck?: boolean }): GitHubPollerConfig {
     const db = getDatabase();
     const now = new Date().toISOString();
     const existing = db.prepare("SELECT * FROM github_poller_config WHERE id = 1").get() as GithubPollerRow | undefined;
@@ -286,6 +296,9 @@ class GitHubPoller {
         data.pollIntervalS ?? existing.poll_interval_s,
         now,
       );
+    }
+    if (data.webhookSafetyCheck !== undefined) {
+      db.prepare("UPDATE github_poller_config SET webhook_safety_check = ? WHERE id = 1").run(data.webhookSafetyCheck ? 1 : 0);
     }
 
     this.reschedule();
@@ -333,9 +346,14 @@ class GitHubPoller {
     let errorCount = 0;
 
     try {
+      // Webhook projects get a slow safety check on top of their hook: a push sent while
+      // Stackport was down is never redelivered, and this catches it late instead of never.
+      const safetyCutoff = new Date(Date.now() - WEBHOOK_SAFETY_INTERVAL_MS).toISOString();
       const projects = db.prepare(
-        "SELECT * FROM projects WHERE github_repo IS NOT NULL AND github_repo != '' AND paused = 0 AND deploy_trigger = 'poller'"
-      ).all() as ProjectRow[];
+        `SELECT * FROM projects WHERE github_repo IS NOT NULL AND github_repo != '' AND paused = 0
+         AND (deploy_trigger = 'poller'
+              OR (? = 1 AND deploy_trigger = 'webhook' AND (github_checked_at IS NULL OR github_checked_at < ?)))`
+      ).all(cfg.webhookSafetyCheck ? 1 : 0, safetyCutoff) as ProjectRow[];
 
       outputLines.push(`Found ${projects.length} project(s) with GitHub repos`);
 
@@ -360,6 +378,11 @@ class GitHubPoller {
               ).run(watched.sha, watched.commitMessage, watched.commitAuthor, watched.commitAt, project.id);
               outputLines.push(`${prefix} First poll on ${watchBranch}: ${shortSha} stored as baseline (no deploy)`);
             } else if (watched.sha !== project.lastCommitSha) {
+              if (project.deployTrigger === "webhook" && project.pendingDeploySha !== watched.sha) {
+                // The hook should have delivered this push already; flag it so the page shows the hook needs a look.
+                db.prepare("UPDATE projects SET hook_status = 'failing' WHERE id = ?").run(project.id);
+                outputLines.push(`${prefix} webhook missed ${shortSha}; deploying from the safety check`);
+              }
               const outcome = requestAutoDeploy(project.id, watched, "auto");
               outputLines.push(outcome === "started"
                 ? `${prefix} NEW commit on ${watchBranch}: ${shortSha} — ${watched.commitMessage ?? "—"} → deploy triggered`

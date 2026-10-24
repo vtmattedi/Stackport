@@ -1,0 +1,87 @@
+.control {
+  display: grid;
+  gap: 6px;
+  font-size: 0.82rem;
+  max-width: 640px;
+}
+
+.panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--dim);
+}
+
+.waiting { background: var(--dim); }
+.verified { background: var(--success); }
+.failing { background: var(--danger); }
+
+.warn { color: var(--danger); }
+
+.manual {
+  display: grid;
+  gap: 6px;
+  color: var(--dim);
+}
+
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+
+  > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+}
+
+.deliveries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+
+  li {
+    display: grid;
+    grid-template-columns: 76px minmax(0, auto) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: baseline;
+
+    > span:nth-child(3) {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+}
+
+.outcome {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--dim);
+}
+
+.good { color: var(--success); }
+.bad { color: var(--danger); }
