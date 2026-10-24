@@ -20,7 +20,9 @@ import {
   Trash2,
   Upload,
   X,
+  Search,
 } from "lucide-react";
+import styles from "./Projects.module.scss";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
 import { ProjectGroupField } from "../components/ProjectGroupField";
 import { ProjectIngressSelect } from "../components/ProjectIngressSelect";
@@ -122,6 +124,7 @@ function WizardTimeline({ currentStep, statusByStep, steps = WIZARD_STEPS }: { c
                 </TooltipTrigger>
                 <TooltipContent side="bottom">{step.label}</TooltipContent>
               </Tooltip>
+              {active && <span className="wizard-timeline-label">{step.label}</span>}
               {index < steps.length - 1 && <span className={`wizard-timeline-line${done ? " wizard-timeline-line-done" : ""}`} />}
             </div>
           );
@@ -155,7 +158,14 @@ export default function Projects() {
   const loading = projectsData === null;
   const [groupFilter, setGroupFilter] = useState("");
   const groupNames = [...new Set(projects.map(project => project.groupName).filter((name): name is string => !!name))].sort((a, b) => a.localeCompare(b));
-  const visibleProjects = projects.filter(project => !groupFilter || (groupFilter === "ungrouped" ? !project.groupName : project.groupName === groupFilter.slice(6)));
+  const [search, setSearch] = useState("");
+  const searchTerm = search.trim().toLowerCase();
+  const visibleProjects = projects
+    .filter(project => !groupFilter || (groupFilter === "ungrouped" ? !project.groupName : project.groupName === groupFilter.slice(6)))
+    .filter(project => !searchTerm
+      || project.name.toLowerCase().includes(searchTerm)
+      || (project.githubRepo ?? "").toLowerCase().includes(searchTerm)
+      || (project.domains ?? []).some(domain => domain.domain.toLowerCase().includes(searchTerm)));
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const githubCredentials = credentials.filter((credential) => credential.type === "github");
   const [togglingFavoriteId, setTogglingFavoriteId] = useState<number | null>(null);
@@ -669,15 +679,24 @@ export default function Projects() {
 
         <TooltipProvider>
           <div className="card">
-            <div className="card-title" style={{justifyContent: "space-between"}}>
-              <span><FolderDot size={12} />Projects</span>
-              <AppSelect value={groupFilter} onValueChange={setGroupFilter} size="sm"
+            <div className={styles.listToolbar}>
+              <label className={styles.searchBox}>
+                <Search size={13} />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by name, repo or domain"
+                  aria-label="Search projects"
+                />
+              </label>
+              <AppSelect value={groupFilter} onValueChange={setGroupFilter} size="sm" triggerClassName={styles.groupFilter}
                 options={[{value: "", label: "All groups"}, {value: "ungrouped", label: "Ungrouped"}, ...groupNames.map(group => ({value: `group:${group}`, label: group}))]} />
             </div>
             {loading ? (
               <div className="empty">Loading...</div>
             ) : visibleProjects.length === 0 ? (
-              <div className="empty">{projects.length ? "No projects in this group." : "No projects yet."}</div>
+              <div className="empty">{!projects.length ? "No projects yet." : searchTerm ? `No projects match "${search.trim()}".` : "No projects in this group."}</div>
             ) : (
               <div className="table-wrap">
                 <table>

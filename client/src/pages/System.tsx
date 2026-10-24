@@ -11,6 +11,7 @@ import NginxCode from "../components/NginxCode";
 const ContainerShellDialog = lazy(() => import("../components/ContainerShellDialog").then((m) => ({ default: m.ContainerShellDialog })));
 const ContainerLogDialog = lazy(() => import("../components/ContainerLogDialog").then((m) => ({ default: m.ContainerLogDialog })));
 import { StatusChip } from "../components/StatusChip";
+import { ServiceError } from "../components/ServiceError";
 import { api, ApiError } from "../api/client";
 import type {
   ComposeStack,
@@ -760,10 +761,7 @@ function SystemPage() {
       </div>
 
       {!docker?.available ? (
-        <Alert className={styles.softAlert}>
-          <AlertCircle size={14} />
-          <AlertDescription>{docker?.reason ?? "Not available"}</AlertDescription>
-        </Alert>
+        <ServiceError service="Docker" reason={docker?.reason} className={styles.softAlert} />
       ) : (
         <>
           <div className={styles.dockerDfPanel}>
@@ -980,10 +978,7 @@ function SystemPage() {
 
       {!nginx?.available ? (
         <div>
-          <Alert className={styles.softAlert}>
-            <AlertCircle size={14} />
-            <AlertDescription>{nginx?.reason ?? "Not available"}</AlertDescription>
-          </Alert>
+          <ServiceError service="Nginx" reason={nginx?.reason} className={styles.softAlert} />
         </div>
       ) : (
         <>
@@ -1343,10 +1338,7 @@ function SystemPage() {
 
       {!certbot?.available ? (
         <div>
-          <Alert className={styles.softAlert}>
-            <AlertCircle size={14} />
-            <AlertDescription>{certbot?.reason ?? "Certbot status unavailable"}</AlertDescription>
-          </Alert>
+          <ServiceError service="Certbot" reason={certbot?.reason} className={styles.softAlert} />
         </div>
       ) : certbot.entries.length === 0 ? (
         <>

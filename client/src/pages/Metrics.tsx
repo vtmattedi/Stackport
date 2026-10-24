@@ -14,11 +14,11 @@ import { MultiSelect } from "../components/MultiSelect";
 import { AppSelect } from "../components/AppSelect";
 import { api } from "../api/client";
 import type { MetricsData, ProjectResourceData, ProjectResourceSummary, ProjectResourceSummaryItem, ProjectResourcesTimeseries, ResourceMetric } from "../api/types";
-import { formatTimeAgo } from "../lib/format";
 import { formatMb, CHART_TICK, CHART_GRID_COLOR, CHART_TOOLTIP_STYLE, formatChartTick } from "../lib/charts";
 import { cn } from "../lib/utils";
 import { ProjectResourceCharts } from "../components/ProjectResourceCharts";
 import styles from "./Metrics.module.scss";
+import { TimeAgo } from "../components/TimeAgo";
 
 const CURSOR_FILL = "rgba(255,255,255,0.05)";
 
@@ -286,7 +286,7 @@ export default function Metrics() {
       <div className={styles.statInfoTitle}>Recent failed deploys</div>
       <ul className={styles.statInfoList}>
         {metrics.deploys.recentFailures.map((f) => (
-          <li key={f.id}>{f.projectName} — {formatTimeAgo(f.createdAt)}</li>
+          <li key={f.id}>{f.projectName} — <TimeAgo ts={f.createdAt} /></li>
         ))}
       </ul>
     </div>
@@ -298,7 +298,7 @@ export default function Metrics() {
       <div className={styles.statInfoTitle}>Failing health checks</div>
       <ul className={styles.statInfoList}>
         {downHealthChecks.map((p) => (
-          <li key={p.id}>{p.name} — last checked {formatTimeAgo(p.lastCheckedAt, "never")}</li>
+          <li key={p.id}>{p.name} — last checked <TimeAgo ts={p.lastCheckedAt} fallback="never" /></li>
         ))}
       </ul>
     </div>
@@ -334,7 +334,9 @@ export default function Metrics() {
               label="Deploys"
               n={metrics.deploys.success}
               total={metrics.deploys.total}
-              sub={metrics.deploys.failed > 0
+              sub={metrics.deploys.total === 0
+                ? <span className={styles.statMuted}>No deploys in this period</span>
+                : metrics.deploys.failed > 0
                 ? <span className={styles.statDanger}>{metrics.deploys.failed} failed</span>
                 : <span className={styles.statSuccess}>all successful</span>
               }
@@ -344,7 +346,9 @@ export default function Metrics() {
               label="Health Checks"
               n={metrics.healthChecks.projects.filter((p) => p.status === "up").length}
               total={metrics.healthChecks.projects.length}
-              sub={downHealthChecks.length > 0
+              sub={metrics.healthChecks.projects.length === 0
+                ? <span className={styles.statMuted}>No health checks set up</span>
+                : downHealthChecks.length > 0
                 ? <span className={styles.statDanger}>{downHealthChecks.length} down</span>
                 : <span className={styles.statSuccess}>all healthy</span>
               }
@@ -365,7 +369,9 @@ export default function Metrics() {
               label="Emails"
               n={metrics.notifications.success}
               total={metrics.notifications.total}
-              sub={metrics.notifications.failed > 0
+              sub={metrics.notifications.total === 0
+                ? <span className={styles.statMuted}>No emails sent</span>
+                : metrics.notifications.failed > 0
                 ? <span className={styles.statDanger}>{metrics.notifications.failed} failed</span>
                 : <span className={styles.statSuccess}>all delivered</span>
               }
@@ -474,7 +480,7 @@ export default function Metrics() {
                     <th className={styles.colDomain}>Project</th>
                     <SortableHeader label="CPU" className={styles.colRequests} active={sortColumn === "cpu"} dir={sortDir} onClick={() => handleSort("cpu")} />
                     <SortableHeader label="Memory" className={styles.colRequests} active={sortColumn === "memory"} dir={sortDir} onClick={() => handleSort("memory")} />
-                    <SortableHeader label={`Net (${resourceWindowLabel})`} className={cn(styles.colBandwidth, styles.colSecondary)} active={sortColumn === "net"} dir={sortDir} onClick={() => handleSort("net")} />
+                    <SortableHeader label={`Net ${resourceWindowLabel.replace(" ", "")}`} className={cn(styles.colBandwidth, styles.colSecondary)} active={sortColumn === "net"} dir={sortDir} onClick={() => handleSort("net")} />
                     <SortableHeader label="Disk" className={cn(styles.colBandwidth, styles.colSecondary)} active={sortColumn === "disk"} dir={sortDir} onClick={() => handleSort("disk")} />
                   </tr>
                 </thead>

@@ -52,11 +52,13 @@ function Button({
 
   return (
     <Comp
-      data-slot="button"
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
+      // After the spread: a Radix trigger wrapping this button (asChild) passes its own
+      // data-slot, which would otherwise drop every [data-slot="button"] style.
+      data-slot="button"
     />
   )
 }

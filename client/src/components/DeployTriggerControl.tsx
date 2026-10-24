@@ -5,10 +5,10 @@ import { AppSelect } from "./AppSelect";
 import { Button } from "./ui/button";
 import { api } from "../api/client";
 import type { DeployTrigger, Project, ProjectWebhookInfo } from "../api/types";
-import { formatTimeAgo } from "../lib/format";
 import { notify } from "../lib/notify";
 import { cn } from "../lib/utils";
 import styles from "./DeployTriggerControl.module.scss";
+import { TimeAgo } from "./TimeAgo";
 
 const HOOK_STATUS_LABEL = {
   waiting: "Waiting for first delivery",
@@ -71,7 +71,7 @@ function WebhookPanel({ project, info, onChange, reload }: {
       <div className={styles.statusLine}>
         <span className={cn(styles.dot, styles[state.status])} />
         <span>{HOOK_STATUS_LABEL[state.status]}</span>
-        {state.lastDeliveryAt && <span className="muted-text">· last {formatTimeAgo(state.lastDeliveryAt)}</span>}
+        {state.lastDeliveryAt && <span className="muted-text">· last <TimeAgo ts={state.lastDeliveryAt} /></span>}
         <span className="muted-text">· {state.installedOnGithub ? "installed by Stackport" : "manual install"}</span>
       </div>
       {state.status === "failing" && (
@@ -116,7 +116,7 @@ function WebhookPanel({ project, info, onChange, reload }: {
               <span className={cn(styles.outcome, d.outcome === "deploying" || d.outcome === "queued" || d.outcome === "ping" ? styles.good : d.outcome === "rejected" ? styles.bad : null)}>{d.outcome}</span>
               <span className="mono">{d.event}{d.sha ? ` ${d.sha.slice(0, 7)}` : ""}</span>
               <span className="muted-text">{d.detail}</span>
-              <span className="muted-text" title={d.receivedAt}>{formatTimeAgo(d.receivedAt)}</span>
+              <span className="muted-text"><TimeAgo ts={d.receivedAt} /></span>
             </li>
           ))}
         </ul>
@@ -161,8 +161,8 @@ export function DeployTriggerControl({ project, onChange }: { project: Project; 
   ];
 
   const pollerStatus = project.deployTrigger !== "poller" ? null
-    : project.githubCheckError ? <span className={styles.warn}>Last check failed {formatTimeAgo(project.githubCheckedAt)}: {project.githubCheckError}</span>
-    : project.githubCheckedAt ? <span className="muted-text">Last checked {formatTimeAgo(project.githubCheckedAt)}</span>
+    : project.githubCheckError ? <span className={styles.warn}>Last check failed <TimeAgo ts={project.githubCheckedAt} />: {project.githubCheckError}</span>
+    : project.githubCheckedAt ? <span className="muted-text">Last checked <TimeAgo ts={project.githubCheckedAt} /></span>
     : <span className="muted-text">Not checked yet. Is the poller enabled in <Link className="ext-link" to="/settings/deploy-triggers">Settings</Link>?</span>;
 
   return (

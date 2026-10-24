@@ -71,15 +71,12 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    border: 1px solid rgba(99, 102, 241, 0.32);
-    border-radius: var(--radius);
-    color: rgba(230, 237, 243, 0.82);
+    // Plain labels, not bordered chips: they describe features and aren't clickable.
+    justify-content: flex-start;
+    color: rgba(230, 237, 243, 0.72);
     font-size: 12px;
-    font-weight: 600;
-    padding: 9px 10px;
-    text-align: center;
-    background: rgba(99, 102, 241, 0.08);
-    min-height: 38px;
+    font-weight: 500;
+    padding: 4px 0;
     white-space: nowrap;
 
     svg {
@@ -105,18 +102,6 @@
   }
 
   .field { margin-bottom: 0; }
-}
-
-.login-icon {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 10px;
-  color: var(--brand);
-
-  svg {
-    width: 48px;
-    height: 48px;
-  }
 }
 
 .login-title {

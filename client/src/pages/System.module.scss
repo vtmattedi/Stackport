@@ -51,9 +51,9 @@
 .page-tabs { gap: 12px; }
 
 .page-tabs-list {
-  flex-wrap: wrap;
-
-  @media (max-width: 560px) { width: 100%; }
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .selector-icon {
