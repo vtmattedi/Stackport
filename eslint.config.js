@@ -23,7 +23,10 @@ module.exports = [
       ...tsPlugin.configs["recommended"].rules,
       ...securityPlugin.configs.recommended.rules,
       "no-console": "warn",
-      "@typescript-eslint/no-unused-vars": "error",
+      // Rest-sibling destructuring (`{ dropped: _x, ...rest }`) is how fields get omitted.
+      "@typescript-eslint/no-unused-vars": ["error", { ignoreRestSiblings: true }],
+      // `declare global { namespace Express { ... } }` is the only way to augment Express's types.
+      "@typescript-eslint/no-namespace": ["error", { allowDeclarations: true }],
       "@typescript-eslint/explicit-function-return-type": "warn",
     },
   },
