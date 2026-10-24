@@ -1,38 +1,22 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Server, Bell, Wrench } from "lucide-react";
-import { cn } from "../../lib/utils";
-import styles from "../Settings.module.scss";
+import SubShell, { SubShellSectionHeader } from "../../components/SubShell";
 
 export const SETTINGS_SECTIONS = [
-  { path: "general", label: "General", icon: SlidersHorizontal },
-  { path: "deploy-triggers", label: "Deploy triggers", icon: GitBranch },
-  { path: "infrastructure", label: "Infrastructure", icon: Server },
-  { path: "notifications", label: "Notifications", icon: Bell },
-  { path: "maintenance", label: "Maintenance", icon: Wrench },
+  { path: "general", label: "General", icon: SlidersHorizontal, description: "Stackport version, updates and the admin password." },
+  { path: "deploy-triggers", label: "Deploy triggers", icon: GitBranch, description: "How new commits reach Stackport: the GitHub poller and webhooks." },
+  { path: "infrastructure", label: "Infrastructure", icon: Server, description: "VPS provider access, monitored VMs and firewall rules." },
+  { path: "notifications", label: "Notifications", icon: Bell, description: "Email alerts for project health, a test send and the recent email log." },
+  { path: "maintenance", label: "Maintenance", icon: Wrench, description: "Housekeeping checks for the deploy folder." },
 ] as const;
 
-/** Settings shell: a section list beside (or, on phones, above) the active section. */
 export default function SettingsLayout() {
+  const { pathname } = useLocation();
+  const active = SETTINGS_SECTIONS.find(({ path }) => pathname.startsWith(`/settings/${path}`));
   return (
-    <main className="main">
-      <h1 className="page-title"><SettingsIcon size={20} />Settings</h1>
-      <div className={styles.settingsShell}>
-        <nav className={styles.sectionNav} aria-label="Settings sections">
-          {SETTINGS_SECTIONS.map(({ path, label, icon: Icon }) => (
-            <NavLink
-              key={path}
-              to={`/settings/${path}`}
-              className={({ isActive }) => cn(styles.sectionLink, isActive && styles.sectionLinkActive)}
-            >
-              <Icon size={14} />
-              {label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className={styles.sectionBody}>
-          <Outlet />
-        </div>
-      </div>
-    </main>
+    <SubShell title="Settings" icon={SettingsIcon} basePath="/settings" sections={SETTINGS_SECTIONS}>
+      {active && <SubShellSectionHeader title={active.label} icon={active.icon} description={active.description} />}
+      <Outlet />
+    </SubShell>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import {
   AlertCircle, Cpu, HardDrive, Loader, MemoryStick, Monitor, Network,
   PowerOff, RefreshCw, Server,
@@ -11,6 +11,7 @@ import { api, ApiError } from "../api/client";
 import type { HardwareData, MonitoredVm, VmData, VpsData } from "../api/types";
 import { useChannelData } from "../context/SocketContext";
 import { useConfirm } from "../components/ConfirmDialog";
+import SubShell, { SubShellSectionHeader } from "../components/SubShell";
 import { formatShortDateTime } from "../lib/format";
 import { cn } from "../lib/utils";
 import { notify } from "../lib/notify";
@@ -174,19 +175,18 @@ function VpsSection() {
   }
 
   return (
-    <section>
-      <div className="page-header">
-        <h1 className="page-title" style={{ fontSize: 16, marginBottom: 0 }}><Monitor size={17} />VPS</h1>
-        <div className="row-actions">
-          <span className="text-foreground-muted" style={{ marginRight: 12 }}>
-            Data time: {lastFetchedAt ? formatShortDateTime(new Date(lastFetchedAt).toISOString(), "never") : "never"}
-          </span>
+    <>
+      <SubShellSectionHeader
+        title="VPS"
+        icon={Server}
+        description={`Last fetched from the provider: ${lastFetchedAt ? formatShortDateTime(new Date(lastFetchedAt).toISOString(), "never") : "never"}`}
+        actions={
           <button className="btn btn-secondary btn-sm" onClick={() => void refreshVms()} disabled={loading || refreshing || monitored.length === 0}>
             {refreshing ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}
             Force refresh
           </button>
-        </div>
-      </div>
+        }
+      />
 
       {error && <div className="alert alert-error"><AlertCircle size={14} />{error}</div>}
 
@@ -203,7 +203,7 @@ function VpsSection() {
       ) : (
         <div className="card empty">No VM state yet. Add monitored VMs in <Link className="ext-link" to="/settings/infrastructure">Settings &gt; Infrastructure</Link>, then refresh VMs.</div>
       )}
-    </section>
+    </>
   );
 }
 
@@ -215,17 +215,18 @@ function HardwareSection() {
   const latest = data?.latest ?? null;
 
   return (
-    <section>
-      <div className="page-header">
-        <h1 className="page-title" style={{ fontSize: 16, marginBottom: 0 }}>
-          <Cpu size={17} />
-          Local host
-        </h1>
-        <button className={cn("btn btn-ghost btn-sm", hardwareStyles.refreshBtn)} onClick={refresh} disabled={!data}>
-          {data ? <RefreshCw size={13} /> : <Loader size={13} className="spin" />}
-          Refresh
-        </button>
-      </div>
+    <>
+      <SubShellSectionHeader
+        title="Local host"
+        icon={Cpu}
+        description="Live usage of the machine Stackport runs on."
+        actions={
+          <button className={cn("btn btn-ghost btn-sm", hardwareStyles.refreshBtn)} onClick={refresh} disabled={!data}>
+            {data ? <RefreshCw size={13} /> : <Loader size={13} className="spin" />}
+            Refresh
+          </button>
+        }
+      />
 
       <div className={hardwareStyles.statGrid}>
         <div className={hardwareStyles.statCard}>
@@ -295,22 +296,21 @@ function HardwareSection() {
           </div>
         </div>
       </div>
-    </section>
+    </>
   );
 }
 
+const INFRASTRUCTURE_SECTIONS = [
+  { path: "vps", label: "VPS", icon: Server },
+  { path: "host", label: "Local host", icon: Cpu },
+] as const;
+
 export default function Infrastructure() {
+  const { section } = useParams();
+  if (section !== "vps" && section !== "host") return <Navigate to="/infrastructure/vps" replace />;
   return (
-    <main className="main">
-      <div className="page-header">
-        <h1 className="page-title">
-          <Monitor size={18} style={{ display: "inline", marginRight: 8, verticalAlign: "text-bottom" }} />
-          Infrastructure
-        </h1>
-      </div>
-      <VpsSection />
-      <div style={{ height: 24 }} />
-      <HardwareSection />
-    </main>
+    <SubShell title="Infrastructure" icon={Monitor} basePath="/infrastructure" sections={INFRASTRUCTURE_SECTIONS}>
+      {section === "vps" ? <VpsSection /> : <HardwareSection />}
+    </SubShell>
   );
 }

@@ -63,8 +63,8 @@ export default function App() {
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:id" element={<ProjectDetails />} />
             <Route path="/credentials" element={<Credentials />} />
-            <Route path="/system" element={<System />} />
-            <Route path="/infrastructure" element={<Infrastructure />} />
+            <Route path="/system/:section?" element={<System />} />
+            <Route path="/infrastructure/:section?" element={<Infrastructure />} />
             <Route path="/settings" element={<SettingsLayout />}>
               <Route index element={<Navigate to="general" replace />} />
               <Route path="general" element={<GeneralSection />} />
@@ -78,8 +78,8 @@ export default function App() {
             <Route path="/traffic" element={<Traffic />} />
           </Route>
           <Route path="/integrations" element={<Navigate to="/settings/infrastructure" replace />} />
-          <Route path="/vps" element={<Navigate to="/infrastructure" replace />} />
-          <Route path="/hardware" element={<Navigate to="/infrastructure" replace />} />
+          <Route path="/vps" element={<Navigate to="/infrastructure/vps" replace />} />
+          <Route path="/hardware" element={<Navigate to="/infrastructure/host" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <Toaster position="top-right" />
