@@ -520,7 +520,7 @@ export const api = {
   getNotificationLogs: () => request<NotificationLogEntry[]>("/notifications/logs"),
 
   // Metrics
-  getMetrics: (days?: number) => request<MetricsData>(`/metrics${buildQuery({ days: days ?? "" })}`),
+  getMetrics: (days?: number, projectIds?: number[]) => request<MetricsData>(`/metrics${buildQuery({ days: days ?? "", projects: projectIds?.join(",") ?? "" })}`),
   getNginxMetrics: (params?: { period?: string; excludeServerIp?: boolean; excludeHealthChecks?: boolean }) =>
     request<NginxMetrics>(`/metrics/nginx${buildQuery(params ?? {})}`),
   getNginxLogEntries: (params?: { period?: string; excludeServerIp?: boolean; excludeHealthChecks?: boolean; host?: string; limit?: number }) =>

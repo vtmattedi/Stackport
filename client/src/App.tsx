@@ -23,8 +23,12 @@ const DeployTriggersSection = lazy(() => import("./pages/settings/DeployTriggers
 const InfrastructureSection = lazy(() => import("./pages/settings/InfrastructureSection"));
 const NotificationsSection = lazy(() => import("./pages/settings/NotificationsSection"));
 const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
-const Metrics = lazy(() => import("./pages/Metrics"));
-const Traffic = lazy(() => import("./pages/Traffic"));
+const InsightsLayout = lazy(() => import("./pages/insights/InsightsLayout"));
+const InsightsOverview = lazy(() => import("./pages/insights/OverviewSection"));
+const InsightsResources = lazy(() => import("./pages/insights/ResourcesSection"));
+const InsightsTraffic = lazy(() => import("./pages/insights/TrafficSection"));
+const InsightsRequests = lazy(() => import("./pages/insights/RequestsSection"));
+const InsightsAnomalies = lazy(() => import("./pages/insights/AnomaliesSection"));
 
 /** Shared shell for every signed-in page. Mounted once as a layout route, so
  *  navigating between pages keeps SystemProvider (and its live subscriptions and
@@ -74,8 +78,17 @@ export default function App() {
               <Route path="maintenance" element={<MaintenanceSection />} />
               <Route path="*" element={<Navigate to="general" replace />} />
             </Route>
-            <Route path="/metrics" element={<Metrics />} />
-            <Route path="/traffic" element={<Traffic />} />
+            <Route path="/insights" element={<InsightsLayout />}>
+              <Route index element={<Navigate to="overview" replace />} />
+              <Route path="overview" element={<InsightsOverview />} />
+              <Route path="resources" element={<InsightsResources />} />
+              <Route path="traffic" element={<InsightsTraffic />} />
+              <Route path="requests" element={<InsightsRequests />} />
+              <Route path="anomalies" element={<InsightsAnomalies />} />
+              <Route path="*" element={<Navigate to="overview" replace />} />
+            </Route>
+            <Route path="/metrics" element={<Navigate to="/insights/overview" replace />} />
+            <Route path="/traffic" element={<Navigate to="/insights/traffic" replace />} />
           </Route>
           <Route path="/integrations" element={<Navigate to="/settings/infrastructure" replace />} />
           <Route path="/vps" element={<Navigate to="/infrastructure" replace />} />
