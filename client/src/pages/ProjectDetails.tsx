@@ -1,9 +1,9 @@
-import { lazy, memo, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { lazy, memo, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Box, EllipsisVertical, ExternalLink, FileText, FolderDot, GitBranch,
-  Hammer, Loader, Lock, Pause, Play, Plus, RefreshCw, Save, ScrollText, Square, Trash2, Upload, X, GitCommit, Activity, Zap, FlameKindling,
-  SquareTerminal, Radio, RotateCw, KeyRound, AlertTriangle, ChevronRight, Rocket,
+  Hammer, Loader, Pause, Play, Plus, RefreshCw, Save, ScrollText, Square, Trash2, Upload, X, GitCommit, Activity, Zap, FlameKindling,
+  SquareTerminal, Radio, KeyRound, AlertTriangle, ChevronRight, Rocket, Globe,
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
 import { DeployTriggerControl } from "../components/DeployTriggerControl";
@@ -18,7 +18,6 @@ const ContainerShellDialog = lazy(() => import("../components/ContainerShellDial
 const ContainerLogDialog = lazy(() => import("../components/ContainerLogDialog").then((m) => ({ default: m.ContainerLogDialog })));
 import { ComposeFileDialog } from "../components/ComposeFileDialog";
 import { EnvManagerDialog } from "../components/EnvManagerDialog";
-import { Switch } from "../components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
 import { useConfirm } from "../components/ConfirmDialog";
@@ -51,6 +50,9 @@ import { cn } from "../lib/utils";
 import { notify } from "../lib/notify";
 import styles from "./ProjectDetails.module.scss";
 import { TimeAgo } from "../components/TimeAgo";
+import { ActionResult, createLogStore, type FinishedAction } from "./project/ActionLog";
+import { DeploymentsCard } from "./project/DeploymentsCard";
+import { DomainRow, TcpExposureRow } from "./project/IngressRows";
 
 const INTERVALS = [
   { label: "Off", value: 0 },
@@ -113,42 +115,6 @@ function ConfigSection({
       </div>
       {open && children}
     </div>
-  );
-}
-
-interface LogStore {
-  get: () => string;
-  set: (text: string) => void;
-  append: (chunk: string) => void;
-  subscribe: (listener: () => void) => () => void;
-}
-
-function createLogStore(): LogStore {
-  let text = "";
-  const listeners = new Set<() => void>();
-  const notifyAll = () => { for (const listener of listeners) listener(); };
-  return {
-    get: () => text,
-    set: (next) => { text = next; notifyAll(); },
-    append: (chunk) => { text += chunk; notifyAll(); },
-    subscribe: (listener) => {
-      listeners.add(listener);
-      return () => { listeners.delete(listener); };
-    },
-  };
-}
-
-function DeployLog({ store, ok }: { store: LogStore; ok: boolean | null }) {
-  const log = useSyncExternalStore(store.subscribe, store.get, store.get);
-  const ref = useRef<HTMLPreElement | null>(null);
-  useEffect(() => {
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
-  }, [log]);
-  if (!log && ok === null) return null;
-  return (
-    <pre ref={ref} className={`output-block${ok === false ? " output-stderr" : ""}`}>
-      {log || (ok ? "Command completed" : "Command failed")}
-    </pre>
   );
 }
 
@@ -408,6 +374,7 @@ export default function ProjectDetails() {
   const [deletingProject, setDeletingProject] = useState(false);
   const [checkingHealth, setCheckingHealth] = useState(false);
   const [deployOk, setDeployOk] = useState<boolean | null>(null);
+  const [finishedAction, setFinishedAction] = useState<FinishedAction | null>(null);
   // The action log streams in chunk by chunk; it lives in a small store so only the
   // <DeployLog> panel re-renders per chunk, not the whole page.
   const [deployLog] = useState(createLogStore);
@@ -492,6 +459,7 @@ export default function ProjectDetails() {
       if (action.kind === "drop-volumes") setDroppingVolumesService((action.meta?.["service"] as string | undefined) ?? null);
     } else {
       setDeployOk(action.ok);
+      setFinishedAction({ kind: action.kind, ok: action.ok, at: action.completedAt });
     }
   }
 
@@ -998,7 +966,11 @@ export default function ProjectDetails() {
         if (event.action === "redeploy-service") setRedeployingService(null);
         if (event.action === "drop-volumes") setDroppingVolumesService(null);
         setDeployOk(event.ok ?? null);
+        setFinishedAction({ kind: event.action, ok: event.ok ?? null, at: new Date().toISOString() });
         refreshSystem();
+        // This handler outlives renders, so fetch by id rather than through the project-bound loaders.
+        api.getProjectDeploys(projectId).then(setDeploys).catch(() => {});
+        api.getProjectDeploymentRevisions(projectId).then(setRevisions).catch(() => {});
       }
     };
     subscribeDeploy<ProjectDeployEvent>(projectId, handler);
@@ -1061,25 +1033,12 @@ export default function ProjectDetails() {
   return (
     <>
       <main className="main">
-        <div className="page-title" style={{ justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div className={cn("page-title", styles.pageTitle)}>
+          <span className={styles.titleName}>
             <FolderDot size={20} />
             {project?.name ?? "Project"}
           </span>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {project && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className={styles.dangerAction}
-                onClick={() => void deleteCurrentProject()}
-                disabled={deletingProject}
-              >
-                {deletingProject ? <Loader size={13} className="spin" /> : <Trash2 size={13} />}
-                Delete
-              </Button>
-            )}
+          <div className={styles.titleActions}>
             <Link className="btn btn-ghost btn-sm" to="/projects">
               <ArrowLeft size={13} />
               Projects
@@ -1308,6 +1267,19 @@ export default function ProjectDetails() {
                         {purgingProject ? <Loader size={13} className="spin" /> : <Trash2 size={13} />}
                         Stop & Delete Data
                       </Button>
+                      <div className={styles.actionsMenuSeparator} role="separator" />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className={cn(styles.actionsMenuItem, styles.dangerAction)}
+                        onClick={() => void deleteCurrentProject()}
+                        disabled={deletingProject || repoBusy}
+                        title={repoBusy ? "Wait for the running action to finish" : "Remove this project from Stackport"}
+                      >
+                        {deletingProject ? <Loader size={13} className="spin" /> : <Trash2 size={13} />}
+                        Delete project
+                      </Button>
                     </PopoverContent>
                   </Popover>
                 </div>
@@ -1360,7 +1332,12 @@ export default function ProjectDetails() {
                 </div>
               )}
 
-              <DeployLog store={deployLog} ok={deployOk} />
+              <ActionResult
+                store={deployLog}
+                running={repoBusy}
+                finished={finishedAction ?? (deployOk === null ? null : { kind: "", ok: deployOk, at: null })}
+                latestRevision={revisions[0] ?? null}
+              />
             </div>
 
             {/* ── Docker expandable card ───────────────────────────────── */}
@@ -1476,6 +1453,106 @@ export default function ProjectDetails() {
               )}
             </ExpandableCard>
 
+            {/* ── Domains & ports card (changes apply immediately, not through Save) ── */}
+            <ExpandableCard
+              icon={<Globe size={13} />}
+              title="Domains & ports"
+              storageKey="project.ingress"
+              defaultOpen
+              summary={<span className={styles.cardSummaryText}>{domains.length} domain{domains.length === 1 ? "" : "s"}{tcpExposures.length > 0 ? ` · ${tcpExposures.length} TCP` : ""}</span>}
+            >
+              <div className={styles.ingressBlock}>
+                <div className={styles.historyHeading}>Domains</div>
+                <p className="muted-text">Each domain routes to a compose service and container port over the stackport-proxy network.</p>
+                <div className="row-actions">
+                  <Input
+                    type="text"
+                    placeholder="myapp.example.com"
+                    value={newDomainInput}
+                    onChange={(e) => setNewDomainInput(e.target.value)}
+                    className={styles.domainInput}
+                  />
+                  <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
+                    refreshKey={project.updatedAt} disabled={addingDomain}
+                    value={newDomainService && newDomainPort ? `${newDomainService}:${newDomainPort}` : ""}
+                    onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewDomainService(service); setNewDomainPort(port); }} />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    onClick={() => void addDomain()}
+                    disabled={addingDomain || !newDomainInput.trim() || !newDomainService.trim() || !newDomainPort.trim()}
+                    title={!newDomainInput.trim() ? "Type a domain first" : !newDomainService.trim() ? "Pick the service and port it should reach" : undefined}
+                  >
+                    {addingDomain ? <Loader size={12} className="spin" /> : <Plus size={12} />}
+                    Add domain
+                  </Button>
+                </div>
+                {domainError && <div className={styles.inlineError}>{domainError}</div>}
+                {domains.length === 0 ? (
+                  <div className="muted-text">No domains routed to this project.</div>
+                ) : (
+                  <div className={styles.ingressList}>
+                    {domains.map((domain) => (
+                      <DomainRow
+                        key={domain.id}
+                        domain={domain}
+                        cert={certbotEntryFor(domain.domain)}
+                        certRecord={certbotRecordFor(domain.domain)}
+                        certbotAvailable={certbotAvailable}
+                        onToggleSsl={(checked) => void toggleDomainSsl(domain, checked)}
+                        onIssue={() => void issueDomainSsl(domain)}
+                        onCertAction={(action) => void handleCertAction(domain.domain, action)}
+                        onRemove={() => void removeDomainRow(domain)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className={styles.ingressBlock}>
+                <div className={styles.historyHeading}>TCP ports</div>
+                <div className={styles.tcpWarningCard} role="note" aria-label="Public TCP security warning">
+                  <AlertTriangle size={17} />
+                  <div>
+                    <strong>Public TCP security boundary</strong>
+                    <span>Public TCP ports are reachable outside the VPS. Authentication, TLS, and protocol security remain the application's responsibility.</span>
+                  </div>
+                </div>
+                <div className="row-actions">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    placeholder="Public port"
+                    value={newTcpPublicPort}
+                    onChange={(e) => setNewTcpPublicPort(e.target.value)}
+                    className={styles.portInput}
+                  />
+                  <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
+                    refreshKey={project.updatedAt} disabled={addingTcpExposure}
+                    value={newTcpService && newTcpContainerPort ? `${newTcpService}:${newTcpContainerPort}` : ""}
+                    onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewTcpService(service); setNewTcpContainerPort(port); }} />
+                  <Button type="button" variant="outline" size="xs" onClick={() => void addTcpExposure()}
+                    disabled={addingTcpExposure || !newTcpPublicPort || !newTcpService || !newTcpContainerPort}
+                    title={!newTcpPublicPort ? "Type a public port first" : !newTcpService ? "Pick the service and port it should reach" : undefined}>
+                    {addingTcpExposure ? <Loader size={12} className="spin" /> : <Plus size={12} />}
+                    Expose
+                  </Button>
+                </div>
+                {tcpExposureError && <div className={styles.inlineError}>{tcpExposureError}</div>}
+                {tcpExposures.length === 0 ? (
+                  <div className="muted-text">No public TCP ports configured.</div>
+                ) : (
+                  <div className={styles.ingressList}>
+                    {tcpExposures.map((exposure) => (
+                      <TcpExposureRow key={exposure.id} exposure={exposure} onRemove={() => void removeTcpExposureRow(exposure)} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </ExpandableCard>
+
             {/* ── Project config card ──────────────────────────────────── */}
             <ExpandableCard
               icon={<FileText size={13} />}
@@ -1548,157 +1625,6 @@ export default function ProjectDetails() {
                   </div>
                 </ConfigSection>
 
-                <ConfigSection title="Ingress" storageKey="ingress">
-                  <div className="field field-wide" style={{ gridColumn: "1 / -1" }}>
-                    <label>Domains <span className="hint">(each domain routes to its own compose service + container port over the stackport-proxy network)</span></label>
-                    <div className="row-actions" style={{ marginBottom: domains.length > 0 ? 10 : 0 }}>
-                      <Input
-                        type="text"
-                        placeholder="myapp.example.com"
-                        value={newDomainInput}
-                        onChange={(e) => setNewDomainInput(e.target.value)}
-                        style={{ maxWidth: 220 }}
-                      />
-                      <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
-                        refreshKey={project.updatedAt} disabled={addingDomain}
-                        value={newDomainService && newDomainPort ? `${newDomainService}:${newDomainPort}` : ""}
-                        onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewDomainService(service); setNewDomainPort(port); }} />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="xs"
-                        onClick={() => void addDomain()}
-                        disabled={addingDomain || !newDomainInput.trim() || !newDomainService.trim() || !newDomainPort.trim()}
-                      >
-                        {addingDomain ? <Loader size={12} className="spin" /> : <Plus size={12} />}
-                        Add
-                      </Button>
-                    </div>
-                    {domainError && <div style={{ fontSize: "0.78rem", color: "var(--danger)", marginBottom: 8 }}>{domainError}</div>}
-                    {domains.length === 0 ? (
-                      <div className="muted-text" style={{ fontSize: 13 }}>No domains routed to this project.</div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 8 }}>
-                        {domains.map((domain) => {
-                          const entry = certbotEntryFor(domain.domain);
-                          const record = certbotRecordFor(domain.domain);
-                          const acting = record?.status === "running";
-                          return (
-                            <div key={domain.id} className={cn(styles.runtimeSection, styles.certSection)} style={{ marginBottom: 0 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                <span className="mono" style={{ fontSize: 13 }}>{domain.domain}</span>
-                                <span className="mono muted-text" style={{ fontSize: 11 }}>
-                                  {domain.service ? `${domain.service}:${domain.containerPort}` : "not routed"}
-                                </span>
-                                {entry ? (
-                                  <span className={cn(styles.statusPill,
-                                    entry.status === "valid" ? styles.statusUp :
-                                    entry.status === "expiring" ? styles.statusUnknown :
-                                    styles.statusDown
-                                  )} style={{ fontSize: 11 }}>
-                                    {entry.status}
-                                    {entry.expiresAt && ` · ${formatShortDateTime(entry.expiresAt, "")}`}
-                                  </span>
-                                ) : (
-                                  <span className={cn(styles.statusPill, styles.statusDown)} style={{ fontSize: 11 }}>no cert</span>
-                                )}
-                                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", cursor: certbotAvailable ? "pointer" : "not-allowed", opacity: certbotAvailable ? 1 : 0.55 }}>
-                                  <Switch
-                                    checked={domain.useSsl}
-                                    onCheckedChange={(checked) => void toggleDomainSsl(domain, checked)}
-                                    disabled={!certbotAvailable}
-                                  />
-                                  <span style={{ fontSize: 12 }}>Use SSL</span>
-                                </label>
-                              </div>
-                              <div className="row-actions" style={{ gridColumn: "1 / -1" }}>
-                                {certbotAvailable && (!entry || entry.status === "missing" || entry.status === "expired") ? (
-                                  <Button type="button" size="xs" onClick={() => void issueDomainSsl(domain)} disabled={acting}>
-                                    {acting ? <Loader size={12} className="spin" /> : <Lock size={12} />}
-                                    Issue cert
-                                  </Button>
-                                ) : certbotAvailable && (
-                                  <Button type="button" variant="outline" size="xs" onClick={() => void handleCertAction(domain.domain, "renew")} disabled={acting}>
-                                    {acting ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
-                                    Renew
-                                  </Button>
-                                )}
-                                {entry && (
-                                  <Button type="button" variant="outline" size="xs" className={styles.dangerAction} onClick={() => void handleCertAction(domain.domain, "delete")} disabled={acting}>
-                                    <Trash2 size={12} />
-                                    Remove cert
-                                  </Button>
-                                )}
-                                <Button type="button" variant="outline" size="xs" className={styles.dangerAction} onClick={() => void removeDomainRow(domain)}>
-                                  <Trash2 size={12} />
-                                  Remove domain
-                                </Button>
-                              </div>
-                              {record?.log && (
-                                <pre className="output-block" style={{ gridColumn: "1 / -1", marginTop: 4 }}>{record.log}</pre>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                  <div className="field field-wide" style={{ gridColumn: "1 / -1" }}>
-                    <label>TCP Exposures <span className="hint">(raw TCP passthrough to a declared compose service port)</span></label>
-                    <div className={styles.tcpWarningCard} role="note" aria-label="Public TCP security warning">
-                      <AlertTriangle size={17} />
-                      <div>
-                        <strong>Public TCP security boundary</strong>
-                        <span>Public TCP ports are reachable outside the VPS. Authentication, TLS, and protocol security remain the application's responsibility.</span>
-                      </div>
-                    </div>
-                    <div className="row-actions" style={{ marginBottom: tcpExposures.length > 0 ? 10 : 0 }}>
-                      <Input
-                        type="number"
-                        min={1}
-                        max={65535}
-                        placeholder="Public port"
-                        value={newTcpPublicPort}
-                        onChange={(e) => setNewTcpPublicPort(e.target.value)}
-                        style={{ maxWidth: 140 }}
-                      />
-                      <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
-                        refreshKey={project.updatedAt} disabled={addingTcpExposure}
-                        value={newTcpService && newTcpContainerPort ? `${newTcpService}:${newTcpContainerPort}` : ""}
-                        onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewTcpService(service); setNewTcpContainerPort(port); }} />
-                      <Button type="button" variant="outline" size="xs" onClick={() => void addTcpExposure()}
-                        disabled={addingTcpExposure || !newTcpPublicPort || !newTcpService || !newTcpContainerPort}>
-                        {addingTcpExposure ? <Loader size={12} className="spin" /> : <Plus size={12} />}
-                        Expose
-                      </Button>
-                    </div>
-                    {tcpExposureError && <div style={{ fontSize: "0.78rem", color: "var(--danger)", marginBottom: 8 }}>{tcpExposureError}</div>}
-                    {tcpExposures.length === 0 ? (
-                      <div className="muted-text" style={{ fontSize: 13 }}>No public TCP ports configured.</div>
-                    ) : (
-                      <div style={{ display: "grid", gap: 8 }}>
-                        {tcpExposures.map((exposure) => (
-                          <div key={exposure.id} className={cn(styles.runtimeSection, styles.certSection)} style={{ marginBottom: 0 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", width: "100%" }}>
-                              <span className="mono" style={{ fontSize: 13 }}>:{exposure.publicPort}</span>
-                              <span className="mono muted-text" style={{ fontSize: 11 }}>→ {exposure.service}:{exposure.containerPort}</span>
-                              {exposure.lastError ? (
-                                <span className={cn(styles.statusPill, styles.statusDown)} style={{ fontSize: 11 }} title={exposure.lastError}>error</span>
-                              ) : (
-                                <span className={cn(styles.statusPill, styles.statusUp)} style={{ fontSize: 11 }}>configured</span>
-                              )}
-                              <Button type="button" variant="outline" size="xs" className={styles.dangerAction}
-                                style={{ marginLeft: "auto" }} onClick={() => void removeTcpExposureRow(exposure)}>
-                                <Trash2 size={12} /> Remove
-                              </Button>
-                            </div>
-                            {exposure.lastError && <div style={{ color: "var(--danger)", fontSize: 11 }}>{exposure.lastError}</div>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </ConfigSection>
 
                 <ConfigSection title="Compose & Nginx" storageKey="compose-nginx" defaultOpen={false}>
                   {(project.availableComposeFiles.length > 0 || project.composeFile) && (
@@ -1755,47 +1681,6 @@ export default function ProjectDetails() {
                   </div>
                 </ConfigSection>
 
-                <ConfigSection
-                  title="Deployment history"
-                  storageKey="deployment-history"
-                  actions={(
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="xs"
-                      onClick={() => void handleRollback()}
-                      disabled={rollingBack || revisions.filter((r) => r.status !== "failed").length < 2}
-                      title="Restore the previous successful revision's exact commit and compose file, then redeploy"
-                    >
-                      {rollingBack ? <Loader size={12} className="spin" /> : <RotateCw size={12} />}
-                      Roll back
-                    </Button>
-                  )}
-                >
-                  {revisions.length === 0 ? (
-                    <div className="muted-text" style={{ fontSize: 13 }}>No recorded deployments yet.</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 4 }}>
-                      {revisions.slice(0, 8).map((rev) => (
-                        <div key={rev.id} className="row-actions" style={{ fontSize: 12, gap: 10 }}>
-                          <span
-                            className={cn(styles.statusPill,
-                              rev.status === "active" ? styles.statusUp :
-                              rev.status === "failed" ? styles.statusDown :
-                              styles.statusUnknown
-                            )}
-                            style={{ fontSize: 11 }}
-                          >
-                            {rev.status}
-                          </span>
-                          <span className="mono">{rev.commitSha ? rev.commitSha.slice(0, 7) : "—"}</span>
-                          <span className="muted-text">{rev.composeFileName ?? ""}</span>
-                          <span className="muted-text" style={{ marginLeft: "auto" }}>{formatShortDateTime(rev.createdAt)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </ConfigSection>
 
                 <ConfigSection title="Health check" storageKey="health-check">
                   <div className="field">
@@ -1877,52 +1762,37 @@ export default function ProjectDetails() {
                 </div>
 
                 {branches.length > 0 && (
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: "0.78rem", color: "var(--dim)", marginBottom: 6 }}>
+                  <div className={styles.historyBlock}>
+                    <div className={styles.historyHeading}>
                       Branches ({branches.length})
-                      {project.branchesFetchedAt && <span> · updated {formatTimeAgo(project.branchesFetchedAt)}</span>}
+                      {project.branchesFetchedAt && <span> · updated <TimeAgo ts={project.branchesFetchedAt} /></span>}
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <ul className={styles.historyList}>
                       {branches.map((b) => (
-                        <div key={b.name} style={{ display: "flex", gap: 10, alignItems: "baseline", fontSize: "0.82rem" }}>
-                          <span className="mono" style={{ minWidth: 140, display: "inline-flex", alignItems: "center", gap: 4, color: b.name === project.autoDeployBranch ? "var(--primary)" : "inherit" }}>
+                        <li key={b.name}>
+                          <span className={cn("mono", styles.branchName, b.name === project.autoDeployBranch && styles.branchAuto)}>
                             <GitCommit size={11} />
                             {b.name}
-                            {b.name === project.autoDeployBranch && <span style={{ marginLeft: 4, fontSize: "0.75em", color: "var(--primary)" }}>▶ auto-deploy</span>}
                           </span>
-                          {b.commitMessage && <span style={{ color: "var(--dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.commitMessage}</span>}
-                          {b.commitAuthor && <span className="mono" style={{ color: "var(--dim)", fontSize: "0.78em" }}>{b.commitAuthor}</span>}
-                        </div>
+                          {b.name === project.autoDeployBranch && <span className={styles.branchAutoTag}>auto-deploy</span>}
+                          <span className={styles.historyMessage} title={b.commitMessage ?? undefined}>{b.commitMessage ?? ""}</span>
+                          {b.commitAuthor && <span className={styles.historyMeta}>{b.commitAuthor}</span>}
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   </div>
                 )}
 
-                {deploys.length > 0 && (
-                  <div style={{ marginTop: 16 }}>
-                    <div style={{ fontSize: "0.78rem", color: "var(--dim)", marginBottom: 6 }}>Recent deploys</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      {deploys.slice(0, 10).map((d) => (
-                        <div key={d.id} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: "0.8rem" }}>
-                          <span className="mono" style={{ fontSize: "0.76em", color: "var(--dim)", minWidth: 130 }}>{formatShortDateTime(d.createdAt, "")}</span>
-                          <span style={{
-                            fontSize: "0.74em",
-                            padding: "1px 6px",
-                            borderRadius: 4,
-                            background: d.status === "success" ? "var(--success-bg, rgba(34,197,94,0.12))" : d.status === "failed" ? "var(--danger-bg, rgba(239,68,68,0.12))" : "var(--bg-3)",
-                            color: d.status === "success" ? "var(--success, #22c55e)" : d.status === "failed" ? "var(--danger)" : "var(--dim)",
-                          }}>{d.status}</span>
-                          <span style={{ fontSize: "0.74em", color: "var(--dim)" }}>{d.triggeredBy === "auto" ? "poller" : d.triggeredBy === "webhook" ? "webhook" : "manual"}</span>
-                          {d.commitSha && <span className="mono" style={{ fontSize: "0.74em", color: "var(--dim)" }}>{d.commitSha.slice(0, 7)}</span>}
-                          {d.commitMessage && <span style={{ color: "var(--dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.commitMessage}</span>}
-                        </div>
-                      ))}
-                    </div>
-                    {loadingDeploys && <Loader size={12} className="spin" style={{ marginTop: 6 }} />}
-                  </div>
-                )}
               </ExpandableCard>
             )}
+
+            <DeploymentsCard
+              deploys={deploys}
+              revisions={revisions}
+              loading={loadingDeploys}
+              rollingBack={rollingBack}
+              onRollback={() => void handleRollback()}
+            />
 
             <ResourceUsageCard projectId={project.id} />
 
