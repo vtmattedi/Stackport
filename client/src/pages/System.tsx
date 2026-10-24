@@ -1,18 +1,15 @@
 import { lazy, Suspense, useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Navigate, useSearchParams } from "react-router-dom";
 import {
-  Cpu, RefreshCw, Loader, Box, Layers, CheckCircle, AlertCircle,
+  Cpu, RefreshCw, Loader, Box, Layers, AlertCircle,
   RotateCw, Play, Square, Hammer, ChevronDown, ChevronRight, X, FileText, Save, Eye, Settings,
-  ShieldCheck, ShieldX, KeyRound, Trash2, Mail, GitBranch, Shield, Plus, UploadCloud,
+  ShieldCheck, ShieldX, KeyRound, Trash2, Mail,
   SquareTerminal, Radio,
 } from "lucide-react";
 import NginxCode from "../components/NginxCode";
-import { AppSelect } from "../components/AppSelect";
-import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
 // The terminal dialogs pull in xterm (~90 KB gzipped); load it only when one opens.
 const ContainerShellDialog = lazy(() => import("../components/ContainerShellDialog").then((m) => ({ default: m.ContainerShellDialog })));
 const ContainerLogDialog = lazy(() => import("../components/ContainerLogDialog").then((m) => ({ default: m.ContainerLogDialog })));
-import { useConfirm } from "../components/ConfirmDialog";
 import { StatusChip } from "../components/StatusChip";
 import { api, ApiError } from "../api/client";
 import type {
@@ -22,13 +19,6 @@ import type {
   NginxDocument,
   NginxDocumentKind,
   CertbotEntry,
-  GitHubPollerConfig,
-  Credential,
-  FirewallAction,
-  FirewallProfile,
-  FirewallProtocol,
-  FirewallSource,
-  ProviderFirewall,
   DockerStorageThresholds,
 } from "../api/types";
 import { useSystem } from "../context/SystemContext";
@@ -37,7 +27,6 @@ import { cn } from "../lib/utils";
 import styles from "./System.module.scss";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { Button } from "../components/ui/button";
-import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Switch } from "../components/ui/switch";
@@ -237,7 +226,7 @@ function ContainerTable({ containers }: { containers: ContainerInfo[] }) {
 
 type ComposeOp = "up" | "down" | "build";
 type CertbotOp = "issue" | "renew" | "delete";
-type SystemTab = "nginx" | "docker" | "certbot" | "github" | "firewall";
+type SystemTab = "nginx" | "docker" | "certbot";
 
 const STACK_COLLAPSE_KEY = "stackport_system_collapsed_stacks";
 const NGINX_DOC_KEY = "stackport_system_nginx_doc";
@@ -252,7 +241,7 @@ function readCollapsedStacks(): Record<string, boolean> {
 }
 
 function isSystemTab(value: string): value is SystemTab {
-  return value === "docker" || value === "nginx" || value === "certbot" || value === "github" || value === "firewall";
+  return value === "docker" || value === "nginx" || value === "certbot";
 }
 
 function readNginxDocumentKind(): NginxDocumentKind {
@@ -377,10 +366,19 @@ function StackRow({ stack, onAction, activeOp, result, onDismissResult, collapse
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+/** The poller and firewall moved to Settings; keep old /system?tab= links working. */
 export default function System() {
+  const [searchParams] = useSearchParams();
+  const tab = searchParams.get("tab");
+  if (tab === "github") return <Navigate to="/settings/deploy-triggers" replace />;
+  if (tab === "firewall") return <Navigate to="/settings/infrastructure" replace />;
+  return <SystemPage />;
+}
+
+function SystemPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const {
-    system: data, vps: vpsData, refreshSystem: refresh, refreshVps,
+    system: data, refreshSystem: refresh,
     applyNginx, updateNginxAppConfig, certbotAction, pruneDockerCache,
   } = useSystem();
   const loading = data === null;
@@ -421,36 +419,6 @@ export default function System() {
   const [storageThresholdsDirty, setStorageThresholdsDirty] = useState(false);
   const [savingStorageThresholds, setSavingStorageThresholds] = useState(false);
 
-  // GitHub Poller state
-  const [ghConfig, setGhConfig] = useState<GitHubPollerConfig | null>(null);
-  const [ghCredentialIdDraft, setGhCredentialIdDraft] = useState<number | null>(null);
-  const [ghIntervalDraft, setGhIntervalDraft] = useState("300");
-  const [ghEnabledDraft, setGhEnabledDraft] = useState(false);
-  const [savingGh, setSavingGh] = useState(false);
-  const [pollingGh, setPollingGh] = useState(false);
-  const [loadingGhConfig, setLoadingGhConfig] = useState(false);
-  const [ghCredentials, setGhCredentials] = useState<Credential[]>([]);
-  const [ghPollOutputOpen, setGhPollOutputOpen] = useState(false);
-
-  // Firewall state
-  const [firewallProviderId, setFirewallProviderId] = useState<number | "">("");
-  const [firewallProfiles, setFirewallProfiles] = useState<FirewallProfile[]>([]);
-  const [providerFirewalls, setProviderFirewalls] = useState<ProviderFirewall[]>([]);
-  const [selectedFirewallProfileId, setSelectedFirewallProfileId] = useState<number | "">("");
-  const [selectedFirewallVmId, setSelectedFirewallVmId] = useState("");
-  const [firewallProfileName, setFirewallProfileName] = useState("STACKPORT Firewall");
-  const [profileModalOpen, setProfileModalOpen] = useState(false);
-  const [ruleFormOpen, setRuleFormOpen] = useState(false);
-  const [firewallAction, setFirewallAction] = useState<FirewallAction>("accept");
-  const [firewallProtocol, setFirewallProtocol] = useState<FirewallProtocol>("TCP");
-  const [firewallPort, setFirewallPort] = useState("22");
-  const [firewallSource, setFirewallSource] = useState<FirewallSource>("any");
-  const [firewallSourceDetail, setFirewallSourceDetail] = useState("any");
-  const [loadingFirewall, setLoadingFirewall] = useState(false);
-  const [syncingFirewall, setSyncingFirewall] = useState(false);
-  const [firewallError, setFirewallError] = useState("");
-  const [firewallSuccess, setFirewallSuccess] = useState("");
-  const confirm = useConfirm();
 
   const docker = data?.docker;
   const nginx = data?.nginx;
@@ -464,12 +432,7 @@ export default function System() {
   const nginxSelectorOk = !!nginx?.available && !!nginx.active;
   const dockerSelectorOk = !!docker?.available && dockerHasRunningContainers;
   const certbotSelectorOk = !!certbot?.available;
-  const firewallSelectorOk = providerFirewalls.length > 0 || firewallProfiles.length > 0;
   const selectorIconClass = (ok: boolean) => cn(styles.selectorIcon, !loading && (ok ? styles.selectorIconOk : styles.selectorIconFail));
-  const vpsProviders = vpsData?.providers ?? [];
-  const monitoredVms = vpsData?.monitored ?? [];
-  const selectedFirewallProfile = firewallProfiles.find((profile) => profile.id === selectedFirewallProfileId) ?? firewallProfiles[0] ?? null;
-  const firewallMonitoredVms = monitoredVms.filter((vm) => vm.providerId === firewallProviderId);
   const nginxAppChanged = nginxAppDirty && (
     !nginx?.layer?.app ||
     nginxAppEnabledDraft !== nginx.layer.app.enabled ||
@@ -529,81 +492,7 @@ export default function System() {
   }, []);
 
 
-  useEffect(() => {
-    if (activeTab !== "github") return;
-    if (ghConfig) return;
-    setLoadingGhConfig(true);
-    Promise.all([api.getGithubPollerConfig(), api.listCredentials()])
-      .then(([cfg, creds]) => {
-        setGhConfig(cfg);
-        setGhEnabledDraft(cfg.enabled);
-        setGhIntervalDraft(String(cfg.pollIntervalS));
-        setGhCredentialIdDraft(cfg.credentialId);
-        setGhCredentials(creds.filter((c) => c.type === "github"));
-      })
-      .catch(() => {})
-      .finally(() => setLoadingGhConfig(false));
-  }, [activeTab, ghConfig]);
 
-  useEffect(() => {
-    if (firewallProviderId === "" && vpsProviders.length > 0) {
-      setFirewallProviderId(vpsProviders[0].id);
-    }
-  }, [firewallProviderId, vpsProviders]);
-
-  useEffect(() => {
-    if (activeTab !== "firewall") return;
-    if (firewallProviderId === "") return;
-    void refreshFirewallData(firewallProviderId);
-  }, [activeTab, firewallProviderId]);
-
-  useEffect(() => {
-    if (selectedFirewallProfile && selectedFirewallProfileId === "") {
-      setSelectedFirewallProfileId(selectedFirewallProfile.id);
-    }
-  }, [selectedFirewallProfile, selectedFirewallProfileId]);
-
-  function syncGhConfig(cfg: GitHubPollerConfig) {
-    setGhConfig(cfg);
-    setGhEnabledDraft(cfg.enabled);
-    setGhIntervalDraft(String(cfg.pollIntervalS));
-    setGhCredentialIdDraft(cfg.credentialId);
-  }
-
-  async function handleGhSave() {
-    const toastId = notify.loading("Saving GitHub poller config...");
-    setSavingGh(true);
-    try {
-      const cfg = await api.updateGithubPollerConfig({
-        enabled: ghEnabledDraft,
-        credentialId: ghCredentialIdDraft,
-        pollIntervalS: Number(ghIntervalDraft) || 300,
-      });
-      syncGhConfig(cfg);
-      notify.success("GitHub poller config saved.", { id: toastId });
-    } catch (err) {
-      notify.error(err, "Failed to save GitHub poller config", { id: toastId });
-    } finally {
-      setSavingGh(false);
-    }
-  }
-
-  async function handleGhPollNow() {
-    const toastId = notify.loading("Triggering GitHub poll...");
-    setPollingGh(true);
-    setGhPollOutputOpen(false);
-    try {
-      await api.triggerGithubPoll();
-      notify.success("GitHub poll triggered.", { id: toastId });
-      setTimeout(() => {
-        api.getGithubPollerConfig().then(syncGhConfig).catch(() => {});
-      }, 3000);
-    } catch (err) {
-      notify.error(err, "Failed to trigger GitHub poll", { id: toastId });
-    } finally {
-      setPollingGh(false);
-    }
-  }
 
   function handleSystemTabChange(value: string) {
     if (!isSystemTab(value)) return;
@@ -810,162 +699,6 @@ export default function System() {
       notify.error(err, "Failed to update storage thresholds");
     } finally {
       setSavingStorageThresholds(false);
-    }
-  }
-
-  const FIREWALL_PROTOCOLS: FirewallProtocol[] = ["TCP", "UDP", "ICMP", "GRE", "any", "ESP", "AH", "ICMPv6", "SSH", "HTTP", "HTTPS", "MySQL", "PostgreSQL"];
-
-  function providerFirewallData(firewall: ProviderFirewall): ProviderFirewall["data"] & ProviderFirewall {
-    return firewall.data ? { ...firewall, ...firewall.data } : firewall;
-  }
-
-  async function refreshFirewallData(nextProviderId = firewallProviderId) {
-    if (nextProviderId === "") return;
-    setLoadingFirewall(true);
-    setFirewallError("");
-    try {
-      const [localProfiles, remoteFirewalls] = await Promise.all([
-        api.listFirewallProfiles(nextProviderId),
-        api.listProviderFirewalls(nextProviderId),
-      ]);
-      setFirewallProfiles(localProfiles);
-      setProviderFirewalls(remoteFirewalls);
-      if (localProfiles.length > 0) {
-        setSelectedFirewallProfileId((current) => localProfiles.some((profile) => profile.id === current) ? current : localProfiles[0].id);
-      } else {
-        setSelectedFirewallProfileId("");
-      }
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Failed to load firewall data";
-      setFirewallError(message);
-      notify.error(err, "Failed to load firewall data");
-    } finally {
-      setLoadingFirewall(false);
-    }
-  }
-
-  async function handleCreateFirewallProfile(e: React.FormEvent) {
-    e.preventDefault();
-    if (firewallProviderId === "") return;
-    setLoadingFirewall(true);
-    setFirewallError("");
-    setFirewallSuccess("");
-    try {
-      const profile = await api.createFirewallProfile({
-        providerId: firewallProviderId,
-        name: firewallProfileName,
-      });
-      setSelectedFirewallProfileId(profile.id);
-      setFirewallProfileName("STACKPORT Firewall");
-      setProfileModalOpen(false);
-      await refreshFirewallData(firewallProviderId);
-      setFirewallSuccess("Firewall profile created.");
-      notify.success("Firewall profile created.");
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Failed to create firewall profile";
-      setFirewallError(message);
-      notify.error(err, "Failed to create firewall profile");
-    } finally {
-      setLoadingFirewall(false);
-    }
-  }
-
-  async function deleteFirewallProfile() {
-    if (!selectedFirewallProfile) return;
-    const ok = await confirm({
-      title: "Delete firewall profile?",
-      description: `${selectedFirewallProfile.name} and its local rules will be removed. Provider firewalls are not changed.`,
-      confirmLabel: "Delete",
-      destructive: true,
-    });
-    if (!ok) return;
-    setLoadingFirewall(true);
-    setFirewallError("");
-    setFirewallSuccess("");
-    try {
-      await api.deleteFirewallProfile(selectedFirewallProfile.id);
-      setSelectedFirewallProfileId("");
-      await refreshFirewallData(selectedFirewallProfile.providerId);
-      setFirewallSuccess("Firewall profile deleted.");
-      notify.success("Firewall profile deleted.");
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Failed to delete firewall profile";
-      setFirewallError(message);
-      notify.error(err, "Failed to delete firewall profile");
-    } finally {
-      setLoadingFirewall(false);
-    }
-  }
-
-  async function addFirewallRule(e: React.FormEvent) {
-    e.preventDefault();
-    if (!selectedFirewallProfile) return;
-    setLoadingFirewall(true);
-    setFirewallError("");
-    setFirewallSuccess("");
-    try {
-      await api.createFirewallRule(selectedFirewallProfile.id, {
-        action: firewallAction,
-        protocol: firewallProtocol,
-        port: firewallPort,
-        source: firewallSource,
-        sourceDetail: firewallSource === "any" ? "any" : firewallSourceDetail,
-      });
-      await refreshFirewallData(selectedFirewallProfile.providerId);
-      setRuleFormOpen(false);
-      setFirewallSuccess("Rule added to our firewall profile.");
-      notify.success("Firewall rule added.");
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Failed to add firewall rule";
-      setFirewallError(message);
-      notify.error(err, "Failed to add firewall rule");
-    } finally {
-      setLoadingFirewall(false);
-    }
-  }
-
-  async function removeFirewallRule(ruleId: number) {
-    if (!selectedFirewallProfile) return;
-    setLoadingFirewall(true);
-    setFirewallError("");
-    setFirewallSuccess("");
-    try {
-      await api.deleteFirewallRule(selectedFirewallProfile.id, ruleId);
-      await refreshFirewallData(selectedFirewallProfile.providerId);
-      setFirewallSuccess("Rule removed from our firewall profile.");
-      notify.success("Firewall rule removed.");
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Failed to delete firewall rule";
-      setFirewallError(message);
-      notify.error(err, "Failed to delete firewall rule");
-    } finally {
-      setLoadingFirewall(false);
-    }
-  }
-
-  async function syncFirewallProfile(activate = false) {
-    if (!selectedFirewallProfile) return;
-    const toastId = notify.loading(activate ? "Activating firewall profile..." : "Syncing firewall profile...");
-    setSyncingFirewall(true);
-    setFirewallError("");
-    setFirewallSuccess("");
-    try {
-      const result = await api.syncFirewallProfile(selectedFirewallProfile.id, {
-        vmId: selectedFirewallVmId || null,
-        activate,
-      });
-      await refreshFirewallData(selectedFirewallProfile.providerId);
-      setFirewallSuccess(activate
-        ? `Activated ${selectedFirewallProfile.name} and synced ${result.createdRules} rule${result.createdRules === 1 ? "" : "s"}.`
-        : `Synced ${result.createdRules} rule${result.createdRules === 1 ? "" : "s"} to provider firewall.`);
-      notify.success(activate ? "Firewall profile activated." : "Firewall profile synced.", { id: toastId });
-      refreshVps();
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : activate ? "Failed to activate firewall profile" : "Failed to sync firewall profile";
-      setFirewallError(message);
-      notify.error(err, activate ? "Failed to activate firewall profile" : "Failed to sync firewall profile", { id: toastId });
-    } finally {
-      setSyncingFirewall(false);
     }
   }
 
@@ -1699,494 +1432,6 @@ export default function System() {
     </>
   );
 
-  const POLL_INTERVALS = [
-    { label: "1 min", value: "60" },
-    { label: "5 min", value: "300" },
-    { label: "15 min", value: "900" },
-    { label: "30 min", value: "1800" },
-    { label: "1 hour", value: "3600" },
-  ];
-
-  const ghChanged = ghConfig ? (
-    ghEnabledDraft !== ghConfig.enabled ||
-    ghCredentialIdDraft !== ghConfig.credentialId ||
-    ghIntervalDraft !== String(ghConfig.pollIntervalS)
-  ) : true;
-
-  const ghPanel = (
-    <>
-      <div className={styles.sectionTitle}>
-        <GitBranch size={14} />
-        GitHub Poller
-        {ghConfig && (
-          <span className={cn(styles.titleMeta, "mono")} style={{ fontSize: "0.78rem" }}>
-            {ghConfig.enabled ? "enabled" : "disabled"}
-          </span>
-        )}
-        <div className={cn("row-actions", styles.titleActions)}>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={() => void handleGhPollNow()}
-            disabled={pollingGh || loadingGhConfig || !ghConfig?.enabled}
-            title={ghConfig?.enabled ? "Trigger a poll now" : "Enable poller first"}
-          >
-            {pollingGh ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
-            Poll now
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={() => void handleGhSave()}
-            disabled={savingGh || loadingGhConfig || !ghChanged}
-          >
-            {savingGh ? <Loader size={12} className="spin" /> : <Save size={12} />}
-            Save
-          </Button>
-        </div>
-      </div>
-
-      {loadingGhConfig ? (
-        <div className={styles.loadingState} style={{ padding: 32 }}>
-          <Loader size={18} className="spin" />
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap" }}>
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 500, fontSize: "0.85rem", cursor: "pointer" }}>
-              <Switch
-                checked={ghEnabledDraft}
-                onCheckedChange={(v) => setGhEnabledDraft(v)}
-              />
-              {ghEnabledDraft ? "Enabled" : "Disabled"}
-            </label>
-
-            <div className="field" style={{ margin: 0 }}>
-              <label>Poll interval</label>
-              <AppSelect
-                value={ghIntervalDraft}
-                onValueChange={setGhIntervalDraft}
-                options={POLL_INTERVALS.map((opt) => ({ value: opt.value, label: opt.label }))}
-              />
-            </div>
-
-            <div className="field" style={{ margin: 0, minWidth: 200 }}>
-              <label>
-                <KeyRound size={12} />
-                GitHub credential
-              </label>
-              <GitHubTokenSelect
-                credentials={ghCredentials}
-                value={ghCredentialIdDraft}
-                onValueChange={setGhCredentialIdDraft}
-                placeholder="None (public repos only)"
-                noneLabel="None (public repos only)"
-              />
-              {ghCredentials.length === 0 && (
-                <div style={{ fontSize: "0.75rem", color: "var(--dim)", marginTop: 3 }}>
-                  Add a GitHub credential in the Credentials page first.
-                </div>
-              )}
-            </div>
-          </div>
-
-          {ghConfig && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: "0.82rem" }}>
-              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", color: "var(--dim)" }}>
-                <span>Last poll: <span className="mono">{formatShortDateTime(ghConfig.lastPolledAt, "never")}</span></span>
-                {ghConfig.lastError && (
-                  <span style={{ color: "var(--danger)" }}>Error: {ghConfig.lastError}</span>
-                )}
-              </div>
-
-              {ghConfig.lastPollOutput && (
-                <div>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    style={{ fontSize: "0.78rem", padding: "2px 6px" }}
-                    onClick={() => setGhPollOutputOpen((v) => !v)}
-                  >
-                    {ghPollOutputOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-                    Last poll output
-                  </button>
-                  {ghPollOutputOpen && (
-                    <div className={styles.outputShell} style={{ marginTop: 6 }}>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        className={styles.outputDismiss}
-                        onClick={() => setGhPollOutputOpen(false)}
-                        title="Collapse"
-                      >
-                        <X size={12} />
-                      </Button>
-                      <pre className={cn("output-block", styles.outputBlock, !!ghConfig.lastError && "output-stderr")}>
-                        {ghConfig.lastPollOutput}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
-
-  const firewallPanel = (
-    <>
-      <div className={styles.sectionTitle}>
-        <Shield size={14} />
-        Firewall
-        {vpsProviders.length > 0 && (
-          <span className={cn("mono", styles.titleMeta)}>
-            {vpsProviders.length} provider{vpsProviders.length === 1 ? "" : "s"}
-          </span>
-        )}
-        <div className={cn("row-actions", styles.titleActions)}>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={() => void refreshFirewallData()}
-            disabled={firewallProviderId === "" || loadingFirewall}
-            title="Reload local and provider firewall state"
-          >
-            {loadingFirewall ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
-            Refresh
-          </Button>
-        </div>
-      </div>
-
-      {firewallError && (
-        <Alert className={styles.softAlert}>
-          <AlertCircle size={14} />
-          <AlertDescription>{firewallError}</AlertDescription>
-        </Alert>
-      )}
-      {firewallSuccess && (
-        <Alert className={cn(styles.softAlert, styles.successAlert)}>
-          <CheckCircle size={14} />
-          <AlertDescription>{firewallSuccess}</AlertDescription>
-        </Alert>
-      )}
-
-      {vpsData === null ? (
-        <SystemSkeleton />
-      ) : (
-        <>
-          <div className={styles.firewallToolbar}>
-            <div className="field">
-              <label>Provider</label>
-              <AppSelect
-                value={firewallProviderId === "" ? "" : String(firewallProviderId)}
-                onValueChange={(value) => {
-                  setFirewallProviderId(value ? Number(value) : "");
-                  setFirewallSuccess("");
-                }}
-                options={vpsProviders.length > 0
-                  ? vpsProviders.map((provider) => ({ value: String(provider.id), label: provider.name }))
-                  : [{ value: "", label: "No providers", disabled: true }]}
-                disabled={vpsProviders.length === 0}
-              />
-            </div>
-            <div className="field">
-              <label>Our profiles</label>
-              <div className={styles.firewallProfilePicker}>
-                <AppSelect
-                  value={selectedFirewallProfileId === "" ? "" : String(selectedFirewallProfileId)}
-                  onValueChange={(value) => setSelectedFirewallProfileId(value ? Number(value) : "")}
-                  options={firewallProfiles.length > 0
-                    ? firewallProfiles.map((profile) => ({ value: String(profile.id), label: profile.name }))
-                    : [{ value: "", label: "No profiles", disabled: true }]}
-                  disabled={firewallProfiles.length === 0}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  className={styles.firewallProfileAddButton}
-                  onClick={() => setProfileModalOpen(true)}
-                  disabled={firewallProviderId === ""}
-                  title="Add local firewall profile"
-                  aria-label="Add local firewall profile"
-                >
-                  <Plus size={12} />
-                </Button>
-              </div>
-            </div>
-            <div className="field">
-              <label>Sync target VM</label>
-              <AppSelect
-                value={selectedFirewallVmId}
-                onValueChange={setSelectedFirewallVmId}
-                options={[
-                  { value: "", label: "Do not sync to VM" },
-                  ...firewallMonitoredVms.map((vm) => ({ value: vm.vmId, label: vm.label || vm.vmId })),
-                ]}
-              />
-            </div>
-          </div>
-
-          <div className={styles.firewallGrid}>
-            <section className={styles.firewallPane}>
-              <div className={styles.firewallPaneHeader}>
-                <div className={styles.firewallPaneTitle}>
-                  <strong>Our rules</strong>
-                  <span>{selectedFirewallProfile?.name ?? "No profile selected"}</span>
-                </div>
-                <div className="row-actions">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    onClick={() => setRuleFormOpen((open) => !open)}
-                    disabled={!selectedFirewallProfile}
-                    title="Add local firewall rule"
-                  >
-                    <Plus size={12} />
-                    Add rule
-                  </Button>
-                  <Button
-                    type="button"
-                    size="xs"
-                    onClick={() => void syncFirewallProfile(false)}
-                    disabled={!selectedFirewallProfile || syncingFirewall || selectedFirewallProfile.rules.length === 0}
-                    title="Push local rules to the linked provider firewall"
-                  >
-                    {syncingFirewall ? <Loader size={12} className="spin" /> : <UploadCloud size={12} />}
-                    Sync rules
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    onClick={() => void syncFirewallProfile(true)}
-                    disabled={!selectedFirewallProfile || syncingFirewall || selectedFirewallProfile.rules.length === 0 || !selectedFirewallVmId}
-                    title="Sync and activate this local profile on the selected VM"
-                  >
-                    {syncingFirewall ? <Loader size={12} className="spin" /> : <ShieldCheck size={12} />}
-                    Activate local profile
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    className={styles.dangerButton}
-                    onClick={() => void deleteFirewallProfile()}
-                    disabled={!selectedFirewallProfile || loadingFirewall}
-                    title="Delete local firewall profile"
-                  >
-                    <Trash2 size={12} />
-                    Delete
-                  </Button>
-                </div>
-              </div>
-
-              {ruleFormOpen && (
-                <form className={styles.firewallRuleEditor} onSubmit={(event) => void addFirewallRule(event)}>
-                  <div className="field">
-                    <label>Action</label>
-                    <AppSelect
-                      value={firewallAction}
-                      onValueChange={(value) => setFirewallAction(value as FirewallAction)}
-                      options={[
-                        { value: "accept", label: "accept" },
-                        { value: "drop", label: "drop" },
-                      ]}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Protocol</label>
-                    <AppSelect
-                      value={firewallProtocol}
-                      onValueChange={(value) => setFirewallProtocol(value as FirewallProtocol)}
-                      options={FIREWALL_PROTOCOLS.map((value) => ({ value, label: value }))}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Port</label>
-                    <Input
-                      type="text"
-                      className={styles.formInput}
-                      value={firewallPort}
-                      onChange={(event) => setFirewallPort(event.target.value)}
-                      placeholder="22, 80, 443"
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Source</label>
-                    <AppSelect
-                      value={firewallSource}
-                      onValueChange={(value) => {
-                        setFirewallSource(value as FirewallSource);
-                        if (value === "any") setFirewallSourceDetail("any");
-                      }}
-                      options={[
-                        { value: "any", label: "any" },
-                        { value: "custom", label: "custom" },
-                      ]}
-                    />
-                  </div>
-                  <div className="field field-wide">
-                    <label>Source detail</label>
-                    <Input
-                      type="text"
-                      className={styles.formInput}
-                      value={firewallSourceDetail}
-                      onChange={(event) => setFirewallSourceDetail(event.target.value)}
-                      disabled={firewallSource === "any"}
-                      placeholder="CIDR/IP"
-                    />
-                  </div>
-                  <div className={styles.firewallRuleEditorActions}>
-                    <Button type="button" variant="ghost" size="xs" onClick={() => setRuleFormOpen(false)}>
-                      Cancel
-                    </Button>
-                    <Button type="submit" variant="outline" size="xs" disabled={!selectedFirewallProfile || loadingFirewall}>
-                      <Plus size={12} />
-                      Add local rule
-                    </Button>
-                  </div>
-                </form>
-              )}
-
-              {!selectedFirewallProfile ? (
-                <div className={styles.panelEmpty}>Create a local firewall profile first.</div>
-              ) : selectedFirewallProfile.rules.length === 0 ? (
-                <div className={styles.panelEmpty}>No local rules yet.</div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Action</TableHead>
-                      <TableHead>Protocol</TableHead>
-                      <TableHead>Port</TableHead>
-                      <TableHead>Source</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {selectedFirewallProfile.rules.map((rule) => (
-                      <TableRow key={rule.id}>
-                        <TableCell>{rule.action}</TableCell>
-                        <TableCell>{rule.protocol}</TableCell>
-                        <TableCell className="mono">{rule.port}</TableCell>
-                        <TableCell className="mono">{rule.source === "any" ? "any" : rule.sourceDetail}</TableCell>
-                        <TableCell><Badge variant="outline" className={styles.statusChip}>local only</Badge></TableCell>
-                        <TableCell>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="xs"
-                            className={styles.dangerButton}
-                            onClick={() => void removeFirewallRule(rule.id)}
-                          >
-                            <Trash2 size={12} />
-                            Remove
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </section>
-
-            <section className={styles.firewallPane}>
-              <div className={styles.firewallPaneHeader}>
-                <strong>Provider firewalls</strong>
-                <span className="muted-text">Read only until sync</span>
-              </div>
-              {providerFirewalls.length === 0 ? (
-                <div className={styles.panelEmpty}>No provider firewalls loaded.</div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>ID</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Synced</TableHead>
-                      <TableHead>Rules</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {providerFirewalls.map((rawFirewall) => {
-                      const firewall = providerFirewallData(rawFirewall);
-                      const firewallId = String(firewall.id ?? "");
-                      return (
-                        <TableRow key={firewallId || firewall.name}>
-                          <TableCell className="mono">{firewallId || "-"}</TableCell>
-                          <TableCell>{firewall.name ?? "-"}</TableCell>
-                          <TableCell>{firewall.is_synced == null ? "-" : firewall.is_synced ? "yes" : "no"}</TableCell>
-                          <TableCell>{firewall.rules?.length ?? "-"}</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              )}
-            </section>
-          </div>
-
-          {profileModalOpen && (
-            <div className="modal-backdrop" role="presentation" onMouseDown={() => setProfileModalOpen(false)}>
-              <form
-                className={cn("modal-panel", styles.firewallProfileModal)}
-                role="dialog"
-                aria-modal="true"
-                aria-label="Add firewall profile"
-                onMouseDown={(event) => event.stopPropagation()}
-                onSubmit={(event) => void handleCreateFirewallProfile(event)}
-              >
-                <div className={styles.firewallModalHeader}>
-                  <div>
-                    <h2>Add firewall profile</h2>
-                    <p>Profiles are local until you sync or activate them.</p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    onClick={() => setProfileModalOpen(false)}
-                    title="Close"
-                  >
-                    <X size={12} />
-                  </Button>
-                </div>
-                <div className="field">
-                  <label>Profile name</label>
-                  <Input
-                    type="text"
-                    className={styles.formInput}
-                    value={firewallProfileName}
-                    onChange={(event) => setFirewallProfileName(event.target.value)}
-                    autoFocus
-                  />
-                </div>
-                <div className={styles.firewallModalActions}>
-                  <Button type="button" variant="outline" size="sm" onClick={() => setProfileModalOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button type="submit" size="sm" disabled={firewallProviderId === "" || loadingFirewall || !firewallProfileName.trim()}>
-                    {loadingFirewall ? <Loader size={13} className="spin" /> : <Plus size={13} />}
-                    Add profile
-                  </Button>
-                </div>
-              </form>
-            </div>
-          )}
-        </>
-      )}
-    </>
-  );
-
   return (
     <>
       <main className="main">
@@ -2220,14 +1465,6 @@ export default function System() {
                 <ShieldCheck size={13} className={selectorIconClass(certbotSelectorOk)} />
                 Certbot
               </TabsTrigger>
-              <TabsTrigger value="github">
-                <GitBranch size={13} />
-                GitHub
-              </TabsTrigger>
-              <TabsTrigger value="firewall">
-                <Shield size={13} className={selectorIconClass(firewallSelectorOk)} />
-                Firewall
-              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="nginx">
@@ -2242,13 +1479,6 @@ export default function System() {
               <section className={styles.systemPanel}>{loading ? <SystemSkeleton /> : certbotPanel}</section>
             </TabsContent>
 
-            <TabsContent value="github">
-              <section className={styles.systemPanel}>{loading ? <SystemSkeleton /> : ghPanel}</section>
-            </TabsContent>
-
-            <TabsContent value="firewall">
-              <section className={styles.systemPanel}>{firewallPanel}</section>
-            </TabsContent>
           </Tabs>
       </main>
     </>

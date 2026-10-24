@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import {
   AlertCircle, Cpu, HardDrive, Loader, MemoryStick, Monitor, Network,
   PowerOff, RefreshCw, Server,
@@ -200,7 +201,7 @@ function VpsSection() {
           />
         ))
       ) : (
-        <div className="card empty">No VM state yet. Add monitored VMs in Settings, then refresh VMs.</div>
+        <div className="card empty">No VM state yet. Add monitored VMs in <Link className="ext-link" to="/settings/infrastructure">Settings &gt; Infrastructure</Link>, then refresh VMs.</div>
       )}
     </section>
   );
