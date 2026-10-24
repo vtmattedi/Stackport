@@ -1,0 +1,53 @@
+name: Upgrade
+
+# Installs the base version on a fresh runner and walks it through every update path
+# (CLI, in-app updater, broken build, broken runtime, rollback onto a newer database)
+# to prove a release can always be updated again.
+on:
+  pull_request:
+    paths:
+      - "stackport.sh"
+      - "docker-compose.system.yml"
+      - "Dockerfile"
+      - "docker-entrypoint.sh"
+      - "src/**"
+      - "client/**"
+      - "package*.json"
+      - "scripts/e2e/**"
+      - ".github/workflows/upgrade.yml"
+  workflow_call:
+    inputs:
+      base:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Version to install first (ref or sha)"
+        required: true
+        default: main
+
+concurrency:
+  group: upgrade-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run upgrade scenarios
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || inputs.base }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: sudo --preserve-env=BASE,HEAD scripts/e2e/upgrade.sh "$BASE" "$HEAD"
+      - name: Diagnostics
+        if: failure()
+        run: |
+          sudo cat /var/lib/stackport/update/state.env || true
+          docker ps -a
+          docker logs --tail 200 stackport || true
+          docker logs --tail 200 stackport-updater || true
