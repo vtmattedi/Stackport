@@ -7,6 +7,7 @@ import type {
   ProjectWebhookInfo,
   ProjectDomain,
   TcpExposure,
+  ComposeEnvFileRef,
   ComposeIngressTarget,
   ActionStartResponse,
   ProjectActionsSnapshot,
@@ -296,6 +297,8 @@ export const api = {
     request<ProjectDomain[]>(`/projects/${projectId}/domains`),
   getProjectIngressTargets: (projectId: number, composeFile?: string) =>
     request<ComposeIngressTarget[]>(`/projects/${projectId}/ingress-targets${buildQuery({composeFile})}`),
+  getProjectComposeEnvFiles: (projectId: number, composeFile?: string) =>
+    request<ComposeEnvFileRef[]>(`/projects/${projectId}/compose-env-files${buildQuery({composeFile})}`),
   addProjectDomain: (projectId: number, domain: string, service: string, containerPort: number) =>
     request<ProjectDomain>(`/projects/${projectId}/domains`, { method: "POST", body: JSON.stringify({ domain, service, containerPort }) }),
   removeProjectDomain: (projectId: number, domainId: number) =>
@@ -366,11 +369,13 @@ export const api = {
     }),
   getProjectComposeFileContent: (projectId: number) =>
     request<ComposeFileContent>(`/projects/${projectId}/compose-file/content`),
-  uploadProjectCompose: (projectId: number, composeFile: File, supportFiles: { file: File; path: string }[]) => {
+  /** `deploy: false` only stages and validates the files; nothing is started. */
+  uploadProjectCompose: (projectId: number, composeFile: File, supportFiles: { file: File; path: string }[], opts: { deploy?: boolean } = {}) => {
     const formData = new FormData();
     formData.append("composeFile", composeFile);
     for (const { file } of supportFiles) formData.append("files", file);
     formData.append("paths", JSON.stringify(supportFiles.map((f) => f.path)));
+    if (opts.deploy === false) formData.append("deploy", "false");
     return requestActionStartMultipart(`/projects/${projectId}/upload`, formData);
   },
   getProjectActions: (projectId: number) =>

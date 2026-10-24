@@ -184,7 +184,13 @@ are never routing targets. Add `expose` and refresh if no target is detected;
 selecting another Compose file refreshes the wizard's options. The server also
 checks that the chosen port is declared for its service before saving a route.
 
-Projects → "Add new project" — GitHub repo or manually-uploaded compose file. The wizard's domain step asks for the domain and a detected Compose service/container port from the select (§1.3) — there is no internal-port field anywhere in the UI; ports are never published to the host at all.
+Projects → "Add new project" — GitHub repo or manually-uploaded compose file. The wizard has three stages and starts nothing until the last one:
+
+1. **Source** creates the project and fetches its files: a clone for GitHub, or a staged and `docker compose config`-validated upload (`POST /projects/:id/upload` with `deploy=false`). A failed fetch can be retried with a corrected repo or token.
+2. **Configure** collects the branch (switching it checks it out straight away), the Compose file, the deploy trigger, env files and routing. Env files are edited in the shared Environment Manager; `env_file:` paths the Compose file references but that neither exist in the source nor are managed by StackPort are flagged (`GET /projects/:id/compose-env-files`). The domain step asks for the domain and a detected Compose service/container port from the select (§1.3) — there is no internal-port field anywhere in the UI; ports are never published to the host at all. Until the first deploy writes the env files, `docker compose config` may not resolve, so service targets fall back to the literal ports in the raw YAML.
+3. **Deploy** checks out the branch, saves the settings, runs Compose, adds the domain and issues SSL, in that order. A failed step is retried from where it stopped.
+
+Closing before the deploy finishes offers to keep or discard the project. A kept project that isn't deployed and has no domain shows **Finish setup** in the projects list (also reachable as `/projects?setup=<id>`), which reopens the wizard at Configure.
 
 ### 6.2 Compose requirements
 

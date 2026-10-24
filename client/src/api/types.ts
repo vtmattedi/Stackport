@@ -94,6 +94,14 @@ export interface TcpExposure {
   updatedAt: string;
 }
 
+export interface ComposeEnvFileRef {
+  path: string;
+  required: boolean;
+  services: string[];
+  /** The file is already on disk (committed to the repo or uploaded). */
+  existsInSource: boolean;
+}
+
 export interface ComposeIngressTarget {
   service: string;
   containerPort: number;
