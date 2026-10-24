@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { lazy, Suspense, useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Cpu, RefreshCw, Loader, Box, Layers, CheckCircle, AlertCircle,
@@ -9,8 +9,9 @@ import {
 import NginxCode from "../components/NginxCode";
 import { AppSelect } from "../components/AppSelect";
 import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
-import { ContainerShellDialog } from "../components/ContainerShellDialog";
-import { ContainerLogDialog } from "../components/ContainerLogDialog";
+// The terminal dialogs pull in xterm (~90 KB gzipped); load it only when one opens.
+const ContainerShellDialog = lazy(() => import("../components/ContainerShellDialog").then((m) => ({ default: m.ContainerShellDialog })));
+const ContainerLogDialog = lazy(() => import("../components/ContainerLogDialog").then((m) => ({ default: m.ContainerLogDialog })));
 import { useConfirm } from "../components/ConfirmDialog";
 import { StatusChip } from "../components/StatusChip";
 import { api, ApiError } from "../api/client";
@@ -219,10 +220,14 @@ function ContainerTable({ containers }: { containers: ContainerInfo[] }) {
         </div>
       )}
       {shellContainer && (
-        <ContainerShellDialog container={shellContainer} onClose={() => setShellContainer(null)} />
+        <Suspense fallback={null}>
+          <ContainerShellDialog container={shellContainer} onClose={() => setShellContainer(null)} />
+        </Suspense>
       )}
       {logStreamContainer && (
-        <ContainerLogDialog container={logStreamContainer} onClose={() => setLogStreamContainer(null)} />
+        <Suspense fallback={null}>
+          <ContainerLogDialog container={logStreamContainer} onClose={() => setLogStreamContainer(null)} />
+        </Suspense>
       )}
     </>
   );

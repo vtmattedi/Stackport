@@ -7,7 +7,7 @@ import {
   Layers, Box, GitBranch, Shield, Loader, BarChart2, Radar, Plug, Star,
 } from "lucide-react";
 import { api, clearToken } from "../api/client";
-import { useSocket } from "../context/SocketContext";
+import { useSocket, useSocketLatency } from "../context/SocketContext";
 import { useSystem } from "../context/SystemContext";
 import { cn } from "../lib/utils";
 import { deriveProjectStatus, findProjectStack, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
@@ -129,7 +129,8 @@ function ProjectsSubmenu({ projects }: { projects: Project[] | null }) {
 export default function Nav() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { connected, latencyMs, disconnect } = useSocket();
+  const { connected, disconnect } = useSocket();
+  const latencyMs = useSocketLatency();
   const { system, projects, vps, github } = useSystem();
   const [expanded, setExpanded] = useState(() => {
     return localStorage.getItem("sidebar-expanded") === "true";

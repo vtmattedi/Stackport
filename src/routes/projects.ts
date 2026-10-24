@@ -38,7 +38,7 @@ import {
   updateProjectEnvFile,
   validateComposeFileChoice,
 } from "../services/projectDeploy";
-import { getProjectBranches } from "../services/githubPoller";
+import { getProjectBranches, resetGithubTrackingIfChanged } from "../services/githubPoller";
 import { runCertbotAction } from "../services/certbot";
 import { actionRegistry, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../services/actionRegistry";
 import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "./projectResources";
@@ -583,12 +583,20 @@ router.post("/:id/deploy", requireAuth, (req: Request<{ id: string }>, res: Resp
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
 
+  const rawBranch = typeof req.body?.branch === "string" ? req.body.branch.trim() : "";
+  if (rawBranch && !isValidBranchName(rawBranch)) {
+    res.status(400).json({ error: "Invalid branch name" });
+    return;
+  }
+  const branch = rawBranch || null;
+
   const user = req.user ?? "unknown";
   const key = projectRepoKey(id);
-  const started = actionRegistry.tryStart(key, "deploy", { projectId: id }, async () => {
-    const result = await deployProject(id);
+  const started = actionRegistry.tryStart(key, "deploy", { projectId: id, ...(branch ? { branch } : {}) }, async () => {
+    const result = await deployProject(id, "manual", branch);
     auditLog(user, "project.deploy", String(id), result.ok ? "ok" : "fail", {
       repoPath: result.repoPath,
+      ...(branch ? { branch } : {}),
     });
     return { ok: result.ok, output: result.output };
   });
@@ -1004,7 +1012,8 @@ router.get("/:id/branches", requireAuth, async (req: Request<{ id: string }>, re
 
   const project = rowToProject(row);
   try {
-    const branches = await getProjectBranches(project);
+    const refresh = req.query["refresh"] === "1" || req.query["refresh"] === "true";
+    const branches = await getProjectBranches(project, { refresh });
 
     let autoDeployBranch = project.autoDeployBranch;
     if (!autoDeployBranch && branches.length > 0) {
@@ -1014,7 +1023,8 @@ router.get("/:id/branches", requireAuth, async (req: Request<{ id: string }>, re
         .run(autoDeployBranch, new Date().toISOString(), id);
     }
 
-    res.json({ branches, autoDeployBranch });
+    const fetchedRow = db.prepare("SELECT branches_fetched_at FROM projects WHERE id = ?").get(id) as { branches_fetched_at: string | null } | undefined;
+    res.json({ branches, autoDeployBranch, fetchedAt: fetchedRow?.branches_fetched_at ?? null });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(502).json({ error: `GitHub API error: ${msg}` });
@@ -1225,6 +1235,7 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
          auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
      WHERE id = ?`
   ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newHealthCheckDomainId, newIntervalS, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
+  resetGithubTrackingIfChanged(db, id, existing, newGhRepo, newAutoDeployBranch);
 
   const updated = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow;
   const project = rowToProject(updated);

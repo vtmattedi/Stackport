@@ -420,6 +420,9 @@ export function initializeDatabase(): Database.Database {
   if (!projectCols.some((c) => c.name === "branches_json")) {
     db.exec("ALTER TABLE projects ADD COLUMN branches_json TEXT");
   }
+  if (!projectCols.some((c) => c.name === "branches_fetched_at")) {
+    db.exec("ALTER TABLE projects ADD COLUMN branches_fetched_at TEXT");
+  }
   if (!projectCols.some((c) => c.name === "source_type")) {
     db.exec("ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'github'");
   }
@@ -508,6 +511,9 @@ export function initializeDatabase(): Database.Database {
   if (!ghCols.some((c) => c.name === "last_poll_output")) {
     db.exec("ALTER TABLE github_poller_config ADD COLUMN last_poll_output TEXT");
   }
+  // The poller writes its status/output with UPDATE ... WHERE id = 1, which silently
+  // did nothing (no output, no error shown) until the config had been saved once.
+  db.exec("INSERT OR IGNORE INTO github_poller_config (id) VALUES (1)");
 
   return db;
 }

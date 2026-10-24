@@ -28,6 +28,7 @@ export interface Project {
   lastCommitAuthor: string | null;
   lastCommitAt: string | null;
   branches: ProjectBranch[];
+  branchesFetchedAt: string | null;
   sourceType: "github" | "upload";
   nginxExtraConfig: string | null;
   nginxExtraBlocks: string | null;
@@ -61,6 +62,7 @@ export interface ProjectRow {
   last_commit_author: string | null;
   last_commit_at: string | null;
   branches_json: string | null;
+  branches_fetched_at?: string | null;
   source_type: string;
   nginx_extra_config: string | null;
   nginx_extra_blocks: string | null;
@@ -97,6 +99,7 @@ export function rowToProject(row: ProjectRow): Project {
     lastCommitAuthor: row.last_commit_author ?? null,
     lastCommitAt: row.last_commit_at ?? null,
     branches: parseBranchesJson(row.branches_json),
+    branchesFetchedAt: row.branches_fetched_at ?? null,
     sourceType: row.source_type === "upload" ? "upload" : "github",
     nginxExtraConfig: row.nginx_extra_config ?? null,
     nginxExtraBlocks: row.nginx_extra_blocks ?? null,

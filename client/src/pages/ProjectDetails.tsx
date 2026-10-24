@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Box, EllipsisVertical, ExternalLink, FileText, FolderDot, GitBranch,
   Hammer, Loader, Lock, Pause, Play, Plus, RefreshCw, Save, ScrollText, Square, Trash2, Upload, X, GitCommit, Activity, Zap, FlameKindling,
-  SquareTerminal, Radio, RotateCw, KeyRound, AlertTriangle,
+  SquareTerminal, Radio, RotateCw, KeyRound, AlertTriangle, ChevronRight, Rocket,
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
 import { ProjectGroupField } from "../components/ProjectGroupField";
 import { ProjectIngressSelect } from "../components/ProjectIngressSelect";
 import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
 import { ExpandableCard } from "../components/ExpandableCard";
-import { ProjectResourceCharts } from "../components/ProjectResourceCharts";
-import { ContainerShellDialog } from "../components/ContainerShellDialog";
-import { ContainerLogDialog } from "../components/ContainerLogDialog";
+import { ProjectResourceCharts as ProjectResourceChartsBase } from "../components/ProjectResourceCharts";
+// The terminal dialogs pull in xterm (~90 KB gzipped); load it only when one opens.
+const ContainerShellDialog = lazy(() => import("../components/ContainerShellDialog").then((m) => ({ default: m.ContainerShellDialog })));
+const ContainerLogDialog = lazy(() => import("../components/ContainerLogDialog").then((m) => ({ default: m.ContainerLogDialog })));
 import { ComposeFileDialog } from "../components/ComposeFileDialog";
 import { EnvManagerDialog } from "../components/EnvManagerDialog";
 import { Switch } from "../components/ui/switch";
@@ -40,7 +41,7 @@ import type {
   ProjectDeploymentRevision,
 } from "../api/types";
 import { useSocket } from "../context/SocketContext";
-import { pollProjectAction, useSystem } from "../context/SystemContext";
+import { jsonEqual, pollProjectAction, useSystemActions, useSystemSelector } from "../context/SystemContext";
 import { formatShortDateTime, formatTimeAgo } from "../lib/format";
 import { parseAnsi } from "../lib/ansi";
 import { deriveProjectStatus, expectedComposeProjectName, explainProjectStatus, findProjectStack, healthMonitoredContainers, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
@@ -65,6 +66,160 @@ function DetailRow({ label, value }: { label: string; value: ReactNode }) {
       <span>{value}</span>
     </div>
   );
+}
+
+/** A collapsible group inside the Project Config form; open state is remembered per section. */
+function ConfigSection({
+  title,
+  actions,
+  storageKey,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  actions?: ReactNode;
+  storageKey: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const key = `stackport:config-section:${storageKey}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      return stored === null ? defaultOpen : stored === "1";
+    } catch {
+      return defaultOpen;
+    }
+  });
+  function toggle() {
+    setOpen(!open);
+    try {
+      localStorage.setItem(key, open ? "0" : "1");
+    } catch {
+      // storage unavailable — state just won't persist
+    }
+  }
+  return (
+    <div className={cn(styles.runtimeSection, !open && styles.runtimeSectionCollapsed)}>
+      <div className={styles.runtimeSectionHeader}>
+        <button type="button" className={styles.sectionToggle} onClick={toggle} aria-expanded={open}>
+          <ChevronRight size={12} className={cn(styles.sectionChevron, open && styles.sectionChevronOpen)} />
+          {title}
+        </button>
+        {actions}
+      </div>
+      {open && children}
+    </div>
+  );
+}
+
+interface LogStore {
+  get: () => string;
+  set: (text: string) => void;
+  append: (chunk: string) => void;
+  subscribe: (listener: () => void) => () => void;
+}
+
+function createLogStore(): LogStore {
+  let text = "";
+  const listeners = new Set<() => void>();
+  const notifyAll = () => { for (const listener of listeners) listener(); };
+  return {
+    get: () => text,
+    set: (next) => { text = next; notifyAll(); },
+    append: (chunk) => { text += chunk; notifyAll(); },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+  };
+}
+
+function DeployLog({ store, ok }: { store: LogStore; ok: boolean | null }) {
+  const log = useSyncExternalStore(store.subscribe, store.get, store.get);
+  const ref = useRef<HTMLPreElement | null>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [log]);
+  if (!log && ok === null) return null;
+  return (
+    <pre ref={ref} className={`output-block${ok === false ? " output-stderr" : ""}`}>
+      {log || (ok ? "Command completed" : "Command failed")}
+    </pre>
+  );
+}
+
+// Recharts redraws its SVG on every render; only redraw when the samples change.
+const ProjectResourceCharts = memo(ProjectResourceChartsBase);
+
+/** Owns its own live samples (every ~15 s) so they re-render this card, not the page.
+ *  The charts get `history`, which only changes when a 5-minute bucket closes. */
+function ResourceUsageCard({ projectId }: { projectId: number }) {
+  const { on, off } = useSocket();
+  const [history, setHistory] = useState<ProjectResourceData | null>(null);
+  const [latest, setLatest] = useState<ProjectResourceData["latest"]>(null);
+
+  // Latest cpu/mem/net numbers arrive live over WS the instant the sampler writes
+  // them (see project:resource-sample) — no more independent client poll timer
+  // desynced from the sampler's own 15s interval. History is 5-minute-bucketed
+  // server-side, so it's re-fetched only when a live sample crosses into a new
+  // bucket (i.e. the previous bucket just became final), not on a fixed clock.
+  useEffect(() => {
+    if (!Number.isInteger(projectId) || projectId <= 0) return;
+    let cancelled = false;
+    let lastBucket: number | null = null;
+    const refetch = () => {
+      void api.getProjectResources(projectId, 24).then((data) => {
+        if (!cancelled) { setHistory(data); setLatest(data.latest); }
+      }).catch(() => { /* non-critical */ });
+    };
+    refetch();
+
+    const handler = (event: ProjectResourceSampleEvent) => {
+      if (event.projectId !== projectId) return;
+      setLatest(event.sample);
+      const bucket = Math.floor(new Date(event.sample.sampledAt).getTime() / (5 * 60_000));
+      if (lastBucket !== null && bucket !== lastBucket) refetch();
+      lastBucket = bucket;
+    };
+    on<ProjectResourceSampleEvent>("project:resource-sample", handler);
+    return () => {
+      cancelled = true;
+      off<ProjectResourceSampleEvent>("project:resource-sample", handler);
+    };
+  }, [projectId, on, off]);
+
+  return (
+    <ExpandableCard
+      icon={<Activity size={13} />}
+      title="Resource usage"
+      storageKey="project.resources"
+      defaultOpen
+      summary={(
+        <span className="mono" style={{ fontSize: 12 }}>
+          {latest
+            ? `CPU ${latest.cpuPercent.toFixed(1)}% · Mem ${latest.memPercent.toFixed(1)}%`
+            : "5-min avg, last 24h"}
+        </span>
+      )}
+    >
+      <div className={styles.detailGrid} style={{ marginBottom: 12 }}>
+        <DetailRow label="CPU" value={latest ? `${latest.cpuPercent.toFixed(1)}%` : "—"} />
+        <DetailRow
+          label="Memory"
+          value={latest
+            ? `${latest.memPercent.toFixed(1)}% (${Math.round(latest.memUsedMb)} MB / ${Math.round(latest.memLimitMb)} MB)`
+            : "—"}
+        />
+      </div>
+      <ProjectResourceCharts resources={history} chartHeight={180} />
+    </ExpandableCard>
+  );
+}
+
+function sameProjectGroups(a: Project[] | null, b: Project[] | null): boolean {
+  const key = (list: Project[] | null) => (list ?? []).map((p) => p.groupName ?? "").join("\u0000");
+  return a === b || key(a) === key(b);
 }
 
 function statusPillClass(status: ProjectStatusKind, styles: Record<string, string>): string {
@@ -187,12 +342,40 @@ export default function ProjectDetails() {
     unsubscribeDeploySync,
     subscribeProject,
     unsubscribeProject,
-    on,
-    off,
   } = useSocket();
-  const { system: systemData, projects: allProjects, refreshProjects, refreshSystem, systemActions, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, certbotAction, issueProjectDomainSsl } = useSystem();
+  const { refreshProjects, refreshSystem, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, certbotAction, issueProjectDomainSsl } = useSystemActions();
   const projectId = Number(id);
   const [project, setProject] = useState<Project | null>(null);
+  const [domains, setDomains] = useState<ProjectDomain[]>([]);
+
+  // Live system data arrives every few seconds. Each selector below picks only what
+  // this page renders, so the page re-renders when that slice changes, not on every push.
+  const systemLoaded = useSystemSelector((snap) => snap.system !== null);
+  const docker = useSystemSelector((snap) => {
+    const data = snap.system?.docker;
+    if (!data) return null;
+    const stack = data.available && project ? findProjectStack(project, data.stacks) : null;
+    return {
+      available: data.available,
+      reason: data.reason ?? null,
+      // Per-container CPU/RAM stats change on every push and aren't shown here.
+      stack: stack ? { ...stack, containers: stack.containers.map((c) => ({ ...c, stats: null })) } : null,
+    };
+  }, jsonEqual);
+  const domainNames = domains.map((d) => d.domain);
+  const certbotInfo = useSystemSelector((snap) => {
+    const certbot = snap.system?.certbot;
+    return {
+      available: !!(certbot?.available && certbot?.emailConfigured),
+      entries: (certbot?.entries ?? []).filter((entry) => domainNames.includes(entry.domain)),
+    };
+  }, jsonEqual);
+  const certbotRecords = useSystemSelector(
+    (snap) => snap.systemActions.certbot.filter((entry) => domainNames.includes(entry.meta?.["domain"] as string)),
+    jsonEqual,
+  );
+  // Only group names are used (for the group picker).
+  const allProjects = useSystemSelector((snap) => snap.projects, sameProjectGroups);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [envFiles, setEnvFiles] = useState<ProjectEnvFile[]>([]);
   const [envManagerOpen, setEnvManagerOpen] = useState(false);
@@ -222,13 +405,14 @@ export default function ProjectDetails() {
   const [deletingProject, setDeletingProject] = useState(false);
   const [checkingHealth, setCheckingHealth] = useState(false);
   const [deployOk, setDeployOk] = useState<boolean | null>(null);
-  const [deployLog, setDeployLog] = useState("");
-  const deployLogRef = useRef<HTMLPreElement | null>(null);
+  // The action log streams in chunk by chunk; it lives in a small store so only the
+  // <DeployLog> panel re-renders per chunk, not the whole page.
+  const [deployLog] = useState(createLogStore);
+  const setDeployLog = deployLog.set;
   const runtimeChangedRef = useRef(false);
   const [configRepo, setConfigRepo] = useState("");
   const [configGroupName, setConfigGroupName] = useState("");
   const [configGithubCredentialId, setConfigGithubCredentialId] = useState<number | null>(null);
-  const [domains, setDomains] = useState<ProjectDomain[]>([]);
   const [newDomainInput, setNewDomainInput] = useState("");
   const [newDomainService, setNewDomainService] = useState("");
   const [newDomainPort, setNewDomainPort] = useState("");
@@ -255,7 +439,6 @@ export default function ProjectDetails() {
   const [loadingDeploys, setLoadingDeploys] = useState(false);
   const [revisions, setRevisions] = useState<ProjectDeploymentRevision[]>([]);
   const [rollingBack, setRollingBack] = useState(false);
-  const [resources, setResources] = useState<ProjectResourceData | null>(null);
   const [configNginxExtra, setConfigNginxExtra] = useState("");
   const [configNginxExtraBlocks, setConfigNginxExtraBlocks] = useState("");
 
@@ -269,13 +452,13 @@ export default function ProjectDetails() {
     setError("");
     setLoading(true);
     try {
-      const [projectData, credentialData, domainData, tcpExposureData] = await Promise.all([
+      const [projectData, credentialData, domainData, tcpExposureData, envFileData] = await Promise.all([
         api.getProject(projectId),
         api.listCredentials(),
         api.listProjectDomains(projectId),
         api.listTcpExposures(projectId),
+        api.listProjectEnvFiles(projectId),
       ]);
-      const envFileData = await api.listProjectEnvFiles(projectId);
       setProject(projectData);
       syncConfig(projectData);
       setDomains(domainData);
@@ -333,12 +516,12 @@ export default function ProjectDetails() {
     if (projectData.branches.length > 0) setBranches(projectData.branches);
   }
 
-  async function loadBranches() {
+  async function loadBranches(refresh = true) {
     if (!project?.githubRepo) return;
     setLoadingBranches(true);
     setBranchError("");
     try {
-      const data = await api.getProjectBranches(project.id);
+      const data = await api.getProjectBranches(project.id, refresh);
       setBranches(data.branches);
       setConfigAutoDeployBranch((current) => current || data.autoDeployBranch || "");
     } catch (err) {
@@ -619,8 +802,8 @@ export default function ProjectDetails() {
     }
   }
 
-  async function saveProjectConfig(e: React.FormEvent) {
-    e.preventDefault();
+  async function saveProjectConfig(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!project) return;
     const toastId = notify.loading("Saving project runtime settings...");
     setSavingConfig(true);
@@ -770,7 +953,7 @@ export default function ProjectDetails() {
   const runtimeFormId = project ? `project-runtime-${project.id}` : "project-runtime";
 
   function certbotRecordFor(domain: string): ActionRecord | null {
-    return systemActions.certbot
+    return certbotRecords
       .filter((entry) => entry.meta?.["domain"] === domain)
       .reduce<ActionRecord | null>((latest, entry) => (
         !latest || new Date(entry.startedAt) > new Date(latest.startedAt) ? entry : latest
@@ -789,44 +972,18 @@ export default function ProjectDetails() {
     if (!project) return;
     void loadDeploys();
     void loadRevisions();
+    // Branch list is cached server-side (refreshed by the GitHub poller), so this is
+    // normally instant; it only reaches GitHub when nothing has been cached yet.
+    if (project.githubRepo && project.branches.length === 0) void loadBranches(false);
   }, [project?.id]);
 
-  // Latest cpu/mem/net numbers arrive live over WS the instant the sampler writes
-  // them (see project:resource-sample) — no more independent client poll timer
-  // desynced from the sampler's own 15s interval. History is 5-minute-bucketed
-  // server-side, so it's re-fetched only when a live sample crosses into a new
-  // bucket (i.e. the previous bucket just became final), not on a fixed clock.
-  useEffect(() => {
-    if (!Number.isInteger(projectId) || projectId <= 0) return;
-    let cancelled = false;
-    let lastBucket: number | null = null;
-    const refetch = () => {
-      void api.getProjectResources(projectId, 24).then((data) => {
-        if (!cancelled) setResources(data);
-      }).catch(() => { /* non-critical */ });
-    };
-    refetch();
-
-    const handler = (event: ProjectResourceSampleEvent) => {
-      if (event.projectId !== projectId) return;
-      setResources((prev) => (prev ? { ...prev, latest: event.sample } : prev));
-      const bucket = Math.floor(new Date(event.sample.sampledAt).getTime() / (5 * 60_000));
-      if (lastBucket !== null && bucket !== lastBucket) refetch();
-      lastBucket = bucket;
-    };
-    on<ProjectResourceSampleEvent>("project:resource-sample", handler);
-    return () => {
-      cancelled = true;
-      off<ProjectResourceSampleEvent>("project:resource-sample", handler);
-    };
-  }, [projectId, on, off]);
 
   useEffect(() => {
     if (!Number.isInteger(projectId) || projectId <= 0) return;
     const handler = (event: ProjectDeployEvent) => {
       if (event.projectId !== projectId) return;
 
-      setDeployLog((value) => value + event.message);
+      deployLog.append(event.message);
       if (event.done) {
         if (event.action === "pull") setPullingRepo(false);
         if (event.action === "compose") setComposingProject(false);
@@ -865,18 +1022,17 @@ export default function ProjectDetails() {
     return () => unsubscribeProject<ProjectUpdateEvent>(projectId, handler);
   }, [projectId, subscribeProject, unsubscribeProject]);
 
-  useEffect(() => {
-    if (!deployLogRef.current) return;
-    deployLogRef.current.scrollTop = deployLogRef.current.scrollHeight;
-  }, [deployLog]);
 
-  const certbotAvailable = !!(systemData?.certbot?.available && systemData?.certbot?.emailConfigured);
+  const repoBusy = pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding ||
+    stoppingProject || purgingProject || uploadingFiles || redeployingService !== null || droppingVolumesService !== null;
+  /** Branch a Pull/Redeploy will check out: the explicit pick, else the auto-deploy branch. */
+  const selectedBranch = pullBranch || project?.autoDeployBranch || "";
+  const certbotAvailable = certbotInfo.available;
   function certbotEntryFor(domain: string) {
-    return systemData?.certbot?.entries?.find((e) => e.domain === domain) ?? null;
+    return certbotInfo.entries.find((e) => e.domain === domain) ?? null;
   }
-  const docker = systemData?.docker ?? null;
   const expectedStackName = project ? expectedComposeProjectName(project) : "";
-  const dockerStack = (docker?.available && project) ? findProjectStack(project, docker.stacks) : null;
+  const dockerStack = docker?.stack ?? null;
   const monitoredContainers = healthMonitoredContainers(dockerStack);
   const ignoredContainerCount = dockerStack?.containers.filter((container) => container.healthCheckIgnored).length ?? 0;
   const dockerRunningCount = monitoredContainers.filter((c) => c.state === "running").length;
@@ -966,57 +1122,101 @@ export default function ProjectDetails() {
                 ) : (
                   <span className="muted-text" style={{ fontSize: 13 }}>No domain</span>
                 )}
-                <div className={styles.statusActions}>
-                  {project.sourceType === "github" && (
-                    <>
-                      <AppSelect
-                        value={pullBranch}
-                        onValueChange={setPullBranch}
-                        disabled={pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding || stoppingProject || project.paused}
-                        options={[
-                          { value: "", label: "Current branch" },
-                          ...branches.map((b) => ({ value: b.name, label: b.name })),
-                        ]}
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => void runProjectCommand("pull", pullBranch ? { branch: pullBranch } : undefined)}
-                        disabled={pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding || stoppingProject || !project.githubRepo || project.paused}
-                        title={pullBranch ? `Pull and switch to ${pullBranch}` : "Pull the currently checked-out branch"}
-                      >
-                        {pullingRepo ? <Loader size={13} className="spin" /> : <GitBranch size={13} />}
-                        Pull from GitHub
-                      </Button>
-                    </>
-                  )}
-                  {project.sourceType === "upload" && (
+                {project.lastCommitSha && (
+                  <span className={styles.statusCommit} title={project.lastCommitMessage ?? undefined}>
+                    <GitCommit size={12} />
+                    <span className="mono">{project.lastCommitSha.slice(0, 7)}</span>
+                    {project.lastCommitAt && <span className="muted-text">{formatTimeAgo(project.lastCommitAt)}</span>}
+                  </span>
+                )}
+              </div>
+
+              <div className={styles.toolbar}>
+                {project.sourceType === "github" && (
+                  <div className={styles.branchGroup} role="group" aria-label="Branch">
+                    <GitBranch size={13} className={styles.branchGroupIcon} />
+                    <AppSelect
+                      value={pullBranch}
+                      onValueChange={setPullBranch}
+                      disabled={repoBusy || project.paused}
+                      triggerClassName={styles.branchSelect}
+                      placeholder="Select a branch"
+                      options={[
+                        ...(project.autoDeployBranch
+                          ? [{ value: "", label: `${project.autoDeployBranch} (auto-deploy)` }]
+                          : [{ value: "", label: "Select a branch", disabled: true }]),
+                        ...branches
+                          .filter((b) => b.name !== project.autoDeployBranch)
+                          .map((b) => ({ value: b.name, label: b.name })),
+                      ]}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => void loadBranches(true)}
+                      disabled={loadingBranches || !project.githubRepo}
+                      title="Refresh branch list from GitHub"
+                      aria-label="Refresh branch list"
+                    >
+                      {loadingBranches ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}
+                    </Button>
+                    <span className={styles.toolbarDivider} />
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => setReuploadOpen((open) => !open)}
-                      disabled={uploadingFiles || deploying || composingProject || recreatingProject || forceRebuilding || stoppingProject || project.paused}
+                      size="sm"
+                      onClick={() => void runProjectCommand("pull", pullBranch ? { branch: pullBranch } : undefined)}
+                      disabled={repoBusy || !project.githubRepo || !selectedBranch || project.paused}
+                      title={selectedBranch ? `Pull ${selectedBranch} from GitHub (no rebuild)` : "Pick a branch first"}
                     >
-                      {uploadingFiles ? <Loader size={13} className="spin" /> : <Upload size={13} />}
-                      Re-upload files
+                      {pullingRepo ? <Loader size={13} className="spin" /> : <GitBranch size={13} />}
+                      Pull
                     </Button>
-                  )}
-                  <Button type="button" variant="outline" onClick={() => setEnvManagerOpen(true)}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => void runProjectCommand("deploy", pullBranch ? { branch: pullBranch } : undefined)}
+                      disabled={repoBusy || !project.githubRepo || !selectedBranch || project.paused}
+                      title={selectedBranch ? `Pull ${selectedBranch}, then docker compose up -d --build` : "Pick a branch first"}
+                    >
+                      {deploying ? <Loader size={13} className="spin" /> : <Rocket size={13} />}
+                      Redeploy
+                    </Button>
+                  </div>
+                )}
+                {project.sourceType === "upload" && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setReuploadOpen((open) => !open)}
+                    disabled={repoBusy || project.paused}
+                  >
+                    {uploadingFiles ? <Loader size={13} className="spin" /> : <Upload size={13} />}
+                    Re-upload files
+                  </Button>
+                )}
+                <div className={styles.toolbarActions}>
+                  <Button type="button" variant="outline" size="sm" onClick={() => setEnvManagerOpen(true)}>
                     <KeyRound size={13} />
-                    Env Manager
+                    Env
                     <span className={styles.actionCount}>{envFiles.length}</span>
                   </Button>
                   <Button
                     type="button"
+                    variant={project.sourceType === "github" ? "outline" : "default"}
+                    size="sm"
                     onClick={() => void runProjectCommand("compose")}
-                    disabled={composingProject || recreatingProject || forceRebuilding || deploying || pullingRepo || stoppingProject || (project.sourceType === "github" && !project.githubRepo) || project.paused}
+                    disabled={repoBusy || (project.sourceType === "github" && !project.githubRepo) || project.paused}
+                    title="docker compose up -d --build on the current checkout (no git pull)"
                   >
                     {composingProject ? <Loader size={13} className="spin" /> : <Box size={13} />}
-                    Docker Compose
+                    Compose up
                   </Button>
                   <Popover>
                     <PopoverTrigger asChild>
-                      <Button type="button" variant="outline">
+                      <Button type="button" variant="outline" size="sm">
                         <EllipsisVertical size={13} />
                         Actions
                       </Button>
@@ -1110,23 +1310,6 @@ export default function ProjectDetails() {
                 </div>
               </div>
 
-              {(project.lastCommitSha || project.lastCommitAt) && (
-                <div className={styles.commitInfo}>
-                  {project.lastCommitSha && (
-                    <span className={cn("mono", styles.commitSha)}>{project.lastCommitSha.slice(0, 7)}</span>
-                  )}
-                  {project.lastCommitMessage && (
-                    <span className={styles.commitMsg}>{project.lastCommitMessage}</span>
-                  )}
-                  {project.lastCommitAuthor && (
-                    <span className={cn("mono", styles.commitMeta)}>{project.lastCommitAuthor}</span>
-                  )}
-                  {project.lastCommitAt && (
-                    <span className={cn("mono", styles.commitMeta)}>{formatShortDateTime(project.lastCommitAt, "")}</span>
-                  )}
-                </div>
-              )}
-
               {reuploadOpen && project.sourceType === "upload" && (
                 <div className={styles.commitInfo} style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
                   <div className="field field-wide">
@@ -1174,19 +1357,16 @@ export default function ProjectDetails() {
                 </div>
               )}
 
-              {(deployLog || deployOk !== null) && (
-                <pre ref={deployLogRef} className={`output-block${deployOk === false ? " output-stderr" : ""}`}>
-                  {deployLog || (deployOk ? "Command completed" : "Command failed")}
-                </pre>
-              )}
+              <DeployLog store={deployLog} ok={deployOk} />
             </div>
 
             {/* ── Docker expandable card ───────────────────────────────── */}
             <ExpandableCard
               icon={<Box size={13} />}
               title="Docker"
+              storageKey="project.docker"
               summary={
-                systemData === null ? (
+                !systemLoaded ? (
                   <Loader size={11} className="spin" />
                 ) : !docker?.available ? (
                   <span style={{ color: "var(--danger)", fontSize: 12 }}>Unavailable</span>
@@ -1294,28 +1474,29 @@ export default function ProjectDetails() {
             </ExpandableCard>
 
             {/* ── Project config card ──────────────────────────────────── */}
-            <div className={cn("card", styles.runtimeCard)}>
-              <div className="card-title">
-                Project Config
+            <ExpandableCard
+              icon={<FileText size={13} />}
+              title="Project Config"
+              storageKey="project.config"
+              className={styles.runtimeCard}
+              summary={runtimeChanged ? <span className={styles.unsavedHint}>Unsaved changes</span> : undefined}
+              actions={(
                 <Button
-                  type="submit"
-                  form={runtimeFormId}
+                  type="button"
                   size="xs"
-                  style={{ marginLeft: "auto" }}
+                  onClick={() => void saveProjectConfig()}
                   disabled={savingConfig || !runtimeChanged}
                 >
                   {savingConfig ? <Loader size={12} className="spin" /> : <Save size={12} />}
                   Save
                 </Button>
-              </div>
+              )}
+            >
               {configError && <div className="alert alert-error">{configError}</div>}
 
               <form id={runtimeFormId} className={styles.runtimeForm} onSubmit={(e) => void saveProjectConfig(e)}>
                 <ProjectGroupField value={configGroupName} onValueChange={setConfigGroupName} projects={allProjects ?? []} disabled={savingConfig} />
-                <div className={styles.runtimeSection}>
-                  <div className={styles.runtimeSectionHeader}>
-                    <span>Repository</span>
-                  </div>
+                <ConfigSection title="Repository" storageKey="repository">
                   <div className="field field-wide">
                     <label>GitHub repo <span className="hint mono">(owner/repo)</span></label>
                     <input type="text" value={configRepo} onChange={(e) => setConfigRepo(e.target.value)} />
@@ -1362,12 +1543,9 @@ export default function ProjectDetails() {
                     />
                     {branchError && <div style={{ fontSize: "0.78rem", color: "var(--danger)", marginTop: 4 }}>{branchError}</div>}
                   </div>
-                </div>
+                </ConfigSection>
 
-                <div className={styles.runtimeSection}>
-                  <div className={styles.runtimeSectionHeader}>
-                    <span>Ingress</span>
-                  </div>
+                <ConfigSection title="Ingress" storageKey="ingress">
                   <div className="field field-wide" style={{ gridColumn: "1 / -1" }}>
                     <label>Domains <span className="hint">(each domain routes to its own compose service + container port over the stackport-proxy network)</span></label>
                     <div className="row-actions" style={{ marginBottom: domains.length > 0 ? 10 : 0 }}>
@@ -1517,6 +1695,9 @@ export default function ProjectDetails() {
                       </div>
                     )}
                   </div>
+                </ConfigSection>
+
+                <ConfigSection title="Compose & Nginx" storageKey="compose-nginx" defaultOpen={false}>
                   {(project.availableComposeFiles.length > 0 || project.composeFile) && (
                     <div className="field">
                       <label>Compose file</label>
@@ -1569,11 +1750,12 @@ export default function ProjectDetails() {
                       onChange={(e) => setConfigNginxExtraBlocks(e.target.value)}
                     />
                   </div>
-                </div>
+                </ConfigSection>
 
-                <div className={styles.runtimeSection}>
-                  <div className={styles.runtimeSectionHeader}>
-                    <span>Deployment history</span>
+                <ConfigSection
+                  title="Deployment history"
+                  storageKey="deployment-history"
+                  actions={(
                     <Button
                       type="button"
                       variant="outline"
@@ -1585,7 +1767,8 @@ export default function ProjectDetails() {
                       {rollingBack ? <Loader size={12} className="spin" /> : <RotateCw size={12} />}
                       Roll back
                     </Button>
-                  </div>
+                  )}
+                >
                   {revisions.length === 0 ? (
                     <div className="muted-text" style={{ fontSize: 13 }}>No recorded deployments yet.</div>
                   ) : (
@@ -1609,12 +1792,9 @@ export default function ProjectDetails() {
                       ))}
                     </div>
                   )}
-                </div>
+                </ConfigSection>
 
-                <div className={styles.runtimeSection}>
-                  <div className={styles.runtimeSectionHeader}>
-                    <span>Health check</span>
-                  </div>
+                <ConfigSection title="Health check" storageKey="health-check">
                   <div className="field">
                     <label>Domain <span className="hint">(HTTPS target)</span></label>
                     <AppSelect
@@ -1645,28 +1825,37 @@ export default function ProjectDetails() {
                       }))}
                     />
                   </div>
-                </div>
-
+                </ConfigSection>
               </form>
-            </div>
+            </ExpandableCard>
 
             {project.githubRepo && (
-              <div className="card">
-                <div className="card-title">
-                  <GitBranch size={13} />
-                  GitHub
-                  <div className="row-actions" style={{ marginLeft: "auto" }}>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => void loadBranches()}
-                      disabled={loadingBranches}
-                    >
-                      {loadingBranches ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
-                      Refresh branches
-                    </button>
-                  </div>
-                </div>
+              <ExpandableCard
+                icon={<GitBranch size={13} />}
+                title="GitHub"
+                storageKey="project.github"
+                defaultOpen
+                summary={(
+                  <span className="mono" style={{ fontSize: 12 }}>
+                    {project.githubRepo}
+                    {project.autoDeployBranch && ` · ${project.autoDeployBranch}`}
+                    {project.lastCommitSha && ` @ ${project.lastCommitSha.slice(0, 7)}`}
+                  </span>
+                )}
+                actions={(
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => void loadBranches(true)}
+                    disabled={loadingBranches}
+                    title={project.branchesFetchedAt ? `Branch list updated ${formatTimeAgo(project.branchesFetchedAt)}` : "Fetch branches from GitHub"}
+                  >
+                    {loadingBranches ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
+                    Refresh branches
+                  </Button>
+                )}
+              >
 
                 <div className={styles.detailGrid}>
                   <DetailRow label="Repository" value={<a className="ext-link mono" href={`https://github.com/${project.githubRepo}`} target="_blank" rel="noopener noreferrer">{project.githubRepo} <ExternalLink size={10} /></a>} />
@@ -1683,12 +1872,15 @@ export default function ProjectDetails() {
 
                 {branches.length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: "0.78rem", color: "var(--dim)", marginBottom: 6 }}>Branches</div>
+                    <div style={{ fontSize: "0.78rem", color: "var(--dim)", marginBottom: 6 }}>
+                      Branches ({branches.length})
+                      {project.branchesFetchedAt && <span> · updated {formatTimeAgo(project.branchesFetchedAt)}</span>}
+                    </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {branches.map((b) => (
                         <div key={b.name} style={{ display: "flex", gap: 10, alignItems: "baseline", fontSize: "0.82rem" }}>
-                          <span className="mono" style={{ minWidth: 140, color: b.name === project.autoDeployBranch ? "var(--primary)" : "inherit" }}>
-                            <GitCommit size={11} style={{ marginRight: 4 }} />
+                          <span className="mono" style={{ minWidth: 140, display: "inline-flex", alignItems: "center", gap: 4, color: b.name === project.autoDeployBranch ? "var(--primary)" : "inherit" }}>
+                            <GitCommit size={11} />
                             {b.name}
                             {b.name === project.autoDeployBranch && <span style={{ marginLeft: 4, fontSize: "0.75em", color: "var(--primary)" }}>▶ auto-deploy</span>}
                           </span>
@@ -1723,47 +1915,36 @@ export default function ProjectDetails() {
                     {loadingDeploys && <Loader size={12} className="spin" style={{ marginTop: 6 }} />}
                   </div>
                 )}
-              </div>
+              </ExpandableCard>
             )}
 
-            <div className="card">
-              <div className="card-title">
-                <Activity size={13} />
-                Resource usage
-                <span className="muted-text" style={{ fontWeight: 400, marginLeft: 4 }}>5-min avg, last 24h</span>
-              </div>
-              <div className={styles.detailGrid} style={{ marginBottom: 12 }}>
-                <DetailRow label="CPU" value={resources?.latest ? `${resources.latest.cpuPercent.toFixed(1)}%` : "—"} />
-                <DetailRow
-                  label="Memory"
-                  value={resources?.latest
-                    ? `${resources.latest.memPercent.toFixed(1)}% (${Math.round(resources.latest.memUsedMb)} MB / ${Math.round(resources.latest.memLimitMb)} MB)`
-                    : "—"}
-                />
-              </div>
-              <ProjectResourceCharts resources={resources} chartHeight={180} />
-            </div>
+            <ResourceUsageCard projectId={project.id} />
 
-            <div className="card">
-              <div className="card-title">
-                <GitBranch size={13} />
-                Project Metadata
-              </div>
+            <ExpandableCard
+              icon={<FolderDot size={13} />}
+              title="Project Metadata"
+              storageKey="project.metadata"
+              summary={<span className="mono" style={{ fontSize: 12 }}>#{project.id}</span>}
+            >
               <div className={styles.detailGrid}>
                 <DetailRow label="Project ID" value={<span className="mono">{project.id}</span>} />
                 <DetailRow label="Created" value={<span className="mono">{formatShortDateTime(project.createdAt)}</span>} />
                 <DetailRow label="Updated" value={<span className="mono">{formatShortDateTime(project.updatedAt)}</span>} />
               </div>
-            </div>
+            </ExpandableCard>
           </>
         ) : null}
 
       </main>
       {shellContainer && (
-        <ContainerShellDialog container={shellContainer} onClose={() => setShellContainer(null)} />
+        <Suspense fallback={null}>
+          <ContainerShellDialog container={shellContainer} onClose={() => setShellContainer(null)} />
+        </Suspense>
       )}
       {logStreamContainer && (
-        <ContainerLogDialog container={logStreamContainer} onClose={() => setLogStreamContainer(null)} />
+        <Suspense fallback={null}>
+          <ContainerLogDialog container={logStreamContainer} onClose={() => setLogStreamContainer(null)} />
+        </Suspense>
       )}
       {composeFileDialogOpen && project && (
         <ComposeFileDialog projectId={project.id} projectName={project.name} onClose={() => setComposeFileDialogOpen(false)} />

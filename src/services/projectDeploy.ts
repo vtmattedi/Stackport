@@ -857,7 +857,7 @@ async function readComposeFileSafe(repoPath: string, composeFile: string | null)
   return fs.readFile(path.join(repoPath, composeFile), "utf8").catch(() => null);
 }
 
-async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual"): Promise<DeployResult> {
+async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null): Promise<DeployResult> {
   const project = getProjectById(projectId);
   if (!project) {
     return { ok: false, projectId, repoPath: "", output: "Project not found", action };
@@ -867,13 +867,14 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   }
 
   const repoPath = projectRepoDir(project);
+  const deployedBranch = branch ?? project.autoDeployBranch;
   const output: string[] = [];
   emit(projectId, action, "status", `${actionStartedLabel(action)} started\n`);
 
   let composeFile: string | null;
   if (pullFirst) {
     emit(projectId, action, "status", "Stage 1/2: pull from GitHub\n");
-    const repoResults = await ensureRepo(project, repoPath, action);
+    const repoResults = await ensureRepo(project, repoPath, action, branch);
     output.push(...repoResults.map((result) => result.output));
 
     if (repoResults.some((result) => !result.ok)) {
@@ -891,7 +892,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       }
       recordFailedDeployment(
         projectId,
-        { commitSha: await currentCommitSha(projectId, action, repoPath), branch: project.autoDeployBranch, composeFileName: null, triggeredBy },
+        { commitSha: await currentCommitSha(projectId, action, repoPath), branch: deployedBranch, composeFileName: null, triggeredBy },
         sync.blockedReason ?? "Deploy blocked."
       );
       return { ok: false, projectId, repoPath, output: output.join("\n\n"), action };
@@ -936,7 +937,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   if (!capacity.ok) {
     emit(projectId, action, "stderr", capacity.message, { ok: false, done: true });
     output.push(capacity.message);
-    recordFailedDeployment(projectId, { commitSha, branch: project.autoDeployBranch, composeFileName: composeFile, triggeredBy }, capacity.message.trim());
+    recordFailedDeployment(projectId, { commitSha, branch: deployedBranch, composeFileName: composeFile, triggeredBy }, capacity.message.trim());
     return { ok: false, projectId, repoPath, output: output.join("\n\n"), action };
   }
   if (capacity.message) {
@@ -957,12 +958,12 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       await snapshotDeployedCompose(repoPath, composeFile);
       const effectiveCompose = await readComposeFileSafe(repoPath, composeFile);
       recordSuccessfulDeployment(projectId, {
-        commitSha, branch: project.autoDeployBranch, composeFileName: composeFile, sourceCompose, effectiveCompose, triggeredBy,
+        commitSha, branch: deployedBranch, composeFileName: composeFile, sourceCompose, effectiveCompose, triggeredBy,
       });
     } else {
       recordFailedDeployment(
         projectId,
-        { commitSha, branch: project.autoDeployBranch, composeFileName: composeFile, triggeredBy },
+        { commitSha, branch: deployedBranch, composeFileName: composeFile, triggeredBy },
         "docker compose up failed — see output for details"
       );
     }
@@ -982,8 +983,9 @@ export function buildProject(projectId: number): Promise<DeployResult> {
   return runProjectAction(projectId, "build");
 }
 
-export function deployProject(projectId: number, triggeredBy: "manual" | "auto" = "manual"): Promise<DeployResult> {
-  return runProjectAction(projectId, "deploy", true, triggeredBy);
+/** Pull (optionally switching to `branch`, else the auto-deploy branch) then `docker compose up -d --build`. */
+export function deployProject(projectId: number, triggeredBy: "manual" | "auto" = "manual", branch?: string | null): Promise<DeployResult> {
+  return runProjectAction(projectId, "deploy", true, triggeredBy, branch);
 }
 
 export async function pullProject(projectId: number, branch?: string | null, triggeredBy: "manual" | "auto" = "manual"): Promise<DeployResult> {
