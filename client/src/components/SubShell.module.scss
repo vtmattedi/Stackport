@@ -1,0 +1,121 @@
+$phone: 760px;
+
+.header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+
+  :global(.page-title) { margin-bottom: 0; }
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+
+  @media (max-width: $phone) { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+}
+
+.section-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 16px;
+
+  @media (max-width: $phone) {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+  }
+}
+
+.section-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  color: var(--dim);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:hover { color: var(--text); background: var(--surface); }
+
+  svg { flex-shrink: 0; transition: color 0.15s; }
+}
+
+.section-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.section-link-active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: inset 2px 0 0 var(--brand);
+
+  @media (max-width: $phone) { box-shadow: inset 0 -2px 0 var(--brand); }
+}
+
+.status-ok { color: var(--success); }
+.status-fail { color: var(--danger); }
+
+.body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+
+  > :global(.card) { margin-bottom: 0; }
+}
+
+.section-header {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.section-heading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.section-description {
+  color: var(--dim);
+  font-size: 13px;
+}

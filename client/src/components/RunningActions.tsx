@@ -53,9 +53,9 @@ export function useRunningActions(): RunningItem[] {
   }, [on, off, refetch]);
 
   const systemItems = [
-    systemItem(systemActions.nginx, "/system?tab=nginx"),
-    systemItem(systemActions.docker, "/system?tab=docker"),
-    ...systemActions.certbot.map((action) => systemItem(action, "/system?tab=certbot")),
+    systemItem(systemActions.nginx, "/system/nginx"),
+    systemItem(systemActions.docker, "/system/docker"),
+    ...systemActions.certbot.map((action) => systemItem(action, "/system/certbot")),
   ].filter((item): item is RunningItem => item !== null);
 
   return [...projectItems, ...systemItems];

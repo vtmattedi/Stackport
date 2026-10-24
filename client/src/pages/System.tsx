@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useEffect } from "react";
-import { Navigate, useSearchParams } from "react-router-dom";
+import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Cpu, RefreshCw, Loader, Box, Layers, AlertCircle,
   RotateCw, Play, Square, Hammer, ChevronDown, ChevronRight, X, FileText, Save, Eye, Settings,
@@ -26,7 +26,8 @@ import { useSystem } from "../context/SystemContext";
 import { formatShortDateTime } from "../lib/format";
 import { cn } from "../lib/utils";
 import styles from "./System.module.scss";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
+import SubShell, { SubShellSectionHeader } from "../components/SubShell";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -367,27 +368,27 @@ function StackRow({ stack, onAction, activeOp, result, onDismissResult, collapse
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-/** The poller and firewall moved to Settings; keep old /system?tab= links working. */
+/** Sections live at /system/:section; old /system?tab= links (including the
+ *  poller and firewall, which moved to Settings) still land in the right place. */
 export default function System() {
+  const { section } = useParams();
   const [searchParams] = useSearchParams();
   const tab = searchParams.get("tab");
   if (tab === "github") return <Navigate to="/settings/deploy-triggers" replace />;
   if (tab === "firewall") return <Navigate to="/settings/infrastructure" replace />;
-  return <SystemPage />;
+  if (!section || !isSystemTab(section)) {
+    return <Navigate to={`/system/${tab && isSystemTab(tab) ? tab : "nginx"}`} replace />;
+  }
+  return <SystemPage activeTab={section} />;
 }
 
-function SystemPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
+function SystemPage({ activeTab }: { activeTab: SystemTab }) {
   const {
     system: data, refreshSystem: refresh,
     applyNginx, updateNginxAppConfig, certbotAction, pruneDockerCache,
   } = useSystem();
   const loading = data === null;
   const [collapsedStacks, setCollapsedStacks] = useState<Record<string, boolean>>(() => readCollapsedStacks());
-  const [activeTab, setActiveTab] = useState<SystemTab>(() => {
-    const tab = searchParams.get("tab");
-    return tab && isSystemTab(tab) ? tab : "nginx";
-  });
   const [nginxDocKind, setNginxDocKind] = useState<NginxDocumentKind>(() => readNginxDocumentKind());
   const [nginxRoutesOpen, setNginxRoutesOpen] = useState(false);
   const [nginxFilesOpen, setNginxFilesOpen] = useState(false);
@@ -433,7 +434,7 @@ function SystemPage() {
   const nginxSelectorOk = !!nginx?.available && !!nginx.active;
   const dockerSelectorOk = !!docker?.available && dockerHasRunningContainers;
   const certbotSelectorOk = !!certbot?.available;
-  const selectorIconClass = (ok: boolean) => cn(styles.selectorIcon, !loading && (ok ? styles.selectorIconOk : styles.selectorIconFail));
+  const sectionStatus = (ok: boolean) => (loading ? undefined : ok ? "ok" as const : "fail" as const);
   const nginxAppChanged = nginxAppDirty && (
     !nginx?.layer?.app ||
     nginxAppEnabledDraft !== nginx.layer.app.enabled ||
@@ -448,13 +449,6 @@ function SystemPage() {
   useEffect(() => {
     localStorage.setItem(STACK_COLLAPSE_KEY, JSON.stringify(collapsedStacks));
   }, [collapsedStacks]);
-
-  useEffect(() => {
-    const tab = searchParams.get("tab");
-    if (tab && isSystemTab(tab) && tab !== activeTab) {
-      setActiveTab(tab);
-    }
-  }, [searchParams, activeTab]);
 
   useEffect(() => {
     localStorage.setItem(NGINX_DOC_KEY, nginxDocKind);
@@ -494,16 +488,6 @@ function SystemPage() {
 
 
 
-
-  function handleSystemTabChange(value: string) {
-    if (!isSystemTab(value)) return;
-    setActiveTab(value);
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set("tab", value);
-      return next;
-    }, { replace: true });
-  }
 
   async function loadNginxDocument(kind: NginxDocumentKind = nginxDocKind) {
     setLoadingNginxDoc(true);
@@ -747,18 +731,6 @@ function SystemPage() {
 
   const dockerPanel = (
     <>
-      <div className={styles.sectionTitle}>
-        <Box size={14} />
-        Docker
-        {docker?.version && (
-          <span className={cn("mono", styles.titleMeta)}>
-            v{docker.version}
-          </span>
-        )}
-        <span className={styles.titleStatus}>
-          <StatusChip ok={!!docker?.available} labels={["available", "unavailable"]} />
-        </span>
-      </div>
 
       {!docker?.available ? (
         <ServiceError service="Docker" reason={docker?.reason} className={styles.softAlert} />
@@ -928,53 +900,6 @@ function SystemPage() {
 
   const nginxPanel = (
     <>
-      <div className={styles.sectionTitle}>
-        <Layers size={13} />
-        Nginx
-        {nginx?.version && (
-          <span className={cn("mono", styles.titleMeta)}>
-            {nginx.version}
-          </span>
-        )}
-        {nginx?.available !== undefined && (
-          <span>
-            <StatusChip ok={!!nginx.available} labels={["available", "unavailable"]} />
-          </span>
-        )}
-        {nginx?.available && nginx.active !== undefined && (
-          <span>
-            <StatusChip ok={nginx.active} labels={["active", "inactive"]} />
-          </span>
-        )}
-        {nginx?.available && (
-          <div className={cn("row-actions", styles.titleActions)}>
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={() => void handleNginxApply()}
-              disabled={applyingNginx || reloading}
-              title="Generate, validate, and reload"
-            >
-              {applyingNginx ? <Loader size={12} className="spin" /> : <FileText size={12} />}
-              Apply
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={() => void handleNginxReload()}
-              disabled={reloading || applyingNginx}
-              title="Regenerate and reload nginx"
-            >
-              {reloading ? <Loader size={12} className="spin" /> : <RotateCw size={12} />}
-              Reload
-            </Button>
-          </div>
-        )}
-      </div>
-
-      <p className="muted-text">Nginx runs in the stackport-nginx container. Certbot uses temporary Docker containers for certificate issuance and renewal.</p>
 
       {!nginx?.available ? (
         <div>
@@ -1315,26 +1240,6 @@ function SystemPage() {
 
   const certbotPanel = (
     <>
-      <div className={styles.sectionTitle}>
-        <ShieldCheck size={13} />
-        Certbot
-        {certbot && (
-          <span className={cn("mono", styles.titleMeta)}>
-            Docker
-          </span>
-        )}
-        {certbot && (
-          <span>
-            <StatusChip ok={certbot.available} labels={["available", "unavailable"]} />
-          </span>
-        )}
-        {certbot?.available && (
-          <div className={cn(styles.titleActions, styles.inlineMeta, "muted-text")}>
-            <span className="mono path-text">{certbot.rootPath}</span>
-            <span className="mono">{certbot.emailConfigured ? "email configured" : "no email"}</span>
-          </div>
-        )}
-      </div>
 
       {!certbot?.available ? (
         <div>
@@ -1424,55 +1329,101 @@ function SystemPage() {
     </>
   );
 
-  return (
+  const nginxActions = nginx?.available && (
     <>
-      <main className="main">
-        <div className="page-header">
-          <h1 className="page-title">
-            <Cpu size={20} />System
-          </h1>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={refresh}
-            disabled={loading}
-          >
-            <RefreshCw size={13} />
-            Refresh
-          </Button>
-        </div>
-
-          <Tabs value={activeTab} onValueChange={handleSystemTabChange} className={styles.pageTabs}>
-            <TabsList className={styles.pageTabsList}>
-              <TabsTrigger value="nginx">
-                <Layers size={13} className={selectorIconClass(nginxSelectorOk)} />
-                Nginx
-              </TabsTrigger>
-              <TabsTrigger value="docker">
-                <Box size={13} className={selectorIconClass(dockerSelectorOk)} />
-                Docker
-              </TabsTrigger>
-              <TabsTrigger value="certbot">
-                <ShieldCheck size={13} className={selectorIconClass(certbotSelectorOk)} />
-                Certbot
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="nginx">
-              <section className={styles.systemPanel}>{loading ? <SystemSkeleton /> : nginxPanel}</section>
-            </TabsContent>
-
-            <TabsContent value="docker">
-              <section className={styles.systemPanel}>{loading ? <SystemSkeleton /> : dockerPanel}</section>
-            </TabsContent>
-
-            <TabsContent value="certbot">
-              <section className={styles.systemPanel}>{loading ? <SystemSkeleton /> : certbotPanel}</section>
-            </TabsContent>
-
-          </Tabs>
-      </main>
+      <Button
+        type="button"
+        variant="outline"
+        size="xs"
+        onClick={() => void handleNginxApply()}
+        disabled={applyingNginx || reloading}
+        title="Generate, validate, and reload"
+      >
+        {applyingNginx ? <Loader size={12} className="spin" /> : <FileText size={12} />}
+        Apply
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="xs"
+        onClick={() => void handleNginxReload()}
+        disabled={reloading || applyingNginx}
+        title="Regenerate and reload nginx"
+      >
+        {reloading ? <Loader size={12} className="spin" /> : <RotateCw size={12} />}
+        Reload
+      </Button>
     </>
+  );
+
+  const headers = {
+    nginx: (
+      <SubShellSectionHeader
+        title="Nginx"
+        icon={Layers}
+        meta={
+          <>
+            {nginx?.version && <span className="mono muted-text">{nginx.version}</span>}
+            {nginx?.available !== undefined && <StatusChip ok={!!nginx.available} labels={["available", "unavailable"]} />}
+            {nginx?.available && nginx.active !== undefined && <StatusChip ok={nginx.active} labels={["active", "inactive"]} />}
+          </>
+        }
+        description="Runs in the stackport-nginx container and routes every project's domains."
+        actions={nginxActions}
+      />
+    ),
+    docker: (
+      <SubShellSectionHeader
+        title="Docker"
+        icon={Box}
+        meta={
+          <>
+            {docker?.version && <span className="mono muted-text">v{docker.version}</span>}
+            {docker && <StatusChip ok={!!docker.available} labels={["available", "unavailable"]} />}
+          </>
+        }
+        description="Compose stacks, standalone containers and disk usage."
+      />
+    ),
+    certbot: (
+      <SubShellSectionHeader
+        title="Certbot"
+        icon={ShieldCheck}
+        meta={certbot && <StatusChip ok={certbot.available} labels={["available", "unavailable"]} />}
+        description={
+          certbot?.available ? (
+            <span className={styles.inlineMeta}>
+              <span>Issues and renews certificates in temporary Docker containers.</span>
+              <span className="mono path-text">{certbot.rootPath}</span>
+              <span className="mono">{certbot.emailConfigured ? "email configured" : "no email"}</span>
+            </span>
+          ) : "Issues and renews certificates in temporary Docker containers."
+        }
+      />
+    ),
+  };
+
+  const panels = { nginx: nginxPanel, docker: dockerPanel, certbot: certbotPanel };
+
+  return (
+    <SubShell
+      title="System"
+      icon={Cpu}
+      basePath="/system"
+      sections={[
+        { path: "nginx", label: "Nginx", icon: Layers, status: sectionStatus(nginxSelectorOk) },
+        { path: "docker", label: "Docker", icon: Box, status: sectionStatus(dockerSelectorOk) },
+        { path: "certbot", label: "Certbot", icon: ShieldCheck, status: sectionStatus(certbotSelectorOk) },
+      ]}
+      actions={
+        <Button type="button" variant="outline" size="xs" onClick={refresh} disabled={loading}>
+          <RefreshCw size={13} />
+          Refresh
+        </Button>
+      }
+    >
+      {headers[activeTab]}
+      <section className={styles.systemPanel}>{loading ? <SystemSkeleton /> : panels[activeTab]}</section>
+    </SubShell>
   );
 }

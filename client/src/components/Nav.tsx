@@ -59,7 +59,7 @@ function SystemSubmenu({ system }: { system: SystemData | null }) {
       <div className={styles.submenuHeader}>System</div>
       <div className={styles.submenuList}>
         {SYSTEM_TABS.map(({ tab, label, icon: Icon }) => (
-          <Link key={tab} to={`/system?tab=${tab}`} className={styles.submenuItem}>
+          <Link key={tab} to={`/system/${tab}`} className={styles.submenuItem}>
             <Icon size={14} className={tabIconClass(states[tab])} />
             <span className={styles.submenuItemLabel}>{label}</span>
           </Link>
