@@ -4,7 +4,7 @@
 // package.json (not just transitively pulled in by eslint tooling): the
 // deploy script prunes devDependencies after build, which previously deleted
 // this exact module and crash-looped the service at boot.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const yaml = require("js-yaml") as {
   load: (input: string) => unknown;
   dump: (input: unknown) => string;

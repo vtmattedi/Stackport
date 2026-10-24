@@ -20,7 +20,8 @@
     "start": "node dist/index.js",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tests",
+    "test": "node --import tsx --import ./tests/setup.ts --test \"tests/**/*.test.ts\""
   },
   "keywords": [],
   "author": "",
