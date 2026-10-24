@@ -73,7 +73,7 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 BASE="$(git -C "$SRC" rev-parse "$BASE_REF^{commit}")"
 HEAD="$(git -C "$SRC" rev-parse "$HEAD_REF^{commit}")"
 git init --quiet --bare --initial-branch=main "$ORIGIN"
-git -C "$SRC" push --quiet "$ORIGIN" "$BASE:refs/heads/main" "$BASE:refs/heads/stable"
+git -C "$SRC" push --quiet "$ORIGIN" "$BASE:refs/heads/main" "$BASE:refs/heads/stable" "$HEAD:refs/heads/e2e-head"
 git clone --quiet "$ORIGIN" "$SCRATCH"
 
 # The runner's firewall must stay off; a no-op ufw keeps install from enabling it.
