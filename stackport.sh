@@ -130,7 +130,7 @@ healthcheck_stackport() {
 
 # Process health alone does not prove that the first-login HTTPS route is ready.
 healthcheck_ingress() {
-  local attempts="${1:-${STACKPORT_INGRESS_ATTEMPTS:-180}}" domain i
+  local attempts="${STACKPORT_INGRESS_ATTEMPTS:-180}" domain i
   domain="$(grep -m1 '^STACKPORT_DOMAIN=' "$STACKPORT_ENV_FILE" | cut -d= -f2-)"
   for ((i = 0; i < attempts; i++)); do
     if [[ -n "$domain" ]]; then

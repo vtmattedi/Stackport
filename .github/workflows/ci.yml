@@ -33,7 +33,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: client/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
+      # Same layout as the Dockerfile: vite.config.ts resolves Node types from the
+      # root install.
+      - run: npm ci
       - run: npm ci --prefix client
       # build:dry skips the version bump, so CI never rewrites build-info.json.
       - run: npm --prefix client run build:dry
