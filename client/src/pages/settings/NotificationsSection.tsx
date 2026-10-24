@@ -147,7 +147,7 @@ export default function NotificationsSection() {
               className="btn btn-ghost"
               onClick={() => void sendTestNotification()}
               disabled={testingNotif || !notifConfig?.hasApiKey}
-              title={!notifConfig?.hasApiKey ? "Save API key first" : undefined}
+              title={!notifConfig?.hasApiKey ? "Save an API key first" : undefined}
             >
               {testingNotif ? <Loader size={13} className="spin" /> : <Send size={13} />}
               Send test

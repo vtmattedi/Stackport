@@ -141,7 +141,8 @@ export default function InfrastructureSection() {
                 Cancel
               </button>
             )}
-            <button className="btn btn-primary" type="submit" disabled={savingProvider || (!providerCredentialId && !providerFormId)}>
+            <button className="btn btn-primary" type="submit" disabled={savingProvider || (!providerCredentialId && !providerFormId)}
+              title={!providerCredentialId && !providerFormId ? "Pick an API key credential first" : undefined}>
               {savingProvider ? <Loader size={13} className="spin" /> : <Plus size={13} />}
               {providerFormId ? "Update" : "Add"}
             </button>
@@ -191,7 +192,8 @@ export default function InfrastructureSection() {
               placeholder="Provider"
               disabled={providers.length === 0}
               action={(
-                <button className="btn btn-ghost btn-sm" onClick={() => void listVms()} disabled={!provider || listing}>
+                <button className="btn btn-ghost btn-sm" onClick={() => void listVms()} disabled={!provider || listing}
+                  title={!provider ? "Pick a provider first" : "Fetch this provider's VMs"}>
                   {listing ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}
                   List VMs
                 </button>
