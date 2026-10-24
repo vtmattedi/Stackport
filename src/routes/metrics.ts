@@ -40,15 +40,26 @@ function clampDays(value: unknown): number {
   return Math.min(Math.max(n, MIN_DEPLOY_DAYS), MAX_DEPLOY_DAYS);
 }
 
+/** `?projects=1,2,3` → those ids; absent or empty → null (every project). */
+function parseProjectIds(value: unknown): number[] | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const ids = value.split(",").map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0);
+  return ids.length > 0 ? ids : null;
+}
+
 router.get("/", (req, res) => {
   const db = getDatabase();
   const days = clampDays(req.query.days);
+  const projectIds = parseProjectIds(req.query.projects);
+  // Ids are validated integers, so inlining them is safe and keeps every query a single prepare.
+  const deployScope = projectIds ? ` AND project_id IN (${projectIds.join(",")})` : "";
+  const projectScope = projectIds ? ` AND id IN (${projectIds.join(",")})` : "";
 
   // Deploy stats: grouped by day + status, over the requested window
   const deployRows = db.prepare(`
     SELECT date(created_at) AS day, status, COUNT(*) AS cnt
     FROM project_deploys
-    WHERE created_at >= datetime('now', ?)
+    WHERE created_at >= datetime('now', ?)${deployScope}
     GROUP BY day, status
     ORDER BY day ASC
   `).all(`-${days} days`) as Array<{ day: string; status: string; cnt: number }>;
@@ -61,15 +72,15 @@ router.get("/", (req, res) => {
   }
 
   const windowArg = `-${days} days`;
-  const totalDeploys = (db.prepare("SELECT COUNT(*) AS c FROM project_deploys WHERE created_at >= datetime('now', ?)").get(windowArg) as { c: number }).c;
-  const successDeploys = (db.prepare("SELECT COUNT(*) AS c FROM project_deploys WHERE status = 'success' AND created_at >= datetime('now', ?)").get(windowArg) as { c: number }).c;
-  const failedDeploys = (db.prepare("SELECT COUNT(*) AS c FROM project_deploys WHERE status = 'failed' AND created_at >= datetime('now', ?)").get(windowArg) as { c: number }).c;
+  const totalDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
+  const successDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE status = 'success' AND created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
+  const failedDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE status = 'failed' AND created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
 
   const recentFailedDeploys = db.prepare(`
     SELECT pd.id, pd.project_id, p.name AS project_name, pd.created_at
     FROM project_deploys pd
     JOIN projects p ON p.id = pd.project_id
-    WHERE pd.status = 'failed' AND pd.created_at >= datetime('now', ?)
+    WHERE pd.status = 'failed' AND pd.created_at >= datetime('now', ?)${deployScope.replace("project_id", "pd.project_id")}
     ORDER BY pd.created_at DESC
     LIMIT 10
   `).all(windowArg) as Array<{ id: number; project_id: number; project_name: string; created_at: string }>;
@@ -80,7 +91,7 @@ router.get("/", (req, res) => {
   const healthProjects = db.prepare(`
     SELECT id, name, last_status, last_checked_at, last_response_ms
     FROM projects
-    WHERE health_check_interval_s > 0
+    WHERE health_check_interval_s > 0${projectScope}
     ORDER BY name ASC
   `).all() as Array<{ id: number; name: string; last_status: string; last_checked_at: string | null; last_response_ms: number | null }>;
 
@@ -191,8 +202,13 @@ interface DomainAgg {
   statusCodes: Record<string, number>;
   pathCounts: Record<string, number>;
   methodCounts: Record<string, number>;
-  tsStats: Record<string, { count: number; errors: number }>;
+  tsStats: Record<string, TsBucket>;
+  ips: Set<string>;
+  botRequests: number;
 }
+
+/** One time-series bucket. `errors` counts every 4xx/5xx; `serverErrors` is the 5xx share of it. */
+interface TsBucket { count: number; errors: number; serverErrors: number }
 
 function parseNginxContent(
   content: string,
@@ -211,7 +227,7 @@ function parseNginxContent(
 
   const statusCodes: Record<string, number> = {};
   const pathCounts: Record<string, number> = {};
-  const tsStats: Record<string, { count: number; errors: number }> = {};
+  const tsStats: Record<string, TsBucket> = {};
   const domainMap = new Map<string, DomainAgg>();
   const methodCounts: Record<string, number> = {};
   const uniqueIps = new Set<string>();
@@ -221,22 +237,22 @@ function parseNginxContent(
   let hasExtendedFormat = false;
   const allRts: number[] = [];
 
-  function buildTimeSeries(stats: Record<string, { count: number; errors: number }>) {
-    const series: Array<{ ts: string; count: number; errors: number }> = [];
+  function buildTimeSeries(stats: Record<string, TsBucket>) {
+    const series: Array<{ ts: string } & TsBucket> = [];
     if (granularity === "hour") {
       for (let h = periodHours - 1; h >= 0; h--) {
         const d = new Date(now - h * 3600 * 1000);
         const key = d.toISOString().slice(0, 13);
-        const s = stats[key] ?? { count: 0, errors: 0 };
-        series.push({ ts: key + ":00", count: s.count, errors: s.errors });
+        const s = stats[key] ?? { count: 0, errors: 0, serverErrors: 0 };
+        series.push({ ts: key + ":00", ...s });
       }
     } else {
       const days = Math.ceil(periodHours / 24);
       for (let d = days - 1; d >= 0; d--) {
         const date = new Date(now - d * 86_400_000);
         const key = date.toISOString().slice(0, 10);
-        const s = stats[key] ?? { count: 0, errors: 0 };
-        series.push({ ts: key, count: s.count, errors: s.errors });
+        const s = stats[key] ?? { count: 0, errors: 0, serverErrors: 0 };
+        series.push({ ts: key, ...s });
       }
     }
     return series;
@@ -259,15 +275,18 @@ function parseNginxContent(
     methodCounts[entry.method] = (methodCounts[entry.method] ?? 0) + 1;
 
     const isError = entry.status >= 400;
-    if (entry.ua && BOT_UA_RE.test(entry.ua)) botRequests++;
+    const isServerError = entry.status >= 500;
+    const isBot = !!entry.ua && BOT_UA_RE.test(entry.ua);
+    if (isBot) botRequests++;
     if (entry.requestTimeMs != null) allRts.push(entry.requestTimeMs);
 
     const tsKey = granularity === "hour"
       ? entry.date.toISOString().slice(0, 13)
       : entry.date.toISOString().slice(0, 10);
-    const ts = tsStats[tsKey] ?? (tsStats[tsKey] = { count: 0, errors: 0 });
+    const ts = tsStats[tsKey] ?? (tsStats[tsKey] = { count: 0, errors: 0, serverErrors: 0 });
     ts.count++;
     if (isError) ts.errors++;
+    if (isServerError) ts.serverErrors++;
 
     const cleanPath = entry.path ? entry.path.split("?")[0] : null;
     if (cleanPath) pathCounts[cleanPath] = (pathCounts[cleanPath] ?? 0) + 1;
@@ -275,19 +294,22 @@ function parseNginxContent(
     if (entry.host) {
       let ds = domainMap.get(entry.host);
       if (!ds) {
-        ds = { requests: 0, errors: 0, bytes: 0, rts: [], statusCodes: {}, pathCounts: {}, methodCounts: {}, tsStats: {} };
+        ds = { requests: 0, errors: 0, bytes: 0, rts: [], statusCodes: {}, pathCounts: {}, methodCounts: {}, tsStats: {}, ips: new Set(), botRequests: 0 };
         domainMap.set(entry.host, ds);
       }
       ds.requests++;
       ds.bytes += entry.bytes;
+      ds.ips.add(entry.ip);
+      if (isBot) ds.botRequests++;
       if (isError) ds.errors++;
       if (entry.requestTimeMs != null) ds.rts.push(entry.requestTimeMs);
       ds.statusCodes[codeKey] = (ds.statusCodes[codeKey] ?? 0) + 1;
       ds.methodCounts[entry.method] = (ds.methodCounts[entry.method] ?? 0) + 1;
       if (cleanPath) ds.pathCounts[cleanPath] = (ds.pathCounts[cleanPath] ?? 0) + 1;
-      const dts = ds.tsStats[tsKey] ?? (ds.tsStats[tsKey] = { count: 0, errors: 0 });
+      const dts = ds.tsStats[tsKey] ?? (ds.tsStats[tsKey] = { count: 0, errors: 0, serverErrors: 0 });
       dts.count++;
       if (isError) dts.errors++;
+      if (isServerError) dts.serverErrors++;
     }
   }
 
@@ -316,6 +338,10 @@ function parseNginxContent(
         errors: ds.errors,
         bytes: ds.bytes,
         avgRtMs,
+        p50ResponseMs: sorted.length > 0 ? pct(sorted, 50) : null,
+        p95ResponseMs: sorted.length > 0 ? pct(sorted, 95) : null,
+        uniqueIps: ds.ips.size,
+        botRequests: ds.botRequests,
         statusCodes: ds.statusCodes,
         methodCounts: ds.methodCounts,
         topPaths: domainTopPaths,

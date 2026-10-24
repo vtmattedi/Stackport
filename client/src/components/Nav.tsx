@@ -4,7 +4,7 @@ import { HoverCard } from "radix-ui";
 import {
   ScrollText, FolderDot, Monitor, LogOut, Settings as SettingsIcon,
   ShieldCheck, Cpu, Wifi, WifiOff, ChevronLeft, ChevronRight,
-  Layers, Box, Loader, BarChart2, Radar, Star, Menu,
+  Layers, Box, Loader, BarChart2, Star, Menu,
 } from "lucide-react";
 import { api, clearToken } from "../api/client";
 import { useSocket, useSocketLatency } from "../context/SocketContext";
@@ -256,20 +256,12 @@ export default function Nav() {
           <span className={styles.linkText}>Logs</span>
         </NavLink>
         <NavLink
-          to="/metrics"
-          title="Metrics"
+          to="/insights"
+          title="Insights"
           className={({ isActive }) => cn(styles.navLink, isActive && styles.active)}
         >
           <BarChart2 size={16} />
-          <span className={styles.linkText}>Metrics</span>
-        </NavLink>
-        <NavLink
-          to="/traffic"
-          title="Traffic"
-          className={({ isActive }) => cn(styles.navLink, isActive && styles.active)}
-        >
-          <Radar size={16} />
-          <span className={styles.linkText}>Traffic</span>
+          <span className={styles.linkText}>Insights</span>
         </NavLink>
         <NavLink
           to="/settings"
@@ -319,7 +311,7 @@ export default function Nav() {
     <nav className={styles.mobileBar} aria-label="Main">
       <NavLink to="/projects" className={mobileLink}><FolderDot size={18} /><span>Projects</span></NavLink>
       <NavLink to="/system" className={mobileLink}><Cpu size={18} /><span>System</span></NavLink>
-      <NavLink to="/metrics" className={mobileLink}><BarChart2 size={18} /><span>Metrics</span></NavLink>
+      <NavLink to="/insights" className={mobileLink}><BarChart2 size={18} /><span>Insights</span></NavLink>
       <NavLink to="/logs" className={mobileLink}><ScrollText size={18} /><span>Logs</span></NavLink>
       <Popover open={moreOpen} onOpenChange={setMoreOpen}>
         <PopoverTrigger asChild>
@@ -342,7 +334,6 @@ export default function Nav() {
           {([
             ["/credentials", "Credentials", ShieldCheck],
             ["/infrastructure", "Infrastructure", Monitor],
-            ["/traffic", "Traffic", Radar],
             ["/settings", "Settings", SettingsIcon],
           ] as const).map(([to, label, Icon]) => (
             <NavLink key={to} to={to} className={({ isActive }) => cn(styles.submenuItem, isActive && styles.moreItemActive)} onClick={() => setMoreOpen(false)}>
