@@ -15,6 +15,11 @@ on:
       - "package*.json"
       - "scripts/e2e/**"
       - ".github/workflows/upgrade.yml"
+  workflow_call:
+    inputs:
+      base:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       base:
@@ -23,7 +28,7 @@ on:
         default: main
 
 concurrency:
-  group: upgrade-${{ github.ref }}
+  group: upgrade-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

@@ -2,8 +2,8 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  # Pushes to main run this through promote.yml, which moves stable when it passes.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}

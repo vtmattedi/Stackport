@@ -19,6 +19,9 @@ ORIGIN="$WORK/origin.git"
 SCRATCH="$WORK/scratch"
 APP_DIR=/var/lib/stackport/app
 PORT=3000
+# Versions before the stable branch follow main unless told otherwise; real servers
+# reach stable through their first update, which installs the new CLI.
+export STACKPORT_BRANCH=stable
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAIL: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -51,14 +54,15 @@ assert_accepted() {
   pass "$label (${expect:0:7})"
 }
 
-# Publishes a commit on top of $1 to origin/main. $2 edits the scratch tree.
+# Publishes a commit on top of $1 to origin/stable, the branch servers follow.
+# $3 edits the scratch tree.
 publish() {
   local parent="$1" message="$2" edit="$3"
   git -C "$SCRATCH" checkout --quiet --detach "$parent"
   (cd "$SCRATCH" && eval "$edit")
   git -C "$SCRATCH" add -A
   git -C "$SCRATCH" -c user.name=e2e -c user.email=e2e@stackport.invalid commit --quiet -m "$message"
-  git -C "$SCRATCH" push --quiet --force origin HEAD:refs/heads/main
+  git -C "$SCRATCH" push --quiet --force origin HEAD:refs/heads/stable
   git -C "$SCRATCH" rev-parse HEAD
 }
 
@@ -69,7 +73,7 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 BASE="$(git -C "$SRC" rev-parse "$BASE_REF^{commit}")"
 HEAD="$(git -C "$SRC" rev-parse "$HEAD_REF^{commit}")"
 git init --quiet --bare --initial-branch=main "$ORIGIN"
-git -C "$SRC" push --quiet "$ORIGIN" "$BASE:refs/heads/main" "$HEAD:refs/heads/e2e-head"
+git -C "$SRC" push --quiet "$ORIGIN" "$BASE:refs/heads/main" "$BASE:refs/heads/stable"
 git clone --quiet "$ORIGIN" "$SCRATCH"
 
 # The runner's firewall must stay off; a no-op ufw keeps install from enabling it.
@@ -80,11 +84,11 @@ command -v ss >/dev/null || { printf '#!/bin/sh\nexit 0\n' > "$WORK/bin/ss"; chm
 step "install base ${BASE:0:7}"
 git -C "$SCRATCH" show "$BASE:stackport.sh" > "$WORK/stackport-base.sh"
 PATH="$WORK/bin:$PATH" STACKPORT_REPO="file://$ORIGIN" STACKPORT_INGRESS_ATTEMPTS=90 \
-  bash "$WORK/stackport-base.sh" install --yes --branch=main
+  bash "$WORK/stackport-base.sh" install --yes --branch=stable
 assert_accepted "$BASE" "base installed"
 
 step "1. base -> head, driven by the base version's CLI"
-git -C "$SCRATCH" push --quiet --force origin "$HEAD:refs/heads/main"
+git -C "$SCRATCH" push --quiet --force origin "$HEAD:refs/heads/stable"
 stackport update
 assert_accepted "$HEAD" "updated to head"
 stackport selfcheck || fail "head's CLI fails its own selfcheck"
@@ -130,5 +134,11 @@ step "the fix ships through the same update path"
 FIXED="$(publish "$NEXT" "e2e: fixed release" 'marker fixed')"
 stackport update
 assert_accepted "$FIXED" "updated to the fix"
+
+step "an update never steps backwards when stable is behind"
+git -C "$SCRATCH" push --quiet --force origin "$NEXT:refs/heads/stable"
+stackport update | tee "$WORK/behind.log"
+grep -q 'is ahead of origin/stable' "$WORK/behind.log" || fail "update did not recognise it is ahead of stable"
+assert_accepted "$FIXED" "stayed on the fix"
 
 step "all upgrade scenarios passed"

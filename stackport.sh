@@ -34,10 +34,9 @@ STATE_FILE="$VAR_DIR/update/state.env"
 COMPOSE_FILE="$APP_DIR/docker-compose.system.yml"
 CLI_TARGET="/usr/local/bin/stackport"
 
-# Real StackPort source location/branch — overridable for testing via env, but this
-# is what a fresh `install` clones by default.
+# Real StackPort source location — overridable for testing via env, but this is what
+# a fresh `install` clones by default. The branch comes from configured_branch.
 STACKPORT_REPO="${STACKPORT_REPO:-https://github.com/vtmattedi/Stackport.git}"
-STACKPORT_BRANCH_DEFAULT="${STACKPORT_BRANCH:-main}"
 
 # ── Logging ─────────────────────────────────────────────────────────────────────
 # Never print secrets here — generated credentials are echoed exactly once, directly
@@ -51,6 +50,7 @@ usage() {
   cat <<'EOF'
 Usage:
   stackport install [--domain=<domain>] [--email=<email>] [--branch=<branch>] [--yes]
+                    (--branch defaults to stable and is remembered for updates)
   stackport update
   stackport rollback
   stackport status
@@ -113,6 +113,24 @@ state_set() {
     sed -i "s|^${key}=.*|${key}=${value}|" "$STATE_FILE"
   else
     echo "${key}=${value}" >> "$STATE_FILE"
+  fi
+}
+
+# Servers follow `stable`, which CI fast-forwards only after the upgrade scenarios
+# pass on a commit. `install --branch=<name>` saves another branch in stackport.env;
+# STACKPORT_BRANCH in the environment overrides both for one run.
+configured_branch() {
+  local saved
+  saved="$(grep -m1 '^STACKPORT_BRANCH=' "$STACKPORT_ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
+  echo "${STACKPORT_BRANCH:-${saved:-stable}}"
+}
+
+save_branch() {
+  local branch="$1"
+  if grep -q '^STACKPORT_BRANCH=' "$STACKPORT_ENV_FILE" 2>/dev/null; then
+    sed -i "s|^STACKPORT_BRANCH=.*|STACKPORT_BRANCH=${branch}|" "$STACKPORT_ENV_FILE"
+  else
+    echo "STACKPORT_BRANCH=${branch}" >> "$STACKPORT_ENV_FILE"
   fi
 }
 
@@ -345,7 +363,8 @@ ensure_cli() {
 }
 
 pull_stackport() {
-  local branch="${STACKPORT_BRANCH:-$STACKPORT_BRANCH_DEFAULT}"
+  local branch
+  branch="$(configured_branch)"
 
   if [[ -d "$APP_DIR/.git" ]]; then
     log "updating existing checkout at $APP_DIR"
@@ -410,6 +429,8 @@ ensure_env_file() {
     echo "STACKPORT_DATA_DIR=$VAR_DIR/data"
     echo "STACKPORT_LOGS_DIR=$VAR_DIR/logs"
     echo "STACKPORT_NGINX_DIR=$VAR_DIR/nginx"
+    # The app's "update available" check compares against this branch.
+    echo "GIT_BRANCH=$(configured_branch)"
   } > "$target"
   # This file is bind-mounted read-only into the stackport container and read by
   # its unprivileged `node` user (UID/GID 1000, the same assumption ensure_directories/
@@ -482,6 +503,7 @@ install_stackport() {
   ensure_docker
   ensure_directories
   ensure_configuration
+  if [[ -n "${STACKPORT_BRANCH:-}" ]]; then save_branch "$STACKPORT_BRANCH"; fi
   ensure_secrets
   load_secrets
   ensure_firewall
@@ -628,16 +650,30 @@ prune_staged_images() {
 }
 
 update_stackport() {
-  local branch="${STACKPORT_BRANCH:-$STACKPORT_BRANCH_DEFAULT}"
-  local current target
+  local branch current target
+  branch="$(configured_branch)"
   load_secrets
   current="$(git -C "$APP_DIR" rev-parse HEAD)"
   git_auth_args
-  GIT_TERMINAL_PROMPT=0 git "${GIT_AUTH_ARGS[@]}" -C "$APP_DIR" fetch --quiet origin "$branch"
+  if ! GIT_TERMINAL_PROMPT=0 git "${GIT_AUTH_ARGS[@]}" -C "$APP_DIR" fetch --quiet origin "$branch" 2>/dev/null; then
+    # Until CI has promoted a first commit, the repository has no stable branch.
+    if [[ "$branch" == stable ]] && GIT_TERMINAL_PROMPT=0 git "${GIT_AUTH_ARGS[@]}" -C "$APP_DIR" fetch --quiet origin main; then
+      warn "origin has no stable branch yet — following main"
+      branch=main
+    else
+      error "cannot fetch origin/$branch"
+      exit 1
+    fi
+  fi
   target="$(git -C "$APP_DIR" rev-parse "origin/$branch")"
 
   if [[ "$current" == "$target" ]]; then
     log "already up to date (${current:0:7})"
+    return 0
+  fi
+  # Never step backwards, e.g. a server installed from main while stable catches up.
+  if git -C "$APP_DIR" merge-base --is-ancestor "$target" "$current"; then
+    log "already up to date (${current:0:7} is ahead of origin/$branch)"
     return 0
   fi
 
@@ -770,7 +806,7 @@ status_stackport() {
   echo "StackPort status"
   echo "----------------"
   if [[ -d "$APP_DIR/.git" ]]; then
-    echo "version:      $(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown) (branch ${STACKPORT_BRANCH:-$STACKPORT_BRANCH_DEFAULT})"
+    echo "version:      $(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown) (branch $(configured_branch))"
   else
     echo "version:      not installed"
   fi

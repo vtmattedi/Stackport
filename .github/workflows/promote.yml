@@ -1,0 +1,52 @@
+name: Promote
+
+# Servers update from `stable`. A commit on main reaches it only after CI and the
+# upgrade scenarios pass, starting from the version servers run now (stable's tip).
+on:
+  push:
+    branches: [main]
+
+# Only the newest push promotes; an older run finishing later would be a step back.
+concurrency:
+  group: promote
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  base:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.base.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      # Before the first promotion there is no stable branch: start from the previous
+      # main, which is what servers follow until their first update to this version.
+      - id: base
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          stable="$(git ls-remote origin refs/heads/stable | cut -f1)"
+          echo "sha=${stable:-$BEFORE}" >> "$GITHUB_OUTPUT"
+
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  upgrade:
+    needs: base
+    uses: ./.github/workflows/upgrade.yml
+    with:
+      base: ${{ needs.base.outputs.sha }}
+
+  promote:
+    needs: [ci, upgrade]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # A plain push only fast-forwards, so stable can never move to unrelated history.
+      - run: git push origin "$GITHUB_SHA:refs/heads/stable"
