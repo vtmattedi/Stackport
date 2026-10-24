@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Box, EllipsisVertical, ExternalLink, FileText, FolderDot, GitBranch,
@@ -10,9 +10,10 @@ import { ProjectGroupField } from "../components/ProjectGroupField";
 import { ProjectIngressSelect } from "../components/ProjectIngressSelect";
 import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
 import { ExpandableCard } from "../components/ExpandableCard";
-import { ProjectResourceCharts } from "../components/ProjectResourceCharts";
-import { ContainerShellDialog } from "../components/ContainerShellDialog";
-import { ContainerLogDialog } from "../components/ContainerLogDialog";
+import { ProjectResourceCharts as ProjectResourceChartsBase } from "../components/ProjectResourceCharts";
+// The terminal dialogs pull in xterm (~90 KB gzipped); load it only when one opens.
+const ContainerShellDialog = lazy(() => import("../components/ContainerShellDialog").then((m) => ({ default: m.ContainerShellDialog })));
+const ContainerLogDialog = lazy(() => import("../components/ContainerLogDialog").then((m) => ({ default: m.ContainerLogDialog })));
 import { ComposeFileDialog } from "../components/ComposeFileDialog";
 import { EnvManagerDialog } from "../components/EnvManagerDialog";
 import { Switch } from "../components/ui/switch";
@@ -40,7 +41,7 @@ import type {
   ProjectDeploymentRevision,
 } from "../api/types";
 import { useSocket } from "../context/SocketContext";
-import { pollProjectAction, useSystem } from "../context/SystemContext";
+import { jsonEqual, pollProjectAction, useSystemActions, useSystemSelector } from "../context/SystemContext";
 import { formatShortDateTime, formatTimeAgo } from "../lib/format";
 import { parseAnsi } from "../lib/ansi";
 import { deriveProjectStatus, expectedComposeProjectName, explainProjectStatus, findProjectStack, healthMonitoredContainers, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
@@ -110,6 +111,115 @@ function ConfigSection({
       {open && children}
     </div>
   );
+}
+
+interface LogStore {
+  get: () => string;
+  set: (text: string) => void;
+  append: (chunk: string) => void;
+  subscribe: (listener: () => void) => () => void;
+}
+
+function createLogStore(): LogStore {
+  let text = "";
+  const listeners = new Set<() => void>();
+  const notifyAll = () => { for (const listener of listeners) listener(); };
+  return {
+    get: () => text,
+    set: (next) => { text = next; notifyAll(); },
+    append: (chunk) => { text += chunk; notifyAll(); },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+  };
+}
+
+function DeployLog({ store, ok }: { store: LogStore; ok: boolean | null }) {
+  const log = useSyncExternalStore(store.subscribe, store.get, store.get);
+  const ref = useRef<HTMLPreElement | null>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [log]);
+  if (!log && ok === null) return null;
+  return (
+    <pre ref={ref} className={`output-block${ok === false ? " output-stderr" : ""}`}>
+      {log || (ok ? "Command completed" : "Command failed")}
+    </pre>
+  );
+}
+
+// Recharts redraws its SVG on every render; only redraw when the samples change.
+const ProjectResourceCharts = memo(ProjectResourceChartsBase);
+
+/** Owns its own live samples (every ~15 s) so they re-render this card, not the page.
+ *  The charts get `history`, which only changes when a 5-minute bucket closes. */
+function ResourceUsageCard({ projectId }: { projectId: number }) {
+  const { on, off } = useSocket();
+  const [history, setHistory] = useState<ProjectResourceData | null>(null);
+  const [latest, setLatest] = useState<ProjectResourceData["latest"]>(null);
+
+  // Latest cpu/mem/net numbers arrive live over WS the instant the sampler writes
+  // them (see project:resource-sample) — no more independent client poll timer
+  // desynced from the sampler's own 15s interval. History is 5-minute-bucketed
+  // server-side, so it's re-fetched only when a live sample crosses into a new
+  // bucket (i.e. the previous bucket just became final), not on a fixed clock.
+  useEffect(() => {
+    if (!Number.isInteger(projectId) || projectId <= 0) return;
+    let cancelled = false;
+    let lastBucket: number | null = null;
+    const refetch = () => {
+      void api.getProjectResources(projectId, 24).then((data) => {
+        if (!cancelled) { setHistory(data); setLatest(data.latest); }
+      }).catch(() => { /* non-critical */ });
+    };
+    refetch();
+
+    const handler = (event: ProjectResourceSampleEvent) => {
+      if (event.projectId !== projectId) return;
+      setLatest(event.sample);
+      const bucket = Math.floor(new Date(event.sample.sampledAt).getTime() / (5 * 60_000));
+      if (lastBucket !== null && bucket !== lastBucket) refetch();
+      lastBucket = bucket;
+    };
+    on<ProjectResourceSampleEvent>("project:resource-sample", handler);
+    return () => {
+      cancelled = true;
+      off<ProjectResourceSampleEvent>("project:resource-sample", handler);
+    };
+  }, [projectId, on, off]);
+
+  return (
+    <ExpandableCard
+      icon={<Activity size={13} />}
+      title="Resource usage"
+      storageKey="project.resources"
+      defaultOpen
+      summary={(
+        <span className="mono" style={{ fontSize: 12 }}>
+          {latest
+            ? `CPU ${latest.cpuPercent.toFixed(1)}% · Mem ${latest.memPercent.toFixed(1)}%`
+            : "5-min avg, last 24h"}
+        </span>
+      )}
+    >
+      <div className={styles.detailGrid} style={{ marginBottom: 12 }}>
+        <DetailRow label="CPU" value={latest ? `${latest.cpuPercent.toFixed(1)}%` : "—"} />
+        <DetailRow
+          label="Memory"
+          value={latest
+            ? `${latest.memPercent.toFixed(1)}% (${Math.round(latest.memUsedMb)} MB / ${Math.round(latest.memLimitMb)} MB)`
+            : "—"}
+        />
+      </div>
+      <ProjectResourceCharts resources={history} chartHeight={180} />
+    </ExpandableCard>
+  );
+}
+
+function sameProjectGroups(a: Project[] | null, b: Project[] | null): boolean {
+  const key = (list: Project[] | null) => (list ?? []).map((p) => p.groupName ?? "").join("\u0000");
+  return a === b || key(a) === key(b);
 }
 
 function statusPillClass(status: ProjectStatusKind, styles: Record<string, string>): string {
@@ -232,12 +342,40 @@ export default function ProjectDetails() {
     unsubscribeDeploySync,
     subscribeProject,
     unsubscribeProject,
-    on,
-    off,
   } = useSocket();
-  const { system: systemData, projects: allProjects, refreshProjects, refreshSystem, systemActions, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, certbotAction, issueProjectDomainSsl } = useSystem();
+  const { refreshProjects, refreshSystem, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, certbotAction, issueProjectDomainSsl } = useSystemActions();
   const projectId = Number(id);
   const [project, setProject] = useState<Project | null>(null);
+  const [domains, setDomains] = useState<ProjectDomain[]>([]);
+
+  // Live system data arrives every few seconds. Each selector below picks only what
+  // this page renders, so the page re-renders when that slice changes, not on every push.
+  const systemLoaded = useSystemSelector((snap) => snap.system !== null);
+  const docker = useSystemSelector((snap) => {
+    const data = snap.system?.docker;
+    if (!data) return null;
+    const stack = data.available && project ? findProjectStack(project, data.stacks) : null;
+    return {
+      available: data.available,
+      reason: data.reason ?? null,
+      // Per-container CPU/RAM stats change on every push and aren't shown here.
+      stack: stack ? { ...stack, containers: stack.containers.map((c) => ({ ...c, stats: null })) } : null,
+    };
+  }, jsonEqual);
+  const domainNames = domains.map((d) => d.domain);
+  const certbotInfo = useSystemSelector((snap) => {
+    const certbot = snap.system?.certbot;
+    return {
+      available: !!(certbot?.available && certbot?.emailConfigured),
+      entries: (certbot?.entries ?? []).filter((entry) => domainNames.includes(entry.domain)),
+    };
+  }, jsonEqual);
+  const certbotRecords = useSystemSelector(
+    (snap) => snap.systemActions.certbot.filter((entry) => domainNames.includes(entry.meta?.["domain"] as string)),
+    jsonEqual,
+  );
+  // Only group names are used (for the group picker).
+  const allProjects = useSystemSelector((snap) => snap.projects, sameProjectGroups);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [envFiles, setEnvFiles] = useState<ProjectEnvFile[]>([]);
   const [envManagerOpen, setEnvManagerOpen] = useState(false);
@@ -267,13 +405,14 @@ export default function ProjectDetails() {
   const [deletingProject, setDeletingProject] = useState(false);
   const [checkingHealth, setCheckingHealth] = useState(false);
   const [deployOk, setDeployOk] = useState<boolean | null>(null);
-  const [deployLog, setDeployLog] = useState("");
-  const deployLogRef = useRef<HTMLPreElement | null>(null);
+  // The action log streams in chunk by chunk; it lives in a small store so only the
+  // <DeployLog> panel re-renders per chunk, not the whole page.
+  const [deployLog] = useState(createLogStore);
+  const setDeployLog = deployLog.set;
   const runtimeChangedRef = useRef(false);
   const [configRepo, setConfigRepo] = useState("");
   const [configGroupName, setConfigGroupName] = useState("");
   const [configGithubCredentialId, setConfigGithubCredentialId] = useState<number | null>(null);
-  const [domains, setDomains] = useState<ProjectDomain[]>([]);
   const [newDomainInput, setNewDomainInput] = useState("");
   const [newDomainService, setNewDomainService] = useState("");
   const [newDomainPort, setNewDomainPort] = useState("");
@@ -300,7 +439,6 @@ export default function ProjectDetails() {
   const [loadingDeploys, setLoadingDeploys] = useState(false);
   const [revisions, setRevisions] = useState<ProjectDeploymentRevision[]>([]);
   const [rollingBack, setRollingBack] = useState(false);
-  const [resources, setResources] = useState<ProjectResourceData | null>(null);
   const [configNginxExtra, setConfigNginxExtra] = useState("");
   const [configNginxExtraBlocks, setConfigNginxExtraBlocks] = useState("");
 
@@ -314,13 +452,13 @@ export default function ProjectDetails() {
     setError("");
     setLoading(true);
     try {
-      const [projectData, credentialData, domainData, tcpExposureData] = await Promise.all([
+      const [projectData, credentialData, domainData, tcpExposureData, envFileData] = await Promise.all([
         api.getProject(projectId),
         api.listCredentials(),
         api.listProjectDomains(projectId),
         api.listTcpExposures(projectId),
+        api.listProjectEnvFiles(projectId),
       ]);
-      const envFileData = await api.listProjectEnvFiles(projectId);
       setProject(projectData);
       syncConfig(projectData);
       setDomains(domainData);
@@ -815,7 +953,7 @@ export default function ProjectDetails() {
   const runtimeFormId = project ? `project-runtime-${project.id}` : "project-runtime";
 
   function certbotRecordFor(domain: string): ActionRecord | null {
-    return systemActions.certbot
+    return certbotRecords
       .filter((entry) => entry.meta?.["domain"] === domain)
       .reduce<ActionRecord | null>((latest, entry) => (
         !latest || new Date(entry.startedAt) > new Date(latest.startedAt) ? entry : latest
@@ -839,42 +977,13 @@ export default function ProjectDetails() {
     if (project.githubRepo && project.branches.length === 0) void loadBranches(false);
   }, [project?.id]);
 
-  // Latest cpu/mem/net numbers arrive live over WS the instant the sampler writes
-  // them (see project:resource-sample) — no more independent client poll timer
-  // desynced from the sampler's own 15s interval. History is 5-minute-bucketed
-  // server-side, so it's re-fetched only when a live sample crosses into a new
-  // bucket (i.e. the previous bucket just became final), not on a fixed clock.
-  useEffect(() => {
-    if (!Number.isInteger(projectId) || projectId <= 0) return;
-    let cancelled = false;
-    let lastBucket: number | null = null;
-    const refetch = () => {
-      void api.getProjectResources(projectId, 24).then((data) => {
-        if (!cancelled) setResources(data);
-      }).catch(() => { /* non-critical */ });
-    };
-    refetch();
-
-    const handler = (event: ProjectResourceSampleEvent) => {
-      if (event.projectId !== projectId) return;
-      setResources((prev) => (prev ? { ...prev, latest: event.sample } : prev));
-      const bucket = Math.floor(new Date(event.sample.sampledAt).getTime() / (5 * 60_000));
-      if (lastBucket !== null && bucket !== lastBucket) refetch();
-      lastBucket = bucket;
-    };
-    on<ProjectResourceSampleEvent>("project:resource-sample", handler);
-    return () => {
-      cancelled = true;
-      off<ProjectResourceSampleEvent>("project:resource-sample", handler);
-    };
-  }, [projectId, on, off]);
 
   useEffect(() => {
     if (!Number.isInteger(projectId) || projectId <= 0) return;
     const handler = (event: ProjectDeployEvent) => {
       if (event.projectId !== projectId) return;
 
-      setDeployLog((value) => value + event.message);
+      deployLog.append(event.message);
       if (event.done) {
         if (event.action === "pull") setPullingRepo(false);
         if (event.action === "compose") setComposingProject(false);
@@ -913,22 +1022,17 @@ export default function ProjectDetails() {
     return () => unsubscribeProject<ProjectUpdateEvent>(projectId, handler);
   }, [projectId, subscribeProject, unsubscribeProject]);
 
-  useEffect(() => {
-    if (!deployLogRef.current) return;
-    deployLogRef.current.scrollTop = deployLogRef.current.scrollHeight;
-  }, [deployLog]);
 
   const repoBusy = pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding ||
     stoppingProject || purgingProject || uploadingFiles || redeployingService !== null || droppingVolumesService !== null;
   /** Branch a Pull/Redeploy will check out: the explicit pick, else the auto-deploy branch. */
   const selectedBranch = pullBranch || project?.autoDeployBranch || "";
-  const certbotAvailable = !!(systemData?.certbot?.available && systemData?.certbot?.emailConfigured);
+  const certbotAvailable = certbotInfo.available;
   function certbotEntryFor(domain: string) {
-    return systemData?.certbot?.entries?.find((e) => e.domain === domain) ?? null;
+    return certbotInfo.entries.find((e) => e.domain === domain) ?? null;
   }
-  const docker = systemData?.docker ?? null;
   const expectedStackName = project ? expectedComposeProjectName(project) : "";
-  const dockerStack = (docker?.available && project) ? findProjectStack(project, docker.stacks) : null;
+  const dockerStack = docker?.stack ?? null;
   const monitoredContainers = healthMonitoredContainers(dockerStack);
   const ignoredContainerCount = dockerStack?.containers.filter((container) => container.healthCheckIgnored).length ?? 0;
   const dockerRunningCount = monitoredContainers.filter((c) => c.state === "running").length;
@@ -1253,11 +1357,7 @@ export default function ProjectDetails() {
                 </div>
               )}
 
-              {(deployLog || deployOk !== null) && (
-                <pre ref={deployLogRef} className={`output-block${deployOk === false ? " output-stderr" : ""}`}>
-                  {deployLog || (deployOk ? "Command completed" : "Command failed")}
-                </pre>
-              )}
+              <DeployLog store={deployLog} ok={deployOk} />
             </div>
 
             {/* ── Docker expandable card ───────────────────────────────── */}
@@ -1266,7 +1366,7 @@ export default function ProjectDetails() {
               title="Docker"
               storageKey="project.docker"
               summary={
-                systemData === null ? (
+                !systemLoaded ? (
                   <Loader size={11} className="spin" />
                 ) : !docker?.available ? (
                   <span style={{ color: "var(--danger)", fontSize: 12 }}>Unavailable</span>
@@ -1818,30 +1918,7 @@ export default function ProjectDetails() {
               </ExpandableCard>
             )}
 
-            <ExpandableCard
-              icon={<Activity size={13} />}
-              title="Resource usage"
-              storageKey="project.resources"
-              defaultOpen
-              summary={(
-                <span className="mono" style={{ fontSize: 12 }}>
-                  {resources?.latest
-                    ? `CPU ${resources.latest.cpuPercent.toFixed(1)}% · Mem ${resources.latest.memPercent.toFixed(1)}%`
-                    : "5-min avg, last 24h"}
-                </span>
-              )}
-            >
-              <div className={styles.detailGrid} style={{ marginBottom: 12 }}>
-                <DetailRow label="CPU" value={resources?.latest ? `${resources.latest.cpuPercent.toFixed(1)}%` : "—"} />
-                <DetailRow
-                  label="Memory"
-                  value={resources?.latest
-                    ? `${resources.latest.memPercent.toFixed(1)}% (${Math.round(resources.latest.memUsedMb)} MB / ${Math.round(resources.latest.memLimitMb)} MB)`
-                    : "—"}
-                />
-              </div>
-              <ProjectResourceCharts resources={resources} chartHeight={180} />
-            </ExpandableCard>
+            <ResourceUsageCard projectId={project.id} />
 
             <ExpandableCard
               icon={<FolderDot size={13} />}
@@ -1860,10 +1937,14 @@ export default function ProjectDetails() {
 
       </main>
       {shellContainer && (
-        <ContainerShellDialog container={shellContainer} onClose={() => setShellContainer(null)} />
+        <Suspense fallback={null}>
+          <ContainerShellDialog container={shellContainer} onClose={() => setShellContainer(null)} />
+        </Suspense>
       )}
       {logStreamContainer && (
-        <ContainerLogDialog container={logStreamContainer} onClose={() => setLogStreamContainer(null)} />
+        <Suspense fallback={null}>
+          <ContainerLogDialog container={logStreamContainer} onClose={() => setLogStreamContainer(null)} />
+        </Suspense>
       )}
       {composeFileDialogOpen && project && (
         <ComposeFileDialog projectId={project.id} projectName={project.name} onClose={() => setComposeFileDialogOpen(false)} />

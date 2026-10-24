@@ -1,5 +1,5 @@
 import {
-  createContext, useContext, useEffect, useRef, useState, useCallback,
+  createContext, useContext, useEffect, useMemo, useRef, useState, useCallback,
 } from "react";
 import { io, Socket } from "socket.io-client";
 import { getToken, clearToken } from "../api/client";
@@ -8,7 +8,6 @@ import { getToken, clearToken } from "../api/client";
 
 interface SocketContextValue {
   connected: boolean;
-  latencyMs: number | null;
   subscribe: <T>(channel: string, handler: (data: T) => void) => void;
   unsubscribe: <T>(channel: string, handler: (data: T) => void) => void;
   subscribeDeploy: <T>(projectId: number, handler: (data: T) => void) => void;
@@ -36,6 +35,9 @@ interface SocketContextValue {
 }
 
 const SocketContext = createContext<SocketContextValue | null>(null);
+// Latency is re-measured every 5 s; it gets its own context so that tick only
+// re-renders the status indicator, not every component that uses the socket.
+const SocketLatencyContext = createContext<number | null>(null);
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
@@ -222,9 +224,15 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     socketRef.current?.off(event, handler as (d: unknown) => void);
   }, []);
 
+  const value = useMemo<SocketContextValue>(() => ({
+    connected, subscribe, unsubscribe, subscribeDeploy, unsubscribeDeploy, subscribeDeploySync, unsubscribeDeploySync, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off,
+  }), [connected, subscribe, unsubscribe, subscribeDeploy, unsubscribeDeploy, subscribeDeploySync, unsubscribeDeploySync, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off]);
+
   return (
-    <SocketContext.Provider value={{ connected, latencyMs, subscribe, unsubscribe, subscribeDeploy, unsubscribeDeploy, subscribeDeploySync, unsubscribeDeploySync, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off }}>
-      {children}
+    <SocketContext.Provider value={value}>
+      <SocketLatencyContext.Provider value={latencyMs}>
+        {children}
+      </SocketLatencyContext.Provider>
     </SocketContext.Provider>
   );
 }
@@ -235,6 +243,11 @@ export function useSocket(): SocketContextValue {
   const ctx = useContext(SocketContext);
   if (!ctx) throw new Error("useSocket must be used inside <SocketProvider>");
   return ctx;
+}
+
+/** Round-trip latency to the server in ms, or null when unknown/disconnected. */
+export function useSocketLatency(): number | null {
+  return useContext(SocketLatencyContext);
 }
 
 /**
@@ -252,29 +265,36 @@ export function useChannelData<T>(
 } {
   const { subscribe, unsubscribe, connected, refresh: socketRefresh } = useSocket();
   const [data, setData] = useState<T | null>(null);
-  const fallback = options?.fallback;
+  // Callers pass an inline arrow; a ref keeps `refresh` stable across renders.
+  const fallbackRef = useRef(options?.fallback);
+  fallbackRef.current = options?.fallback;
+  // Channels re-push on a timer whether or not anything changed; skipping identical
+  // payloads keeps every consumer from re-rendering on a no-op push.
+  const lastJsonRef = useRef<string | null>(null);
+  const accept = useCallback((next: T) => {
+    let json: string | null = null;
+    try { json = JSON.stringify(next); } catch { /* unserializable — always accept */ }
+    if (json !== null && json === lastJsonRef.current) return;
+    lastJsonRef.current = json;
+    setData(next);
+  }, []);
 
   // Immediate REST seed — runs once on mount, socket overrides it when connected
   useEffect(() => {
-    if (!fallback) return;
-    fallback().then(setData).catch(() => {});
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    fallbackRef.current?.().then(accept).catch(() => {});
+  }, [accept]);
 
   // Live socket subscription
   useEffect(() => {
-    const handler = (d: T) => setData(d);
-    subscribe<T>(channel, handler);
-    return () => unsubscribe<T>(channel, handler);
-  }, [channel, subscribe, unsubscribe]);
+    subscribe<T>(channel, accept);
+    return () => unsubscribe<T>(channel, accept);
+  }, [channel, subscribe, unsubscribe, accept]);
 
   const refresh = useCallback(() => {
     socketRefresh(channel);
     // When socket is offline, fall back to REST for the manual refresh too
-    if (!connected && fallback) {
-      fallback().then(setData).catch(() => {});
-    }
-  }, [channel, socketRefresh, connected, fallback]);
+    if (!connected) fallbackRef.current?.().then(accept).catch(() => {});
+  }, [channel, socketRefresh, connected, accept]);
 
   return { data, connected, refresh };
 }

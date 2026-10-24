@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../api/client";
 import { notify } from "../lib/notify";
 import { truncateLabel } from "../lib/format";
@@ -71,13 +71,19 @@ const PROJECT_ACTION_REQUEST: Record<ProjectActionKind, (projectId: number, opts
   rollback: (projectId) => api.rollbackProject(projectId),
 };
 
-interface SystemContextValue {
+/** The live, frequently-changing half of the system context. */
+export interface SystemSnapshot {
   system: SystemData | null;
   projects: Project[] | null;
   vps: VpsData | null;
   github: GitHubPollerConfig | null;
   firewallProfiles: FirewallProfile[] | null;
   systemActions: SystemActionsSnapshot;
+}
+
+/** The stable half: refreshers and action wrappers. Their identities don't change
+ *  when live data arrives, so components that only need these never re-render for it. */
+interface SystemActionsValue {
   refreshSystem: () => void;
   refreshProjects: () => void;
   refreshVps: () => void;
@@ -101,7 +107,16 @@ interface SystemContextValue {
   pruneDockerCache: () => Promise<ActionRecord | null>;
 }
 
+type SystemContextValue = SystemSnapshot & SystemActionsValue;
+
+interface SystemStore {
+  get: () => SystemSnapshot;
+  subscribe: (listener: () => void) => () => void;
+}
+
 const SystemContext = createContext<SystemContextValue | null>(null);
+const SystemActionsContext = createContext<SystemActionsValue | null>(null);
+const SystemStoreContext = createContext<SystemStore | null>(null);
 
 /** Poll GET /projects/:id/actions until the repo slot is no longer "running". Used
  *  for actions with no live progress estimate (pull/stop/stop-purge) — build-like
@@ -312,6 +327,10 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
   const [systemActions, setSystemActions] = useState<SystemActionsSnapshot>({ nginx: null, certbot: [], docker: null });
   const resumedRef = useRef(false);
   const resumedProjectActionsRef = useRef(false);
+  // Action wrappers only need a project's name for toast labels; reading it through a
+  // ref keeps their identities stable instead of changing on every projects push.
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
 
   const refreshGithub = useCallback(async () => {
     try {
@@ -321,8 +340,9 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => { void refreshGithub(); }, [refreshGithub]);
 
+  const firstProviderId = vps?.providers[0]?.id;
   const refreshFirewall = useCallback(async (providerId?: number) => {
-    const id = providerId ?? vps?.providers[0]?.id;
+    const id = providerId ?? firstProviderId;
     if (id == null) {
       setFirewallProfiles(null);
       return;
@@ -330,9 +350,8 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     try {
       setFirewallProfiles(await api.listFirewallProfiles(id));
     } catch { /* non-critical */ }
-  }, [vps]);
+  }, [firstProviderId]);
 
-  const firstProviderId = vps?.providers[0]?.id;
   useEffect(() => { void refreshFirewall(firstProviderId); }, [firstProviderId, refreshFirewall]);
 
   // ── nginx / docker / certbot completion waiters ───────────────────────────
@@ -462,7 +481,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
 
   const startProjectAction = useCallback(async (projectId: number, kind: ProjectActionKind, opts?: ProjectActionOpts): Promise<ActionRecord | null> => {
     const label = PROJECT_ACTION_LABELS[kind];
-    const projectName = projects?.find((p) => p.id === projectId)?.name;
+    const projectName = projectsRef.current?.find((p) => p.id === projectId)?.name;
     const prefix = projectName ? `${truncateLabel(projectName)}: ` : "";
     let result: ActionStartResponse;
     try {
@@ -489,10 +508,10 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     resolveActionToast(toastId, final, title, label);
     refreshProjects();
     return final;
-  }, [refreshProjects, projects, socket]);
+  }, [refreshProjects, socket]);
 
   const redeployProjectContainer = useCallback(async (projectId: number, service: string): Promise<ActionRecord | null> => {
-    const projectName = projects?.find((p) => p.id === projectId)?.name;
+    const projectName = projectsRef.current?.find((p) => p.id === projectId)?.name;
     const prefix = projectName ? `${truncateLabel(projectName)}: ` : "";
     const label = `Redeploy ${service}`;
     let result: ActionStartResponse;
@@ -520,7 +539,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     resolveActionToast(toastId, final, title, label);
     refreshProjects();
     return final;
-  }, [refreshProjects, projects, socket]);
+  }, [refreshProjects, socket]);
 
   /** Destructive — the caller (the per-container UI) is expected to confirm with the
    *  user before calling this. No progress bar (there's nothing BuildKit-shaped to
@@ -528,7 +547,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
    *  button (drop-volumes isn't in CANCELABLE_PROJECT_ACTION_KINDS — matches
    *  stop/stop-purge: fast, destructive, not something to interrupt mid-flight). */
   const dropProjectServiceVolumes = useCallback(async (projectId: number, service: string): Promise<ActionRecord | null> => {
-    const projectName = projects?.find((p) => p.id === projectId)?.name;
+    const projectName = projectsRef.current?.find((p) => p.id === projectId)?.name;
     const prefix = projectName ? `${truncateLabel(projectName)}: ` : "";
     const label = `Drop volumes for ${service}`;
     let result: ActionStartResponse;
@@ -548,10 +567,10 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     resolveActionToast(toastId, final, title, label);
     refreshProjects();
     return final;
-  }, [refreshProjects, projects, socket]);
+  }, [refreshProjects, socket]);
 
   const issueProjectDomainSsl = useCallback(async (projectId: number, domainId: number): Promise<ActionRecord | null> => {
-    const projectName = projects?.find((p) => p.id === projectId)?.name;
+    const projectName = projectsRef.current?.find((p) => p.id === projectId)?.name;
     const prefix = projectName ? `${truncateLabel(projectName)}: ` : "";
     let result: ActionStartResponse;
     try {
@@ -574,7 +593,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     refreshSystem();
     refreshProjects();
     return final;
-  }, [refreshSystem, refreshProjects, projects, socket]);
+  }, [refreshSystem, refreshProjects, socket]);
 
   const applyNginx = useCallback(async (): Promise<ActionRecord | null> => {
     let result: ActionStartResponse;
@@ -676,16 +695,45 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     return final;
   }, [refreshSystem, awaitDockerPruneDone]);
 
+  const actions = useMemo<SystemActionsValue>(() => ({
+    refreshSystem, refreshProjects, refreshVps, refreshGithub, refreshFirewall,
+    startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, issueProjectDomainSsl, applyNginx, updateNginxAppConfig, certbotAction, pruneDockerCache,
+  }), [
+    refreshSystem, refreshProjects, refreshVps, refreshGithub, refreshFirewall,
+    startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, issueProjectDomainSsl, applyNginx, updateNginxAppConfig, certbotAction, pruneDockerCache,
+  ]);
+
+  const snapshot = useMemo<SystemSnapshot>(
+    () => ({ system, projects, vps, github, firewallProfiles, systemActions }),
+    [system, projects, vps, github, firewallProfiles, systemActions],
+  );
+
+  // A tiny external store over `snapshot`, so a component can subscribe to just the
+  // slice it renders (useSystemSelector) instead of re-rendering on every push.
+  const snapshotRef = useRef(snapshot);
+  const listenersRef = useRef(new Set<() => void>());
+  const store = useMemo<SystemStore>(() => ({
+    get: () => snapshotRef.current,
+    subscribe: (listener) => {
+      listenersRef.current.add(listener);
+      return () => { listenersRef.current.delete(listener); };
+    },
+  }), []);
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+    for (const listener of listenersRef.current) listener();
+  }, [snapshot]);
+
+  const value = useMemo<SystemContextValue>(() => ({ ...snapshot, ...actions }), [snapshot, actions]);
+
   return (
-    <SystemContext.Provider
-      value={{
-        system, projects, vps, github, firewallProfiles, systemActions,
-        refreshSystem, refreshProjects, refreshVps, refreshGithub, refreshFirewall,
-        startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, issueProjectDomainSsl, applyNginx, updateNginxAppConfig, certbotAction, pruneDockerCache,
-      }}
-    >
-      {children}
-    </SystemContext.Provider>
+    <SystemActionsContext.Provider value={actions}>
+      <SystemStoreContext.Provider value={store}>
+        <SystemContext.Provider value={value}>
+          {children}
+        </SystemContext.Provider>
+      </SystemStoreContext.Provider>
+    </SystemActionsContext.Provider>
   );
 }
 
@@ -693,4 +741,35 @@ export function useSystem(): SystemContextValue {
   const ctx = useContext(SystemContext);
   if (!ctx) throw new Error("useSystem must be used inside <SystemProvider>");
   return ctx;
+}
+
+/** Stable refreshers and action wrappers only — never re-renders for live data. */
+export function useSystemActions(): SystemActionsValue {
+  const ctx = useContext(SystemActionsContext);
+  if (!ctx) throw new Error("useSystemActions must be used inside <SystemProvider>");
+  return ctx;
+}
+
+/** Structural equality for small derived slices, via JSON. Keep selected slices small. */
+export function jsonEqual<T>(a: T, b: T): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Subscribes to one slice of the live system snapshot. The component re-renders only
+ * when `isEqual` says the slice changed — e.g. the project page selects its own Docker
+ * stack minus CPU/RAM stats, so the 5-second system push no longer rebuilds the page.
+ */
+export function useSystemSelector<T>(selector: (snapshot: SystemSnapshot) => T, isEqual: (a: T, b: T) => boolean = Object.is): T {
+  const store = useContext(SystemStoreContext);
+  if (!store) throw new Error("useSystemSelector must be used inside <SystemProvider>");
+  const cacheRef = useRef<{ value: T } | null>(null);
+  const getSelection = () => {
+    const next = selector(store.get());
+    const cached = cacheRef.current;
+    if (cached && isEqual(cached.value, next)) return cached.value;
+    cacheRef.current = { value: next };
+    return next;
+  };
+  return useSyncExternalStore(store.subscribe, getSelection, getSelection);
 }
