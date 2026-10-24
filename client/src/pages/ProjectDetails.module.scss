@@ -449,3 +449,208 @@
 }
 
 .detail-row-wide { grid-column: 1 / -1; }
+
+// ── Page title ───────────────────────────────────────────────────────────
+.page-title {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.title-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.title-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.actions-menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+
+// ── Last action result ───────────────────────────────────────────────────
+.action-result {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.action-result-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.action-ok { color: var(--success); }
+.action-failed { color: var(--danger); }
+
+.log-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+
+  &:hover { color: var(--text); }
+}
+
+.card-summary-text {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+// ── Lists inside cards (deploys, revisions, branches) ────────────────────
+.history-block {
+  display: grid;
+  gap: 6px;
+
+  & + & { margin-top: 16px; }
+}
+
+.history-heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+}
+
+.history-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+    font-size: 12.5px;
+  }
+
+  .status-pill { font-size: 11px; padding: 2px 7px; }
+  .mono { font-size: 12px; }
+}
+
+.history-meta {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.history-message {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+}
+
+.branch-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 140px;
+}
+
+.branch-auto { color: var(--primary); }
+
+.branch-auto-tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--primary);
+}
+
+// ── Domains & ports ──────────────────────────────────────────────────────
+.ingress-block {
+  display: grid;
+  gap: 10px;
+
+  & + & {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  > p { margin: 0; }
+}
+
+.ingress-list {
+  display: grid;
+  gap: 8px;
+}
+
+.ingress-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+
+  .status-pill { font-size: 11px; }
+}
+
+.ingress-row-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.ingress-target {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.ssl-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ssl-toggle-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.push-right { margin-left: auto; }
+
+.inline-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.domain-input { max-width: 240px; }
+.port-input { max-width: 140px; }
+
+.detail-grid + .history-block { margin-top: 14px; }
+
+// Grid children default to min-width:auto and would push the card wider than a phone.
+.ingress-block,
+.ingress-block > * { min-width: 0; }
+
+.ingress-block :global(.row-actions) { flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .domain-input,
+  .port-input { max-width: none; flex: 1 1 100%; }
+}
