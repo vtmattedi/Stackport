@@ -25,6 +25,8 @@ interface EnvManagerDialogProps {
   envFiles: ProjectEnvFile[];
   onEnvFilesChange: (files: ProjectEnvFile[]) => void;
   onClose: () => void;
+  /** Opens on this file, or starts a new draft at this path when it doesn't exist yet. */
+  initialPath?: string;
 }
 
 function editableVariables(envFile: ProjectEnvFile | undefined): EnvVariable[] {
@@ -90,12 +92,12 @@ function RandomValueButton({ onGenerate }: { onGenerate: (value: string) => void
   );
 }
 
-export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesChange, onClose }: EnvManagerDialogProps) {
+export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesChange, onClose, initialPath }: EnvManagerDialogProps) {
   const confirm = useConfirm();
   const importInputRef = useRef<HTMLInputElement | null>(null);
-  const firstFile = envFiles[0];
+  const firstFile = initialPath === undefined ? envFiles[0] : envFiles.find((file) => file.relativePath === initialPath);
   const [editingEnvId, setEditingEnvId] = useState<number | null>(firstFile?.id ?? null);
-  const [envPath, setEnvPath] = useState(firstFile?.relativePath ?? "");
+  const [envPath, setEnvPath] = useState(firstFile?.relativePath ?? initialPath ?? "");
   const [envVariables, setEnvVariables] = useState<EnvVariable[]>(editableVariables(firstFile));
   const [search, setSearch] = useState("");
   const [visibleValues, setVisibleValues] = useState<Set<number>>(() => new Set());
@@ -112,7 +114,7 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
   const filledEnvVariables = envVariables.filter((variable) => variable.key.trim() || variable.value);
   const envDraftChanged = selectedEnvFile
     ? envPath !== selectedEnvFile.relativePath || JSON.stringify(envVariables) !== JSON.stringify(editableVariables(selectedEnvFile))
-    : !!envPath || filledEnvVariables.length > 0;
+    : (!!envPath && envPath !== initialPath) || filledEnvVariables.length > 0;
 
   const normalizedSearch = search.trim().toLowerCase();
   const searchMatches = useMemo(() => {

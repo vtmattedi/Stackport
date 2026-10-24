@@ -16,7 +16,7 @@ import { ensureBuildCapacity } from "./dockerStorage";
 import { recordFailedDeployment, recordSuccessfulDeployment, getPreviousSuccessfulDeployment } from "./projectDeployments";
 import { notifyDeployBlocked } from "./notificationService";
 import { invalidateContainers } from "./dockerStatusCache";
-import { extractComposeIngressTargets, type ComposeIngressTarget } from "./composeIngress";
+import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
 
 export interface EnvVariable {
   key: string;
@@ -109,21 +109,49 @@ export async function ensureProjectProxyNetwork(projectId: number): Promise<void
   invalidateContainers();
 }
 
-export async function getProjectIngressTargets(projectId: number, selectedFile?: string): Promise<ComposeIngressTarget[]> {
+async function resolveSelectedComposeFile(projectId: number, selectedFile?: string): Promise<{ repoPath: string; composeFile: string }> {
   const project = getProjectById(projectId);
   if (!project?.composeFile) throw new Error("Pull or upload the project and select a Compose file first");
   const repoPath = projectRepoDir(project);
   const composeFile = selectedFile === undefined ? project.composeFile
     : validateComposeFileChoice(selectedFile, await scanComposeFiles(repoPath));
   if (!composeFile) throw new Error("Select a Compose file found in this project");
+  return { repoPath, composeFile };
+}
+
+async function readRawComposeDoc(repoPath: string, composeFile: string): Promise<unknown> {
+  try { return loadYamlDoc(await fs.readFile(path.join(repoPath, composeFile), "utf8")); }
+  catch { return null; }
+}
+
+export async function getProjectIngressTargets(projectId: number, selectedFile?: string): Promise<ComposeIngressTarget[]> {
+  const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId, selectedFile);
   const compose = await composeCommand();
   // Do not stream or return resolved config: it can contain environment secrets.
-  const raw = await new Promise<string>((resolve, reject) => {
+  const raw = await new Promise<string | null>((resolve) => {
     execFile(compose.cmd, [...compose.argsPrefix, "-f", composeFile, "config", "--format", "json"],
       { cwd: repoPath, env: dockerEnv(), timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
-      (err, stdout) => err ? reject(new Error("Could not resolve Compose config. Check the selected file and required environment variables.")) : resolve(stdout));
+      (err, stdout) => resolve(err ? null : stdout));
   });
-  return extractComposeIngressTargets(JSON.parse(raw));
+  if (raw !== null) return extractComposeIngressTargets(JSON.parse(raw));
+  // Env files are only written at deploy time, so a fresh project whose compose file
+  // needs one can't be resolved yet. Fall back to the literal ports in the YAML.
+  const doc = await readRawComposeDoc(repoPath, composeFile);
+  const targets = doc ? extractRawComposeIngressTargets(doc) : [];
+  if (!targets.length) throw new Error("Could not resolve Compose config. Check the selected file and required environment variables.");
+  return targets;
+}
+
+/** The `env_file:` paths a compose file references — lets setup flag the ones not created yet. */
+export async function getProjectComposeEnvFiles(projectId: number, selectedFile?: string): Promise<(ComposeEnvFileRef & { existsInSource: boolean })[]> {
+  const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId, selectedFile);
+  const refs = extractComposeEnvFileRefs(await readRawComposeDoc(repoPath, composeFile));
+  return Promise.all(refs.map(async (ref) => {
+    const target = resolveContainedPath(repoPath, ref.path);
+    // A committed or uploaded file counts; one StackPort wrote on an earlier deploy is a managed env file instead.
+    const existsInSource = !!target && await fs.stat(target).then((stat) => stat.isFile()).catch(() => false);
+    return { ...ref, existsInSource };
+  }));
 }
 
 function dockerConfigDir(): string {
@@ -852,6 +880,12 @@ async function currentCommitSha(projectId: number, action: ProjectDeployEvent["a
   return result.ok ? result.stdout.trim() : null;
 }
 
+/** A GitHub project needs its clone; an uploaded one only has the files it was given, no `.git`. */
+async function hasProjectSource(project: Project, repoPath: string): Promise<boolean> {
+  const marker = project.sourceType === "upload" ? repoPath : path.join(repoPath, ".git");
+  return fs.stat(marker).then((stat) => stat.isDirectory()).catch(() => false);
+}
+
 async function readComposeFileSafe(repoPath: string, composeFile: string | null): Promise<string | null> {
   if (!composeFile) return null;
   return fs.readFile(path.join(repoPath, composeFile), "utf8").catch(() => null);
@@ -899,7 +933,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
     }
     composeFile = sync.composeFile;
   } else {
-    const hasCheckout = await fs.stat(path.join(repoPath, ".git")).then((stat) => stat.isDirectory()).catch(() => false);
+    const hasCheckout = await hasProjectSource(project, repoPath);
     if (!hasCheckout) {
       const message = "Repository checkout not found. Pull from GitHub before running docker compose.\n";
       emit(projectId, action, "stderr", message, { ok: false, done: true });
@@ -1083,7 +1117,7 @@ export async function redeployProjectService(projectId: number, service: string)
   }
 
   const repoPath = projectRepoDir(project);
-  const hasCheckout = await fs.stat(path.join(repoPath, ".git")).then((stat) => stat.isDirectory()).catch(() => false);
+  const hasCheckout = await hasProjectSource(project, repoPath);
   if (!hasCheckout) {
     const message = "Repository checkout not found. Pull from GitHub before running docker compose.\n";
     emit(projectId, action, "stderr", message, { ok: false, done: true });
@@ -1178,7 +1212,7 @@ export async function dropProjectServiceVolumes(projectId: number, service: stri
   }
 
   const repoPath = projectRepoDir(project);
-  const hasCheckout = await fs.stat(path.join(repoPath, ".git")).then((stat) => stat.isDirectory()).catch(() => false);
+  const hasCheckout = await hasProjectSource(project, repoPath);
   if (!hasCheckout) {
     const message = "Repository checkout not found. Pull from GitHub before running docker compose.\n";
     emit(projectId, action, "stderr", message, { ok: false, done: true });
@@ -1266,7 +1300,7 @@ export async function forceRebuildProject(projectId: number): Promise<DeployResu
   const output: string[] = [];
   emit(projectId, action, "status", "Force rebuild started\n");
 
-  const hasCheckout = await fs.stat(path.join(repoPath, ".git")).then((stat) => stat.isDirectory()).catch(() => false);
+  const hasCheckout = await hasProjectSource(project, repoPath);
   if (!hasCheckout) {
     const message = "Repository checkout not found. Pull from GitHub before running docker compose.\n";
     emit(projectId, action, "stderr", message, { ok: false, done: true });
