@@ -23,15 +23,17 @@ interface SubShellProps {
   actions?: ReactNode;
   /** The active section. Defaults to the nested route's <Outlet />. */
   children?: ReactNode;
+  /** Extra classes for the page's <main>, e.g. a wider max-width. */
+  className?: string;
 }
 
 /**
  * Shared layout for pages split into sections (Settings, System, Infrastructure…):
  * a title row, a section list beside (or, on phones, above) the active section.
  */
-export default function SubShell({ title, icon: TitleIcon, basePath, sections, actions, children }: SubShellProps) {
+export default function SubShell({ title, icon: TitleIcon, basePath, sections, actions, children, className }: SubShellProps) {
   return (
-    <main className="main">
+    <main className={cn("main", className)}>
       <div className={styles.header}>
         <h1 className="page-title"><TitleIcon size={20} />{title}</h1>
         {actions && <div className={styles.headerActions}>{actions}</div>}
