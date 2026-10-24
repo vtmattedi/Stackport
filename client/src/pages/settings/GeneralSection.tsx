@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { KeyRound, Eye, EyeOff, Check, Loader, GitPullRequestArrow, Boxes } from "lucide-react";
+import { KeyRound, Eye, EyeOff, Check, Loader, GitPullRequestArrow, Boxes, RefreshCw } from "lucide-react";
 import { api, ApiError } from "../../api/client";
-import type { AppVersionInfo, SelfUpdateStatus } from "../../api/types";
+import type { AppUpdateCheck, AppVersionInfo, CommitInfo, SelfUpdateStatus } from "../../api/types";
 import { cn } from "../../lib/utils";
 import { formatShortDateTime } from "../../lib/format";
 import styles from "../Settings.module.scss";
@@ -22,10 +22,26 @@ export default function GeneralSection() {
   const [updateError, setUpdateError] = useState("");
   const [updateSuccess, setUpdateSuccess] = useState("");
   const [updateOutput, setUpdateOutput] = useState("");
+  const [updateCheck, setUpdateCheck] = useState<AppUpdateCheck | null>(null);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     api.getVersion().then(setVersionInfo).catch(() => {});
+    void checkForUpdates();
   }, []);
+
+  async function checkForUpdates() {
+    setChecking(true);
+    try {
+      const result = await api.checkAppUpdate();
+      if (updateMounted.current) setUpdateCheck(result);
+    } catch (err) {
+      if (updateMounted.current) setUpdateCheck(null);
+      console.warn("update check failed", err);
+    } finally {
+      if (updateMounted.current) setChecking(false);
+    }
+  }
 
   useEffect(() => {
     updateMounted.current = true;
@@ -62,6 +78,7 @@ export default function GeneralSection() {
     if (status.status === "success") {
       setUpdateSuccess("Stackport is up to date.");
       void api.getVersion().then(setVersionInfo).catch(() => {});
+      void checkForUpdates();
     } else {
       setUpdateError(status.status === "rolled-back"
         ? "Update failed health checks. The previous version was restored."
@@ -101,10 +118,27 @@ export default function GeneralSection() {
     }
   }
 
-  function formatBuild(value: string | null | undefined) {
-    if (!value) return "Not built yet";
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : formatShortDateTime(value);
+  const commit = versionInfo?.commit ?? updateCheck?.current ?? null;
+  const upToDate = !!updateCheck?.ok && updateCheck.available.length === 0;
+
+  function commitLink(c: CommitInfo) {
+    return updateCheck?.commitUrl
+      ? <a href={updateCheck.commitUrl + c.sha} target="_blank" rel="noreferrer"><code>{c.shortSha}</code></a>
+      : <code>{c.shortSha}</code>;
+  }
+
+  function commitList(commits: CommitInfo[]) {
+    return (
+      <ul className={styles.commitList}>
+        {commits.map(c => (
+          <li key={c.sha}>
+            {commitLink(c)}
+            <span className={styles.commitMessage} title={c.message}>{c.message}</span>
+            {c.date && <span className={styles.commitDate}>{formatShortDateTime(c.date)}</span>}
+          </li>
+        ))}
+      </ul>
+    );
   }
 
   return (
@@ -117,43 +151,58 @@ export default function GeneralSection() {
               <Check size={14} />{updateSuccess}
             </div>
           )}
-          <div className={styles.versionGrid}>
-            <div className={styles.versionItem}>
-              <span>Backend</span>
-              <strong>{versionInfo?.backend.version ?? "-"}</strong>
-              <small>{formatBuild(versionInfo?.backend.builtAt)}</small>
-              {versionInfo?.backend.gitCommit && (
-                <small>
-                  {versionInfo.backend.gitBranch || "git"} @ {versionInfo.backend.gitCommit}
-                  {versionInfo.backend.gitMessage && <span className="muted-text"> — {versionInfo.backend.gitMessage}</span>}
-                </small>
-              )}
-            </div>
-            <div className={styles.versionItem}>
-              <span>Frontend</span>
-              <strong>{versionInfo?.frontend.version ?? "-"}</strong>
-              <small>{formatBuild(versionInfo?.frontend.builtAt)}</small>
-              {versionInfo?.frontend.gitCommit && (
-                <small>
-                  {versionInfo.frontend.gitBranch || "git"} @ {versionInfo.frontend.gitCommit}
-                  {versionInfo.frontend.gitMessage && <span className="muted-text"> — {versionInfo.frontend.gitMessage}</span>}
-                </small>
-              )}
-            </div>
+          <div className={styles.versionCurrent}>
+            <span>Running</span>
+            <strong>{commit ? commit.shortSha : versionInfo?.version ?? "-"}</strong>
+            {commit?.message && <small>{commit.message}</small>}
+            {commit?.date && <small>Committed {formatShortDateTime(commit.date)}</small>}
+            {!commit && versionInfo && <small>Commit unknown until the next update.</small>}
           </div>
 
-          <div className="row-actions" style={{ marginTop: 14 }}>
+          {updateCheck && !updateCheck.ok && updateCheck.error && (
+            <div className="alert alert-error" style={{ marginTop: 12 }}>{updateCheck.error}</div>
+          )}
+          {updateCheck?.ok && (
+            <div className={styles.updateGroup}>
+              {updateCheck.available.length > 0 ? (
+                <>
+                  <p>{updateCheck.available.length} update{updateCheck.available.length === 1 ? "" : "s"} ready on <code>{updateCheck.branch}</code>:</p>
+                  {commitList(updateCheck.available)}
+                </>
+              ) : (
+                <p className="muted-text">Up to date with <code>{updateCheck.branch}</code>.</p>
+              )}
+            </div>
+          )}
+          {updateCheck?.ok && updateCheck.pending.length > 0 && (
+            <div className={styles.updateGroup}>
+              <p className="muted-text">
+                Not released yet: {updateCheck.pending.length} newer commit{updateCheck.pending.length === 1 ? "" : "s"} on <code>main</code>.
+                They reach <code>{updateCheck.branch}</code> once CI and the upgrade test pass.
+              </p>
+              {commitList(updateCheck.pending)}
+            </div>
+          )}
 
-            <button className="btn btn-primary" type="button" onClick={() => void runSelfUpdate()} disabled={updatingApp}>
+          <div className="row-actions" style={{ marginTop: 14 }}>
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => void runSelfUpdate()}
+              disabled={updatingApp || upToDate}
+              title={upToDate ? "Already on the latest released version" : undefined}
+            >
               {updatingApp ? <Loader size={13} className="spin" /> : <GitPullRequestArrow size={13} />}
               Update Stackport
             </button>
+            <button className="btn btn-ghost" type="button" onClick={() => void checkForUpdates()} disabled={checking || updatingApp}>
+              <RefreshCw size={13} className={checking ? "spin" : undefined} />
+              Check for updates
+            </button>
           </div>
-          {(
-            <span className="hint" style={{ display: "block", marginTop: 8 }}>
-              Pulls the latest source, backs up the database and updates Stackport. Failed health checks restore the previous version. Progress resumes after a restart or page reload.
-            </span>
-          )}
+          <span className="hint" style={{ display: "block", marginTop: 8 }}>
+            Builds the new version first, backs up the database, then switches over. A version that fails its checks is rolled back automatically. Progress resumes after a restart or page reload.
+          </span>
 
           {updateOutput && <pre className={styles.updateOutput}>{updateOutput}</pre>}
         </div>

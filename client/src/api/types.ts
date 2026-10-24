@@ -609,18 +609,17 @@ export interface SystemData {
   version: AppVersionInfo | null;
 }
 
-export interface BuildInfo {
-  name: string;
-  version: string;
-  builtAt: string | null;
-  gitCommit: string;
-  gitBranch: string;
-  gitMessage: string;
+export interface CommitInfo {
+  sha: string;
+  shortSha: string;
+  date: string | null;
+  message: string;
 }
 
+/** One version for the whole app: the client and API ship in the same image. */
 export interface AppVersionInfo {
-  backend: BuildInfo;
-  frontend: BuildInfo;
+  version: string;
+  commit: CommitInfo | null;
 }
 
 export interface ComposeActionResult {
@@ -707,12 +706,16 @@ export interface SetupLoginResult {
 
 export interface AppUpdateCheck {
   ok: boolean;
-  repo: string | null;
-  branch: string | null;
-  localCommit: string | null;
-  remoteCommit: string | null;
-  hasUpdate: boolean;
-  output: string;
+  error: string | null;
+  /** The branch this server updates from. */
+  branch: string;
+  current: CommitInfo | null;
+  /** Newer commits on that branch: what Update would install. */
+  available: CommitInfo[];
+  /** Commits on main not promoted to stable yet (CI still running or failed). */
+  pending: CommitInfo[];
+  commitUrl: string | null;
+  checkedAt: string;
 }
 
 export interface SystemUpdateConfig {

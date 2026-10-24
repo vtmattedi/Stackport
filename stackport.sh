@@ -429,8 +429,10 @@ ensure_env_file() {
     echo "STACKPORT_DATA_DIR=$VAR_DIR/data"
     echo "STACKPORT_LOGS_DIR=$VAR_DIR/logs"
     echo "STACKPORT_NGINX_DIR=$VAR_DIR/nginx"
-    # The app's "update available" check compares against this branch.
+    # The app's update check: which branch, which repository, and what is running.
     echo "GIT_BRANCH=$(configured_branch)"
+    echo "STACKPORT_REPO_URL=$(git -C "$APP_DIR" remote get-url origin 2>/dev/null || true)"
+    echo "STACKPORT_COMMIT=$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || true)"
   } > "$target"
   # This file is bind-mounted read-only into the stackport container and read by
   # its unprivileged `node` user (UID/GID 1000, the same assumption ensure_directories/
@@ -611,7 +613,7 @@ stage_update() {
     || { error "new stackport.sh failed its selfcheck"; return 1; }
 
   log "building image for ${target:0:7}"
-  docker build --quiet --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
+  docker build --quiet --build-arg "STACKPORT_COMMIT=$target" --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
     || { error "image build failed for ${target:0:7}"; return 1; }
   STAGED_IMAGE="stackport:${target:0:12}"
 }
