@@ -1197,6 +1197,15 @@ tr:last-child td { border-bottom: none; }
   background: rgba(248, 81, 73, 0.12);
 }
 
+/* Only the current step is named inline; the others keep their name in a tooltip. */
+.wizard-timeline-label {
+  margin-left: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .wizard-timeline-line {
   flex: 1;
   height: 1px;

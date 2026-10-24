@@ -140,16 +140,14 @@ const Login: FC = () => {
       <StackPortLoading show={mode === "checking"} />
       {heroPanel}
       <div className={styles.loginCard}>
-        <div className={styles.loginIcon}>
-          <StackPortBrand iconSize={48} showWordmark={false} />
-        </div>
+        {/* The hero beside (or above) this card already shows the logo and name. */}
         <h2 className={styles.loginTitle}>
-          <StackPortWordmark />
+          {mode === "login" ? "Sign in" : "Set up Stackport"}
         </h2>
 
         {mode === "login" && (
           <>
-            <p className={styles.loginSub}>VPS Manager</p>
+            <p className={styles.loginSub}>Use your administrator account.</p>
             {error && <div className="alert alert-error">{error}</div>}
             {notice && <div className="alert alert-success">{notice}</div>}
             <form onSubmit={handleSubmit}>

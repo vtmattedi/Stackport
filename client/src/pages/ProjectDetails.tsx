@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
 import { DeployTriggerControl } from "../components/DeployTriggerControl";
+import { ServiceError } from "../components/ServiceError";
 import { ProjectGroupField } from "../components/ProjectGroupField";
 import { ProjectIngressSelect } from "../components/ProjectIngressSelect";
 import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
@@ -49,6 +50,7 @@ import { deriveProjectStatus, expectedComposeProjectName, explainProjectStatus, 
 import { cn } from "../lib/utils";
 import { notify } from "../lib/notify";
 import styles from "./ProjectDetails.module.scss";
+import { TimeAgo } from "../components/TimeAgo";
 
 const INTERVALS = [
   { label: "Off", value: 0 },
@@ -1127,7 +1129,7 @@ export default function ProjectDetails() {
                   <span className={styles.statusCommit} title={project.lastCommitMessage ?? undefined}>
                     <GitCommit size={12} />
                     <span className="mono">{project.lastCommitSha.slice(0, 7)}</span>
-                    {project.lastCommitAt && <span className="muted-text">{formatTimeAgo(project.lastCommitAt)}</span>}
+                    {project.lastCommitAt && <span className="muted-text"><TimeAgo ts={project.lastCommitAt} /></span>}
                   </span>
                 )}
               </div>
@@ -1392,7 +1394,7 @@ export default function ProjectDetails() {
               }
             >
               {!docker?.available ? (
-                <div className="alert alert-error">{docker?.reason ?? "Docker unavailable"}</div>
+                <ServiceError service="Docker" reason={docker?.reason} />
               ) : dockerStack ? (
                 <>
                   <div className={styles.dockerContainerList} style={{ marginTop: 0 }}>
@@ -1850,7 +1852,7 @@ export default function ProjectDetails() {
                     size="xs"
                     onClick={() => void loadBranches(true)}
                     disabled={loadingBranches}
-                    title={project.branchesFetchedAt ? `Branch list updated ${formatTimeAgo(project.branchesFetchedAt)}` : "Fetch branches from GitHub"}
+                    title={project.branchesFetchedAt ? `Branch list updated $<TimeAgo ts={project.branchesFetchedAt} />` : "Fetch branches from GitHub"}
                   >
                     {loadingBranches ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
                     Refresh branches

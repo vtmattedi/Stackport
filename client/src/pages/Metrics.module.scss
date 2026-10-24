@@ -112,6 +112,7 @@
 
 .stat-success { color: var(--success); }
 .stat-danger  { color: var(--danger); }
+.stat-muted   { color: var(--dim); }
 .stat-brand   { color: var(--brand); }
 
 .two-col {
@@ -243,8 +244,13 @@
   padding: 0 8px;
 }
 
-.resource-metric-select {
+// Match MultiSelect's compact trigger beside it instead of the full-width form select.
+.resource-metric-select[data-slot="select-trigger"] {
+  width: auto;
   min-width: 120px;
+  height: 32px;
+  font-size: 12px;
+  background: transparent;
 }
 
 .clear-btn {

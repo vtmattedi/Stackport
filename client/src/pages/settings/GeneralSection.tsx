@@ -3,6 +3,7 @@ import { KeyRound, Eye, EyeOff, Check, Loader, GitPullRequestArrow, Boxes } from
 import { api, ApiError } from "../../api/client";
 import type { AppVersionInfo, SelfUpdateStatus } from "../../api/types";
 import { cn } from "../../lib/utils";
+import { formatShortDateTime } from "../../lib/format";
 import styles from "../Settings.module.scss";
 
 /** Stackport's own version and self-update, plus the admin password. */
@@ -103,7 +104,7 @@ export default function GeneralSection() {
   function formatBuild(value: string | null | undefined) {
     if (!value) return "Not built yet";
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    return Number.isNaN(date.getTime()) ? value : formatShortDateTime(value);
   }
 
   return (

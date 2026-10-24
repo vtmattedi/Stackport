@@ -463,3 +463,9 @@
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
+
+.tabs {
+  margin-bottom: 16px;
+
+  [data-slot="tabs-list"] { max-width: 100%; overflow-x: auto; }
+}

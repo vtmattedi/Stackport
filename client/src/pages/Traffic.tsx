@@ -18,6 +18,7 @@ import { cn } from "../lib/utils";
 import { AppSelect } from "../components/AppSelect";
 import { MultiSelect, multiSelectSummary } from "../components/MultiSelect";
 import { Switch } from "../components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Badge } from "../components/ui/badge";
 import { ExpandableCard } from "../components/ExpandableCard";
 import { StatusChip } from "../components/StatusChip";
@@ -431,23 +432,18 @@ export default function Traffic() {
 
       {error && <div className="alert alert-error" style={{ marginBottom: 20 }}>{error}</div>}
 
-      <div className="card" style={{ padding: "6px 12px", marginBottom: 16 }}>
-        <div className="row" style={{ display: "flex", gap: 4 }}>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as TabId)} className={styles.tabs}>
+        <TabsList>
           {(["overview", "logs", "anomalies"] as TabId[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              className={cn("btn btn-ghost btn-sm", tab === t && "btn-primary")}
-              onClick={() => setTab(t)}
-            >
+            <TabsTrigger key={t} value={t}>
               {t === "overview" ? "Overview" : t === "logs" ? "Log inspector" : "Anomalies"}
               {t === "anomalies" && flagged.length > 0 && (
                 <Badge variant="destructive" className={styles.tabBadge}>{flagged.length}</Badge>
               )}
-            </button>
+            </TabsTrigger>
           ))}
-        </div>
-      </div>
+        </TabsList>
+      </Tabs>
 
       {tab === "overview" && (
         <>
