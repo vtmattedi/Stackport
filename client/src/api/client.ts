@@ -2,6 +2,7 @@ import type {
   AuditLogQuery,
   AuditLogResult,
   Project,
+  DeployTrigger,
   ProjectDomain,
   TcpExposure,
   ComposeIngressTarget,
@@ -312,6 +313,8 @@ export const api = {
   resumeProject: (id: number) => request<Project>(`/projects/${id}/resume`, { method: "POST" }),
   favoriteProject: (id: number) => request<Project>(`/projects/${id}/favorite`, { method: "POST" }),
   unfavoriteProject: (id: number) => request<Project>(`/projects/${id}/unfavorite`, { method: "POST" }),
+  setDeployTrigger: (id: number, trigger: DeployTrigger) =>
+    request<Project>(`/projects/${id}/deploy-trigger`, { method: "PUT", body: JSON.stringify({ trigger }) }),
   checkProject: (id: number) => request<Project>(`/projects/${id}/check`, { method: "POST" }),
   listProjectEnvFiles: (projectId: number) =>
     request<ProjectEnvFile[]>(`/projects/${projectId}/env-files`),

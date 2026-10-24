@@ -6,6 +6,7 @@ import { closeDatabase, initializeDatabase } from "./config/database";
 import { healthChecker } from "./services/healthChecker";
 import { SocketManager } from "./services/socketManager";
 import { githubPoller } from "./services/githubPoller";
+import { resetPendingAutoDeploys } from "./services/autoDeploy";
 import { hardwareSampler } from "./services/hardwareSampler";
 import { projectResourceSampler } from "./services/projectResourceSampler";
 import { dockerStorageMonitor } from "./services/dockerStorageMonitor";
@@ -20,6 +21,7 @@ try {
   void ensureAppIngress();
   void reconcileAllTcpExposures();
   healthChecker.start();
+  resetPendingAutoDeploys();
   githubPoller.start();
   hardwareSampler.start();
   projectResourceSampler.start();

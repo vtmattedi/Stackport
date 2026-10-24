@@ -1,3 +1,5 @@
+export type DeployTrigger = "poller" | "manual";
+
 export interface Project {
   groupName: string | null;
   id: number;
@@ -21,6 +23,12 @@ export interface Project {
   lastCommitAt: string | null;
   branches: GitHubBranch[];
   branchesFetchedAt: string | null;
+  /** How new commits on the auto-deploy branch reach this project. */
+  deployTrigger: DeployTrigger;
+  /** A commit waiting for the running action to end before it deploys. */
+  pendingDeploySha: string | null;
+  githubCheckedAt: string | null;
+  githubCheckError: string | null;
   sourceType: "github" | "upload";
   nginxExtraConfig: string | null;
   nginxExtraBlocks: string | null;

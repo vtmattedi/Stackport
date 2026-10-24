@@ -2,10 +2,11 @@ import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../config/database";
 import { requireAuth } from "../middleware/auth";
 import { auditLog } from "../utils/logger";
-import { rowToProject, type ProjectRow } from "../entities/Project";
+import { rowToProject, DEPLOY_TRIGGERS, type DeployTrigger, type ProjectRow } from "../entities/Project";
+import { clearPendingAutoDeploy } from "../services/autoDeploy";
 import { healthChecker } from "../services/healthChecker";
 import { getNginxAppConfig, writeNginxConfig } from "../services/nginx/configWriter";
-import { emitGlobalEvent } from "../services/realtime";
+import { emitGlobalEvent, emitProjectDataUpdate } from "../services/realtime";
 import {
   buildProject,
   cleanOrphanFolder,
@@ -951,6 +952,26 @@ router.patch("/:id/compose-file", requireAuth, async (req: Request<{ id: string 
   res.json(getProjectById(id));
 });
 
+router.put("/:id/deploy-trigger", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+
+  const { trigger } = req.body as Record<string, unknown>;
+  if (!(DEPLOY_TRIGGERS as readonly unknown[]).includes(trigger)) {
+    res.status(400).json({ error: `trigger must be one of: ${DEPLOY_TRIGGERS.join(", ")}` });
+    return;
+  }
+  const next = trigger as DeployTrigger;
+  getDatabase().prepare("UPDATE projects SET deploy_trigger = ?, updated_at = ? WHERE id = ?").run(next, new Date().toISOString(), id);
+  if (next === "manual") clearPendingAutoDeploy(id);
+  auditLog(req.user ?? "unknown", "project.deploy-trigger", project.name, "ok", { trigger: next });
+  const updated = getProjectById(id);
+  if (updated) emitProjectDataUpdate(id, updated);
+  res.json(updated);
+});
+
 router.get("/:id/actions", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
@@ -1333,6 +1354,7 @@ function setProjectPaused(req: Request<{ id: string }>, res: Response, paused: b
     .run(paused ? 1 : 0, paused ? "unknown" : row.last_status, now, id);
   if (paused) {
     healthChecker.unschedule(id);
+    clearPendingAutoDeploy(id);
   } else {
     const resumed = rowToProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow);
     healthChecker.schedule(resumed);

@@ -2,9 +2,8 @@ import https from "https";
 import { getDatabase } from "../config/database";
 import { decryptSecret } from "../utils/crypto";
 import { rowToProject, type Project, type ProjectRow } from "../entities/Project";
-import { deployProject } from "./projectDeploy";
+import { requestAutoDeploy } from "./autoDeploy";
 import { emitProjectDataUpdate } from "./realtime";
-import { actionRegistry, projectRepoKey } from "./actionRegistry";
 
 export interface GitHubPollerConfig {
   enabled: boolean;
@@ -196,6 +195,11 @@ function storeBranchList(projectId: number, branches: GitHubBranch[]): void {
     .run(JSON.stringify(branches), new Date().toISOString(), projectId);
 }
 
+function markChecked(projectId: number, error: string | null): void {
+  getDatabase().prepare("UPDATE projects SET github_checked_at = ?, github_check_error = ? WHERE id = ?")
+    .run(new Date().toISOString(), error ? error.slice(0, 500) : null, projectId);
+}
+
 function emitProjectRow(projectId: number): void {
   const row = getDatabase().prepare("SELECT * FROM projects WHERE id = ?").get(projectId) as ProjectRow | undefined;
   if (row) emitProjectDataUpdate(projectId, rowToProject(row));
@@ -330,7 +334,7 @@ class GitHubPoller {
 
     try {
       const projects = db.prepare(
-        "SELECT * FROM projects WHERE github_repo IS NOT NULL AND github_repo != '' AND paused = 0"
+        "SELECT * FROM projects WHERE github_repo IS NOT NULL AND github_repo != '' AND paused = 0 AND deploy_trigger = 'poller'"
       ).all() as ProjectRow[];
 
       outputLines.push(`Found ${projects.length} project(s) with GitHub repos`);
@@ -350,29 +354,18 @@ class GitHubPoller {
 
           if (watchBranch && watched) {
             const shortSha = watched.sha.slice(0, 7);
-            const isNew = project.lastCommitSha !== null && watched.sha !== project.lastCommitSha;
-            let recordCommit = true;
-
-            if (isNew) {
-              const started = this.triggerDeploy(project.id, watched);
-              if (started) {
-                outputLines.push(`${prefix} NEW commit on ${watchBranch}: ${shortSha} — ${watched.commitMessage ?? "—"} → deploy triggered`);
-              } else {
-                // Another action holds the project's repo slot. Leave last_commit_sha
-                // alone so the next poll sees the commit as new again and retries.
-                recordCommit = false;
-                outputLines.push(`${prefix} NEW commit on ${watchBranch}: ${shortSha} — another action is running, will retry next poll`);
-              }
-            } else if (project.lastCommitSha === null) {
-              outputLines.push(`${prefix} First poll on ${watchBranch}: ${shortSha} stored as baseline (no deploy)`);
-            } else {
-              outputLines.push(`${prefix} No new commits on ${watchBranch} (${shortSha})`);
-            }
-
-            if (recordCommit) {
+            if (project.lastCommitSha === null) {
               db.prepare(
                 "UPDATE projects SET last_commit_sha = ?, last_commit_message = ?, last_commit_author = ?, last_commit_at = ? WHERE id = ?"
               ).run(watched.sha, watched.commitMessage, watched.commitAuthor, watched.commitAt, project.id);
+              outputLines.push(`${prefix} First poll on ${watchBranch}: ${shortSha} stored as baseline (no deploy)`);
+            } else if (watched.sha !== project.lastCommitSha) {
+              const outcome = requestAutoDeploy(project.id, watched, "auto");
+              outputLines.push(outcome === "started"
+                ? `${prefix} NEW commit on ${watchBranch}: ${shortSha} — ${watched.commitMessage ?? "—"} → deploy triggered`
+                : `${prefix} NEW commit on ${watchBranch}: ${shortSha} — another action is running, deploy queued`);
+            } else {
+              outputLines.push(`${prefix} No new commits on ${watchBranch} (${shortSha})`);
             }
           } else if (watchBranch) {
             outputLines.push(`${prefix} Branch "${watchBranch}" not found in repo`);
@@ -380,11 +373,14 @@ class GitHubPoller {
             outputLines.push(`${prefix} No auto-deploy branch set`);
           }
 
+          markChecked(project.id, watchBranch && !watched ? `Branch "${watchBranch}" not found in repo` : null);
           emitProjectRow(project.id);
         } catch (err) {
           errorCount++;
           const msg = err instanceof Error ? err.message : String(err);
           outputLines.push(`${prefix} ERROR: ${msg}`);
+          markChecked(project.id, msg);
+          emitProjectRow(project.id);
         }
       }
 
@@ -404,29 +400,6 @@ class GitHubPoller {
       const updatedCfg = this.getConfig();
       if (updatedCfg.enabled) this.schedule(updatedCfg.pollIntervalS * 1000);
     }
-  }
-
-  /** Starts an auto-deploy through the shared action registry, so it shows up live on
-   *  the project page and can't overlap a manual action. Returns false when busy. */
-  private triggerDeploy(projectId: number, commit: GitHubBranch): boolean {
-    const db = getDatabase();
-    const started = actionRegistry.tryStart(projectRepoKey(projectId), "deploy", { projectId, triggeredBy: "auto" }, async () => {
-      const deployRow = db.prepare(
-        "INSERT INTO project_deploys (project_id, commit_sha, commit_message, commit_author, triggered_by, status, created_at) VALUES (?, ?, ?, ?, 'auto', 'running', ?)"
-      ).run(projectId, commit.sha, commit.commitMessage, commit.commitAuthor, new Date().toISOString());
-      const deployId = deployRow.lastInsertRowid as number;
-      try {
-        const result = await deployProject(projectId, "auto");
-        db.prepare("UPDATE project_deploys SET status = ?, completed_at = ? WHERE id = ?")
-          .run(result.ok ? "success" : "failed", new Date().toISOString(), deployId);
-        return { ok: result.ok, output: result.output };
-      } catch (err) {
-        db.prepare("UPDATE project_deploys SET status = 'failed', completed_at = ? WHERE id = ?")
-          .run(new Date().toISOString(), deployId);
-        throw err;
-      }
-    });
-    return started !== null;
   }
 }
 

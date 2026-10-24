@@ -39,6 +39,7 @@ import type {
   GitHubBranch,
   ProjectDeploy,
   ProjectDeploymentRevision,
+  DeployTrigger,
 } from "../api/types";
 import { useSocket } from "../context/SocketContext";
 import { jsonEqual, pollProjectAction, useSystemActions, useSystemSelector } from "../context/SystemContext";
@@ -58,6 +59,50 @@ const INTERVALS = [
   { label: "30 min", value: 1800 },
   { label: "1 hr", value: 3600 },
 ];
+
+const DEPLOY_TRIGGER_OPTIONS: { value: DeployTrigger; label: string }[] = [
+  { value: "poller", label: "Poller" },
+  { value: "manual", label: "Manual only" },
+];
+
+/** Deploy trigger picker (applies immediately) plus what the poller last saw for this project. */
+function DeployTriggerControl({ project, onChange }: { project: Project; onChange: (updated: Project) => void }) {
+  const [saving, setSaving] = useState(false);
+
+  async function change(value: string) {
+    setSaving(true);
+    try {
+      onChange(await api.setDeployTrigger(project.id, value as DeployTrigger));
+    } catch (err) {
+      notify.error(err, "Failed to change deploy trigger");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const pollerStatus = project.deployTrigger !== "poller" ? null
+    : project.githubCheckError ? <span style={{ color: "var(--danger)" }}>Last check failed {formatTimeAgo(project.githubCheckedAt)}: {project.githubCheckError}</span>
+    : project.githubCheckedAt ? <span className="muted-text">Last checked {formatTimeAgo(project.githubCheckedAt)}</span>
+    : <span className="muted-text">Not checked yet. Is the poller enabled in <Link className="ext-link" to="/settings/deploy-triggers">Settings</Link>?</span>;
+
+  return (
+    <div className={styles.deployTrigger}>
+      <AppSelect
+        value={project.deployTrigger}
+        onValueChange={(value) => void change(value)}
+        options={DEPLOY_TRIGGER_OPTIONS}
+        disabled={saving}
+      />
+      {!project.autoDeployBranch && project.deployTrigger !== "manual" && (
+        <span className="muted-text">No auto-deploy branch set, so nothing deploys automatically.</span>
+      )}
+      {pollerStatus}
+      {project.pendingDeploySha && (
+        <span>Deploy of <span className="mono">{project.pendingDeploySha.slice(0, 7)}</span> queued until the current action ends.</span>
+      )}
+    </div>
+  );
+}
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -1513,7 +1558,7 @@ export default function ProjectDetails() {
                     <label>
                       <GitBranch size={12} />
                       Auto-deploy branch
-                      <span className="hint"> (poller triggers deploy on new commits)</span>
+                      <span className="hint"> (new commits here deploy automatically)</span>
                     </label>
                     <ActionSelect
                       value={configAutoDeployBranch}
@@ -1860,6 +1905,7 @@ export default function ProjectDetails() {
                 <div className={styles.detailGrid}>
                   <DetailRow label="Repository" value={<a className="ext-link mono" href={`https://github.com/${project.githubRepo}`} target="_blank" rel="noopener noreferrer">{project.githubRepo} <ExternalLink size={10} /></a>} />
                   <DetailRow label="Auto-deploy branch" value={project.autoDeployBranch ? <span className="mono">{project.autoDeployBranch}</span> : <span className="muted-text">Off</span>} />
+                  <DetailRow label="Deploy trigger" value={<DeployTriggerControl project={project} onChange={setProject} />} />
                   {project.lastCommitSha && (
                     <>
                       <DetailRow label="Last commit" value={<span className="mono" style={{ fontSize: "0.82em" }}>{project.lastCommitSha.slice(0, 7)}</span>} />

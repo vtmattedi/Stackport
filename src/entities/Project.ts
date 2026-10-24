@@ -29,6 +29,13 @@ export interface Project {
   lastCommitAt: string | null;
   branches: ProjectBranch[];
   branchesFetchedAt: string | null;
+  /** How new commits on the auto-deploy branch reach this project. */
+  deployTrigger: DeployTrigger;
+  /** A commit waiting for the project's action slot; deployed when the running action ends. */
+  pendingDeploySha: string | null;
+  /** Last time the poller checked this project's repo, and the error if that check failed. */
+  githubCheckedAt: string | null;
+  githubCheckError: string | null;
   sourceType: "github" | "upload";
   nginxExtraConfig: string | null;
   nginxExtraBlocks: string | null;
@@ -36,6 +43,13 @@ export interface Project {
   availableComposeFiles: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export const DEPLOY_TRIGGERS = ["poller", "manual"] as const;
+export type DeployTrigger = (typeof DEPLOY_TRIGGERS)[number];
+
+export function parseDeployTrigger(value: unknown): DeployTrigger {
+  return (DEPLOY_TRIGGERS as readonly unknown[]).includes(value) ? (value as DeployTrigger) : "poller";
 }
 
 export interface ProjectRow {
@@ -63,6 +77,10 @@ export interface ProjectRow {
   last_commit_at: string | null;
   branches_json: string | null;
   branches_fetched_at?: string | null;
+  deploy_trigger?: string | null;
+  pending_deploy_sha?: string | null;
+  github_checked_at?: string | null;
+  github_check_error?: string | null;
   source_type: string;
   nginx_extra_config: string | null;
   nginx_extra_blocks: string | null;
@@ -100,6 +118,10 @@ export function rowToProject(row: ProjectRow): Project {
     lastCommitAt: row.last_commit_at ?? null,
     branches: parseBranchesJson(row.branches_json),
     branchesFetchedAt: row.branches_fetched_at ?? null,
+    deployTrigger: parseDeployTrigger(row.deploy_trigger),
+    pendingDeploySha: row.pending_deploy_sha ?? null,
+    githubCheckedAt: row.github_checked_at ?? null,
+    githubCheckError: row.github_check_error ?? null,
     sourceType: row.source_type === "upload" ? "upload" : "github",
     nginxExtraConfig: row.nginx_extra_config ?? null,
     nginxExtraBlocks: row.nginx_extra_blocks ?? null,
