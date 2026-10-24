@@ -118,6 +118,8 @@
 .actions-cell {
   text-align: right;
   white-space: nowrap;
+
+  > * + * { margin-left: 6px; }
 }
 
 // Phones: each row becomes a stacked card (name and status on top, details below).

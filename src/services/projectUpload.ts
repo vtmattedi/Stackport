@@ -12,6 +12,8 @@ import {
 } from "./projectDeploy";
 import { normalizeRelativePath, resolveContainedPath } from "../utils/safePath";
 import { emitProjectDeploy } from "./realtime";
+import { loadYamlDoc } from "./composeYaml";
+import { extractComposeEnvFileRefs } from "./composeIngress";
 
 export interface UploadFileInput {
   relativePath: string;
@@ -29,6 +31,23 @@ function failure(projectId: number, repoPath: string, message: string): DeployRe
   return { ok: false, projectId, repoPath, output: message, action: "upload" };
 }
 
+/** `docker compose config` refuses a missing `env_file:`, but env files are managed
+ *  separately and only written at deploy time. Validation is about the compose file
+ *  itself, so stand in empty files for the missing ones and return them for removal. */
+async function placeholdMissingEnvFiles(stagingDir: string, composeBuffer: Buffer): Promise<string[]> {
+  let doc: unknown;
+  try { doc = loadYamlDoc(composeBuffer.toString("utf8")); } catch { return []; }
+  const created: string[] = [];
+  for (const ref of extractComposeEnvFileRefs(doc)) {
+    const target = resolveContainedPath(stagingDir, ref.path);
+    if (!target || await fs.stat(target).then(() => true).catch(() => false)) continue;
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, "");
+    created.push(target);
+  }
+  return created;
+}
+
 /**
  * Stages an uploaded compose file + support files into a scratch directory,
  * dry-run validates them with `docker compose config`, and only then swaps them
@@ -38,7 +57,8 @@ function failure(projectId: number, repoPath: string, message: string): DeployRe
 export async function stageAndApplyUpload(
   projectId: number,
   composeFile: UploadFileInput,
-  supportFiles: UploadFileInput[]
+  supportFiles: UploadFileInput[],
+  options: { deploy?: boolean } = {}
 ): Promise<DeployResult> {
   const project = getProjectById(projectId);
   if (!project) return failure(projectId, "", "Project not found");
@@ -74,7 +94,9 @@ export async function stageAndApplyUpload(
   }
 
   emitProjectDeploy({ projectId, action: "upload", stream: "status", message: "Validating docker compose file\n" });
+  const placeholders = await placeholdMissingEnvFiles(stagingDir, composeFile.buffer);
   const validation = await validateComposeDir(projectId, stagingDir, composeBasename);
+  await Promise.all(placeholders.map((file) => fs.rm(file, { force: true })));
   if (!validation.ok) {
     await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     return failure(projectId, repoPath, validation.output || "docker compose config validation failed");
@@ -106,6 +128,11 @@ export async function stageAndApplyUpload(
   // intermediate step "done" would finish the slot early and silently drop
   // every subsequent compose-stage log line (actionRegistry.append() is a
   // no-op once status leaves "running").
+  if (options.deploy === false) {
+    emitProjectDeploy({ projectId, action: "upload", stream: "status", message: "Files applied. Nothing was started.\n", ok: true, done: true });
+    return { ok: true, projectId, repoPath, output: "Files staged and validated", action: "upload" };
+  }
+
   emitProjectDeploy({ projectId, action: "upload", stream: "status", message: "Files applied. Starting docker compose.\n" });
 
   return composeProject(projectId);

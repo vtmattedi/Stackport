@@ -17,6 +17,7 @@ import {
   deployProject,
   ensureProjectProxyNetwork,
   getProjectById,
+  getProjectComposeEnvFiles,
   getProjectIngressTargets,
   getProjectComposeFileContent,
   getProjectLogs,
@@ -438,6 +439,8 @@ router.post("/:id/upload", requireAuth, handleUpload, (req: Request<{ id: string
     return;
   }
   const supportPaths = paths as string[];
+  // "false" stages and validates only, so setup can configure env files and routing before the first start.
+  const deploy = req.body?.deploy !== "false";
 
   const user = req.user ?? "unknown";
   const key = projectRepoKey(id);
@@ -446,6 +449,7 @@ router.post("/:id/upload", requireAuth, handleUpload, (req: Request<{ id: string
       id,
       { relativePath: composeFiles[0].originalname, buffer: composeFiles[0].buffer },
       supportFiles.map((file, index) => ({ relativePath: supportPaths[index], buffer: file.buffer })),
+      { deploy },
     );
     auditLog(user, "project.upload", String(id), result.ok ? "ok" : "fail", { repoPath: result.repoPath });
     return { ok: result.ok, output: result.output };
@@ -612,6 +616,15 @@ router.get("/:id/ingress-targets", requireAuth, async (req: Request<{ id: string
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   if (req.query.composeFile !== undefined && typeof req.query.composeFile !== "string") { res.status(400).json({ error: "Invalid Compose file" }); return; }
   try { res.json(await getProjectIngressTargets(id, req.query.composeFile as string | undefined)); }
+  catch (err) { res.status(400).json({ error: (err as Error).message }); }
+});
+
+router.get("/:id/compose-env-files", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  if (req.query.composeFile !== undefined && typeof req.query.composeFile !== "string") { res.status(400).json({ error: "Invalid Compose file" }); return; }
+  try { res.json(await getProjectComposeEnvFiles(id, req.query.composeFile as string | undefined)); }
   catch (err) { res.status(400).json({ error: (err as Error).message }); }
 });
 
