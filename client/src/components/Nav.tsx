@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { NavLink, Link, useNavigate, useLocation } from "react-router-dom";
 import { HoverCard } from "radix-ui";
 import {
-  ScrollText, FolderDot, Monitor, LogOut, KeyRound,
+  ScrollText, FolderDot, Monitor, LogOut, Settings as SettingsIcon,
   ShieldCheck, Cpu, Wifi, WifiOff, ChevronLeft, ChevronRight,
-  Layers, Box, GitBranch, Shield, Loader, BarChart2, Radar, Plug, Star,
+  Layers, Box, Loader, BarChart2, Radar, Star,
 } from "lucide-react";
 import { api, clearToken } from "../api/client";
 import { useSocket, useSocketLatency } from "../context/SocketContext";
@@ -13,7 +13,7 @@ import { cn } from "../lib/utils";
 import { deriveProjectStatus, findProjectStack, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
 import { StackPortBrand } from "../logo/StackPortBrand";
 import styles from "./Nav.module.scss";
-import type { GitHubPollerConfig, Project, SystemData, VpsData } from "../api/types";
+import type { Project, SystemData } from "../api/types";
 
 // Keep in sync with $submenu-open-delay in Nav.module.scss: the trigger's
 // hover sweep is timed to this, so the submenu wipe starts exactly when the
@@ -26,8 +26,6 @@ const SYSTEM_TABS: { tab: string; label: string; icon: typeof Layers }[] = [
   { tab: "nginx", label: "Nginx", icon: Layers },
   { tab: "docker", label: "Docker", icon: Box },
   { tab: "certbot", label: "Certbot", icon: ShieldCheck },
-  { tab: "github", label: "GitHub", icon: GitBranch },
-  { tab: "firewall", label: "Firewall", icon: Shield },
 ];
 
 function dockerHasRunning(docker: SystemData["docker"]): boolean {
@@ -47,13 +45,11 @@ function squircleClass(status: ProjectStatusKind): string {
   return styles.squircleNotDeployed;
 }
 
-function SystemSubmenu({ system, github, vps }: { system: SystemData | null; github: GitHubPollerConfig | null; vps: VpsData | null }) {
+function SystemSubmenu({ system }: { system: SystemData | null }) {
   const states: Record<string, TriState> = {
     nginx: system ? !!system.nginx.available && !!system.nginx.active : null,
     docker: system ? !!system.docker.available && dockerHasRunning(system.docker) : null,
     certbot: system ? !!system.certbot.available : null,
-    github: github ? github.enabled : null,
-    firewall: vps ? vps.providers.length > 0 : null,
   };
 
   return (
@@ -131,7 +127,7 @@ export default function Nav() {
   const location = useLocation();
   const { connected, disconnect } = useSocket();
   const latencyMs = useSocketLatency();
-  const { system, projects, vps, github } = useSystem();
+  const { system, projects } = useSystem();
   const [expanded, setExpanded] = useState(() => {
     return localStorage.getItem("sidebar-expanded") === "true";
   });
@@ -231,7 +227,7 @@ export default function Nav() {
               collisionPadding={8}
               className={styles.submenu}
             >
-              <SystemSubmenu system={system} github={github} vps={vps} />
+              <SystemSubmenu system={system} />
             </HoverCard.Content>
           </HoverCard.Portal>
         </HoverCard.Root>
@@ -269,19 +265,11 @@ export default function Nav() {
           <span className={styles.linkText}>Traffic</span>
         </NavLink>
         <NavLink
-          to="/integrations"
-          title="Integrations"
-          className={({ isActive }) => cn(styles.navLink, isActive && styles.active)}
-        >
-          <Plug size={16} />
-          <span className={styles.linkText}>Integrations</span>
-        </NavLink>
-        <NavLink
           to="/settings"
           title="Settings"
           className={({ isActive }) => cn(styles.navLink, isActive && styles.active)}
         >
-          <KeyRound size={16} />
+          <SettingsIcon size={16} />
           <span className={styles.linkText}>Settings</span>
         </NavLink>
       </div>

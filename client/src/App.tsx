@@ -17,8 +17,12 @@ const ProjectDetails = lazy(() => import("./pages/ProjectDetails"));
 const Credentials = lazy(() => import("./pages/Credentials"));
 const System = lazy(() => import("./pages/System"));
 const Infrastructure = lazy(() => import("./pages/Infrastructure"));
-const Settings = lazy(() => import("./pages/Settings"));
-const Integrations = lazy(() => import("./pages/Integrations"));
+const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
+const GeneralSection = lazy(() => import("./pages/settings/GeneralSection"));
+const DeployTriggersSection = lazy(() => import("./pages/settings/DeployTriggersSection"));
+const InfrastructureSection = lazy(() => import("./pages/settings/InfrastructureSection"));
+const NotificationsSection = lazy(() => import("./pages/settings/NotificationsSection"));
+const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
 const Metrics = lazy(() => import("./pages/Metrics"));
 const Traffic = lazy(() => import("./pages/Traffic"));
 
@@ -61,11 +65,19 @@ export default function App() {
             <Route path="/credentials" element={<Credentials />} />
             <Route path="/system" element={<System />} />
             <Route path="/infrastructure" element={<Infrastructure />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/integrations" element={<Integrations />} />
+            <Route path="/settings" element={<SettingsLayout />}>
+              <Route index element={<Navigate to="general" replace />} />
+              <Route path="general" element={<GeneralSection />} />
+              <Route path="deploy-triggers" element={<DeployTriggersSection />} />
+              <Route path="infrastructure" element={<InfrastructureSection />} />
+              <Route path="notifications" element={<NotificationsSection />} />
+              <Route path="maintenance" element={<MaintenanceSection />} />
+              <Route path="*" element={<Navigate to="general" replace />} />
+            </Route>
             <Route path="/metrics" element={<Metrics />} />
             <Route path="/traffic" element={<Traffic />} />
           </Route>
+          <Route path="/integrations" element={<Navigate to="/settings/infrastructure" replace />} />
           <Route path="/vps" element={<Navigate to="/infrastructure" replace />} />
           <Route path="/hardware" element={<Navigate to="/infrastructure" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
