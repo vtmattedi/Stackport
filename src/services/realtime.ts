@@ -116,6 +116,11 @@ export function emitProjectDataUpdate(projectId: number, project: Project): void
   });
 }
 
+// A bare "something started or finished" ping for the app-wide running-actions list;
+// clients refetch the lists rather than this carrying (and duplicating) the records.
+actionRegistry.onStart(() => { io?.to("global").emit("actions:changed"); });
+actionRegistry.onFinish(() => { io?.to("global").emit("actions:changed"); });
+
 export function emitGlobalEvent(event: GlobalRealtimeEvent): void {
   io?.to("global").emit("global:event", event);
 }

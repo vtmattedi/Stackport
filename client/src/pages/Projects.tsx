@@ -302,10 +302,46 @@ export default function Projects() {
     setModalOpen(true);
   }
 
-  function closeWizard() {
+  async function closeWizard() {
     if (creatingProject || pullStatus === "running" || composeStatus === "running" || configStatus === "running" || uploadStatus === "running") return;
+    const leftover = wizardStep < 6 ? createdProject : null;
+    if (leftover) {
+      const containersMayRun = composeStatus !== "idle" || uploadStatus !== "idle";
+      // The project row already exists from step 1; closing early used to leave a half-set-up project behind silently.
+      const discard = await confirm({
+        title: `Discard ${leftover.name}?`,
+        description: !containersMayRun
+          ? "Setup isn't finished. Discard removes the project. Keep leaves it in your list so you can finish setup from its page."
+          : "Setup isn't finished. Discard stops its containers and removes the project. Keep leaves it running so you can finish setup from its page.",
+        confirmLabel: "Discard project",
+        cancelLabel: "Keep it",
+        destructive: true,
+      });
+      setModalOpen(false);
+      resetWizard();
+      if (discard) await discardProject(leftover, containersMayRun);
+      else notify.success(`${leftover.name} kept. Finish setting it up from its page.`);
+      refresh();
+      return;
+    }
     setModalOpen(false);
     resetWizard();
+  }
+
+  async function discardProject(target: Project, stopFirst: boolean) {
+    if (stopFirst) {
+      const stopped = await startProjectAction(target.id, "stop");
+      if (!stopped?.ok) {
+        notify.error(new Error("Its containers didn't stop, so the project was kept. Stop and delete it from its page."), `Couldn't discard ${target.name}`);
+        return;
+      }
+    }
+    try {
+      await api.deleteProject(target.id);
+      notify.success(`${target.name} discarded.`);
+    } catch (err) {
+      notify.error(err, `Couldn't discard ${target.name}`);
+    }
   }
 
   async function loadRepoMetadata(projectId: number) {
@@ -829,14 +865,14 @@ export default function Projects() {
       </main>
 
       {modalOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={closeWizard}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => void closeWizard()}>
           <div className="modal-panel project-wizard-modal" role="dialog" aria-modal="true" aria-label="Add new project" onMouseDown={(event) => event.stopPropagation()}>
             <div className="wizard-header">
               <div>
                 <div className="card-title" style={{ marginBottom: 4 }}><Plus size={12} />Add new project</div>
                 <div className="muted-text">Create, pull, build, route, and publish a Docker Compose project.</div>
               </div>
-              <button type="button" className="btn-icon" onClick={closeWizard} disabled={busy} aria-label="Close">
+              <button type="button" className="btn-icon" onClick={() => void closeWizard()} disabled={busy} aria-label="Close">
                 <X size={16} />
               </button>
             </div>
@@ -898,7 +934,7 @@ export default function Projects() {
                     </div>
                   )}
                   <div className="wizard-actions">
-                    <button type="button" className="btn btn-ghost" onClick={closeWizard} disabled={creatingProject}>Cancel</button>
+                    <button type="button" className="btn btn-ghost" onClick={() => void closeWizard()} disabled={creatingProject}>Cancel</button>
                     <button type="submit" className="btn btn-primary" disabled={creatingProject}>
                       {creatingProject ? <Loader size={14} className="spin" /> : <ArrowRight size={14} />}
                       Create project
@@ -944,7 +980,7 @@ export default function Projects() {
                 </pre>
 
                 <div className="wizard-actions">
-                  <button type="button" className="btn btn-ghost" onClick={closeWizard} disabled={busy}>Cancel</button>
+                  <button type="button" className="btn btn-ghost" onClick={() => void closeWizard()} disabled={busy}>Cancel</button>
                   {pullStatus === "idle" && (
                     <button type="button" className="btn btn-primary" onClick={() => createdProject && void runPull(createdProject)} disabled={busy || !createdProject}>
                       <GitBranch size={14} />
@@ -1034,7 +1070,7 @@ export default function Projects() {
                 </pre>
 
                 <div className="wizard-actions">
-                  <button type="button" className="btn btn-ghost" onClick={closeWizard} disabled={busy}>Cancel</button>
+                  <button type="button" className="btn btn-ghost" onClick={() => void closeWizard()} disabled={busy}>Cancel</button>
                   {uploadStatus === "idle" && (
                     <button type="button" className="btn btn-primary" onClick={() => createdProject && void runUpload(createdProject)} disabled={busy || !createdProject || !wizardComposeFile}>
                       <Upload size={14} />

@@ -230,6 +230,11 @@ body {
   overflow-x: hidden;
 }
 
+/* Room for the phone bottom bar (Nav.module.scss .mobile-bar). */
+@media (max-width: 760px) {
+  .app-content { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+}
+
 .main {
   max-width: 960px;
   margin: 0 auto;

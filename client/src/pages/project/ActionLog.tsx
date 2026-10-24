@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CheckCircle2, ChevronRight, Loader, XCircle } from "lucide-react";
 import type { ProjectDeploymentRevision } from "../../api/types";
+import { actionLabel } from "../../lib/actionLabels";
 import { cn } from "../../lib/utils";
 import { TimeAgo } from "../../components/TimeAgo";
 import styles from "../ProjectDetails.module.scss";
@@ -34,25 +35,10 @@ export interface FinishedAction {
   at: string | null;
 }
 
-const ACTION_LABEL: Record<string, string> = {
-  deploy: "Redeploy",
-  pull: "Pull",
-  compose: "Compose up",
-  build: "Rebuild",
-  recreate: "Force recreate",
-  "force-rebuild": "Force rebuild",
-  rollback: "Roll back",
-  upload: "Upload",
-  stop: "Stop",
-  "stop-purge": "Stop and delete data",
-  "redeploy-service": "Service redeploy",
-  "drop-volumes": "Drop volumes",
-};
-
 const DEPLOYING_KINDS = new Set(["deploy", "compose", "build", "recreate", "force-rebuild", "rollback", "upload"]);
 
 function summary(action: FinishedAction, revision: ProjectDeploymentRevision | null): string {
-  const label = ACTION_LABEL[action.kind] ?? (action.kind || "Action");
+  const label = actionLabel(action.kind);
   if (action.ok === false) return `${label} failed. The log has the details.`;
   if (DEPLOYING_KINDS.has(action.kind) && revision?.status === "active" && revision.commitSha) {
     return `Deployed ${revision.commitSha.slice(0, 7)}${revision.branch ? ` from ${revision.branch}` : ""}`;

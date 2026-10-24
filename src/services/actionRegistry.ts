@@ -39,6 +39,13 @@ class ActionRegistry {
   private actions = new Map<string, ActionRecord>();
   private cancelers = new Map<string, () => void>();
   private finishListeners = new Set<(record: ActionRecord) => void>();
+  private startListeners = new Set<(record: ActionRecord) => void>();
+
+  /** Called right after an action starts. Returns an unsubscribe function. */
+  onStart(listener: (record: ActionRecord) => void): () => void {
+    this.startListeners.add(listener);
+    return () => this.startListeners.delete(listener);
+  }
 
   /** Called after any action finishes (success or failure). Returns an unsubscribe function. */
   onFinish(listener: (record: ActionRecord) => void): () => void {
@@ -70,6 +77,9 @@ class ActionRegistry {
       progress: null,
     };
     this.actions.set(key, record);
+    for (const listener of this.startListeners) {
+      try { listener(record); } catch { /* a listener must not break starting */ }
+    }
 
     runner()
       .then((result) => this.finish(key, result.ok, result.output, result.meta))
