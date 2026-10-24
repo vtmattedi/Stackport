@@ -6,6 +6,7 @@ import { api, ApiError } from "../api/client";
 import type { Credential } from "../api/types";
 import { formatShortDate } from "../lib/format";
 import { notify } from "../lib/notify";
+import styles from "./Credentials.module.scss";
 
 const CREDENTIAL_TYPE_OPTIONS = [
   { value: "github", label: "GitHub" },
@@ -106,7 +107,7 @@ export default function Credentials() {
         <div className="card">
           <div className="card-title"><Plus size={12} />Add Credential</div>
           {addError && <div className="alert alert-error">{addError}</div>}
-          <form onSubmit={handleAdd} className="form-row">
+          <form onSubmit={handleAdd} className={styles.addForm}>
             <div className="field">
               <label>Type</label>
               <AppSelect
@@ -116,7 +117,7 @@ export default function Credentials() {
               />
             </div>
             <div className="field">
-              <label>Alias <span className="hint mono">(a–z, 0–9, _ -)</span></label>
+              <label>Alias <span className="hint">(a–z, 0–9, _ -)</span></label>
               <input
                 type="text"
                 placeholder={credentialType === "github" ? "github-myrepo" : "resend-api-key"}
@@ -137,16 +138,15 @@ export default function Credentials() {
                 />
               </div>
             )}
-            <div className="field" style={{ position: "relative" }}>
+            <div className="field">
               <label>{credentialType === "github" ? "Token" : "API Key"}</label>
-              <div style={{ display: "flex", gap: 4 }}>
+              <div className={styles.secretInput}>
                 <input
                   type={showSecret ? "text" : "password"}
                   placeholder={credentialType === "github" ? "ghp_..." : "re_..."}
                   value={secret}
                   onChange={(e) => setSecret(e.target.value)}
                   required
-                  style={{ flex: 1 }}
                 />
                 <button
                   type="button"
@@ -159,8 +159,15 @@ export default function Credentials() {
                 </button>
               </div>
             </div>
-            <div className="field field-wide">
-              <label>Description <span className="hint mono">(optional)</span></label>
+            {credentialType === "github" && (
+              <p className={styles.tokenHelp}>
+                <a className="ext-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">Create a fine-grained token</a>{" "}
+                scoped to the repos Stackport deploys, with <strong>Contents: read</strong>. Add <strong>Webhooks: read and write</strong> if you want
+                Stackport to install deploy webhooks for you. A classic token needs <span className="mono">repo</span> (and <span className="mono">admin:repo_hook</span> for webhooks).
+              </p>
+            )}
+            <div className={`field ${styles.descriptionField}`}>
+              <label>Description <span className="hint">(optional)</span></label>
               <input
                 type="text"
                 placeholder={credentialType === "github" ? "GitHub token for private repo" : "Resend API key"}
@@ -168,15 +175,17 @@ export default function Credentials() {
                 onChange={(e) => setDescription(e.target.value)}
               />
             </div>
-            <button type="submit" className="btn btn-primary" disabled={adding}>
-              <Plus size={14} />{adding ? "Adding…" : "Add"}
-            </button>
+            <div className={styles.formActions}>
+              <button type="submit" className="btn btn-primary" disabled={adding}>
+                <Plus size={14} />{adding ? "Adding…" : "Add credential"}
+              </button>
+            </div>
           </form>
         </div>
 
         <div className="card">
           <div className="card-title"><ShieldCheck size={12} />Credentials</div>
-          <p className="hint" style={{ marginBottom: 12 }}>
+          <p className="muted-text" style={{ marginBottom: 12 }}>
             Secrets are stored AES-256-GCM encrypted. They are never returned by the API.
           </p>
           {loading ? (
