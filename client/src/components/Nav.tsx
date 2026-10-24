@@ -4,7 +4,7 @@ import { HoverCard } from "radix-ui";
 import {
   ScrollText, FolderDot, Monitor, LogOut, Settings as SettingsIcon,
   ShieldCheck, Cpu, Wifi, WifiOff, ChevronLeft, ChevronRight,
-  Layers, Box, Loader, BarChart2, Radar, Star,
+  Layers, Box, Loader, BarChart2, Radar, Star, Menu,
 } from "lucide-react";
 import { api, clearToken } from "../api/client";
 import { useSocket, useSocketLatency } from "../context/SocketContext";
@@ -13,6 +13,8 @@ import { cn } from "../lib/utils";
 import { deriveProjectStatus, findProjectStack, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
 import { StackPortBrand } from "../logo/StackPortBrand";
 import styles from "./Nav.module.scss";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { RunningActionsList, useRunningActions } from "./RunningActions";
 import type { Project, SystemData } from "../api/types";
 
 // Keep in sync with $submenu-open-delay in Nav.module.scss: the trigger's
@@ -128,6 +130,8 @@ export default function Nav() {
   const { connected, disconnect } = useSocket();
   const latencyMs = useSocketLatency();
   const { system, projects } = useSystem();
+  const running = useRunningActions();
+  const [moreOpen, setMoreOpen] = useState(false);
   const [expanded, setExpanded] = useState(() => {
     return localStorage.getItem("sidebar-expanded") === "true";
   });
@@ -153,7 +157,10 @@ export default function Nav() {
     ? latencyMs != null ? `${latencyMs} ms` : ""
     : "Disconnected";
 
+  const mobileLink = ({ isActive }: { isActive: boolean }) => cn(styles.mobileLink, isActive && styles.mobileLinkActive);
+
   return (
+    <>
     <nav className={cn(styles.nav, expanded && styles.expanded)}>
       <button
         type="button"
@@ -275,6 +282,21 @@ export default function Nav() {
       </div>
 
       <div className={styles.navFooter}>
+        {running.length > 0 && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button type="button" className={cn(styles.navLink, styles.runningBtn)} title={`${running.length} running`}>
+                <Loader size={16} className="spin" />
+                <span className={styles.runningCount}>{running.length}</span>
+                <span className={styles.linkText}>Running</span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent side="right" align="end" className={styles.runningPopover}>
+              <div className={styles.submenuHeader}>Running now</div>
+              <RunningActionsList items={running} />
+            </PopoverContent>
+          </Popover>
+        )}
         <span
           className={cn(styles.navStatus, connected && styles.connected)}
           title={statusLabel}
@@ -292,5 +314,56 @@ export default function Nav() {
         </button>
       </div>
     </nav>
+
+    {/* Phones: the sidebar becomes a bottom bar with the busiest pages and a More menu. */}
+    <nav className={styles.mobileBar} aria-label="Main">
+      <NavLink to="/projects" className={mobileLink}><FolderDot size={18} /><span>Projects</span></NavLink>
+      <NavLink to="/system" className={mobileLink}><Cpu size={18} /><span>System</span></NavLink>
+      <NavLink to="/metrics" className={mobileLink}><BarChart2 size={18} /><span>Metrics</span></NavLink>
+      <NavLink to="/logs" className={mobileLink}><ScrollText size={18} /><span>Logs</span></NavLink>
+      <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+        <PopoverTrigger asChild>
+          <button type="button" className={cn(styles.mobileLink, moreOpen && styles.mobileLinkActive)} aria-label="More pages">
+            <span className={styles.mobileIconWrap}>
+              {running.length > 0 ? <Loader size={18} className="spin" /> : <Menu size={18} />}
+              {running.length > 0 && <span className={styles.mobileBadge}>{running.length}</span>}
+            </span>
+            <span>More</span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="end" className={styles.moreMenu}>
+          {running.length > 0 && (
+            <>
+              <div className={styles.submenuHeader}>Running now</div>
+              <RunningActionsList items={running} onNavigate={() => setMoreOpen(false)} />
+              <div className={styles.moreSeparator} />
+            </>
+          )}
+          {([
+            ["/credentials", "Credentials", ShieldCheck],
+            ["/infrastructure", "Infrastructure", Monitor],
+            ["/traffic", "Traffic", Radar],
+            ["/settings", "Settings", SettingsIcon],
+          ] as const).map(([to, label, Icon]) => (
+            <NavLink key={to} to={to} className={({ isActive }) => cn(styles.submenuItem, isActive && styles.moreItemActive)} onClick={() => setMoreOpen(false)}>
+              <Icon size={15} />
+              <span className={styles.submenuItemLabel}>{label}</span>
+            </NavLink>
+          ))}
+          <div className={styles.moreSeparator} />
+          <div className={styles.moreFooter}>
+            <span className={cn(styles.navStatus, connected && styles.connected)}>
+              {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
+              <span>{statusLabel || "Connected"}</span>
+            </span>
+            <button type="button" className={styles.submenuItem} onClick={logout}>
+              <LogOut size={15} />
+              <span className={styles.submenuItemLabel}>Logout</span>
+            </button>
+          </div>
+        </PopoverContent>
+      </Popover>
+    </nav>
+    </>
   );
 }
