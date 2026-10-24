@@ -54,15 +54,18 @@ Usage:
   stackport update
   stackport rollback
   stackport status
+  stackport selfcheck
   stackport repair
   stackport admin-recovery
   stackport uninstall
   stackport uninstall --purge
 
 install:  set up or reconcile a StackPort installation (idempotent).
-update:   pull/rebuild/recreate StackPort itself, with automatic rollback on a
-          failed health check. Never touches managed projects.
+update:   build the new version aside, swap to it, and roll back automatically
+          unless it serves its UI and can launch the next update. Never
+          touches managed projects.
 rollback: revert StackPort itself to the previous known-good version.
+selfcheck: verify this script and its host dependencies (read-only).
 status:   non-mutating inspection of the current installation.
 repair:   reconcile StackPort-owned infrastructure (network, nginx scaffold,
           directory permissions) without touching admin/secrets/certs/project data.
@@ -539,6 +542,91 @@ EOF
   log "backup created at $dir"
 }
 
+# Compose tags the stackport service's image with this name (docker-compose.system.yml
+# sets it explicitly), so swapping versions is a retag plus a recreate, not a rebuild.
+APP_IMAGE="stackport-stackport:latest"
+PREVIOUS_IMAGE="stackport:previous"
+STAGING_DIR="$VAR_DIR/update/staging"
+STAGED_IMAGE=""
+
+running_image_id() {
+  docker inspect --format '{{.Image}}' stackport 2>/dev/null || true
+}
+
+cleanup_staging() {
+  if [[ -d "$STAGING_DIR" ]]; then
+    git -C "$APP_DIR" worktree remove --force "$STAGING_DIR" 2>/dev/null || rm -rf "$STAGING_DIR"
+  fi
+  git -C "$APP_DIR" worktree prune 2>/dev/null || true
+}
+
+wait_for_url() {
+  local url="$1" attempts="${2:-30}" i
+  for ((i = 0; i < attempts; i++)); do
+    if curl -fsS -o /dev/null "$url" 2>/dev/null; then return 0; fi
+    sleep 2
+  done
+  return 1
+}
+
+# Everything that can fail without network-free recovery happens here, before the
+# running install is touched: the target's CLI must parse and pass its own selfcheck,
+# and its image must build. A failure leaves HEAD and the running container as they
+# were, so the next `stackport update` retries instead of saying "already up to date".
+stage_update() {
+  local target="$1"
+  cleanup_staging
+  mkdir -p "$(dirname "$STAGING_DIR")"
+  git -C "$APP_DIR" worktree add --force --detach --quiet "$STAGING_DIR" "$target" || return 1
+
+  log "checking the new version's CLI"
+  if [[ ! -f "$STAGING_DIR/stackport.sh" ]]; then
+    error "target ${target:0:7} has no stackport.sh"
+    return 1
+  fi
+  bash -n "$STAGING_DIR/stackport.sh" || { error "new stackport.sh has a syntax error"; return 1; }
+  ETC_DIR="$ETC_DIR" VAR_DIR="$VAR_DIR" APP_DIR="$APP_DIR" bash "$STAGING_DIR/stackport.sh" selfcheck \
+    || { error "new stackport.sh failed its selfcheck"; return 1; }
+
+  log "building image for ${target:0:7}"
+  docker build --quiet --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
+    || { error "image build failed for ${target:0:7}"; return 1; }
+  STAGED_IMAGE="stackport:${target:0:12}"
+}
+
+swap_to_image() {
+  local image="$1"
+  docker tag "$image" "$APP_IMAGE" || return 1
+  ensure_env_file
+  compose up -d --no-build --force-recreate stackport || return 1
+  compose up -d --no-build || return 1
+}
+
+# Health alone only proves Express is listening. A version is accepted only if it
+# serves its UI, reports ready (database, bundle, Docker) and can still launch the
+# updater from its own image — i.e. it can be updated again to fix whatever is wrong.
+verify_running_version() {
+  local base asset
+  base="http://localhost:$(stackport_port)"
+  healthcheck_stackport || { error "/health did not respond"; return 1; }
+  wait_for_url "$base/health/ready" 15 || { error "/health/ready did not report ready"; return 1; }
+  asset="$(curl -fsS "$base/" 2>/dev/null | grep -o '/assets/[^"]*\.js' | head -1 || true)"
+  if [[ -z "$asset" ]] || ! curl -fsS -o /dev/null "$base$asset"; then
+    error "the web UI is not being served"
+    return 1
+  fi
+  docker exec -u node stackport node dist/scripts/updaterSelfTest.js \
+    || { error "the new version cannot launch the updater"; return 1; }
+}
+
+prune_staged_images() {
+  local keep="$1" image
+  while read -r image; do
+    [[ "$image" == "$keep" || "$image" == "$PREVIOUS_IMAGE" ]] && continue
+    docker rmi "$image" >/dev/null 2>&1 || true
+  done < <(docker images --format '{{.Repository}}:{{.Tag}}' stackport 2>/dev/null)
+}
+
 update_stackport() {
   local branch="${STACKPORT_BRANCH:-$STACKPORT_BRANCH_DEFAULT}"
   local current target
@@ -554,53 +642,111 @@ update_stackport() {
   fi
 
   log "updating StackPort: ${current:0:7} -> ${target:0:7}"
+  if ! stage_update "$target"; then
+    cleanup_staging
+    state_set lastUpdate failed
+    error "update aborted before anything changed — StackPort is still on ${current:0:7}"
+    exit 1
+  fi
+
   # Fail closed — never touch the running install if the backup itself fails
   # (stackport_host_lifecycle.md §8.2).
   if ! create_update_backup "$current" "$target"; then
+    cleanup_staging
     error "update aborted — backup failed, StackPort left untouched"
     exit 1
   fi
 
+  # Keep the running image under a fixed tag so rollback needs no rebuild or network.
+  local running
+  running="$(running_image_id)"
+  if [[ -n "$running" ]]; then docker tag "$running" "$PREVIOUS_IMAGE"; fi
   state_set previous "$current"
   git -C "$APP_DIR" checkout --quiet "$target"
-  ensure_env_file
-  compose up -d --build
 
-  if healthcheck_stackport; then
+  if swap_to_image "$STAGED_IMAGE" && verify_running_version; then
     state_set current "$target"
     state_set lastUpdate success
-    if [[ -f "$APP_DIR/stackport.sh" ]]; then install -m 0755 "$APP_DIR/stackport.sh" "$CLI_TARGET"; fi
+    install -m 0755 "$APP_DIR/stackport.sh" "$CLI_TARGET"
+    cleanup_staging
+    prune_staged_images "$STAGED_IMAGE"
     log "update complete"
   else
-    error "health check failed after update — rolling back"
+    error "new version failed verification — rolling back"
     state_set lastUpdate failed
+    cleanup_staging
     rollback_stackport
   fi
 }
 
+# Restores the database snapshot taken by the update from $from to $to. Only used when
+# the previous version can't start on the current database, e.g. after a migration.
+restore_update_backup() {
+  local from="$1" to="$2" dir
+  dir="$(find "$VAR_DIR/backups" -maxdepth 1 -type d -name "update-${from:0:7}-${to:0:7}-*" 2>/dev/null | sort | tail -1)"
+  if [[ -z "$dir" || ! -f "$dir/stackport-db.sqlite" ]]; then
+    error "no database backup found for ${from:0:7} -> ${to:0:7}"
+    return 1
+  fi
+  warn "restoring database from $dir — changes made since the update are lost"
+  compose stop stackport || true
+  cp "$dir/stackport-db.sqlite" "$VAR_DIR/data/stackport.sqlite"
+  rm -f "$VAR_DIR/data/stackport.sqlite-wal" "$VAR_DIR/data/stackport.sqlite-shm"
+  chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$VAR_DIR/data/stackport.sqlite"
+  compose up -d --no-build stackport
+}
+
 rollback_stackport() {
-  local previous current
+  local previous current rolled_from
   previous="$(state_get previous)"
   if [[ -z "$previous" ]]; then
     error "no previous version recorded — nothing to roll back to"
     exit 1
   fi
   current="$(git -C "$APP_DIR" rev-parse HEAD)"
+  rolled_from="$(running_image_id)"
   log "rolling back StackPort: ${current:0:7} -> ${previous:0:7}"
 
   git -C "$APP_DIR" checkout --quiet "$previous"
-  ensure_env_file
-  compose up -d --build
+  if docker image inspect "$PREVIOUS_IMAGE" >/dev/null 2>&1; then
+    swap_to_image "$PREVIOUS_IMAGE" || true
+  else
+    warn "no saved image for ${previous:0:7} — rebuilding it"
+    ensure_env_file
+    compose up -d --build || true
+  fi
+
+  if ! healthcheck_stackport; then
+    restore_update_backup "$previous" "$current" || true
+  fi
 
   if healthcheck_stackport; then
+    if [[ -n "$rolled_from" ]]; then docker tag "$rolled_from" "$PREVIOUS_IMAGE"; fi
     state_set current "$previous"
     state_set previous "$current"
     state_set lastUpdate rolled-back
+    install -m 0755 "$APP_DIR/stackport.sh" "$CLI_TARGET"
     log "rollback complete"
   else
     error "StackPort is still unhealthy after rollback — manual intervention required (check: docker logs stackport)"
     exit 1
   fi
+}
+
+# Run by the *previous* version's update against this version's script before it is
+# installed: proves the file loads, its dependencies exist and the commands the next
+# update relies on are defined. Read-only; needs no root.
+selfcheck_stackport() {
+  local tool fn failed=0
+  for tool in git docker curl; do
+    command -v "$tool" >/dev/null 2>&1 || { error "selfcheck: $tool not found"; failed=1; }
+  done
+  docker compose version >/dev/null 2>&1 || { error "selfcheck: docker compose not available"; failed=1; }
+  for fn in update_stackport rollback_stackport stage_update verify_running_version create_update_backup; do
+    declare -F "$fn" >/dev/null || { error "selfcheck: $fn is not defined"; failed=1; }
+  done
+  [[ "$failed" == 0 ]] || return 1
+  log "selfcheck passed"
 }
 
 # ── status ────────────────────────────────────────────────────────────────────
@@ -809,6 +955,9 @@ case "$COMMAND" in
   rollback)
     require_root
     rollback_stackport
+    ;;
+  selfcheck)
+    selfcheck_stackport
     ;;
   status)
     status_stackport
