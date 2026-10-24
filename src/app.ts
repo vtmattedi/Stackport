@@ -7,6 +7,7 @@ import { globalLimiter } from "./middleware/rateLimiter";
 import { errorHandler } from "./middleware/errorHandler";
 import router from "./routes";
 import githubHooksRouter from "./routes/githubHooks";
+import { getReadiness } from "./services/readiness";
 
 const app = express();
 
@@ -56,6 +57,18 @@ app.use(
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
+});
+
+// Stricter than /health: `stackport update` waits for this before accepting a new
+// version. Only pass/fail per check is public; details go to the server log.
+app.get("/health/ready", async (_req, res) => {
+  const readiness = await getReadiness();
+  const failed = Object.entries(readiness.checks).filter(([, c]) => !c.ok);
+  for (const [name, c] of failed) console.warn(`[ready] ${name} failed: ${c.detail ?? "no detail"}`);
+  res.status(readiness.ok ? 200 : 503).json({
+    status: readiness.ok ? "ready" : "not-ready",
+    checks: Object.fromEntries(Object.entries(readiness.checks).map(([name, c]) => [name, c.ok])),
+  });
 });
 
 app.use("/api", router);

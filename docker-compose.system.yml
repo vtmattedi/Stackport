@@ -8,6 +8,8 @@ networks:
 
 services:
   stackport:
+    # Named so stackport.sh can swap versions by retagging (see APP_IMAGE there).
+    image: stackport-stackport:latest
     build:
       context: .
       dockerfile: Dockerfile
