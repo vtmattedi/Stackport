@@ -241,6 +241,14 @@ body {
   padding: 32px 24px;
 }
 
+/* Pages with a section list beside the content (SubShell, Insights) lose ~220px
+   to that list, so they get the room a wide screen has instead of the 960px column. */
+.main-wide { max-width: 1600px; }
+
+@media (min-width: 1200px) {
+  .main-wide { padding-inline: 40px; }
+}
+
 .page-header {
   display: flex;
   align-items: center;

@@ -1479,7 +1479,7 @@ export default function ProjectDetails() {
                   <Button
                     type="button"
                     variant="outline"
-                    size="xs"
+                    size="default"
                     onClick={() => void addDomain()}
                     disabled={addingDomain || !newDomainInput.trim() || !newDomainService.trim() || !newDomainPort.trim()}
                     title={!newDomainInput.trim() ? "Type a domain first" : !newDomainService.trim() ? "Pick the service and port it should reach" : undefined}
@@ -1533,7 +1533,7 @@ export default function ProjectDetails() {
                     refreshKey={project.updatedAt} disabled={addingTcpExposure}
                     value={newTcpService && newTcpContainerPort ? `${newTcpService}:${newTcpContainerPort}` : ""}
                     onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewTcpService(service); setNewTcpContainerPort(port); }} />
-                  <Button type="button" variant="outline" size="xs" onClick={() => void addTcpExposure()}
+                  <Button type="button" variant="outline" size="default" onClick={() => void addTcpExposure()}
                     disabled={addingTcpExposure || !newTcpPublicPort || !newTcpService || !newTcpContainerPort}
                     title={!newTcpPublicPort ? "Type a public port first" : !newTcpService ? "Pick the service and port it should reach" : undefined}>
                     {addingTcpExposure ? <Loader size={12} className="spin" /> : <Plus size={12} />}

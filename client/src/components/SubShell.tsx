@@ -23,7 +23,7 @@ interface SubShellProps {
   actions?: ReactNode;
   /** The active section. Defaults to the nested route's <Outlet />. */
   children?: ReactNode;
-  /** Extra classes for the page's <main>, e.g. a wider max-width. */
+  /** Extra classes for the page's <main>. */
   className?: string;
 }
 
@@ -33,7 +33,7 @@ interface SubShellProps {
  */
 export default function SubShell({ title, icon: TitleIcon, basePath, sections, actions, children, className }: SubShellProps) {
   return (
-    <main className={cn("main", className)}>
+    <main className={cn("main main-wide", className)}>
       <div className={styles.header}>
         <h1 className="page-title"><TitleIcon size={20} />{title}</h1>
         {actions && <div className={styles.headerActions}>{actions}</div>}

@@ -62,6 +62,49 @@
   }
 }
 
+// ── Admin password ─────────────────────────────────────────────────────────
+.password-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+
+  :global(.card-title) { margin-bottom: 4px; }
+}
+
+.password-modal { width: min(420px, 100%); }
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+
+  h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 4px;
+    color: var(--text);
+    font-size: 16px;
+  }
+
+  p {
+    margin: 0;
+    color: var(--dim);
+    font-size: 13px;
+  }
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
 // ── Input with icon ────────────────────────────────────────────────────────
 .input-with-icon {
   position: relative;

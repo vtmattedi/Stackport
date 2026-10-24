@@ -57,7 +57,7 @@ export default function InsightsLayout() {
   return (
     <InsightsProvider>
       <TooltipProvider>
-        <main className={cn("main", styles.wide)}>
+        <main className="main main-wide">
           <div className={styles.header}>
             <h1 className="page-title"><BarChart2 size={18} />Insights</h1>
             <FilterBar />

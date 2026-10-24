@@ -1,21 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { KeyRound, Eye, EyeOff, Check, Loader, GitPullRequestArrow, Boxes } from "lucide-react";
+import { KeyRound, Check, Loader, GitPullRequestArrow, Boxes } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { AppVersionInfo, SelfUpdateStatus } from "../../api/types";
-import { cn } from "../../lib/utils";
+import { Button } from "../../components/ui/button";
 import { formatShortDateTime } from "../../lib/format";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import styles from "../Settings.module.scss";
 
 /** Stackport's own version and self-update, plus the admin password. */
 export default function GeneralSection() {
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [showCurrent, setShowCurrent] = useState(false);
-  const [showNext, setShowNext] = useState(false);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [versionInfo, setVersionInfo] = useState<AppVersionInfo | null>(null);
   const updateMounted = useRef(true);
   const [updatingApp, setUpdatingApp] = useState(false);
@@ -38,23 +32,6 @@ export default function GeneralSection() {
     }).catch(() => {});
     return () => { cancelled = true; updateMounted.current = false; };
   }, []);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(""); setSuccess(false);
-    if (next !== confirm) { setError("New passwords do not match."); return; }
-    if (next.length < 8) { setError("Password must be at least 8 characters."); return; }
-    setLoading(true);
-    try {
-      await api.changePassword(current, next);
-      setSuccess(true);
-      setCurrent(""); setNext(""); setConfirm("");
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to change password");
-    } finally {
-      setLoading(false);
-    }
-  }
 
   function showUpdateResult(status: SelfUpdateStatus) {
     setUpdatingApp(false);
@@ -150,7 +127,7 @@ export default function GeneralSection() {
             </button>
           </div>
           {(
-            <span className="hint" style={{ display: "block", marginTop: 8 }}>
+            <span className="muted-text" style={{ display: "block", marginTop: 8 }}>
               Pulls the latest source, backs up the database and updates Stackport. Failed health checks restore the previous version. Progress resumes after a restart or page reload.
             </span>
           )}
@@ -158,64 +135,20 @@ export default function GeneralSection() {
           {updateOutput && <pre className={styles.updateOutput}>{updateOutput}</pre>}
         </div>
 
-        <div className="card" style={{ maxWidth: 480 }}>
-          <div className="card-title"><KeyRound size={12} />Change Password</div>
-          {error && <div className="alert alert-error">{error}</div>}
-          {success && (
-            <div className="alert alert-success">
-              <Check size={14} />Password updated successfully.
+        <div className="card">
+          <div className={styles.passwordRow}>
+            <div>
+              <div className="card-title"><KeyRound size={12} />Admin password</div>
+              <span className="muted-text">The password used to sign in to this Stackport.</span>
             </div>
-          )}
-          <form onSubmit={handleSubmit} className={styles.settingsForm}>
-            <div className="field">
-              <label>Current password</label>
-              <div className={styles.inputWithIcon}>
-                <input
-                  type={showCurrent ? "text" : "password"}
-                  value={current}
-                  onChange={(e) => setCurrent(e.target.value)}
-                  required
-                  autoComplete="current-password"
-                />
-                <button type="button" className={cn("btn-icon", styles.inputIconBtn)} onClick={() => setShowCurrent(!showCurrent)}>
-                  {showCurrent ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
-
-            <div className="field">
-              <label>New password</label>
-              <div className={styles.inputWithIcon}>
-                <input
-                  type={showNext ? "text" : "password"}
-                  value={next}
-                  onChange={(e) => setNext(e.target.value)}
-                  required
-                  autoComplete="new-password"
-                />
-                <button type="button" className={cn("btn-icon", styles.inputIconBtn)} onClick={() => setShowNext(!showNext)}>
-                  {showNext ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
-
-            <div className="field">
-              <label>Confirm new password</label>
-              <input
-                type="password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                required
-                autoComplete="new-password"
-              />
-            </div>
-
-            <button type="submit" className="btn btn-primary" disabled={loading}>
-              {loading ? "Saving…" : "Update Password"}
-            </button>
-          </form>
+            <Button type="button" variant="outline" size="sm" onClick={() => setPasswordOpen(true)}>
+              <KeyRound size={13} />
+              Change password
+            </Button>
+          </div>
         </div>
 
+        {passwordOpen && <ChangePasswordDialog onClose={() => setPasswordOpen(false)} />}
     </>
   );
 }
