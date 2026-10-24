@@ -38,3 +38,114 @@
   min-width: 140px;
   height: 32px;
 }
+
+.name-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.name-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.project-name {
+  font-weight: 600;
+}
+
+.sub-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.repo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+
+  .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+.commit-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 320px;
+
+  > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.commit-message {
+  color: var(--text);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 99px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.status-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-ready { background: rgba(63, 185, 80, 0.14); color: var(--success); }
+.status-down { background: rgba(248, 81, 73, 0.14); color: var(--danger); }
+.status-warn { background: rgba(230, 168, 23, 0.14); color: #e6a817; }
+.status-idle { background: rgba(255, 255, 255, 0.05); color: var(--dim); }
+
+.actions-cell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+// Phones: each row becomes a stacked card (name and status on top, details below).
+@media (max-width: 760px) {
+  .project-table {
+    thead { display: none; }
+
+    tr {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+
+      &:last-child { border-bottom: 0; padding-bottom: 0; }
+    }
+
+    td {
+      display: block;
+      padding: 0;
+      border: 0;
+    }
+
+    td[data-label="Project"] { grid-column: 1; }
+    td[data-label="Status"] { grid-column: 2; grid-row: 1; justify-self: end; }
+    td[data-label="Deployed"],
+    td[data-label="Domain"] { grid-column: 1 / -1; }
+    .actions-cell { grid-column: 1 / -1; text-align: left; }
+    .commit-cell { max-width: none; }
+  }
+}

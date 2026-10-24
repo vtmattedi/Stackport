@@ -7,7 +7,6 @@ import {
   FolderDot,
   GitBranch,
   Globe,
-  KeyRound,
   Loader,
   Lock,
   Plus,
@@ -46,6 +45,7 @@ import { notify } from "../lib/notify";
 import { EMPTY_VARIABLE, normalizeEnvRelativePath, parseEnvText } from "../lib/env";
 import { cn } from "../lib/utils";
 import envStyles from "./ProjectDetails.module.scss";
+import { TimeAgo } from "../components/TimeAgo";
 
 const WIZARD_STEPS = [
   { id: 1, label: "Repo info", icon: GitBranch },
@@ -71,22 +71,22 @@ interface WizardSupportFile {
   path: string;
 }
 
-const STATUS_DOT_COLOR: Record<ProjectStatusKind, string> = {
-  ready: "var(--success)",
-  down: "var(--danger)",
-  problem: "#e6a817",
-  "not-deployed": "var(--dim)",
-  paused: "#e6a817",
+const STATUS_PILL_CLASS: Record<ProjectStatusKind, string> = {
+  ready: styles.statusReady,
+  down: styles.statusDown,
+  problem: styles.statusWarn,
+  "not-deployed": styles.statusIdle,
+  paused: styles.statusWarn,
 };
 
-function StatusDot({ status, reason }: { status: ProjectStatusKind; reason: string }) {
+function StatusPill({ status, reason }: { status: ProjectStatusKind; reason: string }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span
-          className="status-dot"
-          style={{ background: STATUS_DOT_COLOR[status], opacity: status === "not-deployed" ? 0.5 : 1 }}
-        />
+        <span className={cn(styles.statusPill, STATUS_PILL_CLASS[status])} tabIndex={0}>
+          <span className={styles.statusPillDot} />
+          {projectStatusLabel(status)}
+        </span>
       </TooltipTrigger>
       <TooltipContent side="top">{reason}</TooltipContent>
     </Tooltip>
@@ -169,6 +169,19 @@ export default function Projects() {
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const githubCredentials = credentials.filter((credential) => credential.type === "github");
   const [togglingFavoriteId, setTogglingFavoriteId] = useState<number | null>(null);
+  const [redeployingIds, setRedeployingIds] = useState<ReadonlySet<number>>(new Set());
+
+  /** Row Redeploy: the same action as the project page's Redeploy (or Rebuild for uploads),
+   *  tracked by the shared action toast so the list stays usable meanwhile. */
+  async function redeployFromList(p: Project) {
+    setRedeployingIds((ids) => new Set(ids).add(p.id));
+    try {
+      await startProjectAction(p.id, p.sourceType === "upload" ? "build" : "deploy");
+    } finally {
+      setRedeployingIds((ids) => { const next = new Set(ids); next.delete(p.id); return next; });
+      refresh();
+    }
+  }
 
   async function toggleFavorite(p: Project) {
     setTogglingFavoriteId(p.id);
@@ -699,13 +712,14 @@ export default function Projects() {
               <div className="empty">{!projects.length ? "No projects yet." : searchTerm ? `No projects match "${search.trim()}".` : "No projects in this group."}</div>
             ) : (
               <div className="table-wrap">
-                <table>
+                <table className={styles.projectTable}>
                   <thead>
                     <tr>
-                      <th>Name</th>
-                      <th>Group</th>
-                      <th>Repository</th>
+                      <th>Project</th>
+                      <th>Status</th>
+                      <th>Deployed commit</th>
                       <th>Domain</th>
+                      <th><span className="sr-only">Actions</span></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -714,11 +728,13 @@ export default function Projects() {
                       const dockerAvailable = system?.docker?.available ?? false;
                       const pDockerStack = system?.docker ? findProjectStack(p, system.docker.stacks) : null;
                       const pStatus = deriveProjectStatus(p, pDockerStack, dockerAvailable);
-                      const pStatusReason = `${projectStatusLabel(pStatus)} — ${explainProjectStatus(p, pDockerStack, dockerAvailable, pStatus)}`;
+                      const pStatusReason = explainProjectStatus(p, pDockerStack, dockerAvailable, pStatus);
+                      const isGithub = p.sourceType !== "upload" && !!p.githubRepo;
+                      const canRebuild = isGithub || p.sourceType === "upload";
                       return (
                         <tr key={p.id}>
-                          <td>
-                            <div className="url-row" style={{ gap: 4 }}>
+                          <td data-label="Project">
+                            <div className={styles.nameCell}>
                               <button
                                 type="button"
                                 className="btn-icon"
@@ -732,36 +748,42 @@ export default function Projects() {
                                   style={p.favorite ? { color: "var(--brand)" } : undefined}
                                 />
                               </button>
-                              <Link className="ext-link url-row" to={`/projects/${p.id}`}>
-                                <StatusDot status={pStatus} reason={pStatusReason} />
-                                <span>{p.name}</span>
-                                {p.paused && <span className="badge">Paused</span>}
-                              </Link>
+                              <div className={styles.nameStack}>
+                                <Link className={cn("ext-link", styles.projectName)} to={`/projects/${p.id}`}>{p.name}</Link>
+                                <span className={styles.subLine}>
+                                  {p.githubRepo ? (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span className={styles.repo} tabIndex={0} aria-label={`${p.githubRepo}, ${tokenLabel}`}>
+                                          <GitBranch size={11} />
+                                          <span className="mono">{p.githubRepo}</span>
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top">{tokenLabel}</TooltipContent>
+                                    </Tooltip>
+                                  ) : p.sourceType === "upload" ? (
+                                    <span className={styles.repo}><Upload size={11} />Uploaded files</span>
+                                  ) : <span>No source set</span>}
+                                  {p.groupName && <span>· {p.groupName}</span>}
+                                </span>
+                              </div>
                             </div>
                           </td>
-                          <td>{p.groupName || "Ungrouped"}</td>
-                          <td>
-                            {p.githubRepo ? (
-                              <div className="url-row">
-                                <GitBranch size={12} />
-                                <span className="mono" style={{ fontSize: "0.85em" }}>{p.githubRepo}</span>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button type="button" className="btn-icon" aria-label={tokenLabel}>
-                                      <KeyRound size={12} />
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top">{tokenLabel}</TooltipContent>
-                                </Tooltip>
-                              </div>
-                            ) : p.sourceType === "upload" ? (
-                              <div className="url-row">
-                                <Upload size={12} />
-                                <span className="muted-text">Uploaded</span>
-                              </div>
-                            ) : <span className="muted-text">Not set</span>}
+                          <td data-label="Status">
+                            <StatusPill status={pStatus} reason={pStatusReason} />
                           </td>
-                          <td>
+                          <td data-label="Deployed">
+                            {p.lastCommitSha ? (
+                              <div className={styles.commitCell}>
+                                <span>
+                                  <span className="mono">{p.lastCommitSha.slice(0, 7)}</span>
+                                  {p.lastCommitMessage && <span className={styles.commitMessage} title={p.lastCommitMessage}> {p.lastCommitMessage}</span>}
+                                </span>
+                                {p.lastCommitAt && <span className={styles.subLine}><TimeAgo ts={p.lastCommitAt} />{p.lastCommitAuthor ? ` · ${p.lastCommitAuthor}` : ""}</span>}
+                              </div>
+                            ) : <span className="muted-text">{p.sourceType === "upload" ? "Uploaded" : "Not deployed yet"}</span>}
+                          </td>
+                          <td data-label="Domain">
                             {(p.domains?.length ?? 0) > 0 ? (
                               <span className="url-row">
                                 <a
@@ -776,7 +798,24 @@ export default function Projects() {
                                   <span className="muted-text" style={{ fontSize: "0.85em" }}>+{p.domains!.length - 1} more</span>
                                 )}
                               </span>
-                            ) : <span className="muted-text">Not set</span>}
+                            ) : <span className="muted-text">No domain</span>}
+                          </td>
+                          <td className={styles.actionsCell}>
+                            {canRebuild && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="xs"
+                                onClick={() => void redeployFromList(p)}
+                                disabled={p.paused || redeployingIds.has(p.id)}
+                                title={p.paused ? "Resume the project to deploy it"
+                                  : isGithub ? "Pull the checked-out branch, then rebuild and restart"
+                                  : "Rebuild and restart from the uploaded files"}
+                              >
+                                {redeployingIds.has(p.id) ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
+                                {isGithub ? "Redeploy" : "Rebuild"}
+                              </Button>
+                            )}
                           </td>
                         </tr>
                       );
