@@ -782,3 +782,15 @@
   gap: 8px;
   margin-top: 16px;
 }
+
+// Settings > Deploy triggers (shares this module with the System panels it came from)
+.webhook-settings {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+}
+
+.webhook-unavailable { color: var(--danger); }

@@ -36,6 +36,8 @@ export interface Project {
   /** Last time the poller checked this project's repo, and the error if that check failed. */
   githubCheckedAt: string | null;
   githubCheckError: string | null;
+  /** GitHub webhook state when deployTrigger is "webhook"; the secret never leaves the server here. */
+  webhook: ProjectWebhookState | null;
   sourceType: "github" | "upload";
   nginxExtraConfig: string | null;
   nginxExtraBlocks: string | null;
@@ -45,11 +47,24 @@ export interface Project {
   updatedAt: string;
 }
 
-export const DEPLOY_TRIGGERS = ["poller", "manual"] as const;
+export const DEPLOY_TRIGGERS = ["poller", "webhook", "manual"] as const;
 export type DeployTrigger = (typeof DEPLOY_TRIGGERS)[number];
 
 export function parseDeployTrigger(value: unknown): DeployTrigger {
   return (DEPLOY_TRIGGERS as readonly unknown[]).includes(value) ? (value as DeployTrigger) : "poller";
+}
+
+/** waiting: no signed delivery yet · verified: last signed delivery was handled · failing: GitHub reports errors or install failed */
+export type HookStatus = "waiting" | "verified" | "failing";
+
+export interface ProjectWebhookState {
+  installedOnGithub: boolean;
+  status: HookStatus;
+  lastDeliveryAt: string | null;
+}
+
+function parseHookStatus(value: unknown): HookStatus {
+  return value === "verified" || value === "failing" ? value : "waiting";
 }
 
 export interface ProjectRow {
@@ -81,6 +96,11 @@ export interface ProjectRow {
   pending_deploy_sha?: string | null;
   github_checked_at?: string | null;
   github_check_error?: string | null;
+  hook_public_id?: string | null;
+  hook_secret_enc?: string | null;
+  github_hook_id?: number | null;
+  hook_status?: string | null;
+  hook_last_delivery_at?: string | null;
   source_type: string;
   nginx_extra_config: string | null;
   nginx_extra_blocks: string | null;
@@ -122,6 +142,13 @@ export function rowToProject(row: ProjectRow): Project {
     pendingDeploySha: row.pending_deploy_sha ?? null,
     githubCheckedAt: row.github_checked_at ?? null,
     githubCheckError: row.github_check_error ?? null,
+    webhook: row.hook_public_id
+      ? {
+          installedOnGithub: row.github_hook_id != null,
+          status: parseHookStatus(row.hook_status),
+          lastDeliveryAt: row.hook_last_delivery_at ?? null,
+        }
+      : null,
     sourceType: row.source_type === "upload" ? "upload" : "github",
     nginxExtraConfig: row.nginx_extra_config ?? null,
     nginxExtraBlocks: row.nginx_extra_blocks ?? null,

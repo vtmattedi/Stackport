@@ -1,4 +1,34 @@
-export type DeployTrigger = "poller" | "manual";
+export type DeployTrigger = "poller" | "webhook" | "manual";
+
+export interface ProjectWebhookState {
+  installedOnGithub: boolean;
+  /** waiting: no signed delivery yet · verified: last delivery handled · failing: the safety check found a push the hook missed */
+  status: "waiting" | "verified" | "failing";
+  lastDeliveryAt: string | null;
+}
+
+export interface HookDelivery {
+  id: number;
+  deliveryId: string;
+  event: string;
+  ref: string | null;
+  sha: string | null;
+  outcome: string;
+  detail: string | null;
+  receivedAt: string;
+}
+
+export interface ProjectWebhookInfo {
+  available: boolean;
+  unavailableReason: string | null;
+  details: { url: string | null; secret: string | null; githubHookId: number | null; deliveries: HookDelivery[] } | null;
+}
+
+export interface DeployTriggerResult {
+  project: Project;
+  installError?: string | null;
+  warning?: string | null;
+}
 
 export interface Project {
   groupName: string | null;
@@ -29,6 +59,7 @@ export interface Project {
   pendingDeploySha: string | null;
   githubCheckedAt: string | null;
   githubCheckError: string | null;
+  webhook: ProjectWebhookState | null;
   sourceType: "github" | "upload";
   nginxExtraConfig: string | null;
   nginxExtraBlocks: string | null;
@@ -75,6 +106,10 @@ export interface GitHubPollerConfig {
   lastPolledAt: string | null;
   lastError: string | null;
   lastPollOutput: string | null;
+  webhookSafetyCheck: boolean;
+  /** https://<domain> when Stackport can receive GitHub webhooks, else null with a reason. */
+  webhookBaseUrl: string | null;
+  webhookUnavailableReason: string | null;
   updatedAt: string | null;
 }
 
@@ -92,7 +127,7 @@ export interface ProjectDeploy {
   commitSha: string | null;
   commitMessage: string | null;
   commitAuthor: string | null;
-  triggeredBy: "manual" | "auto";
+  triggeredBy: "manual" | "auto" | "webhook";
   status: "running" | "success" | "failed";
   createdAt: string;
   completedAt: string | null;

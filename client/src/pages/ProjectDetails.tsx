@@ -6,6 +6,7 @@ import {
   SquareTerminal, Radio, RotateCw, KeyRound, AlertTriangle, ChevronRight, Rocket,
 } from "lucide-react";
 import { ActionSelect, AppSelect } from "../components/AppSelect";
+import { DeployTriggerControl } from "../components/DeployTriggerControl";
 import { ProjectGroupField } from "../components/ProjectGroupField";
 import { ProjectIngressSelect } from "../components/ProjectIngressSelect";
 import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
@@ -39,7 +40,6 @@ import type {
   GitHubBranch,
   ProjectDeploy,
   ProjectDeploymentRevision,
-  DeployTrigger,
 } from "../api/types";
 import { useSocket } from "../context/SocketContext";
 import { jsonEqual, pollProjectAction, useSystemActions, useSystemSelector } from "../context/SystemContext";
@@ -59,50 +59,6 @@ const INTERVALS = [
   { label: "30 min", value: 1800 },
   { label: "1 hr", value: 3600 },
 ];
-
-const DEPLOY_TRIGGER_OPTIONS: { value: DeployTrigger; label: string }[] = [
-  { value: "poller", label: "Poller" },
-  { value: "manual", label: "Manual only" },
-];
-
-/** Deploy trigger picker (applies immediately) plus what the poller last saw for this project. */
-function DeployTriggerControl({ project, onChange }: { project: Project; onChange: (updated: Project) => void }) {
-  const [saving, setSaving] = useState(false);
-
-  async function change(value: string) {
-    setSaving(true);
-    try {
-      onChange(await api.setDeployTrigger(project.id, value as DeployTrigger));
-    } catch (err) {
-      notify.error(err, "Failed to change deploy trigger");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const pollerStatus = project.deployTrigger !== "poller" ? null
-    : project.githubCheckError ? <span style={{ color: "var(--danger)" }}>Last check failed {formatTimeAgo(project.githubCheckedAt)}: {project.githubCheckError}</span>
-    : project.githubCheckedAt ? <span className="muted-text">Last checked {formatTimeAgo(project.githubCheckedAt)}</span>
-    : <span className="muted-text">Not checked yet. Is the poller enabled in <Link className="ext-link" to="/settings/deploy-triggers">Settings</Link>?</span>;
-
-  return (
-    <div className={styles.deployTrigger}>
-      <AppSelect
-        value={project.deployTrigger}
-        onValueChange={(value) => void change(value)}
-        options={DEPLOY_TRIGGER_OPTIONS}
-        disabled={saving}
-      />
-      {!project.autoDeployBranch && project.deployTrigger !== "manual" && (
-        <span className="muted-text">No auto-deploy branch set, so nothing deploys automatically.</span>
-      )}
-      {pollerStatus}
-      {project.pendingDeploySha && (
-        <span>Deploy of <span className="mono">{project.pendingDeploySha.slice(0, 7)}</span> queued until the current action ends.</span>
-      )}
-    </div>
-  );
-}
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -1905,7 +1861,9 @@ export default function ProjectDetails() {
                 <div className={styles.detailGrid}>
                   <DetailRow label="Repository" value={<a className="ext-link mono" href={`https://github.com/${project.githubRepo}`} target="_blank" rel="noopener noreferrer">{project.githubRepo} <ExternalLink size={10} /></a>} />
                   <DetailRow label="Auto-deploy branch" value={project.autoDeployBranch ? <span className="mono">{project.autoDeployBranch}</span> : <span className="muted-text">Off</span>} />
-                  <DetailRow label="Deploy trigger" value={<DeployTriggerControl project={project} onChange={setProject} />} />
+                  <div className={styles.detailRowWide}>
+                    <DetailRow label="Deploy trigger" value={<DeployTriggerControl project={project} onChange={setProject} />} />
+                  </div>
                   {project.lastCommitSha && (
                     <>
                       <DetailRow label="Last commit" value={<span className="mono" style={{ fontSize: "0.82em" }}>{project.lastCommitSha.slice(0, 7)}</span>} />
@@ -1952,7 +1910,7 @@ export default function ProjectDetails() {
                             background: d.status === "success" ? "var(--success-bg, rgba(34,197,94,0.12))" : d.status === "failed" ? "var(--danger-bg, rgba(239,68,68,0.12))" : "var(--bg-3)",
                             color: d.status === "success" ? "var(--success, #22c55e)" : d.status === "failed" ? "var(--danger)" : "var(--dim)",
                           }}>{d.status}</span>
-                          <span style={{ fontSize: "0.74em", color: "var(--dim)" }}>{d.triggeredBy === "auto" ? "auto" : "manual"}</span>
+                          <span style={{ fontSize: "0.74em", color: "var(--dim)" }}>{d.triggeredBy === "auto" ? "poller" : d.triggeredBy === "webhook" ? "webhook" : "manual"}</span>
                           {d.commitSha && <span className="mono" style={{ fontSize: "0.74em", color: "var(--dim)" }}>{d.commitSha.slice(0, 7)}</span>}
                           {d.commitMessage && <span style={{ color: "var(--dim)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.commitMessage}</span>}
                         </div>

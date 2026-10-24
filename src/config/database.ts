@@ -242,6 +242,24 @@ export function initializeDatabase(): Database.Database {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS hook_deliveries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      delivery_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      ref TEXT,
+      sha TEXT,
+      outcome TEXT NOT NULL,
+      detail TEXT,
+      received_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_deliveries_delivery
+      ON hook_deliveries (delivery_id);
+
+    CREATE INDEX IF NOT EXISTS idx_hook_deliveries_project
+      ON hook_deliveries (project_id, received_at);
+
     CREATE TABLE IF NOT EXISTS project_deploys (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -435,6 +453,22 @@ export function initializeDatabase(): Database.Database {
   if (!projectCols.some((c) => c.name === "github_check_error")) {
     db.exec("ALTER TABLE projects ADD COLUMN github_check_error TEXT");
   }
+  if (!projectCols.some((c) => c.name === "hook_public_id")) {
+    db.exec("ALTER TABLE projects ADD COLUMN hook_public_id TEXT");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_hook_public_id ON projects (hook_public_id)");
+  }
+  if (!projectCols.some((c) => c.name === "hook_secret_enc")) {
+    db.exec("ALTER TABLE projects ADD COLUMN hook_secret_enc TEXT");
+  }
+  if (!projectCols.some((c) => c.name === "github_hook_id")) {
+    db.exec("ALTER TABLE projects ADD COLUMN github_hook_id INTEGER");
+  }
+  if (!projectCols.some((c) => c.name === "hook_status")) {
+    db.exec("ALTER TABLE projects ADD COLUMN hook_status TEXT");
+  }
+  if (!projectCols.some((c) => c.name === "hook_last_delivery_at")) {
+    db.exec("ALTER TABLE projects ADD COLUMN hook_last_delivery_at TEXT");
+  }
   if (!projectCols.some((c) => c.name === "source_type")) {
     db.exec("ALTER TABLE projects ADD COLUMN source_type TEXT NOT NULL DEFAULT 'github'");
   }
@@ -525,6 +559,9 @@ export function initializeDatabase(): Database.Database {
   }
   // The poller writes its status/output with UPDATE ... WHERE id = 1, which silently
   // did nothing (no output, no error shown) until the config had been saved once.
+  if (!ghCols.some((c) => c.name === "webhook_safety_check")) {
+    db.exec("ALTER TABLE github_poller_config ADD COLUMN webhook_safety_check INTEGER NOT NULL DEFAULT 1");
+  }
   db.exec("INSERT OR IGNORE INTO github_poller_config (id) VALUES (1)");
 
   return db;

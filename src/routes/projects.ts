@@ -4,6 +4,7 @@ import { requireAuth } from "../middleware/auth";
 import { auditLog } from "../utils/logger";
 import { rowToProject, DEPLOY_TRIGGERS, type DeployTrigger, type ProjectRow } from "../entities/Project";
 import { clearPendingAutoDeploy } from "../services/autoDeploy";
+import { disableWebhook, enableWebhook, getWebhookDetails, moveWebhookIfRepoChanged, pingWebhook, reinstallWebhook, webhookBaseUrl } from "../services/githubWebhooks";
 import { healthChecker } from "../services/healthChecker";
 import { getNginxAppConfig, writeNginxConfig } from "../services/nginx/configWriter";
 import { emitGlobalEvent, emitProjectDataUpdate } from "../services/realtime";
@@ -952,7 +953,7 @@ router.patch("/:id/compose-file", requireAuth, async (req: Request<{ id: string 
   res.json(getProjectById(id));
 });
 
-router.put("/:id/deploy-trigger", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+router.put("/:id/deploy-trigger", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   const project = getProjectById(id);
@@ -964,12 +965,59 @@ router.put("/:id/deploy-trigger", requireAuth, (req: Request<{ id: string }>, re
     return;
   }
   const next = trigger as DeployTrigger;
+
+  if (next === "webhook") {
+    try {
+      const result = await enableWebhook(id);
+      auditLog(req.user ?? "unknown", "project.deploy-trigger", project.name, "ok", { trigger: next, installedOnGithub: result.installedOnGithub });
+      res.json({ project: getProjectById(id), installError: result.installError });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
+
+  let warning: string | null = null;
+  if (project.webhook) warning = await disableWebhook(id);
   getDatabase().prepare("UPDATE projects SET deploy_trigger = ?, updated_at = ? WHERE id = ?").run(next, new Date().toISOString(), id);
   if (next === "manual") clearPendingAutoDeploy(id);
   auditLog(req.user ?? "unknown", "project.deploy-trigger", project.name, "ok", { trigger: next });
   const updated = getProjectById(id);
   if (updated) emitProjectDataUpdate(id, updated);
-  res.json(updated);
+  res.json({ project: updated, warning });
+});
+
+router.get("/:id/webhook", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  const base = webhookBaseUrl();
+  res.json({ available: base.url !== null, unavailableReason: base.reason, details: getWebhookDetails(id) });
+});
+
+router.post("/:id/webhook/ping", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  try {
+    await pingWebhook(id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post("/:id/webhook/reinstall", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  try {
+    const result = await reinstallWebhook(id);
+    auditLog(req.user ?? "unknown", "project.webhook.reinstall", project.name, result.installedOnGithub ? "ok" : "fail");
+    res.json({ project: getProjectById(id), installError: result.installError });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 router.get("/:id/actions", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
@@ -1257,6 +1305,7 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
      WHERE id = ?`
   ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newHealthCheckDomainId, newIntervalS, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
   resetGithubTrackingIfChanged(db, id, existing, newGhRepo, newAutoDeployBranch);
+  moveWebhookIfRepoChanged(id, existing.github_repo, newGhRepo);
 
   const updated = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow;
   const project = rowToProject(updated);
@@ -1287,6 +1336,10 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   } catch (err) {
     res.status(502).json({ error: `Could not remove project TCP proxies: ${err instanceof Error ? err.message : String(err)}` });
     return;
+  }
+  if (row.github_hook_id != null) {
+    const warning = await disableWebhook(id);
+    if (warning) console.warn(`[webhooks] ${row.name}: ${warning}`);
   }
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   healthChecker.unschedule(id);

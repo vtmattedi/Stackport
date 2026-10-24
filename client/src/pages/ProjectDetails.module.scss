@@ -448,9 +448,4 @@
   span { display: block; margin-top: 3px; color: var(--text); font-size: 12px; line-height: 1.45; }
 }
 
-.deploy-trigger {
-  display: grid;
-  gap: 6px;
-  font-size: 0.82rem;
-  max-width: 420px;
-}
+.detail-row-wide { grid-column: 1 / -1; }

@@ -6,6 +6,7 @@ import { config } from "./config/env";
 import { globalLimiter } from "./middleware/rateLimiter";
 import { errorHandler } from "./middleware/errorHandler";
 import router from "./routes";
+import githubHooksRouter from "./routes/githubHooks";
 
 const app = express();
 
@@ -41,6 +42,8 @@ app.use(
   })
 );
 
+// GitHub webhook deliveries: own rate limit and raw-body parsing, so they go before both.
+app.use("/api/hooks", githubHooksRouter);
 app.use(globalLimiter);
 app.use(
   express.json({

@@ -4,6 +4,7 @@ import { rowToProject, type Project, type ProjectRow } from "../entities/Project
 import { getNginxAppConfig } from "./nginx/configWriter";
 import { addProjectDomain, getProjectDomain } from "./projectDomains";
 import { resetGithubTrackingIfChanged } from "./githubPoller";
+import { moveWebhookIfRepoChanged } from "./githubWebhooks";
 
 const GITHUB_REPO_RE = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
@@ -172,6 +173,7 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
      WHERE id = ?`
   ).run(name, groupName, internalPort, healthCheckEndpoint, healthCheckDomainId, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
   resetGithubTrackingIfChanged(db, projectId, existing, githubRepo, autoDeployBranch);
+  moveWebhookIfRepoChanged(projectId, existing.github_repo, githubRepo);
 
   // Routing changes (domain add/remove/ssl-toggle) go through the /projects/:id/domains
   // routes, which trigger their own nginx apply — this only covers fields that live on
