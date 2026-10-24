@@ -791,10 +791,22 @@ export interface NginxDomainStat {
   errors: number;
   bytes: number;
   avgRtMs: number | null;
+  p50ResponseMs: number | null;
+  p95ResponseMs: number | null;
+  uniqueIps: number;
+  botRequests: number;
   statusCodes: Record<string, number>;
   methodCounts: Record<string, number>;
   topPaths: Array<{ path: string; count: number }>;
-  timeSeries: Array<{ ts: string; count: number; errors: number }>;
+  timeSeries: NginxTimePoint[];
+}
+
+/** `errors` counts every 4xx/5xx response; `serverErrors` is the 5xx share of it. */
+export interface NginxTimePoint {
+  ts: string;
+  count: number;
+  errors: number;
+  serverErrors: number;
 }
 
 export interface NginxMetrics {
@@ -807,7 +819,7 @@ export interface NginxMetrics {
   errorRate?: number;
   statusCodes?: Record<string, number>;
   topPaths?: Array<{ path: string; count: number }>;
-  timeSeries?: Array<{ ts: string; count: number; errors: number }>;
+  timeSeries?: NginxTimePoint[];
   granularity?: "hour" | "day";
   domains?: NginxDomainStat[];
   bytesTotal?: number;
