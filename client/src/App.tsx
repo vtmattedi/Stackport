@@ -67,7 +67,7 @@ export default function App() {
           <Route element={<PrivateLayout />}>
             <Route path="/logs" element={<Logs />} />
             <Route path="/projects" element={<Projects />} />
-            <Route path="/projects/:id" element={<ProjectDetails />} />
+            <Route path="/projects/:id/:tab?" element={<ProjectDetails />} />
             <Route path="/credentials" element={<Credentials />} />
             <Route path="/system/:section?" element={<System />} />
             <Route path="/infrastructure/:section?" element={<Infrastructure />} />

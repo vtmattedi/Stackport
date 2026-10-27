@@ -56,7 +56,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | ✅ |
 | 14 | Label the traffic window | R2 | ⚪ | S | — | ✅ |
 | 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | ✅ |
-| 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | |
+| 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | ✅ |
 | 17 | Navigation consolidation | U1 | 🟡 | M | 13, 16 | |
 | 18 | Deploy and rollback preview | U3 | 🟡 | M | 1 | |
 | 19 | Clear policy-violation display | U4 (part) | 🟡 | S | — | |
@@ -400,12 +400,24 @@ picker, and say when the chosen period is longer than the data.
 
 ## Phase 5: UI structure
 
-### PR 16 — Project page as routed tabs (T4)
+### PR 16 — Project page as routed tabs (T4) ✅
 
 Split `ProjectDetails.tsx` (about 1,840 lines, 68 `useState`) into
 `/projects/:id/{overview,deployments,domains,env,logs,settings}`. Each tab owns its
 queries (after PR 9, mostly moving code). `/projects/:id` redirects to overview, and
 existing query parameters such as `?setup=` keep working.
+
+**Shipped notes:**
+- Tabs: Overview (Docker, resources), Deploys (GitHub trigger, deployments), Domains
+  (domains and TCP ports), Settings (config form, metadata), at `/projects/:id/:tab`;
+  `/projects/:id` and unknown tabs show Overview. The status card, toolbar and action
+  log stay above the tabs. No Env tab: the env manager is already a full dialog.
+- Settings and Domains are their own components (`pages/project/SettingsTab.tsx`,
+  `DomainsTab.tsx`) with their own state. Settings stays mounted while hidden, so
+  unsaved edits survive switching tabs. Domain changes reach the form through project
+  data instead of setting its fields directly.
+- Overview and Deploys stay in `ProjectDetails.tsx`: they share the action handlers the
+  toolbar uses. The file went from about 1,840 to 1,107 lines.
 
 ### PR 17 — Navigation consolidation (U1)
 

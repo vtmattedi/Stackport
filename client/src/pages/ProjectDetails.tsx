@@ -1,37 +1,27 @@
-import { lazy, memo, Suspense, useEffect, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { lazy, memo, Suspense, useEffect, useState } from "react";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import {
   ArrowLeft, Box, EllipsisVertical, ExternalLink, FileText, FolderDot, GitBranch,
-  Hammer, Loader, Pause, Play, Plus, RefreshCw, Save, ScrollText, Square, Trash2, Upload, X, GitCommit, Activity, Zap, FlameKindling,
-  SquareTerminal, Radio, KeyRound, AlertTriangle, ChevronRight, Rocket, Globe,
+  Hammer, Loader, Pause, Play, Plus, RefreshCw, ScrollText, Square, Trash2, Upload, X, GitCommit, Activity, Zap, FlameKindling,
+  SquareTerminal, Radio, KeyRound, Rocket,
 } from "lucide-react";
-import { ActionSelect, AppSelect } from "../components/AppSelect";
+import { AppSelect } from "../components/AppSelect";
 import { DeployTriggerControl } from "../components/DeployTriggerControl";
 import { ServiceError } from "../components/ServiceError";
-import { ProjectGroupField } from "../components/ProjectGroupField";
-import { ProjectIngressSelect } from "../components/ProjectIngressSelect";
-import { GitHubTokenSelect } from "../components/GitHubTokenSelect";
 import { ExpandableCard } from "../components/ExpandableCard";
 import { ProjectResourceCharts as ProjectResourceChartsBase } from "../components/ProjectResourceCharts";
 // The terminal dialogs pull in xterm (~90 KB gzipped); load it only when one opens.
 const ContainerShellDialog = lazy(() => import("../components/ContainerShellDialog").then((m) => ({ default: m.ContainerShellDialog })));
 const ContainerLogDialog = lazy(() => import("../components/ContainerLogDialog").then((m) => ({ default: m.ContainerLogDialog })));
-import { ComposeFileDialog } from "../components/ComposeFileDialog";
 import { EnvManagerDialog } from "../components/EnvManagerDialog";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
-import { NumberInput } from "../components/NumberInput";
-import { Switch } from "../components/ui/switch";
 import { api, ApiError } from "../api/client";
 import type {
-  ActionRecord,
   ContainerInfo,
-  Project,
-  ProjectDomain,
-  TcpExposure,
   ProjectResourceData,
   ProjectResourceSampleEvent,
   GitHubBranch,
@@ -56,74 +46,14 @@ import {
   useProjectQuery,
   useProjectRepoAction,
   useProjectRevisions,
-  useProjectTcpExposures,
 } from "./project/useProjectData";
 import { DeploymentsCard } from "./project/DeploymentsCard";
-import { DomainRow, TcpExposureRow } from "./project/IngressRows";
+import { SettingsTab } from "./project/SettingsTab";
+import { DomainsTab } from "./project/DomainsTab";
+import { DetailRow } from "./project/shared";
 
-const INTERVALS = [
-  { label: "Off", value: 0 },
-  { label: "30 s", value: 30 },
-  { label: "1 min", value: 60 },
-  { label: "5 min", value: 300 },
-  { label: "15 min", value: 900 },
-  { label: "30 min", value: 1800 },
-  { label: "1 hr", value: 3600 },
-];
 
-function DetailRow({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className={styles.detailRow}>
-      <span className="muted-text">{label}</span>
-      <span>{value}</span>
-    </div>
-  );
-}
 
-/** A collapsible group inside the Project Config form; open state is remembered per section. */
-function ConfigSection({
-  title,
-  actions,
-  storageKey,
-  defaultOpen = true,
-  children,
-}: {
-  title: string;
-  actions?: ReactNode;
-  storageKey: string;
-  defaultOpen?: boolean;
-  children: ReactNode;
-}) {
-  const key = `stackport:config-section:${storageKey}`;
-  const [open, setOpen] = useState(() => {
-    try {
-      const stored = localStorage.getItem(key);
-      return stored === null ? defaultOpen : stored === "1";
-    } catch {
-      return defaultOpen;
-    }
-  });
-  function toggle() {
-    setOpen(!open);
-    try {
-      localStorage.setItem(key, open ? "0" : "1");
-    } catch {
-      // storage unavailable — state just won't persist
-    }
-  }
-  return (
-    <div className={cn(styles.runtimeSection, !open && styles.runtimeSectionCollapsed)}>
-      <div className={styles.runtimeSectionHeader}>
-        <button type="button" className={styles.sectionToggle} onClick={toggle} aria-expanded={open}>
-          <ChevronRight size={12} className={cn(styles.sectionChevron, open && styles.sectionChevronOpen)} />
-          {title}
-        </button>
-        {actions}
-      </div>
-      {open && children}
-    </div>
-  );
-}
 
 // Recharts redraws its SVG on every render; only redraw when the samples change.
 const ProjectResourceCharts = memo(ProjectResourceChartsBase);
@@ -193,10 +123,6 @@ function ResourceUsageCard({ projectId }: { projectId: number }) {
   );
 }
 
-function sameProjectGroups(a: Project[] | null, b: Project[] | null): boolean {
-  const key = (list: Project[] | null) => (list ?? []).map((p) => p.groupName ?? "").join("\u0000");
-  return a === b || key(a) === key(b);
-}
 
 function statusPillClass(status: ProjectStatusKind, styles: Record<string, string>): string {
   if (status === "ready") return styles.statusReady;
@@ -307,11 +233,21 @@ function DockerContainerRow({
 }
 
 
+/** The project page's sections, each at /projects/:id/:tab. */
+const PROJECT_TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "deploys", label: "Deploys" },
+  { id: "domains", label: "Domains" },
+  { id: "settings", label: "Settings" },
+] as const;
+type ProjectTab = (typeof PROJECT_TABS)[number]["id"];
+
 export default function ProjectDetails() {
-  const { id } = useParams();
+  const { id, tab: tabParam } = useParams();
+  const tab = PROJECT_TABS.some((t) => t.id === tabParam) ? (tabParam as ProjectTab) : "overview";
   const navigate = useNavigate();
   const confirm = useConfirm();
-  const { refreshProjects, refreshSystem, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, certbotAction, issueProjectDomainSsl } = useSystemActions();
+  const { refreshSystem, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes } = useSystemActions();
   const projectId = Number(id);
   const projectValid = Number.isInteger(projectId) && projectId > 0;
   // Server data lives in the query cache (useProjectData.ts); socket events and the
@@ -337,20 +273,6 @@ export default function ProjectDetails() {
       stack: stack ? { ...stack, containers: stack.containers.map((c) => ({ ...c, stats: null })) } : null,
     };
   }, jsonEqual);
-  const domainNames = domains.map((d) => d.domain);
-  const certbotInfo = useSystemSelector((snap) => {
-    const certbot = snap.system?.certbot;
-    return {
-      available: !!(certbot?.available && certbot?.emailConfigured),
-      entries: (certbot?.entries ?? []).filter((entry) => domainNames.includes(entry.domain)),
-    };
-  }, jsonEqual);
-  const certbotRecords = useSystemSelector(
-    (snap) => snap.systemActions.certbot.filter((entry) => domainNames.includes(entry.meta?.["domain"] as string)),
-    jsonEqual,
-  );
-  // Only group names are used (for the group picker).
-  const allProjects = useSystemSelector((snap) => snap.projects, sameProjectGroups);
   const [credentials] = useCredentials();
   const [envFiles, setEnvFiles] = useProjectEnvFiles(projectId, projectValid);
   const [envManagerOpen, setEnvManagerOpen] = useState(false);
@@ -382,59 +304,13 @@ export default function ProjectDetails() {
   const [checkingHealth, setCheckingHealth] = useState(false);
   const last = repoAction.last;
   const finishedAction: FinishedAction | null = last ? { kind: last.kind, ok: last.ok, at: last.completedAt } : null;
-  /** The form was last synced from this version of the project: unsaved edits are
-   *  measured against it, not against the newest push. */
-  const [syncedProject, setSyncedProject] = useState<Project | null>(null);
-  const [configRepo, setConfigRepo] = useState("");
-  const [configGroupName, setConfigGroupName] = useState("");
-  const [configGithubCredentialId, setConfigGithubCredentialId] = useState<number | null>(null);
-  const [newDomainInput, setNewDomainInput] = useState("");
-  const [newDomainService, setNewDomainService] = useState("");
-  const [newDomainPort, setNewDomainPort] = useState("");
-  const [addingDomain, setAddingDomain] = useState(false);
-  const [domainError, setDomainError] = useState("");
-  const [tcpExposures, setTcpExposures] = useProjectTcpExposures(projectId, projectValid);
-  const [newTcpPublicPort, setNewTcpPublicPort] = useState("");
-  const [newTcpService, setNewTcpService] = useState("");
-  const [newTcpContainerPort, setNewTcpContainerPort] = useState("");
-  const [addingTcpExposure, setAddingTcpExposure] = useState(false);
-  const [tcpExposureError, setTcpExposureError] = useState("");
-  const [configHealthEndpoint, setConfigHealthEndpoint] = useState("");
-  const [configHealthDomainId, setConfigHealthDomainId] = useState<number | null>(null);
-  const [configIntervalS, setConfigIntervalS] = useState(0);
-  const [configHealthGraceS, setConfigHealthGraceS] = useState(60);
-  const [configAutoRollback, setConfigAutoRollback] = useState(false);
-  const [configComposeFile, setConfigComposeFile] = useState("");
-  const [composeFileDialogOpen, setComposeFileDialogOpen] = useState(false);
-  const [savingConfig, setSavingConfig] = useState(false);
-  const [configError, setConfigError] = useState("");
-  const [configAutoDeployBranch, setConfigAutoDeployBranch] = useState<string>("");
   const [branches, setBranches] = useState<GitHubBranch[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [branchError, setBranchError] = useState("");
   const [deploys, , loadingDeploys] = useProjectDeploys(projectId, projectValid);
   const [revisions] = useProjectRevisions(projectId, projectValid);
   const [rollingBack, setRollingBack] = useState(false);
-  const [configNginxExtra, setConfigNginxExtra] = useState("");
-  const [configNginxExtraBlocks, setConfigNginxExtraBlocks] = useState("");
 
-  function syncConfig(projectData: Project) {
-    setSyncedProject(projectData);
-    setConfigRepo(projectData.githubRepo ?? "");
-    setConfigGroupName(projectData.groupName ?? "");
-    setConfigGithubCredentialId(projectData.githubCredentialId);
-    setConfigComposeFile(projectData.composeFile ?? "");
-    setConfigHealthEndpoint(projectData.healthCheckEndpoint ?? "");
-    setConfigHealthDomainId(projectData.healthCheckDomainId);
-    setConfigIntervalS(projectData.healthCheckIntervalS);
-    setConfigHealthGraceS(projectData.deployHealthGraceS);
-    setConfigAutoRollback(projectData.autoRollbackUnhealthy);
-    setConfigAutoDeployBranch(projectData.autoDeployBranch ?? "");
-    setConfigNginxExtra(projectData.nginxExtraConfig ?? "");
-    setConfigNginxExtraBlocks(projectData.nginxExtraBlocks ?? "");
-    // Sync cached branch list from project when available
-    if (projectData.branches.length > 0) setBranches(projectData.branches);
-  }
 
   async function loadBranches(refresh = true) {
     if (!project?.githubRepo) return;
@@ -443,7 +319,6 @@ export default function ProjectDetails() {
     try {
       const data = await api.getProjectBranches(project.id, refresh);
       setBranches(data.branches);
-      setConfigAutoDeployBranch((current) => current || data.autoDeployBranch || "");
     } catch (err) {
       setBranchError(err instanceof ApiError ? err.message : "Failed to load branches");
     } finally {
@@ -623,175 +498,13 @@ export default function ProjectDetails() {
     }
   }
 
-  async function saveProjectConfig(e?: React.FormEvent) {
-    e?.preventDefault();
-    if (!project) return;
-    const toastId = notify.loading("Saving project runtime settings...");
-    setSavingConfig(true);
-    setConfigError("");
-    try {
-      const updated = await api.updateProject(project.id, {
-        groupName: configGroupName.trim() || null,
-        githubRepo: configRepo || null,
-        githubCredentialId: configGithubCredentialId,
-        healthCheckEndpoint: configHealthEndpoint || null,
-        healthCheckDomainId: configHealthDomainId,
-        healthCheckIntervalS: configIntervalS,
-        deployHealthGraceS: configHealthGraceS,
-        autoRollbackUnhealthy: configAutoRollback,
-        autoDeployBranch: configAutoDeployBranch || null,
-        nginxExtraConfig: configNginxExtra.trim() || null,
-        nginxExtraBlocks: configNginxExtraBlocks.trim() || null,
-      });
-      const withComposeFile = configComposeFile && configComposeFile !== (project.composeFile ?? "")
-        ? await api.setProjectComposeFile(updated.id, configComposeFile)
-        : updated;
-      setProject(withComposeFile);
-      syncConfig(withComposeFile);
-      await refreshProjects();
-      notify.success("Project runtime settings saved.", { id: toastId });
-    } catch (err) {
-      setConfigError(err instanceof ApiError ? err.message : "Failed to save project settings");
-      notify.error(err, "Failed to save project runtime settings", { id: toastId });
-    } finally {
-      setSavingConfig(false);
-    }
-  }
 
-  async function handleCertAction(domain: string, action: "issue" | "renew" | "delete") {
-    await certbotAction(domain, action);
-  }
 
-  async function addDomain() {
-    const port = Number(newDomainPort);
-    if (!project || !newDomainInput.trim() || !newDomainService.trim() || !Number.isInteger(port) || port <= 0) return;
-    setAddingDomain(true);
-    setDomainError("");
-    try {
-      const created = await api.addProjectDomain(project.id, newDomainInput.trim(), newDomainService.trim(), port);
-      setDomains((current) => [...current, created]);
-      if (project.healthCheckDomainId === null) {
-        setProject((current) => current ? { ...current, healthCheckDomainId: created.id } : current);
-        setConfigHealthDomainId((current) => current ?? created.id);
-      }
-      setNewDomainInput("");
-      setNewDomainService("");
-      setNewDomainPort("");
-    } catch (err) {
-      setDomainError(err instanceof ApiError ? err.message : "Failed to add domain");
-    } finally {
-      setAddingDomain(false);
-    }
-  }
 
-  async function addTcpExposure() {
-    const publicPort = Number(newTcpPublicPort);
-    const containerPort = Number(newTcpContainerPort);
-    if (!project || !Number.isInteger(publicPort) || !newTcpService || !Number.isInteger(containerPort)) return;
-    setAddingTcpExposure(true);
-    setTcpExposureError("");
-    try {
-      const created = await api.addTcpExposure(project.id, publicPort, newTcpService, containerPort);
-      setTcpExposures((current) => [...current, created].sort((a, b) => a.publicPort - b.publicPort));
-      setNewTcpPublicPort("");
-      setNewTcpService("");
-      setNewTcpContainerPort("");
-      notify.success(`TCP port ${publicPort} is exposed.`);
-    } catch (err) {
-      setTcpExposureError(err instanceof ApiError ? err.message : "Failed to add TCP exposure");
-    } finally {
-      setAddingTcpExposure(false);
-    }
-  }
-
-  async function removeTcpExposureRow(exposure: TcpExposure) {
-    if (!project) return;
-    const ok = await confirm({
-      title: `Remove public TCP port ${exposure.publicPort}?`,
-      description: `This removes only the StackPort TCP proxy to ${exposure.service}:${exposure.containerPort}.`,
-      confirmLabel: "Remove",
-      destructive: true,
-    });
-    if (!ok) return;
-    try {
-      await api.removeTcpExposure(project.id, exposure.id);
-      setTcpExposures((current) => current.filter((item) => item.id !== exposure.id));
-      notify.success(`TCP port ${exposure.publicPort} removed.`);
-    } catch (err) {
-      notify.error(err, `Failed to remove TCP port ${exposure.publicPort}`);
-    }
-  }
-
-  async function removeDomainRow(domain: ProjectDomain) {
-    if (!project) return;
-    const ok = await confirm({
-      title: `Remove ${domain.domain}?`,
-      description: "This stops routing the domain to this project. Any issued certificate stays on disk untouched.",
-      confirmLabel: "Remove",
-      destructive: true,
-    });
-    if (!ok) return;
-    try {
-      await api.removeProjectDomain(project.id, domain.id);
-      const remainingDomains = domains.filter((d) => d.id !== domain.id);
-      const nextDomainId = project.healthCheckDomainId === domain.id ? remainingDomains[0]?.id ?? null : project.healthCheckDomainId;
-      setDomains(remainingDomains);
-      setProject((current) => current ? { ...current, healthCheckDomainId: nextDomainId } : current);
-      if (configHealthDomainId === domain.id) setConfigHealthDomainId(nextDomainId);
-    } catch (err) {
-      notify.error(err, `Failed to remove ${domain.domain}`);
-    }
-  }
-
-  async function toggleDomainSsl(domain: ProjectDomain, useSsl: boolean) {
-    if (!project) return;
-    try {
-      const updated = await api.setProjectDomainSsl(project.id, domain.id, useSsl);
-      setDomains((current) => current.map((d) => (d.id === domain.id ? updated : d)));
-    } catch (err) {
-      notify.error(err, `Failed to update SSL for ${domain.domain}`);
-    }
-  }
-
-  async function issueDomainSsl(domain: ProjectDomain) {
-    if (!project) return;
-    const final = await issueProjectDomainSsl(project.id, domain.id);
-    if (final?.ok) {
-      setDomains((current) => current.map((d) => (d.id === domain.id ? { ...d, useSsl: true } : d)));
-    }
-  }
-
-  // Unsaved edits: the form differs from the project version it was filled from.
-  const runtimeChanged = syncedProject ? (
-    configGroupName.trim() !== (syncedProject.groupName ?? "") ||
-    configRepo !== (syncedProject.githubRepo ?? "") ||
-    configGithubCredentialId !== syncedProject.githubCredentialId ||
-    configHealthEndpoint !== (syncedProject.healthCheckEndpoint ?? "") ||
-    configHealthDomainId !== syncedProject.healthCheckDomainId ||
-    configIntervalS !== syncedProject.healthCheckIntervalS ||
-    configHealthGraceS !== syncedProject.deployHealthGraceS ||
-    configAutoRollback !== syncedProject.autoRollbackUnhealthy ||
-    configAutoDeployBranch !== (syncedProject.autoDeployBranch ?? "") ||
-    configNginxExtra !== (syncedProject.nginxExtraConfig ?? "") ||
-    configNginxExtraBlocks !== (syncedProject.nginxExtraBlocks ?? "") ||
-    configComposeFile !== (syncedProject.composeFile ?? "")
-  ) : false;
-  const runtimeFormId = project ? `project-runtime-${project.id}` : "project-runtime";
-
-  function certbotRecordFor(domain: string): ActionRecord | null {
-    return certbotRecords
-      .filter((entry) => entry.meta?.["domain"] === domain)
-      .reduce<ActionRecord | null>((latest, entry) => (
-        !latest || new Date(entry.startedAt) > new Date(latest.startedAt) ? entry : latest
-      ), null);
-  }
-
-  // New project data (a push, a save, a refetch) refills the form, unless the form
-  // has unsaved edits relative to the version it was last filled from.
+  // The project carries the branch list the poller cached; use it when there is one.
   useEffect(() => {
-    if (project && !runtimeChanged) syncConfig(project);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project]);
+    if (project && project.branches.length > 0) setBranches(project.branches);
+  }, [project?.branches]);
 
   useEffect(() => {
     if (!project) return;
@@ -806,10 +519,6 @@ export default function ProjectDetails() {
     stoppingProject || purgingProject || uploadingFiles || redeployingService !== null || droppingVolumesService !== null;
   /** Branch a Pull/Redeploy will check out: the explicit pick, else the auto-deploy branch. */
   const selectedBranch = pullBranch || project?.autoDeployBranch || "";
-  const certbotAvailable = certbotInfo.available;
-  function certbotEntryFor(domain: string) {
-    return certbotInfo.entries.find((e) => e.domain === domain) ?? null;
-  }
   const expectedStackName = project ? expectedComposeProjectName(project) : "";
   const dockerStack = docker?.stack ?? null;
   const monitoredContainers = healthMonitoredContainers(dockerStack);
@@ -833,6 +542,8 @@ export default function ProjectDetails() {
   const displayStatusReason = project
     ? explainProjectStatus(project, dockerStack, docker?.available ?? false, displayStatus)
     : "";
+
+  if (tabParam !== undefined && tabParam !== tab) return <Navigate to={`/projects/${projectId}/overview`} replace />;
 
   return (
     <>
@@ -1144,500 +855,230 @@ export default function ProjectDetails() {
               />
             </div>
 
-            {/* ── Docker expandable card ───────────────────────────────── */}
-            <ExpandableCard
-              icon={<Box size={13} />}
-              title="Docker"
-              storageKey="project.docker"
-              summary={
-                !systemLoaded ? (
-                  <Loader size={11} className="spin" />
-                ) : !docker?.available ? (
-                  <span style={{ color: "var(--danger)", fontSize: 12 }}>Unavailable</span>
-                ) : (
-                  <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span className={cn(styles.statusPill, dockerStackStatusClass)} style={{ fontSize: 11 }}>
-                      {dockerStackStatus}
+            <Tabs value={tab} onValueChange={(next) => navigate(`/projects/${project.id}/${next}`)} className={styles.projectTabs}>
+              <TabsList variant="line" aria-label="Project sections">
+                {PROJECT_TABS.map(({ id: value, label }) => (
+                  <TabsTrigger key={value} value={value}>{label}</TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+
+            {tab === "overview" && (
+              <>
+              {/* ── Docker expandable card ───────────────────────────────── */}
+              <ExpandableCard
+                icon={<Box size={13} />}
+                title="Docker"
+                storageKey="project.docker"
+                summary={
+                  !systemLoaded ? (
+                    <Loader size={11} className="spin" />
+                  ) : !docker?.available ? (
+                    <span style={{ color: "var(--danger)", fontSize: 12 }}>Unavailable</span>
+                  ) : (
+                    <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span className={cn(styles.statusPill, dockerStackStatusClass)} style={{ fontSize: 11 }}>
+                        {dockerStackStatus}
+                      </span>
+                      {dockerStack && (
+                        <span className="mono" style={{ fontSize: 12, color: "var(--dim)" }}>
+                          {dockerRunningCount}/{dockerTotalCount}
+                          {ignoredContainerCount > 0 && ` +${ignoredContainerCount} helper${ignoredContainerCount === 1 ? "" : "s"}`}
+                        </span>
+                      )}
+                      {dockerPorts.length > 0 && (
+                        <span className="mono path-text" style={{ fontSize: 11, color: "var(--dim)" }}>
+                          {dockerPorts.join(", ")}
+                        </span>
+                      )}
                     </span>
-                    {dockerStack && (
-                      <span className="mono" style={{ fontSize: 12, color: "var(--dim)" }}>
-                        {dockerRunningCount}/{dockerTotalCount}
-                        {ignoredContainerCount > 0 && ` +${ignoredContainerCount} helper${ignoredContainerCount === 1 ? "" : "s"}`}
-                      </span>
-                    )}
-                    {dockerPorts.length > 0 && (
-                      <span className="mono path-text" style={{ fontSize: 11, color: "var(--dim)" }}>
-                        {dockerPorts.join(", ")}
-                      </span>
-                    )}
-                  </span>
-                )
-              }
-            >
-              {!docker?.available ? (
-                <ServiceError service="Docker" reason={docker?.reason} />
-              ) : dockerStack ? (
-                <>
-                  <div className={styles.dockerContainerList} style={{ marginTop: 0 }}>
-                    <div className={styles.dockerContainerHeader}>
-                      <span>Service</span>
-                      <span>State</span>
-                      <span>Status</span>
-                      <span>Ports</span>
-                      <span>Actions</span>
+                  )
+                }
+              >
+                {!docker?.available ? (
+                  <ServiceError service="Docker" reason={docker?.reason} />
+                ) : dockerStack ? (
+                  <>
+                    <div className={styles.dockerContainerList} style={{ marginTop: 0 }}>
+                      <div className={styles.dockerContainerHeader}>
+                        <span>Service</span>
+                        <span>State</span>
+                        <span>Status</span>
+                        <span>Ports</span>
+                        <span>Actions</span>
+                      </div>
+                      {dockerStack.containers.length === 0 ? (
+                        <div className={styles.dockerContainerEmpty}>No containers found for this stack.</div>
+                      ) : dockerStack.containers.map((container) => (
+                        <DockerContainerRow
+                          key={container.id}
+                          container={container}
+                          onOpenShell={setShellContainer}
+                          onOpenLogs={setLogStreamContainer}
+                          onRedeploy={dockerStack.containers.length > 1 ? (c) => void redeployService(c.service ?? c.name) : undefined}
+                          redeploying={redeployingService === (container.service ?? container.name)}
+                          redeployDisabled={
+                            redeployingService !== null || droppingVolumesService !== null || pullingRepo || deploying ||
+                            composingProject || recreatingProject || forceRebuilding || stoppingProject || purgingProject
+                          }
+                          onDropVolumes={dockerStack.containers.length > 1 ? (c) => void dropServiceVolumes(c.service ?? c.name) : undefined}
+                          droppingVolumes={droppingVolumesService === (container.service ?? container.name)}
+                          dropVolumesDisabled={
+                            droppingVolumesService !== null || redeployingService !== null || pullingRepo || deploying ||
+                            composingProject || recreatingProject || forceRebuilding || stoppingProject || purgingProject
+                          }
+                        />
+                      ))}
                     </div>
-                    {dockerStack.containers.length === 0 ? (
-                      <div className={styles.dockerContainerEmpty}>No containers found for this stack.</div>
-                    ) : dockerStack.containers.map((container) => (
-                      <DockerContainerRow
-                        key={container.id}
-                        container={container}
-                        onOpenShell={setShellContainer}
-                        onOpenLogs={setLogStreamContainer}
-                        onRedeploy={dockerStack.containers.length > 1 ? (c) => void redeployService(c.service ?? c.name) : undefined}
-                        redeploying={redeployingService === (container.service ?? container.name)}
-                        redeployDisabled={
-                          redeployingService !== null || droppingVolumesService !== null || pullingRepo || deploying ||
-                          composingProject || recreatingProject || forceRebuilding || stoppingProject || purgingProject
-                        }
-                        onDropVolumes={dockerStack.containers.length > 1 ? (c) => void dropServiceVolumes(c.service ?? c.name) : undefined}
-                        droppingVolumes={droppingVolumesService === (container.service ?? container.name)}
-                        dropVolumesDisabled={
-                          droppingVolumesService !== null || redeployingService !== null || pullingRepo || deploying ||
-                          composingProject || recreatingProject || forceRebuilding || stoppingProject || purgingProject
-                        }
-                      />
-                    ))}
-                  </div>
-                  <div className={styles.logsSection}>
-                    <div className={styles.logsToolbar}>
-                      <AppSelect
-                        value={logsService}
-                        onValueChange={setLogsService}
-                        options={[
-                          { value: "", label: "All services" },
-                          ...dockerStack.containers
-                            .map((c) => c.service ?? c.name)
-                            .filter((s, i, arr) => arr.indexOf(s) === i)
-                            .map((s) => ({ value: s, label: s })),
-                        ]}
-                      />
-                      <AppSelect
-                        value={String(logsTail)}
-                        onValueChange={(v) => setLogsTail(Number(v))}
-                        options={[
-                          { value: "50", label: "50 lines" },
-                          { value: "100", label: "100 lines" },
-                          { value: "200", label: "200 lines" },
-                          { value: "500", label: "500 lines" },
-                        ]}
-                      />
-                      <Button type="button" variant="outline" size="sm" onClick={() => void fetchDockerLogs()} disabled={logsLoading}>
-                        {logsLoading ? <Loader size={13} className="spin" /> : <ScrollText size={13} />}
-                        Logs
-                      </Button>
-                      {logsOutput !== null && (
-                        <Button type="button" variant="ghost" size="sm" onClick={() => setLogsOutput(null)}>
-                          <X size={13} />
-                          Clear
+                    <div className={styles.logsSection}>
+                      <div className={styles.logsToolbar}>
+                        <AppSelect
+                          value={logsService}
+                          onValueChange={setLogsService}
+                          options={[
+                            { value: "", label: "All services" },
+                            ...dockerStack.containers
+                              .map((c) => c.service ?? c.name)
+                              .filter((s, i, arr) => arr.indexOf(s) === i)
+                              .map((s) => ({ value: s, label: s })),
+                          ]}
+                        />
+                        <AppSelect
+                          value={String(logsTail)}
+                          onValueChange={(v) => setLogsTail(Number(v))}
+                          options={[
+                            { value: "50", label: "50 lines" },
+                            { value: "100", label: "100 lines" },
+                            { value: "200", label: "200 lines" },
+                            { value: "500", label: "500 lines" },
+                          ]}
+                        />
+                        <Button type="button" variant="outline" size="sm" onClick={() => void fetchDockerLogs()} disabled={logsLoading}>
+                          {logsLoading ? <Loader size={13} className="spin" /> : <ScrollText size={13} />}
+                          Logs
                         </Button>
-                      )}
-                    </div>
-                    {logsOutput !== null && (
-                      <pre className="output-block" style={{ maxHeight: 480, overflowY: "auto" }}>
-                        {parseAnsi(logsOutput)}
-                      </pre>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className={styles.dockerContainerEmpty}>
-                  No stack found for <span className="mono">{expectedStackName}</span>
-                </div>
-              )}
-            </ExpandableCard>
-
-            {/* ── Domains & ports card (changes apply immediately, not through Save) ── */}
-            <ExpandableCard
-              icon={<Globe size={13} />}
-              title="Domains & ports"
-              storageKey="project.ingress"
-              defaultOpen
-              summary={<span className={styles.cardSummaryText}>{domains.length} domain{domains.length === 1 ? "" : "s"}{tcpExposures.length > 0 ? ` · ${tcpExposures.length} TCP` : ""}</span>}
-            >
-              <div className={styles.ingressBlock}>
-                <div className={styles.historyHeading}>Domains</div>
-                <p className="muted-text">Each domain routes to a compose service and container port over the stackport-proxy network.</p>
-                <div className="row-actions">
-                  <Input
-                    type="text"
-                    placeholder="myapp.example.com"
-                    value={newDomainInput}
-                    onChange={(e) => setNewDomainInput(e.target.value)}
-                    className={styles.domainInput}
-                  />
-                  <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
-                    refreshKey={project.updatedAt} disabled={addingDomain}
-                    value={newDomainService && newDomainPort ? `${newDomainService}:${newDomainPort}` : ""}
-                    onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewDomainService(service); setNewDomainPort(port); }} />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="default"
-                    onClick={() => void addDomain()}
-                    disabled={addingDomain || !newDomainInput.trim() || !newDomainService.trim() || !newDomainPort.trim()}
-                    title={!newDomainInput.trim() ? "Type a domain first" : !newDomainService.trim() ? "Pick the service and port it should reach" : undefined}
-                  >
-                    {addingDomain ? <Loader size={12} className="spin" /> : <Plus size={12} />}
-                    Add domain
-                  </Button>
-                </div>
-                {domainError && <div className={styles.inlineError}>{domainError}</div>}
-                {domains.length === 0 ? (
-                  <div className="muted-text">No domains routed to this project.</div>
-                ) : (
-                  <div className={styles.ingressList}>
-                    {domains.map((domain) => (
-                      <DomainRow
-                        key={domain.id}
-                        domain={domain}
-                        cert={certbotEntryFor(domain.domain)}
-                        certRecord={certbotRecordFor(domain.domain)}
-                        certbotAvailable={certbotAvailable}
-                        onToggleSsl={(checked) => void toggleDomainSsl(domain, checked)}
-                        onIssue={() => void issueDomainSsl(domain)}
-                        onCertAction={(action) => void handleCertAction(domain.domain, action)}
-                        onRemove={() => void removeDomainRow(domain)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className={styles.ingressBlock}>
-                <div className={styles.historyHeading}>TCP ports</div>
-                <div className={styles.tcpWarningCard} role="note" aria-label="Public TCP security warning">
-                  <AlertTriangle size={17} />
-                  <div>
-                    <strong>Public TCP security boundary</strong>
-                    <span>Public TCP ports are reachable outside the VPS. Authentication, TLS, and protocol security remain the application's responsibility.</span>
-                  </div>
-                </div>
-                <div className="row-actions">
-                  <NumberInput
-                    min={1}
-                    max={65535}
-                    placeholder="Public port"
-                    aria-label="Public port"
-                    value={newTcpPublicPort === "" ? null : Number(newTcpPublicPort)}
-                    onValueChange={(port) => setNewTcpPublicPort(port == null ? "" : String(port))}
-                    className={styles.portInput}
-                  />
-                  <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
-                    refreshKey={project.updatedAt} disabled={addingTcpExposure}
-                    value={newTcpService && newTcpContainerPort ? `${newTcpService}:${newTcpContainerPort}` : ""}
-                    onValueChange={value => { const [service = "", port = ""] = value.split(":"); setNewTcpService(service); setNewTcpContainerPort(port); }} />
-                  <Button type="button" variant="outline" size="default" onClick={() => void addTcpExposure()}
-                    disabled={addingTcpExposure || !newTcpPublicPort || !newTcpService || !newTcpContainerPort}
-                    title={!newTcpPublicPort ? "Type a public port first" : !newTcpService ? "Pick the service and port it should reach" : undefined}>
-                    {addingTcpExposure ? <Loader size={12} className="spin" /> : <Plus size={12} />}
-                    Expose
-                  </Button>
-                </div>
-                {tcpExposureError && <div className={styles.inlineError}>{tcpExposureError}</div>}
-                {tcpExposures.length === 0 ? (
-                  <div className="muted-text">No public TCP ports configured.</div>
-                ) : (
-                  <div className={styles.ingressList}>
-                    {tcpExposures.map((exposure) => (
-                      <TcpExposureRow key={exposure.id} exposure={exposure} onRemove={() => void removeTcpExposureRow(exposure)} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            </ExpandableCard>
-
-            {/* ── Project config card ──────────────────────────────────── */}
-            <ExpandableCard
-              icon={<FileText size={13} />}
-              title="Project Config"
-              storageKey="project.config"
-              className={styles.runtimeCard}
-              summary={runtimeChanged ? <span className={styles.unsavedHint}>Unsaved changes</span> : undefined}
-              actions={(
-                <Button
-                  type="button"
-                  size="xs"
-                  onClick={() => void saveProjectConfig()}
-                  disabled={savingConfig || !runtimeChanged}
-                >
-                  {savingConfig ? <Loader size={12} className="spin" /> : <Save size={12} />}
-                  Save
-                </Button>
-              )}
-            >
-              {configError && <div className="alert alert-error">{configError}</div>}
-
-              <form id={runtimeFormId} className={styles.runtimeForm} onSubmit={(e) => void saveProjectConfig(e)}>
-                <ProjectGroupField value={configGroupName} onValueChange={setConfigGroupName} projects={allProjects ?? []} disabled={savingConfig} />
-                <ConfigSection title="Repository" storageKey="repository">
-                  <div className="field field-wide">
-                    <label>GitHub repo <span className="hint mono">(owner/repo)</span></label>
-                    <input type="text" value={configRepo} onChange={(e) => setConfigRepo(e.target.value)} />
-                  </div>
-                  <div className="field">
-                    <label>GitHub token</label>
-                    <GitHubTokenSelect
-                      credentials={credentials}
-                      value={configGithubCredentialId}
-                      onValueChange={setConfigGithubCredentialId}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>
-                      <GitBranch size={12} />
-                      Auto-deploy branch
-                      <span className="hint"> (new commits here deploy automatically)</span>
-                    </label>
-                    <ActionSelect
-                      value={configAutoDeployBranch}
-                      onValueChange={setConfigAutoDeployBranch}
-                      options={[
-                        { value: "", label: "Off — no auto-deploy" },
-                        ...branches.map((b) => ({
-                          value: b.name,
-                          label: b.name,
-                        })),
-                        ...(configAutoDeployBranch && !branches.some((b) => b.name === configAutoDeployBranch)
-                          ? [{ value: configAutoDeployBranch, label: `Current: ${configAutoDeployBranch}` }]
-                          : []),
-                      ]}
-                      action={(
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon-sm"
-                          onClick={() => void loadBranches()}
-                          disabled={loadingBranches || !configRepo}
-                          title="Fetch branches from GitHub"
-                        >
-                          {loadingBranches ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}
-                        </Button>
-                      )}
-                    />
-                    {branchError && <div style={{ fontSize: "0.78rem", color: "var(--danger)", marginTop: 4 }}>{branchError}</div>}
-                  </div>
-                </ConfigSection>
-
-
-                <ConfigSection title="Compose & Nginx" storageKey="compose-nginx" defaultOpen={false}>
-                  {(project.availableComposeFiles.length > 0 || project.composeFile) && (
-                    <div className="field">
-                      <label>Compose file</label>
-                      <ActionSelect
-                        value={configComposeFile}
-                        onValueChange={setConfigComposeFile}
-                        options={[
-                          ...project.availableComposeFiles.map((file) => ({ value: file, label: file })),
-                          ...(project.composeFile && !project.availableComposeFiles.includes(project.composeFile)
-                            ? [{ value: project.composeFile, label: project.composeFile }]
-                            : []),
-                        ]}
-                        action={(
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="icon-sm"
-                            onClick={() => setComposeFileDialogOpen(true)}
-                            disabled={!project.composeFile}
-                            title="View docker-compose.yml"
-                          >
-                            <FileText size={13} />
+                        {logsOutput !== null && (
+                          <Button type="button" variant="ghost" size="sm" onClick={() => setLogsOutput(null)}>
+                            <X size={13} />
+                            Clear
                           </Button>
                         )}
-                      />
+                      </div>
+                      {logsOutput !== null && (
+                        <pre className="output-block" style={{ maxHeight: 480, overflowY: "auto" }}>
+                          {parseAnsi(logsOutput)}
+                        </pre>
+                      )}
                     </div>
-                  )}
-                  <div className="field field-wide" style={{ gridColumn: "1 / -1" }}>
-                    <label>
-                      Extra Nginx config
-                      <span className="hint"> (raw directives appended inside the proxy location block, e.g. client_max_body_size)</span>
-                    </label>
-                    <textarea
-                      className="mono"
-                      rows={4}
-                      placeholder={"client_max_body_size 520M;\nclient_body_timeout 300s;\nproxy_read_timeout 300s;\nproxy_send_timeout 300s;"}
-                      value={configNginxExtra}
-                      onChange={(e) => setConfigNginxExtra(e.target.value)}
-                    />
-                  </div>
-                  <div className="field field-wide" style={{ gridColumn: "1 / -1" }}>
-                    <label>
-                      Extra Nginx blocks <span className="hint">(HTTPS server only — raw blocks appended after the proxy location, e.g. an extra `location`. Use {"{{PORT}}"} for this project's internal port)</span>
-                    </label>
-                    <textarea
-                      className="mono"
-                      rows={6}
-                      placeholder={'location /specific/url {\n    proxy_pass http://127.0.0.1:{{PORT}};\n    proxy_http_version 1.1;\n    proxy_set_header X-specific-route-only "das";\n\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n}'}
-                      value={configNginxExtraBlocks}
-                      onChange={(e) => setConfigNginxExtraBlocks(e.target.value)}
-                    />
-                  </div>
-                </ConfigSection>
-
-
-                <ConfigSection title="Health check" storageKey="health-check">
-                  <div className="field">
-                    <label>Domain</label>
-                    <AppSelect
-                      value={configHealthDomainId === null ? "" : String(configHealthDomainId)}
-                      onValueChange={(value) => setConfigHealthDomainId(value ? Number(value) : null)}
-                      disabled={domains.length === 0}
-                      placeholder="Select a domain"
-                      options={domains.length > 0
-                        ? domains.map((domain) => ({
-                            value: String(domain.id),
-                            label: domain.useSsl ? domain.domain : `${domain.domain} (SSL off)`,
-                          }))
-                        : [{ value: "", label: "No domains available", disabled: true }]}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>Path</label>
-                    <input type="text" placeholder="/health" value={configHealthEndpoint} onChange={(e) => setConfigHealthEndpoint(e.target.value)} />
-                  </div>
-                  <div className="field" style={{ minWidth: 120, flex: "none" }}>
-                    <label>Interval</label>
-                    <AppSelect
-                      value={String(configIntervalS)}
-                      onValueChange={(value) => setConfigIntervalS(Number(value))}
-                      options={INTERVALS.map((interval) => ({
-                        value: String(interval.value),
-                        label: interval.label,
-                      }))}
-                    />
-                  </div>
-                  <div className="field" style={{ minWidth: 140, flex: "none" }}>
-                    <label>After deploy <span className="hint">(wait up to)</span></label>
-                    <NumberInput
-                      min={5}
-                      max={600}
-                      suffix="s"
-                      aria-label="Seconds to wait for the health check after a deploy"
-                      value={configHealthGraceS}
-                      onValueChange={(seconds) => setConfigHealthGraceS(seconds ?? 60)}
-                    />
-                  </div>
-                  <div className="field">
-                    <label className={styles.switchField}>
-                      <Switch checked={configAutoRollback} onCheckedChange={setConfigAutoRollback} />
-                      <span>
-                        <span>Roll back if unhealthy</span>
-                        <span>
-                          When a deploy's health check doesn't pass in time, restore the previous revision.
-                          Otherwise the new revision keeps running and is marked unhealthy.
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                  {!configHealthEndpoint && (
-                    <p className="hint">Without a path, deploys aren't verified: a deploy counts as successful once its containers start.</p>
-                  )}
-                </ConfigSection>
-              </form>
-            </ExpandableCard>
-
-            {project.githubRepo && (
-              <ExpandableCard
-                icon={<GitBranch size={13} />}
-                title="GitHub"
-                storageKey="project.github"
-                defaultOpen
-                summary={(
-                  <span className="mono" style={{ fontSize: 12 }}>
-                    {project.githubRepo}
-                    {project.autoDeployBranch && ` · ${project.autoDeployBranch}`}
-                    {project.lastCommitSha && ` @ ${project.lastCommitSha.slice(0, 7)}`}
-                  </span>
-                )}
-                actions={(
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    onClick={() => void loadBranches(true)}
-                    disabled={loadingBranches}
-                    title={project.branchesFetchedAt ? `Branch list updated $<TimeAgo ts={project.branchesFetchedAt} />` : "Fetch branches from GitHub"}
-                  >
-                    {loadingBranches ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
-                    Refresh branches
-                  </Button>
-                )}
-              >
-
-                <div className={styles.detailGrid}>
-                  <DetailRow label="Repository" value={<a className="ext-link mono" href={`https://github.com/${project.githubRepo}`} target="_blank" rel="noopener noreferrer">{project.githubRepo} <ExternalLink size={10} /></a>} />
-                  <DetailRow label="Auto-deploy branch" value={project.autoDeployBranch ? <span className="mono">{project.autoDeployBranch}</span> : <span className="muted-text">Off</span>} />
-                  <div className={styles.detailRowWide}>
-                    <DetailRow label="Deploy trigger" value={<DeployTriggerControl project={project} onChange={setProject} />} />
-                  </div>
-                  {project.lastCommitSha && (
-                    <>
-                      <DetailRow label="Last commit" value={<span className="mono" style={{ fontSize: "0.82em" }}>{project.lastCommitSha.slice(0, 7)}</span>} />
-                      {project.lastCommitMessage && <DetailRow label="Message" value={<span style={{ fontSize: "0.88em" }}>{project.lastCommitMessage}</span>} />}
-                      {project.lastCommitAuthor && <DetailRow label="Author" value={<span className="mono">{project.lastCommitAuthor}</span>} />}
-                      {project.lastCommitAt && <DetailRow label="Committed" value={<span className="mono">{formatShortDateTime(project.lastCommitAt, "—")}</span>} />}
-                    </>
-                  )}
-                </div>
-
-                {branches.length > 0 && (
-                  <div className={styles.historyBlock}>
-                    <div className={styles.historyHeading}>
-                      Branches ({branches.length})
-                      {project.branchesFetchedAt && <span> · updated <TimeAgo ts={project.branchesFetchedAt} /></span>}
-                    </div>
-                    <ul className={styles.historyList}>
-                      {branches.map((b) => (
-                        <li key={b.name}>
-                          <span className={cn("mono", styles.branchName, b.name === project.autoDeployBranch && styles.branchAuto)}>
-                            <GitCommit size={11} />
-                            {b.name}
-                          </span>
-                          {b.name === project.autoDeployBranch && <span className={styles.branchAutoTag}>auto-deploy</span>}
-                          <span className={styles.historyMessage} title={b.commitMessage ?? undefined}>{b.commitMessage ?? ""}</span>
-                          {b.commitAuthor && <span className={styles.historyMeta}>{b.commitAuthor}</span>}
-                        </li>
-                      ))}
-                    </ul>
+                  </>
+                ) : (
+                  <div className={styles.dockerContainerEmpty}>
+                    No stack found for <span className="mono">{expectedStackName}</span>
                   </div>
                 )}
-
               </ExpandableCard>
+
+              <ResourceUsageCard projectId={project.id} />
+              </>
             )}
 
-            <DeploymentsCard
-              deploys={deploys}
-              revisions={revisions}
-              loading={loadingDeploys}
-              rollingBack={rollingBack}
-              onRollback={(target) => void handleRollback(target)}
+            {tab === "deploys" && (
+              <>
+              {project.githubRepo && (
+                <ExpandableCard
+                  icon={<GitBranch size={13} />}
+                  title="GitHub"
+                  storageKey="project.github"
+                  defaultOpen
+                  summary={(
+                    <span className="mono" style={{ fontSize: 12 }}>
+                      {project.githubRepo}
+                      {project.autoDeployBranch && ` · ${project.autoDeployBranch}`}
+                      {project.lastCommitSha && ` @ ${project.lastCommitSha.slice(0, 7)}`}
+                    </span>
+                  )}
+                  actions={(
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => void loadBranches(true)}
+                      disabled={loadingBranches}
+                      title={project.branchesFetchedAt ? `Branch list updated $<TimeAgo ts={project.branchesFetchedAt} />` : "Fetch branches from GitHub"}
+                    >
+                      {loadingBranches ? <Loader size={12} className="spin" /> : <RefreshCw size={12} />}
+                      Refresh branches
+                    </Button>
+                  )}
+                >
+
+                  <div className={styles.detailGrid}>
+                    <DetailRow label="Repository" value={<a className="ext-link mono" href={`https://github.com/${project.githubRepo}`} target="_blank" rel="noopener noreferrer">{project.githubRepo} <ExternalLink size={10} /></a>} />
+                    <DetailRow label="Auto-deploy branch" value={project.autoDeployBranch ? <span className="mono">{project.autoDeployBranch}</span> : <span className="muted-text">Off</span>} />
+                    <div className={styles.detailRowWide}>
+                      <DetailRow label="Deploy trigger" value={<DeployTriggerControl project={project} onChange={setProject} />} />
+                    </div>
+                    {project.lastCommitSha && (
+                      <>
+                        <DetailRow label="Last commit" value={<span className="mono" style={{ fontSize: "0.82em" }}>{project.lastCommitSha.slice(0, 7)}</span>} />
+                        {project.lastCommitMessage && <DetailRow label="Message" value={<span style={{ fontSize: "0.88em" }}>{project.lastCommitMessage}</span>} />}
+                        {project.lastCommitAuthor && <DetailRow label="Author" value={<span className="mono">{project.lastCommitAuthor}</span>} />}
+                        {project.lastCommitAt && <DetailRow label="Committed" value={<span className="mono">{formatShortDateTime(project.lastCommitAt, "—")}</span>} />}
+                      </>
+                    )}
+                  </div>
+
+                  {branches.length > 0 && (
+                    <div className={styles.historyBlock}>
+                      <div className={styles.historyHeading}>
+                        Branches ({branches.length})
+                        {project.branchesFetchedAt && <span> · updated <TimeAgo ts={project.branchesFetchedAt} /></span>}
+                      </div>
+                      <ul className={styles.historyList}>
+                        {branches.map((b) => (
+                          <li key={b.name}>
+                            <span className={cn("mono", styles.branchName, b.name === project.autoDeployBranch && styles.branchAuto)}>
+                              <GitCommit size={11} />
+                              {b.name}
+                            </span>
+                            {b.name === project.autoDeployBranch && <span className={styles.branchAutoTag}>auto-deploy</span>}
+                            <span className={styles.historyMessage} title={b.commitMessage ?? undefined}>{b.commitMessage ?? ""}</span>
+                            {b.commitAuthor && <span className={styles.historyMeta}>{b.commitAuthor}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                </ExpandableCard>
+              )}
+
+              <DeploymentsCard
+                deploys={deploys}
+                revisions={revisions}
+                loading={loadingDeploys}
+                rollingBack={rollingBack}
+                onRollback={(target) => void handleRollback(target)}
+              />
+
+              </>
+            )}
+
+            {tab === "domains" && (
+              <DomainsTab project={project} setProject={setProject} domains={domains} setDomains={setDomains} />
+            )}
+
+            <SettingsTab
+              project={project}
+              setProject={setProject}
+              domains={domains}
+              credentials={credentials}
+              branches={branches}
+              loadingBranches={loadingBranches}
+              branchError={branchError}
+              loadBranches={loadBranches}
+              hidden={tab !== "settings"}
             />
-
-            <ResourceUsageCard projectId={project.id} />
-
-            <ExpandableCard
-              icon={<FolderDot size={13} />}
-              title="Project Metadata"
-              storageKey="project.metadata"
-              summary={<span className="mono" style={{ fontSize: 12 }}>#{project.id}</span>}
-            >
-              <div className={styles.detailGrid}>
-                <DetailRow label="Project ID" value={<span className="mono">{project.id}</span>} />
-                <DetailRow label="Created" value={<span className="mono">{formatShortDateTime(project.createdAt)}</span>} />
-                <DetailRow label="Updated" value={<span className="mono">{formatShortDateTime(project.updatedAt)}</span>} />
-              </div>
-            </ExpandableCard>
           </>
         ) : null}
 
@@ -1651,9 +1092,6 @@ export default function ProjectDetails() {
         <Suspense fallback={null}>
           <ContainerLogDialog container={logStreamContainer} onClose={() => setLogStreamContainer(null)} />
         </Suspense>
-      )}
-      {composeFileDialogOpen && project && (
-        <ComposeFileDialog projectId={project.id} projectName={project.name} onClose={() => setComposeFileDialogOpen(false)} />
       )}
       {envManagerOpen && project && (
         <EnvManagerDialog
