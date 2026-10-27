@@ -9,7 +9,7 @@ import { Switch } from "../../components/ui/switch";
 import { Badge } from "../../components/ui/badge";
 import { useInsights } from "./InsightsContext";
 import { useRequestSample } from "./data";
-import { ChartState, formatClock, formatMs, Notice } from "./shared";
+import { ChartState, CoverageNote, formatClock, formatMs, Notice } from "./shared";
 import { flagsFor, LOG_LIMIT, maskIp, severityVariant, statusColor } from "./traffic";
 import styles from "./Insights.module.scss";
 
@@ -101,7 +101,7 @@ const STATUS_FILTERS = [
 ];
 
 export default function RequestsSection() {
-  const { maskIps, rules } = useInsights();
+  const { maskIps, rules, hours, periodLabel } = useInsights();
   const sample = useRequestSample();
   const [params, setParams] = useSearchParams();
   const search = params.get("q") ?? "";
@@ -164,6 +164,7 @@ export default function RequestsSection() {
         {rows.length.toLocaleString()} of {sample.entries.length.toLocaleString()} requests
         {sample.data?.truncated ? ` · the most recent ${LOG_LIMIT} in this window` : ""}
       </div>
+      <CoverageNote coverage={sample.data?.coverage} hours={hours} periodLabel={periodLabel} />
 
       {sample.data && !sample.data.available ? (
         <Notice tone="bad">{sample.data.error ?? "Nginx access log not found."}</Notice>

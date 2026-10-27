@@ -370,19 +370,42 @@ function parseNginxContent(
   };
 }
 
-function readNginxLog(periodHours: number, bytes: number, cb: (err: Error | null, stdout: string) => void): void {
+/** What the traffic numbers actually cover: the oldest log entry read, whether the read
+ *  was cut short by the line or byte cap (so older traffic in the period is missing),
+ *  and the Clear cutoff if one applies. */
+export interface LogCoverage {
+  oldestAt: string | null;
+  capped: boolean;
+  clearedAt: string | null;
+}
+
+const LOG_LINE_CAP = 20_000;
+
+function oldestEntryAt(content: string): string | null {
+  for (const line of content.split("\n")) {
+    const entry = line ? parseNginxLine(line) : null;
+    if (entry?.date) return entry.date.toISOString();
+  }
+  return null;
+}
+
+function readNginxLog(periodHours: number, bytes: number, cb: (err: Error | null, stdout: string, coverage: LogCoverage) => void): void {
   const row = getDatabase().prepare("SELECT value FROM app_meta WHERE key = ?").get(CLEARED_AT_KEY) as { value: string } | undefined;
   const cutoff = row ? Date.parse(row.value) : 0;
   const since = new Date(Math.max(Date.now() - periodHours * 3600_000, Number.isFinite(cutoff) ? cutoff : 0)).toISOString();
   // Official nginx writes access logs to stdout and errors to stderr. Reading the
   // Docker API works as the app user without host log permissions or sudo.
-  execFile("docker", ["logs", "--since", since, "--tail", "20000", "stackport-nginx"],
+  const clearedAt = row && cutoff > Date.now() - periodHours * 3600_000 ? row.value : null;
+  execFile("docker", ["logs", "--since", since, "--tail", String(LOG_LINE_CAP), "stackport-nginx"],
     { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
-      if (err) { cb(new Error("Cannot read stackport-nginx Docker logs. Check the container and Docker access."), ""); return; }
+      if (err) { cb(new Error("Cannot read stackport-nginx Docker logs. Check the container and Docker access."), "", { oldestAt: null, capped: false, clearedAt }); return; }
       // Preserve complete lines when bounding the returned window.
       const content = Buffer.from(stdout);
-      const tail = content.length > bytes ? content.subarray(content.length - bytes).toString("utf8") : stdout;
-      cb(null, content.length > bytes ? tail.slice(tail.indexOf("\n") + 1) : tail);
+      const byteCapped = content.length > bytes;
+      const tail = byteCapped ? content.subarray(content.length - bytes).toString("utf8") : stdout;
+      const text = byteCapped ? tail.slice(tail.indexOf("\n") + 1) : tail;
+      const lineCapped = stdout.split("\n").filter(Boolean).length >= LOG_LINE_CAP;
+      cb(null, text, { oldestAt: oldestEntryAt(text), capped: byteCapped || lineCapped, clearedAt });
     });
 }
 
@@ -398,18 +421,19 @@ router.get("/nginx", (req, res) => {
   const excludeSelf = excludeServerIp || excludeHealthChecks;
   const excludeIps = excludeServerIp ? serverIps : new Set<string>();
 
-  const parse = (stdout: string, logPath: string) =>
+  const parse = (stdout: string, logPath: string, coverage: LogCoverage) =>
     res.json({
       available: true,
       logPath,
       period: periodKey,
       serverIps: Array.from(serverIps),
+      coverage,
       ...parseNginxContent(stdout, false, periodHours, excludeIps, excludeSelf),
     });
 
-  readNginxLog(periodHours, tailBytes, (err, stdout) => {
+  readNginxLog(periodHours, tailBytes, (err, stdout, coverage) => {
     if (err) { res.json({ available: false, error: err.message, serverIps: Array.from(serverIps) }); return; }
-    parse(stdout, NGINX_LOG_SOURCE);
+    parse(stdout, NGINX_LOG_SOURCE, coverage);
   });
 });
 
@@ -487,18 +511,19 @@ router.get("/nginx/requests", (req, res) => {
   const hostFilter = typeof req.query.host === "string" && req.query.host ? req.query.host : undefined;
   const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "500"), 10) || 500, 1), 2000);
 
-  const parse = (stdout: string, logPath: string) =>
+  const parse = (stdout: string, logPath: string, coverage: LogCoverage) =>
     res.json({
       available: true,
       logPath,
       period: periodKey,
       serverIps: Array.from(serverIps),
+      coverage,
       ...extractNginxEntries(stdout, false, periodHours, excludeIps, excludeSelf, hostFilter, limit),
     });
 
-  readNginxLog(periodHours, tailBytes, (err, stdout) => {
+  readNginxLog(periodHours, tailBytes, (err, stdout, coverage) => {
     if (err) { res.json({ available: false, error: err.message, serverIps: Array.from(serverIps) }); return; }
-    parse(stdout, NGINX_LOG_SOURCE);
+    parse(stdout, NGINX_LOG_SOURCE, coverage);
   });
 });
 

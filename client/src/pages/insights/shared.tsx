@@ -4,6 +4,7 @@ import { CHART_TOOLTIP_STYLE } from "../../lib/charts";
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 import styles from "./Insights.module.scss";
+import type { LogCoverage } from "../../api/types";
 
 // ── Period ───────────────────────────────────────────────────────────────
 export type PeriodId = "24h" | "7d" | "30d";
@@ -192,4 +193,37 @@ export function ChartState({ loading, empty, emptyText, height = 200, children }
 
 export function Notice({ tone = "info", children }: { tone?: "info" | "bad"; children: React.ReactNode }) {
   return <div className={cn(styles.notice, tone === "bad" && styles.noticeBad)}>{children}</div>;
+}
+
+/** Slack before a late first entry counts as missing history rather than a quiet hour. */
+const COVERAGE_SLACK_MS = 3600_000;
+
+/**
+ * Says when the traffic shown doesn't span the whole chosen period: the read was capped
+ * (only the newest requests), the view was cleared, or the log starts later (Docker keeps
+ * a few rotated files, and history restarts when the nginx container is recreated).
+ */
+export function CoverageNote({ coverage, hours, periodLabel }: { coverage: LogCoverage | undefined; hours: number; periodLabel: string }) {
+  if (!coverage) return null;
+  const periodStart = Date.now() - hours * 3600_000;
+  const from = coverage.oldestAt ? formatDateTime(coverage.oldestAt) : null;
+  if (coverage.capped) {
+    return (
+      <Notice>
+        Only the most recent requests are read{from ? `, back to ${from}` : ""}. Older traffic in the last {periodLabel} isn't counted.
+      </Notice>
+    );
+  }
+  if (coverage.clearedAt) {
+    return <Notice>Counting from {formatDateTime(coverage.clearedAt)}, when this view was cleared.</Notice>;
+  }
+  if (coverage.oldestAt && Date.parse(coverage.oldestAt) > periodStart + COVERAGE_SLACK_MS) {
+    return (
+      <Notice>
+        The log reaches back to {from}. Anything earlier in the last {periodLabel} isn't available (Docker keeps a few
+        rotated nginx log files, and history restarts when the nginx container is recreated), or there was no traffic.
+      </Notice>
+    );
+  }
+  return null;
 }

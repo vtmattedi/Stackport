@@ -54,7 +54,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | ✅ |
 | 12 | Webhooks first, poller as fallback | R3 | 🟡 | S | — | ✅ |
 | 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | ✅ |
-| 14 | Label the traffic window | R2 | ⚪ | S | — | |
+| 14 | Label the traffic window | R2 | ⚪ | S | — | ✅ |
 | 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | |
 | 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | |
 | 17 | Navigation consolidation | U1 | 🟡 | M | 13, 16 | |
@@ -372,7 +372,7 @@ learns that IP from requests carrying Stackport's health-check user agent. Insig
 "Block IP at edge" (which pointed at the removed firewall page) is now "Copy IP". Old
 URLs redirect.
 
-### PR 14 — Label the traffic window (R2)
+### PR 14 — Label the traffic window (R2) ✅
 
 Insights traffic reads at most 20,000 recent nginx log lines, and history resets when
 the container is recreated. Show the time range actually covered next to the period

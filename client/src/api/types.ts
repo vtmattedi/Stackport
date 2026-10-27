@@ -717,12 +717,21 @@ export interface NginxTimePoint {
   serverErrors: number;
 }
 
+/** What a traffic response actually covers (see the server's readNginxLog). */
+export interface LogCoverage {
+  oldestAt: string | null;
+  /** The read hit the line or byte cap, so older traffic in the period is missing. */
+  capped: boolean;
+  clearedAt: string | null;
+}
+
 export interface NginxMetrics {
   available: boolean;
   error?: string;
   logPath?: string;
   period?: string;
   serverIps?: string[];
+  coverage?: LogCoverage;
   totalRequests?: number;
   errorRate?: number;
   statusCodes?: Record<string, number>;
@@ -757,6 +766,7 @@ export interface NginxLogEntriesResult {
   logPath?: string;
   period?: string;
   serverIps?: string[];
+  coverage?: LogCoverage;
   hasExtendedFormat?: boolean;
   entries: NginxLogEntry[];
   truncated: boolean;
