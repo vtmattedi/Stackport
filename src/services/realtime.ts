@@ -58,10 +58,9 @@ function emitProjectBuildProgress(event: ProjectBuildProgressEvent): void {
 }
 
 export function emitProjectDeploy(event: ProjectDeployEvent): void {
+  // Output reaches clients through the action registry (masked, numbered, attached
+  // per action); this only feeds it and the build-progress estimate.
   const key = projectRepoKey(event.projectId);
-  // The registry masks what it stores and streams; this older per-line stream gets
-  // the same masking.
-  io?.to(`deploy:${event.projectId}`).emit("project:deploy", { ...event, message: actionRegistry.mask(key, event.message) });
   actionRegistry.append(key, event.message);
 
   // Best-effort progress estimate, parsed alongside the raw stream above — never
@@ -124,15 +123,13 @@ export function actionSummary(record: ActionRecord): Omit<ActionRecord, "log"> {
   return summary;
 }
 
-// "actions:changed" is the older bare ping (clients refetch the lists); action:started
-// and action:finished carry the record. Output goes only to clients that attached to
-// the action (socketManager's action:attach), in its own room.
+// action:started and action:finished carry the record to every client. Output goes
+// only to clients that attached to the action (socketManager's action:attach), in its
+// own room.
 actionRegistry.onStart((record) => {
-  io?.to("global").emit("actions:changed");
   io?.to("global").emit("action:started", actionSummary(record));
 });
 actionRegistry.onFinish((record) => {
-  io?.to("global").emit("actions:changed");
   io?.to("global").emit("action:finished", actionSummary(record));
 });
 actionRegistry.onOutput((record, chunk) => {

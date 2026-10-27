@@ -237,16 +237,7 @@ export interface ProjectBranchesResult {
   fetchedAt: string | null;
 }
 
-export interface ProjectDeployEvent {
-  projectId: number;
-  action: "build" | "deploy" | "stop" | "stop-purge" | "pull" | "compose" | "upload" | "recreate" | "force-rebuild" | "redeploy-service" | "drop-volumes";
-  stream: "stdout" | "stderr" | "status";
-  message: string;
-  ok?: boolean;
-  done?: boolean;
-}
-
-/** Lean, push-only companion to ProjectDeployEvent — arrives only when the build
+/** Build progress for a project's running action — arrives only when the build
  *  progress estimate actually changes, not on every raw output chunk. No log/message
  *  field; on `done`, fetch the final ActionRecord (GET /projects/:id/actions) once
  *  for the full success/fail detail. */
@@ -362,11 +353,6 @@ export interface SystemActionsSnapshot {
   docker: ActionRecord | null;
 }
 
-export interface RunningProjectAction {
-  action: ActionRecord;
-  projectId: number | null;
-  projectName: string | null;
-}
 
 export interface Credential {
   id: number;

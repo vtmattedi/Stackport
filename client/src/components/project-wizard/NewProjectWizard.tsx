@@ -20,10 +20,10 @@ import {
   XCircle,
 } from "lucide-react";
 import { api, ApiError } from "../../api/client";
-import type { ComposeEnvFileRef, Credential, DeployTrigger, GitHubBranch, Project, ProjectDeployEvent, ProjectEnvFile } from "../../api/types";
-import { useSocket } from "../../context/SocketContext";
+import type { ComposeEnvFileRef, Credential, DeployTrigger, GitHubBranch, Project, ProjectEnvFile } from "../../api/types";
 import { useSystem } from "../../context/SystemContext";
-import { waitForActionResult } from "../../context/ActionTracker";
+import { useRunningActionRecords, waitForActionResult } from "../../context/ActionTracker";
+import { useActionOutput } from "../../hooks/useActionOutput";
 import { notify } from "../../lib/notify";
 import { cn } from "../../lib/utils";
 import { ActionSelect, AppSelect } from "../AppSelect";
@@ -236,7 +236,6 @@ interface NewProjectWizardProps {
 export function NewProjectWizard({ projects, credentials, resumeProject, onClose }: NewProjectWizardProps) {
   const navigate = useNavigate();
   const confirm = useConfirm();
-  const { subscribeDeploy, unsubscribeDeploy } = useSocket();
   const { refreshProjects, startProjectAction, issueProjectDomainSsl } = useSystem();
   const [state, set] = useReducer(reducer, INITIAL);
   const runIdRef = useRef(0);
@@ -265,20 +264,20 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeProject?.id]);
 
-  // Live output for whichever stage is running; the final action record replaces it when it ends.
+  // Live output for whichever stage is running, attached through the action tracker;
+  // the final action record replaces it when it ends.
+  const runningList = useRunningActionRecords();
+  const running = project ? runningList.find((r) => r.key === `project:${project.id}:repo`) ?? null : null;
+  const output = useActionOutput(running?.id ?? null);
   useEffect(() => {
-    if (!project) return;
-    const handler = (event: ProjectDeployEvent) => {
-      if (event.projectId !== project.id) return;
-      if (logTargetRef.current === "fetch" && (event.action === "pull" || event.action === "upload")) {
-        set((s) => ({ fetchLog: `${s.fetchLog}${event.message}`.slice(-LOG_LIMIT) }));
-      } else if (logTargetRef.current === "deploy" && (event.action === "pull" || event.action === "compose" || event.action === "build")) {
-        set((s) => ({ deployLog: `${s.deployLog}${event.message}`.slice(-LOG_LIMIT) }));
-      }
-    };
-    subscribeDeploy<ProjectDeployEvent>(project.id, handler);
-    return () => unsubscribeDeploy<ProjectDeployEvent>(project.id, handler);
-  }, [project?.id, subscribeDeploy, unsubscribeDeploy]);
+    if (!running || !output.text) return;
+    if (logTargetRef.current === "fetch" && (running.kind === "pull" || running.kind === "upload")) {
+      set({ fetchLog: output.text.slice(-LOG_LIMIT) });
+    } else if (logTargetRef.current === "deploy" && (running.kind === "pull" || running.kind === "compose" || running.kind === "build")) {
+      set({ deployLog: output.text.slice(-LOG_LIMIT) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [output.text]);
 
   // ── Source ────────────────────────────────────────────────────────────────
 

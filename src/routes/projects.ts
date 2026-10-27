@@ -157,24 +157,6 @@ router.get("/", requireAuth, (_req: Request, res: Response): void => {
   res.json(attachDomains(rows.map(rowToProject)));
 });
 
-/** Snapshot of every project repo/ssl action still running, with project names attached — lets the client resume toasts for actions started before it connected (e.g. a build kicked off from another tab, or one still running across a page reload). */
-router.get("/actions/running", requireAuth, (_req: Request, res: Response): void => {
-  const rows = getDatabase()
-    .prepare("SELECT id, name FROM projects")
-    .all() as Pick<ProjectRow, "id" | "name">[];
-  const names = new Map(rows.map((row) => [row.id, row.name]));
-
-  const running = actionRegistry
-    .list("project:")
-    .filter((action) => action.status === "running" && (action.key.endsWith(":repo") || action.key.endsWith(":ssl")))
-    .map((action) => ({
-      action,
-      projectId: action.projectId ?? null,
-      projectName: action.projectId != null ? names.get(action.projectId) ?? null : null,
-    }));
-  res.json(running);
-});
-
 router.get("/repo-folder-scan", requireAuth, async (_req: Request, res: Response): Promise<void> => {
   try {
     const result = await scanProjectRepoFolders();

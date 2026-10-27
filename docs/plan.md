@@ -51,7 +51,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 8 | Action runner, server side (includes T2) | RUN-1, T2 | 🟠 | L | 2 | ✅ |
 | 9 | Data layer foundation and runner client | T5a, RUN-2 | 🟡 | M | 8 | ✅ |
 | 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | ✅ |
-| 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | |
+| 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | ✅ |
 | 12 | Webhooks first, poller as fallback | R3 | 🟡 | S–M | — | |
 | 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | |
 | 14 | Label the traffic window | R2 | ⚪ | S | — | |
@@ -319,11 +319,23 @@ fetch/state code as each one moves.
   `sessionStorage` sequence idea wasn't needed: a reload replays the full log, and a
   reconnect resumes from the last sequence held in memory.
 
-### PR 11 — Data layer cleanup (T5c)
+### PR 11 — Data layer cleanup (T5c) ✅
 
 - Delete `pollProjectAction` and `SystemContext`'s store.
 - Lower the global rate limit from 1000 per 15 minutes once polling is gone, sized from
   measured traffic.
+
+**Shipped notes:**
+- Both polling loops went in PR 9. This PR removes what nothing used any more: the
+  per-line `project:deploy` socket stream and the `actions:changed` ping on the server,
+  `GET /api/projects/actions/running`, and the client's deploy-subscription helpers.
+  The wizard's live logs attach through the tracker like the project page.
+- `SystemContext`'s selector store stays: it is a thin `useSyncExternalStore` layer that
+  lets a component re-render only for its slice, over data that now lives in the query
+  cache (no second copy). Replacing it would mean rewriting ~15 consumers for no change
+  in behavior.
+- Global rate limit: 600 per 15 minutes (was 1000), from measured traffic: about 11 API
+  requests per full page load, 122 for 54 in-app page changes, none while idle.
 
 ---
 

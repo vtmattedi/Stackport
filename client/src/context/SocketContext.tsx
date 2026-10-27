@@ -12,10 +12,6 @@ interface SocketContextValue {
   connected: boolean;
   subscribe: <T>(channel: string, handler: (data: T) => void) => void;
   unsubscribe: <T>(channel: string, handler: (data: T) => void) => void;
-  subscribeDeploy: <T>(projectId: number, handler: (data: T) => void) => void;
-  unsubscribeDeploy: <T>(projectId: number, handler: (data: T) => void) => void;
-  subscribeDeploySync: <T>(handler: (data: T) => void) => void;
-  unsubscribeDeploySync: <T>(handler: (data: T) => void) => void;
   subscribeProject: <T>(projectId: number, handler: (data: T) => void) => void;
   unsubscribeProject: <T>(projectId: number, handler: (data: T) => void) => void;
   subscribeGlobal: <T>(handler: (data: T) => void) => void;
@@ -132,31 +128,9 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     s.off(`data:${channel}`, handler as (d: unknown) => void);
   }, []);
 
-  const subscribeDeploy = useCallback(<T,>(projectId: number, handler: (data: T) => void) => {
-    const s = getOrCreate();
-    if (!s) return;
-    s.emit("deploy:subscribe", projectId);
-    s.on("project:deploy", handler as (d: unknown) => void);
-  }, [getOrCreate]);
 
-  const unsubscribeDeploy = useCallback(<T,>(projectId: number, handler: (data: T) => void) => {
-    const s = socketRef.current;
-    if (!s) return;
-    s.emit("deploy:unsubscribe", projectId);
-    s.off("project:deploy", handler as (d: unknown) => void);
-  }, []);
 
-  const subscribeDeploySync = useCallback(<T,>(handler: (data: T) => void) => {
-    const s = getOrCreate();
-    if (!s) return;
-    s.on("project:deploy:sync", handler as (d: unknown) => void);
-  }, [getOrCreate]);
 
-  const unsubscribeDeploySync = useCallback(<T,>(handler: (data: T) => void) => {
-    const s = socketRef.current;
-    if (!s) return;
-    s.off("project:deploy:sync", handler as (d: unknown) => void);
-  }, []);
 
   const subscribeProject = useCallback(<T,>(projectId: number, handler: (data: T) => void) => {
     const s = getOrCreate();
@@ -227,8 +201,8 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo<SocketContextValue>(() => ({
-    connected, subscribe, unsubscribe, subscribeDeploy, unsubscribeDeploy, subscribeDeploySync, unsubscribeDeploySync, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off,
-  }), [connected, subscribe, unsubscribe, subscribeDeploy, unsubscribeDeploy, subscribeDeploySync, unsubscribeDeploySync, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off]);
+    connected, subscribe, unsubscribe, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off,
+  }), [connected, subscribe, unsubscribe, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off]);
 
   return (
     <SocketContext.Provider value={value}>

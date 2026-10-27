@@ -57,7 +57,6 @@ import type {
   HardwareData,
   ProjectResourceData,
   ProjectResourceSummary,
-  RunningProjectAction,
   ApiToken,
   ActionSummary,
 } from "./types";
@@ -393,8 +392,6 @@ export const api = {
   },
   clearProjectActionLogs: (projectId: number) =>
     request<{ deleted: number }>(`/projects/${projectId}/action-logs`, { method: "DELETE" }),
-  getRunningProjectActions: () =>
-    request<RunningProjectAction[]>("/projects/actions/running"),
   cancelProjectAction: (projectId: number) =>
     request<{ ok: boolean }>(`/projects/${projectId}/actions/cancel`, { method: "POST" }),
   /** Cached branch list (kept fresh by the GitHub poller); `refresh` forces a live GitHub fetch. */
