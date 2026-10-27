@@ -52,7 +52,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 9 | Data layer foundation and runner client | T5a, RUN-2 | 🟡 | M | 8 | ✅ |
 | 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | ✅ |
 | 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | ✅ |
-| 12 | Webhooks first, poller as fallback | R3 | 🟡 | S–M | — | |
+| 12 | Webhooks first, poller as fallback | R3 | 🟡 | S | — | ✅ |
 | 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | |
 | 14 | Label the traffic window | R2 | ⚪ | S | — | |
 | 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | |
@@ -341,7 +341,7 @@ fetch/state code as each one moves.
 
 ## Phase 4: product cleanup
 
-### PR 12 — Webhooks first, poller as fallback (R3)
+### PR 12 — Webhooks first, poller as fallback (R3) ✅
 
 Webhook deploys already exist (`0f05f63`). Remaining:
 - New projects default to the `webhook` trigger when the app has an HTTPS domain
@@ -349,6 +349,13 @@ Webhook deploys already exist (`0f05f63`). Remaining:
 - If a project's webhook status is `failing`, or has been `waiting` for longer than a
   set time, the poller covers it and the UI says so.
 - Existing projects keep their current trigger.
+
+**Shipped notes:** the 30-minute webhook safety check already existed and already
+marked a hook failing when it caught a missed push. What changed: a failing hook is now
+polled at the normal interval until a delivery succeeds, and the wizard defaults new
+GitHub projects to the webhook when Stackport is on HTTPS. A hook still `waiting` for
+its first delivery stays on the 30-minute check: there's no reliable "set up at" time
+to tell a new hook from a broken one.
 
 ### PR 13 — Remove the Hostinger feature (R1)
 

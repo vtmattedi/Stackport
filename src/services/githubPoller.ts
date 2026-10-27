@@ -258,6 +258,21 @@ export function resetGithubTrackingIfChanged(
 const FIRST_POLL_DELAY_MS = 15_000;
 const WEBHOOK_SAFETY_INTERVAL_MS = 30 * 60_000;
 
+/** Projects this poll checks: poller-triggered ones; with the safety check on, webhook
+ *  ones whose last check is older than the safety interval (a push sent while Stackport
+ *  was down is never redelivered); and, also with it on, webhook ones whose hook is
+ *  failing, at the normal interval, until a delivery succeeds again (which marks the
+ *  hook verified). */
+export function selectProjectsToPoll(webhookSafetyCheck: boolean, now = Date.now()): ProjectRow[] {
+  const safetyCutoff = new Date(now - WEBHOOK_SAFETY_INTERVAL_MS).toISOString();
+  return getDatabase().prepare(
+    `SELECT * FROM projects WHERE github_repo IS NOT NULL AND github_repo != '' AND paused = 0
+     AND (deploy_trigger = 'poller'
+          OR (? = 1 AND deploy_trigger = 'webhook'
+              AND (hook_status = 'failing' OR github_checked_at IS NULL OR github_checked_at < ?)))`
+  ).all(webhookSafetyCheck ? 1 : 0, safetyCutoff) as ProjectRow[];
+}
+
 class GitHubPoller {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -346,14 +361,7 @@ class GitHubPoller {
     let errorCount = 0;
 
     try {
-      // Webhook projects get a slow safety check on top of their hook: a push sent while
-      // Stackport was down is never redelivered, and this catches it late instead of never.
-      const safetyCutoff = new Date(Date.now() - WEBHOOK_SAFETY_INTERVAL_MS).toISOString();
-      const projects = db.prepare(
-        `SELECT * FROM projects WHERE github_repo IS NOT NULL AND github_repo != '' AND paused = 0
-         AND (deploy_trigger = 'poller'
-              OR (? = 1 AND deploy_trigger = 'webhook' AND (github_checked_at IS NULL OR github_checked_at < ?)))`
-      ).all(cfg.webhookSafetyCheck ? 1 : 0, safetyCutoff) as ProjectRow[];
+      const projects = selectProjectsToPoll(cfg.webhookSafetyCheck);
 
       outputLines.push(`Found ${projects.length} project(s) with GitHub repos`);
 

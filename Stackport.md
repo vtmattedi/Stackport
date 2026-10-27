@@ -214,6 +214,8 @@ Unchanged in shape from earlier versions of the system: named `.env` files per p
 
 A project's health check is a path on one of its domains, fetched over HTTPS or HTTP to match the domain's SSL setting. With a path and a domain set, every deploy and rollback is verified: after `docker compose up` succeeds, Stackport polls the check every 3 seconds for the project's grace period (default 60 s, 5–600 s). If it never passes, the revision stays the running (`active`) one but is marked unhealthy (`health_failed_at`), the action reports failure, and a "deploy failed its health check" alert is sent when notifications are enabled. With **Roll back if unhealthy** turned on (off by default), a failed deploy then rolls back to the default rollback target; a rollback that fails its own check never triggers another. Without a health check path, a deploy counts as successful once its containers start, as before.
 
+**Deploy triggers.** Each GitHub project picks one: `webhook` (GitHub calls Stackport on every push; needs Stackport published on an HTTPS domain), `poller` (Stackport asks GitHub at the poll interval), or `manual`. New projects start on the webhook when it's available. With the poller's webhook safety check on (the default), webhook projects are also checked every 30 minutes, since a push sent while Stackport was down is never redelivered; if that check finds a commit the hook didn't deliver, the hook is marked failing and the project is polled at the normal interval until a delivery succeeds again.
+
 ---
 
 ## 7. Security model summary

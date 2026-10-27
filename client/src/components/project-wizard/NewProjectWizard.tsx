@@ -380,7 +380,9 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
       branchesError: "error" in branchData ? branchData.error : "",
       branch,
       checkedOutBranch: "",
-      trigger: fresh.deployTrigger,
+      // A new GitHub project starts on the webhook when Stackport can receive one (HTTPS
+      // domain); a resumed project keeps whatever trigger it already has.
+      trigger: !resumeProject && projectSource === "github" && webhook?.available ? "webhook" : fresh.deployTrigger,
       webhookAvailable: !!webhook?.available,
       composeFile: fresh.composeFile ?? fresh.availableComposeFiles[0] ?? "",
       sslReady: !!(system?.certbot?.available && system.certbot.emailConfigured),
