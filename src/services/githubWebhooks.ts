@@ -64,7 +64,7 @@ function githubRequest(method: string, path: string, token: string, body?: unkno
     const req = https.request(`https://api.github.com${path}`, {
       method,
       headers: {
-        "User-Agent": "stackport-mw-vps-manager-webhooks/1.0",
+        "User-Agent": "stackport-webhooks/1.0",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "Authorization": `Bearer ${token}`,

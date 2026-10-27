@@ -44,7 +44,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 |---|---|---|---|---|---|---|
 | 1 | Rollback and auto-deploy correctness | C1, C2 | 🟠 | S | — | ✅ `c893c9c` |
 | 2 | Migration framework | T1 | 🟡 | S–M | — | ✅ |
-| 3 | README, package name, stale todos | T6 | ⚪ | S | — | |
+| 3 | README, package name, stale todos | T6 | ⚪ | S | — | ✅ |
 | 4 | Health-gated deploys | C3 | 🟠 | M | 2 | |
 | 5 | One deploy-history table | T2 | 🟡 | M | 2 | |
 | 6 | API tokens and read-only MCP over HTTP | MCP-1, S5 (part) | 🟠 | M–L | 2 | |
@@ -117,12 +117,14 @@ rebuilds (for example to change a `CHECK` constraint) are therefore off the tabl
 **Tests:** run-once and ordering, partial version, failure rollback, newer database,
 second process, and an upgrade from a released install (`user_version` 0).
 
-### PR 3 — README, package name, stale todos (T6)
+### PR 3 — README, package name, stale todos (T6) ✅
 
 - Add `README.md`: what Stackport is, install command, link to `Stackport.md` and
   `Skills.md`.
 - Rename the package from `stackport-mw-vps-manager` to `stackport`, regenerating
   `package-lock.json` with npm (not by hand). The Docker image name is unaffected.
+  The client package keeps its name: regenerating its lockfile pulls in unrelated
+  changes, and the name isn't shown anywhere.
 - Replace `todos.md`: webhook deploys are already implemented; point to this plan.
 
 ### PR 4 — Health-gated deploys (C3)

@@ -68,7 +68,7 @@ let lastRateRemaining: number | null = null;
 function httpGet(url: string, token: string | null): Promise<GitHubResponse> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {
-      "User-Agent": "stackport-mw-vps-manager-github-poller/1.0",
+      "User-Agent": "stackport-github-poller/1.0",
       "Accept": "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
     };
