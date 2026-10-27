@@ -53,7 +53,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | |
 | 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | |
 | 12 | Webhooks first, poller as fallback | R3 | 🟡 | S–M | — | |
-| 13 | Remove or isolate the Hostinger feature | R1 | 🟡 | M | decision D1 | |
+| 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | |
 | 14 | Label the traffic window | R2 | ⚪ | S | — | |
 | 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | |
 | 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | |
@@ -131,7 +131,7 @@ not the app works.
 - After `up`, if the project has a health check configured, poll it for a configurable
   window (default 60 s) using the existing `healthChecker`.
 - Pass: record the revision as `active`, as today.
-- Fail: record it as a new status, `unhealthy` (needs PR 2 to change the `CHECK`
+- Fail (D2): record it as a new status, `unhealthy` (needs PR 2 to change the `CHECK`
   constraint), notify, and leave containers running. The previous `active` row is
   superseded, because the unhealthy revision is what is actually running.
 - **Optional per-project toggle:** "Roll back automatically when the health check
@@ -141,7 +141,7 @@ not the app works.
 
 **Deployed installs:** no behavior changes until a project has a health check *and*
 the deploy runs on the new version. Auto-rollback is off for every project until
-enabled (decision D2).
+enabled (D2).
 
 **Tests:** health pass, health fail without auto-rollback, health fail with
 auto-rollback, no health check configured.
@@ -252,7 +252,7 @@ pruning, deletion paths, interrupted-on-startup.
 
 ### PR 9 — Data layer foundation and runner client (T5a, RUN-2)
 
-Adopt TanStack Query (decision D3).
+Adopt TanStack Query (D3).
 
 - Provider, a query-key factory (`['projects']`, `['project', id]`,
   `['project', id, 'deployments']`, `['actions']`), and one socket bridge that turns
@@ -287,13 +287,12 @@ Webhook deploys already exist (`0f05f63`). Remaining:
   set time, the poller covers it and the UI says so.
 - Existing projects keep their current trigger.
 
-### PR 13 — Remove or isolate the Hostinger feature (R1)
+### PR 13 — Remove the Hostinger feature (R1)
 
-Depends on decision D1.
-- **If not used on any deployed install:** remove the UI, routes and services (about
-  1,600 lines). Keep the database tables for one release; a later migration drops them.
-- **If used:** move it behind a Settings toggle, off for new installs, and keep its
-  code isolated so removing it later is one PR.
+Not used on any deployed install (D1). Remove the UI, routes and services (about 1,600
+lines). Stored Hostinger API key credentials stay in the credentials list for the
+admin to delete. Keep the database tables for one release; a later migration drops
+them, so a rollback to the previous version still finds its schema.
 
 ### PR 14 — Label the traffic window (R2)
 
@@ -343,14 +342,14 @@ existing Radix primitives.
 
 ---
 
-## Decisions still open
+## Decisions
 
-| # | Decision | Recommendation | Blocks |
-|---|---|---|---|
-| D1 | Is the Hostinger fleet or firewall used on any deployed install? | — | PR 13 |
-| D2 | Health check failure: auto-rollback by default for new projects, or mark failed and notify? | Mark failed and notify for one release | PR 4 |
-| D3 | TanStack Query for the data layer? | Yes | PR 9 |
-| D4 | Open one PR per item, or stack on the branch? | One PR per row above | All |
+| # | Decision | Answer |
+|---|---|---|
+| D1 | Is the Hostinger fleet or firewall used on any deployed install? | No: remove it (PR 13) |
+| D2 | Health check failure default | Mark failed and notify; auto-rollback is per-project opt-in |
+| D3 | TanStack Query for the data layer? | Yes |
+| D4 | One PR per item, or one branch? | One branch, one commit (or a few) per row |
 
 ## Deferred (not in this plan)
 
