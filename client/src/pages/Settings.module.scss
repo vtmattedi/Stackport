@@ -37,13 +37,77 @@
   }
 }
 
+/* Branch, commit, message and date under the version, wrapping on narrow screens. */
+.version-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--dim);
+
+  span {
+    font-size: inherit;
+    font-weight: 400;
+    text-transform: none;
+    color: inherit;
+  }
+
+  code { color: var(--dim); }
+}
+
+.version-meta .version-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text);
+}
+
+.version-meta .version-message {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.up-to-date {
+  margin: 14px 0 0;
+  font-size: 13px;
+}
+
 .update-group {
   margin-top: 14px;
 
+  > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    list-style: none;
+    font-size: 13px;
+
+    &::-webkit-details-marker { display: none; }
+  }
+
+  &[open] .summary-chevron { transform: rotate(90deg); }
+
   > p {
-    margin: 0 0 6px;
+    margin: 8px 0 6px;
     font-size: 13px;
   }
+
+  > ul { margin-top: 6px; }
+}
+
+.summary-chevron {
+  flex-shrink: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.15s ease;
+  color: var(--dim);
 }
 
 .commit-list {
@@ -251,3 +315,6 @@
     transition: transform 0.2s;
   }
 }
+
+/* The version card's actions wrap on phones instead of overflowing the card. */
+.version-actions { flex-wrap: wrap; }

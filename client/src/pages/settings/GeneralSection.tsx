@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { KeyRound, Check, Loader, GitPullRequestArrow, Boxes, RefreshCw } from "lucide-react";
+import { KeyRound, Check, Loader, GitPullRequestArrow, Boxes, RefreshCw, GitBranch, ChevronRight } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { AppUpdateCheck, AppVersionInfo, CommitInfo, SelfUpdateStatus } from "../../api/types";
 import { Button } from "../../components/ui/button";
 import { formatShortDateTime } from "../../lib/format";
+import { cn } from "../../lib/utils";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import styles from "../Settings.module.scss";
 
@@ -130,38 +131,42 @@ export default function GeneralSection() {
           )}
           <div className={styles.versionCurrent}>
             <span>Running</span>
-            <strong>{commit ? commit.shortSha : versionInfo?.version ?? "-"}</strong>
-            {commit?.message && <small>{commit.message}</small>}
-            {commit?.date && <small>Committed {formatShortDateTime(commit.date)}</small>}
-            {!commit && versionInfo && <small>Commit unknown until the next update.</small>}
+            <strong>{versionInfo ? `v${versionInfo.version}` : "-"}</strong>
+            <div className={styles.versionMeta}>
+              {updateCheck?.branch && <span className={styles.versionBranch}><GitBranch size={11} />{updateCheck.branch}</span>}
+              {commit && commitLink(commit)}
+              {commit?.message && <span className={styles.versionMessage} title={commit.message}>{commit.message}</span>}
+              {commit?.date && <span>{formatShortDateTime(commit.date)}</span>}
+              {!commit && versionInfo && <span>Commit unknown until the next update.</span>}
+            </div>
           </div>
-
           {updateCheck && !updateCheck.ok && updateCheck.error && (
             <div className="alert alert-error" style={{ marginTop: 12 }}>{updateCheck.error}</div>
           )}
-          {updateCheck?.ok && (
-            <div className={styles.updateGroup}>
-              {updateCheck.available.length > 0 ? (
-                <>
-                  <p>{updateCheck.available.length} update{updateCheck.available.length === 1 ? "" : "s"} ready on <code>{updateCheck.branch}</code>:</p>
-                  {commitList(updateCheck.available)}
-                </>
-              ) : (
-                <p className="muted-text">Up to date with <code>{updateCheck.branch}</code>.</p>
-              )}
-            </div>
-          )}
+          {updateCheck?.ok && (updateCheck.available.length > 0 ? (
+            <details className={styles.updateGroup}>
+              <summary>
+                <ChevronRight size={13} className={styles.summaryChevron} />
+                {updateCheck.available.length} update{updateCheck.available.length === 1 ? "" : "s"} ready on <code>{updateCheck.branch}</code>
+              </summary>
+              {commitList(updateCheck.available)}
+            </details>
+          ) : (
+            <p className={cn("muted-text", styles.upToDate)}>Up to date with <code>{updateCheck.branch}</code>.</p>
+          ))}
           {updateCheck?.ok && updateCheck.pending.length > 0 && (
-            <div className={styles.updateGroup}>
-              <p className="muted-text">
-                Not released yet: {updateCheck.pending.length} newer commit{updateCheck.pending.length === 1 ? "" : "s"} on <code>main</code>.
-                They reach <code>{updateCheck.branch}</code> once CI and the upgrade test pass.
-              </p>
+            <details className={styles.updateGroup}>
+              <summary>
+                <ChevronRight size={13} className={styles.summaryChevron} />
+                <span className="muted-text">
+                  {updateCheck.pending.length} newer commit{updateCheck.pending.length === 1 ? "" : "s"} on <code>main</code>, not released yet
+                </span>
+              </summary>
+              <p className="muted-text">They reach <code>{updateCheck.branch}</code> once CI and the upgrade test pass.</p>
               {commitList(updateCheck.pending)}
-            </div>
+            </details>
           )}
-
-          <div className="row-actions" style={{ marginTop: 14 }}>
+          <div className={cn("row-actions", styles.versionActions)} style={{ marginTop: 14 }}>
             <button
               className="btn btn-primary"
               type="button"
