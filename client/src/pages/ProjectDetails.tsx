@@ -44,7 +44,8 @@ import type {
   ProjectDeploymentRevision,
 } from "../api/types";
 import { useSocket } from "../context/SocketContext";
-import { jsonEqual, pollProjectAction, useSystemActions, useSystemSelector } from "../context/SystemContext";
+import { jsonEqual, useSystemActions, useSystemSelector } from "../context/SystemContext";
+import { waitForActionResult } from "../context/ActionTracker";
 import { formatShortDateTime, formatTimeAgo } from "../lib/format";
 import { parseAnsi } from "../lib/ansi";
 import { deriveProjectStatus, expectedComposeProjectName, explainProjectStatus, findProjectStack, healthMonitoredContainers, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
@@ -633,7 +634,7 @@ export default function ProjectDetails() {
         notify.error(new Error(started.error ?? "An action is already running"), "Failed to start upload");
         return;
       }
-      const final = await pollProjectAction(project.id, "repo");
+      const final = started.action ? await waitForActionResult(started.action.id) : null;
       if (!final) {
         setDeployOk(false);
       } else if (final.status === "running") {

@@ -59,6 +59,7 @@ import type {
   ProjectResourceSummary,
   RunningProjectAction,
   ApiToken,
+  ActionSummary,
 } from "./types";
 
 const TOKEN_KEY = "stackport_token";
@@ -381,6 +382,17 @@ export const api = {
   },
   getProjectActions: (projectId: number) =>
     request<ProjectActionsSnapshot>(`/projects/${projectId}/actions`),
+  listRunningActions: () => request<ActionSummary[]>("/actions/running"),
+  getAction: (id: string) => request<ActionSummary>(`/actions/${encodeURIComponent(id)}`),
+  getActionLog: async (id: string): Promise<string> => {
+    const token = getToken();
+    const res = await fetch(`/api/actions/${encodeURIComponent(id)}/log`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.ok ? res.text() : "";
+  },
+  clearProjectActionLogs: (projectId: number) =>
+    request<{ deleted: number }>(`/projects/${projectId}/action-logs`, { method: "DELETE" }),
   getRunningProjectActions: () =>
     request<RunningProjectAction[]>("/projects/actions/running"),
   cancelProjectAction: (projectId: number) =>

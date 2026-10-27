@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Loader } from "lucide-react";
-import { api } from "../api/client";
-import type { ActionRecord } from "../api/types";
-import { useSocket } from "../context/SocketContext";
-import { useSystem } from "../context/SystemContext";
+import type { ActionSummary } from "../api/types";
+import { useRunningActionRecords } from "../context/ActionTracker";
+import { jsonEqual, useSystemSelector } from "../context/SystemContext";
 import { actionLabel } from "../lib/actionLabels";
 import { TimeAgo } from "./TimeAgo";
 import styles from "./RunningActions.module.scss";
@@ -18,47 +16,33 @@ export interface RunningItem {
   startedAt: string;
 }
 
-function systemItem(action: ActionRecord | null, href: string): RunningItem | null {
-  if (!action || action.status !== "running") return null;
-  const domain = typeof action.meta?.["domain"] === "string" ? action.meta["domain"] : null;
-  return { id: action.id, label: actionLabel(action.kind), subject: domain, href, startedAt: action.startedAt };
+/** Where a running action is followed: its project, or the System tab it belongs to. */
+function hrefFor(record: ActionSummary): string {
+  if (record.projectId !== undefined) return `/projects/${record.projectId}`;
+  if (record.key.startsWith("system:certbot:")) return "/system/certbot";
+  if (record.key.startsWith("system:docker")) return "/system/docker";
+  if (record.key.startsWith("system:nginx")) return "/system/nginx";
+  return "/system";
 }
 
-/** Every action running on the server right now (project builds, deploys and SSL, plus nginx,
- *  certbot and docker jobs), kept current by the server's actions:changed ping. */
+/** Every action running on the server right now (project builds, deploys and SSL, plus
+ *  nginx, certbot and docker jobs), kept current by the action tracker's socket events. */
 export function useRunningActions(): RunningItem[] {
-  const { on, off, connected } = useSocket();
-  const { systemActions } = useSystem();
-  const [projectItems, setProjectItems] = useState<RunningItem[]>([]);
-
-  const refetch = useCallback(() => {
-    api.getRunningProjectActions().then((running) => {
-      setProjectItems(running.map(({ action, projectId, projectName }) => ({
-        id: action.id,
-        label: actionLabel(action.kind),
-        subject: projectName,
-        href: projectId != null ? `/projects/${projectId}` : "/projects",
-        startedAt: action.startedAt,
-      })));
-    }).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (connected) refetch();
-  }, [connected, refetch]);
-
-  useEffect(() => {
-    on("actions:changed", refetch);
-    return () => off("actions:changed", refetch);
-  }, [on, off, refetch]);
-
-  const systemItems = [
-    systemItem(systemActions.nginx, "/system/nginx"),
-    systemItem(systemActions.docker, "/system/docker"),
-    ...systemActions.certbot.map((action) => systemItem(action, "/system/certbot")),
-  ].filter((item): item is RunningItem => item !== null);
-
-  return [...projectItems, ...systemItems];
+  const running = useRunningActionRecords();
+  const projectNames = useSystemSelector(
+    (s) => Object.fromEntries((s.projects ?? []).map((p) => [p.id, p.name])) as Record<number, string>,
+    jsonEqual,
+  );
+  return running.map((record) => {
+    const domain = typeof record.meta?.["domain"] === "string" ? record.meta["domain"] : null;
+    return {
+      id: record.id,
+      label: actionLabel(record.kind),
+      subject: (record.projectId !== undefined ? projectNames[record.projectId] : null) ?? domain,
+      href: hrefFor(record),
+      startedAt: record.startedAt,
+    };
+  });
 }
 
 /** The list itself; the nav decides where it opens (sidebar popover or the phone menu). */

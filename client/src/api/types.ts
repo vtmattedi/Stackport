@@ -329,6 +329,19 @@ export interface ActionRecord {
   progress: number | null;
 }
 
+/** An action without its log, as the server sends it on start and finish. */
+export type ActionSummary = Omit<ActionRecord, "log">;
+
+/** A batch of an action's output (socket event action:output). `reset` replaces
+ *  everything before it: sent when the requested chunks are no longer in memory. */
+export interface ActionOutputEvent {
+  id: string;
+  chunks: { seq: number; data: string }[];
+  reset?: string;
+  nextSeq: number;
+  done: boolean;
+}
+
 export interface ActionStartResponse {
   ok: boolean;
   started: boolean;

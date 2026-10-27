@@ -7,6 +7,7 @@ import Login from "./pages/Login";
 import { Toaster } from "./components/ui/sonner";
 import { ConfirmProvider } from "./components/ConfirmDialog";
 import { GlobalRealtime } from "./components/GlobalRealtime";
+import { GlobalActionToasts } from "./components/GlobalActionToasts";
 import { SystemProvider } from "./context/SystemContext";
 
 // Each page is its own chunk, so the login screen and first page don't download
@@ -41,6 +42,7 @@ function PrivateLayout() {
       <div className="app-shell">
         <Nav />
         <GlobalRealtime />
+        <GlobalActionToasts />
         <div className="app-content">
           <Suspense
             fallback={(

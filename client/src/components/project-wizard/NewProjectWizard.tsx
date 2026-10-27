@@ -22,7 +22,8 @@ import {
 import { api, ApiError } from "../../api/client";
 import type { ComposeEnvFileRef, Credential, DeployTrigger, GitHubBranch, Project, ProjectDeployEvent, ProjectEnvFile } from "../../api/types";
 import { useSocket } from "../../context/SocketContext";
-import { pollProjectAction, useSystem } from "../../context/SystemContext";
+import { useSystem } from "../../context/SystemContext";
+import { waitForActionResult } from "../../context/ActionTracker";
 import { notify } from "../../lib/notify";
 import { cn } from "../../lib/utils";
 import { ActionSelect, AppSelect } from "../AppSelect";
@@ -339,7 +340,7 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
         set({ fetchStatus: "failed", error: started.error ?? "An action is already running for this project" });
         return false;
       }
-      const final = await pollProjectAction(target.id, "repo");
+      const final = started.action ? await waitForActionResult(started.action.id) : null;
       if (runIdRef.current !== runId) return false;
       if (final?.log) set({ fetchLog: final.log });
       if (!final?.ok) {
