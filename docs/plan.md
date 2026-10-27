@@ -43,7 +43,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | # | PR | Items | Crit | Effort | Depends on | Status |
 |---|---|---|---|---|---|---|
 | 1 | Rollback and auto-deploy correctness | C1, C2 | 🟠 | S | — | ✅ `c893c9c` |
-| 2 | Migration framework | T1 | 🟡 | M | — | |
+| 2 | Migration framework | T1 | 🟡 | S–M | — | ✅ |
 | 3 | README, package name, stale todos | T6 | ⚪ | S | — | |
 | 4 | Health-gated deploys | C3 | 🟠 | M | 2 | |
 | 5 | One deploy-history table | T2 | 🟡 | M | 2 | |
@@ -87,32 +87,35 @@ Done in `c893c9c`.
   default rollback after upgrading may pick a revision that was already rolled back
   from. Restore covers that case.
 
-### PR 2 — Migration framework (T1)
+### PR 2 — Migration framework (T1) ✅
 
-**Problem:** schema changes are `CREATE TABLE IF NOT EXISTS` plus try/catch `ALTER` in
-`src/config/database.ts`. There is no record of which changes ran, and anything beyond
-adding a column (changing a `CHECK` constraint, renaming, rebuilding a table) can't be
-done safely.
+**Problem:** schema changes were `CREATE TABLE IF NOT EXISTS` plus try/catch `ALTER` in
+`src/config/database.ts`, re-checked on every boot, with no record of what ran and no
+place for one-time data changes.
 
-**Approach:**
-- Track the schema version with `PRAGMA user_version`.
-- Migration 1 is the baseline: today's `initializeDatabase()` body, unchanged. It is
-  idempotent already, so it runs as-is on fresh and legacy databases and then sets
-  version 1.
-- New changes are numbered modules in `src/migrations/NNN_name.ts`, each exporting
-  `up(db)`, run in order inside a transaction. A failure rolls that migration back and
-  stops startup with a clear error.
-- Refuse to start on a database with a *higher* version than the code knows (a
-  downgrade), with a message pointing to `stackport rollback`.
-- The MCP server and other secondary processes never run migrations (see PR 6).
+**Constraint found while building it:** `stackport rollback` runs the previous
+release's code on the already-migrated database, so migrations may only add (new
+tables, nullable or defaulted columns, indexes, backfills). `tests/migrations.test.ts`
+already enforced this for `database.ts`; it now also scans `src/migrations/`. Table
+rebuilds (for example to change a `CHECK` constraint) are therefore off the table.
 
-**Deployed installs:** `stackport update` already backs up the database before
-updating. The baseline migration changes nothing on an up-to-date install; it only
-records version 1.
+**What shipped:**
+- The existing `initializeDatabase()` body is the baseline, unchanged and still run on
+  every boot.
+- New changes are numbered modules in `src/migrations/` (`001_…` onward), run once
+  each, in order, recorded in `PRAGMA user_version`.
+- Each migration runs in an IMMEDIATE transaction that re-reads the version first, so
+  the app and a second process (MCP, admin-recovery CLI) starting together can't apply
+  one twice. A failure rolls back that migration's changes and its version, and stops
+  startup.
+- A database newer than the code (after `stackport rollback`) is logged and left
+  alone, not refused: refusing would break rollback.
+- Migration 1 moves PR 1's `rolled_back_at` column into the new system.
 
-**Tests:** extend `tests/migrations.test.ts` with an old-format fixture (missing recent
-columns), a fresh database, a failing migration that must roll back, and the downgrade
-refusal.
+**Effort:** S–M, less than estimated, because of the additive-only rule.
+
+**Tests:** run-once and ordering, partial version, failure rollback, newer database,
+second process, and an upgrade from a released install (`user_version` 0).
 
 ### PR 3 — README, package name, stale todos (T6)
 
@@ -131,9 +134,10 @@ not the app works.
 - After `up`, if the project has a health check configured, poll it for a configurable
   window (default 60 s) using the existing `healthChecker`.
 - Pass: record the revision as `active`, as today.
-- Fail (D2): record it as a new status, `unhealthy` (needs PR 2 to change the `CHECK`
-  constraint), notify, and leave containers running. The previous `active` row is
-  superseded, because the unhealthy revision is what is actually running.
+- Fail (D2): the revision stays `active` (it is what is running), a new
+  `health_failed_at` column records the failure (added by a migration; a new status
+  value would need a table rebuild, which the additive-only rule forbids), the UI shows
+  it as unhealthy, and a notification goes out. Containers keep running.
 - **Optional per-project toggle:** "Roll back automatically when the health check
   fails", which runs `rollbackProject` with the default target.
 - Projects without a health check keep today's behavior, with a hint in the UI that
@@ -152,12 +156,14 @@ auto-rollback, no health check configured.
 (revisions for rollback) overlap. Every auto-deploy writes both.
 
 **Approach (safe for existing data):**
-- Add `commit_message`, `commit_author`, `completed_at` and a `running` status to
-  `project_deployments` via a migration.
+- Add `commit_message`, `commit_author` and `completed_at` to `project_deployments`
+  via a migration. In-progress deploys are tracked by the action runner (PR 8), not a
+  new status value, which the additive-only rule (PR 2) rules out.
 - New deploys write one row only.
 - Existing `project_deploys` rows are left in place and shown read-only until they age
-  out of retention. A later release drops the table. No attempt to match and merge old
-  rows, which would be guesswork.
+  out of retention. The table itself stays (unused) because `stackport rollback` may
+  put back code that reads it; see PR 2. No attempt to match and merge old rows, which
+  would be guesswork.
 - The Deployments card shows one list instead of two.
 
 ---
@@ -291,8 +297,8 @@ Webhook deploys already exist (`0f05f63`). Remaining:
 
 Not used on any deployed install (D1). Remove the UI, routes and services (about 1,600
 lines). Stored Hostinger API key credentials stay in the credentials list for the
-admin to delete. Keep the database tables for one release; a later migration drops
-them, so a rollback to the previous version still finds its schema.
+admin to delete. The database tables stay, unused, so `stackport rollback` to the
+previous version still finds its schema (PR 2's additive-only rule).
 
 ### PR 14 — Label the traffic window (R2)
 

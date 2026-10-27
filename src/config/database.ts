@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 import { config } from "./env";
+import { runMigrations } from "../migrations";
 
 let db: Database.Database | null = null;
 
@@ -564,12 +565,9 @@ export function initializeDatabase(): Database.Database {
   }
   db.exec("INSERT OR IGNORE INTO github_poller_config (id) VALUES (1)");
 
-  // Set on the revision a rollback moved away from, so the next default rollback
-  // keeps going back instead of returning to it.
-  const deploymentCols = db.prepare("PRAGMA table_info(project_deployments)").all() as { name: string }[];
-  if (!deploymentCols.some((c) => c.name === "rolled_back_at")) {
-    db.exec("ALTER TABLE project_deployments ADD COLUMN rolled_back_at TEXT");
-  }
+  // Everything above is the baseline: idempotent, and run on every boot as it always
+  // has been. New schema changes go in src/migrations/, which run once each.
+  runMigrations(db);
 
   return db;
 }
