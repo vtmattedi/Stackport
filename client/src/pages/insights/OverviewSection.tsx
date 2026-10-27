@@ -36,7 +36,7 @@ interface AttentionItem { key: string; tone: "bad" | "warn"; text: React.ReactNo
 
 export default function OverviewSection() {
   const { periodLabel, refresh } = useInsights();
-  const { isScoped, hostOwner } = useScope();
+  const { isScoped, hostOwner, appDomain } = useScope();
   const deploys = useDeployMetrics();
   const traffic = useTraffic();
   const hardware = useHardware();
@@ -68,7 +68,7 @@ export default function OverviewSection() {
       key: `dep-${f.id}`, tone: "warn" as const, to: `/projects/${f.projectId}`,
       text: <><strong>{f.projectName}</strong> deploy failed <span className={styles.dim}>· <TimeAgo ts={f.createdAt} /></span></>,
     })),
-    ...serverErrorsByOwner(traffic.totals.domains, (host) => hostOwner.get(host)?.name ?? host)
+    ...serverErrorsByOwner(traffic.totals.domains, (host) => hostOwner.get(host)?.name ?? (host === appDomain ? "StackPort" : host))
       .filter((o) => o.rate > 1)
       .map((o) => ({
         key: `5xx-${o.name}`, tone: "bad" as const, to: "/insights/traffic",
