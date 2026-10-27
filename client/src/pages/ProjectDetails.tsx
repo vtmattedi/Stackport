@@ -489,6 +489,7 @@ export default function ProjectDetails() {
       description: `This stops ${service} and permanently deletes every volume mounted into it — any data it persisted (e.g. a database's contents) is gone. This cannot be undone.`,
       confirmLabel: "Drop Volumes",
       destructive: true,
+      requireText: service,
     });
     if (!ok) return;
     await dropProjectServiceVolumes(project.id, service);
@@ -593,6 +594,7 @@ export default function ProjectDetails() {
       description: "This runs docker compose down -v — all containers, networks, and volumes for this project will be permanently deleted.",
       confirmLabel: "Delete Data",
       destructive: true,
+      requireText: project.name,
     });
     if (!ok) return;
     await startProjectAction(project.id, "stop-purge");
@@ -602,9 +604,10 @@ export default function ProjectDetails() {
     if (!project) return;
     const ok = await confirm({
       title: `Delete ${project.name}?`,
-      description: "This removes the project configuration and detaches it from health checks.",
+      description: "This removes the project from Stackport: its settings, env files, domains (they stop routing), TCP ports, webhook, deploy history and logs. Its containers keep running and its checkout stays on disk (Settings → Maintenance finds leftover folders); stop the project first if you want them gone.",
       confirmLabel: "Delete",
       destructive: true,
+      requireText: project.name,
     });
     if (!ok) return;
     const projectName = project.name;

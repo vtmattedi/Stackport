@@ -18,6 +18,7 @@ import { healthCheckUrl, probeHealth, type HealthProbe } from "./healthChecker";
 import { notifyDeployBlocked, notifyDeployUnhealthy, type DeployRollbackOutcome } from "./notificationService";
 import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
+import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./composeVariables";
 
 export interface EnvVariable {
   key: string;
@@ -152,6 +153,32 @@ export async function getProjectComposeEnvFiles(projectId: number, selectedFile?
     // A committed or uploaded file counts; one StackPort wrote on an earlier deploy is a managed env file instead.
     const existsInSource = !!target && await fs.stat(target).then((stat) => stat.isFile()).catch(() => false);
     return { ...ref, existsInSource };
+  }));
+}
+
+export interface ComposeVariableStatus extends ComposeVariableRef {
+  /** Where Compose would find it: the managed root `.env`, a `.env` in the repository,
+   *  or neither (then it falls back to its default, or Stackport's own environment;
+   *  see docs/plan.md S14). */
+  definedIn: "managed" | "repository" | null;
+}
+
+/** The variables the selected Compose file interpolates, and whether the project's
+ *  root `.env` defines them. */
+export async function getProjectComposeVariables(projectId: number, selectedFile?: string): Promise<ComposeVariableStatus[]> {
+  const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId, selectedFile);
+  const refs = extractComposeVariables(await readRawComposeDoc(repoPath, composeFile));
+  const managed = new Set(
+    listProjectEnvFiles(projectId)
+      .filter((file) => file.relativePath === ".env")
+      .flatMap((file) => file.variables.map((variable) => variable.key)),
+  );
+  const repoEnvPath = resolveContainedPath(repoPath, ".env");
+  const repoText = repoEnvPath ? await fs.readFile(repoEnvPath, "utf8").catch(() => "") : "";
+  const repository = dotenvKeys(repoText);
+  return refs.map((ref) => ({
+    ...ref,
+    definedIn: managed.has(ref.name) ? "managed" : repository.has(ref.name) ? "repository" : null,
   }));
 }
 

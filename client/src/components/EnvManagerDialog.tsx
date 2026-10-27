@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { ClipboardPaste, Copy, Eye, EyeOff, FileText, Loader, Plus, Save, Search, Trash2, Upload, WandSparkles, X } from "lucide-react";
 import type { EnvVariable, ProjectEnvFile } from "../api/types";
 import { api, ApiError } from "../api/client";
@@ -94,6 +95,7 @@ function RandomValueButton({ onGenerate }: { onGenerate: (value: string) => void
 
 export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesChange, onClose, initialPath }: EnvManagerDialogProps) {
   const confirm = useConfirm();
+  const queryClient = useQueryClient();
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const firstFile = initialPath === undefined ? envFiles[0] : envFiles.find((file) => file.relativePath === initialPath);
   const [editingEnvId, setEditingEnvId] = useState<number | null>(firstFile?.id ?? null);
@@ -109,6 +111,14 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [pasteError, setPasteError] = useState("");
+  // Variables the Compose file interpolates that the root .env doesn't define (and that
+  // have no default): Compose leaves them empty, or takes Stackport's own value.
+  const composeVariables = useQuery({
+    queryKey: ["project", projectId, "compose-variables"],
+    queryFn: () => api.getProjectComposeVariables(projectId),
+    retry: false,
+  });
+  const unsetVariables = (composeVariables.data ?? []).filter((v) => v.definedIn === null && !v.hasDefault);
 
   const selectedEnvFile = editingEnvId == null ? undefined : envFiles.find((file) => file.id === editingEnvId);
   const filledEnvVariables = envVariables.filter((variable) => variable.key.trim() || variable.value);
@@ -163,6 +173,23 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
     setPasteOpen(false);
     setPasteText("");
     setPasteError("");
+  }
+
+  /** Opens the root .env (or starts it) and adds an empty row for each unset variable. */
+  async function addUnsetToRootEnv() {
+    const names = unsetVariables.map((v) => v.name);
+    if (envPath.trim() !== ".env") {
+      if (!(await confirmDiscardDraft())) return;
+      const rootEnv = envFiles.find((file) => file.relativePath === ".env");
+      if (rootEnv) editEnvFile(rootEnv);
+      else beginNewEnvFile();
+    }
+    setSearch("");
+    setEnvVariables((variables) => {
+      const present = new Set(variables.map((v) => v.key.trim()));
+      const kept = variables.filter((v) => v.key.trim() || v.value);
+      return [...kept, ...names.filter((name) => !present.has(name)).map((key) => ({ key, value: "" }))];
+    });
   }
 
   async function confirmDiscardDraft(): Promise<boolean> {
@@ -315,6 +342,7 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
         ? envFiles.map((file) => file.id === saved.id ? saved : file)
         : [...envFiles, saved];
       onEnvFilesChange(nextFiles.sort((a, b) => a.relativePath.localeCompare(b.relativePath)));
+      void queryClient.invalidateQueries({ queryKey: ["project", projectId, "compose-variables"] });
       setEditingEnvId(saved.id);
       setEnvPath(saved.relativePath);
       setEnvVariables(editableVariables(saved));
@@ -341,6 +369,7 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
       await api.deleteProjectEnvFile(projectId, envFile.id);
       const nextFiles = envFiles.filter((file) => file.id !== envFile.id);
       onEnvFilesChange(nextFiles);
+      void queryClient.invalidateQueries({ queryKey: ["project", projectId, "compose-variables"] });
       const next = nextFiles[0];
       setEditingEnvId(next?.id ?? null);
       setEnvPath(next?.relativePath ?? "");
@@ -498,6 +527,23 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
             </div>
 
             {envError && <div className="alert alert-error">{envError}</div>}
+
+            {unsetVariables.length > 0 && (
+              <div className={styles.unsetVariables}>
+                <span>
+                  The Compose file uses {unsetVariables.length === 1 ? "a variable" : `${unsetVariables.length} variables`} that
+                  the project's root <span className="mono">.env</span> doesn't define:{" "}
+                  {unsetVariables.map((v, i) => (
+                    <span key={v.name}>{i > 0 ? ", " : ""}<span className="mono">{v.name}</span>{v.required ? " (required)" : ""}</span>
+                  ))}
+                  . Compose fills <span className="mono">{"${VAR}"}</span> only from that file (not from <span className="mono">env_file:</span>),
+                  so these are left empty, or take a value from Stackport's own environment if it has one by that name.
+                </span>
+                <Button type="button" variant="outline" size="xs" onClick={() => void addUnsetToRootEnv()}>
+                  <Plus size={12} /> Add to .env
+                </Button>
+              </div>
+            )}
 
             <div className={styles.pathRow}>
               <div className="field field-wide">

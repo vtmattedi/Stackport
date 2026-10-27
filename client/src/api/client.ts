@@ -45,6 +45,7 @@ import type {
   ProjectResourceSummary,
   ApiToken,
   ActionSummary,
+  ComposeVariableStatus,
 } from "./types";
 
 const TOKEN_KEY = "stackport_token";
@@ -284,6 +285,8 @@ export const api = {
     request<ProjectDomain[]>(`/projects/${projectId}/domains`),
   getProjectIngressTargets: (projectId: number, composeFile?: string) =>
     request<ComposeIngressTarget[]>(`/projects/${projectId}/ingress-targets${buildQuery({composeFile})}`),
+  getProjectComposeVariables: (projectId: number) =>
+    request<ComposeVariableStatus[]>(`/projects/${projectId}/compose-variables`),
   getProjectComposeEnvFiles: (projectId: number, composeFile?: string) =>
     request<ComposeEnvFileRef[]>(`/projects/${projectId}/compose-env-files${buildQuery({composeFile})}`),
   addProjectDomain: (projectId: number, domain: string, service: string, containerPort: number) =>

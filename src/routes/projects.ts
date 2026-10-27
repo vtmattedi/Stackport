@@ -18,6 +18,7 @@ import {
   ensureProjectProxyNetwork,
   getProjectById,
   getProjectComposeEnvFiles,
+  getProjectComposeVariables,
   getProjectIngressTargets,
   getProjectComposeFileContent,
   getProjectLogs,
@@ -623,6 +624,16 @@ router.get("/:id/compose-env-files", requireAuth, async (req: Request<{ id: stri
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   if (req.query.composeFile !== undefined && typeof req.query.composeFile !== "string") { res.status(400).json({ error: "Invalid Compose file" }); return; }
   try { res.json(await getProjectComposeEnvFiles(id, req.query.composeFile as string | undefined)); }
+  catch (err) { res.status(400).json({ error: (err as Error).message }); }
+});
+
+/** Variables the Compose file interpolates and whether the root `.env` defines them. */
+router.get("/:id/compose-variables", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  if (req.query.composeFile !== undefined && typeof req.query.composeFile !== "string") { res.status(400).json({ error: "Invalid Compose file" }); return; }
+  try { res.json(await getProjectComposeVariables(id, req.query.composeFile as string | undefined)); }
   catch (err) { res.status(400).json({ error: (err as Error).message }); }
 });
 

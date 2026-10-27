@@ -55,7 +55,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 12 | Webhooks first, poller as fallback | R3 | 🟡 | S | — | ✅ |
 | 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | ✅ |
 | 14 | Label the traffic window | R2 | ⚪ | S | — | ✅ |
-| 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | |
+| 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | ✅ |
 | 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | |
 | 17 | Navigation consolidation | U1 | 🟡 | M | 13, 16 | |
 | 18 | Deploy and rollback preview | U3 | 🟡 | M | 1 | |
@@ -378,11 +378,23 @@ Insights traffic reads at most 20,000 recent nginx log lines, and history resets
 the container is recreated. Show the time range actually covered next to the period
 picker, and say when the chosen period is longer than the data.
 
-### PR 15 — Safer destructive actions, env paste (U2, U5)
+### PR 15 — Safer destructive actions, env paste (U2, U5) ✅
 
 - Type the project name to confirm Stop & Delete Data, Drop volumes and Delete project.
 - Env manager: paste a whole `.env` at once; flag `${VAR}` references in the Compose
   file that no managed env file defines.
+
+**Shipped notes:**
+- Pasting a whole `.env` already existed (Parse).
+- The unset-variable check looks only at the project's root `.env` (managed or in the
+  repository), because Compose fills `${VAR}` from that file and its own environment,
+  never from `env_file:` entries. Variables with a default are not flagged. "Add to
+  .env" adds empty rows for them.
+- Delete project's confirmation now says what deletion actually does: containers keep
+  running and the checkout stays on disk (the route never stopped them; the old text
+  didn't say).
+- **Found here:** S14 (deferred list). Compose runs with Stackport's whole environment,
+  so a project's Compose file can read Stackport's secrets by name.
 
 ---
 
@@ -435,6 +447,7 @@ Needs a separate design against what is already deployed:
 
 | Item | Crit | Notes |
 |---|---|---|
+| S14 Run `docker compose` with a minimal environment | 🔴 | **Found during PR 15.** `dotenv` loads Stackport's merged `.env` (`JWT_SECRET`, `WEBHOOK_SECRET`, `STACKPORT_REPO_TOKEN`) into `process.env`, and `dockerEnv()` passes all of it to every `docker compose` run. Any project's Compose file can use `${JWT_SECRET}` and receive the key that signs admin sessions and decrypts stored credentials; no policy bypass needed. Fix: pass only `PATH`, `HOME`, `DOCKER_CONFIG`, `DOCKER_HOST` (and the project's own `.env`, which Compose reads itself). Check deployed projects for `${...}` references that relied on Stackport's environment first |
 | S1 Compose policy: allowlist validation of the resolved config | 🔴 | Eight demonstrated bypasses, including `volumes_from: ["container:stackport"]` (Docker socket) and `${VAR:-/}` mounts |
 | S2 Volume model: Stackport-owned mount directories | 🔴 | Needed to close symlink escapes |
 | S3 Take Stackport off the `stackport-proxy` network | 🟠 | Projects can call the API directly |

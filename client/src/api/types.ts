@@ -175,6 +175,14 @@ export interface EnvVariable {
   value: string;
 }
 
+/** A variable the Compose file interpolates, and where the project defines it. */
+export interface ComposeVariableStatus {
+  name: string;
+  hasDefault: boolean;
+  required: boolean;
+  definedIn: "managed" | "repository" | null;
+}
+
 export interface ProjectEnvFile {
   id: number;
   projectId: number;
