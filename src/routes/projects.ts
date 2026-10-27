@@ -20,6 +20,7 @@ import {
   getProjectById,
   getProjectComposeEnvFiles,
   getProjectComposeVariables,
+  getProjectComposePolicy,
   getProjectIngressTargets,
   getProjectComposeFileContent,
   getProjectLogs,
@@ -664,6 +665,16 @@ router.get("/:id/compose-variables", requireAuth, async (req: Request<{ id: stri
   if (req.query.composeFile !== undefined && typeof req.query.composeFile !== "string") { res.status(400).json({ error: "Invalid Compose file" }); return; }
   try { res.json(await getProjectComposeVariables(id, req.query.composeFile as string | undefined)); }
   catch (err) { res.status(400).json({ error: (err as Error).message }); }
+});
+
+/** Policy violations in the selected Compose file of the checkout. No checkout or no
+ *  file selected yet is not an error here: there is just nothing to check. */
+router.get("/:id/compose-policy", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  try { res.json(await getProjectComposePolicy(id)); }
+  catch { res.json({ composeFile: null, violations: [] }); }
 });
 
 router.get("/:id/domains", requireAuth, (req: Request<{ id: string }>, res: Response): void => {

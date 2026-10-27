@@ -59,7 +59,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | ✅ |
 | 17 | Navigation consolidation | U1 | 🟡 | M | 13, 16 | ✅ |
 | 18 | Deploy and rollback preview | U3 | 🟡 | M | 1 | ✅ |
-| 19 | Clear policy-violation display | U4 (part) | 🟡 | S | — | |
+| 19 | Clear policy-violation display | U4 (part) | 🟡 | S | — | ✅ |
 | 20 | Command palette | U6 | ⚪ | M | 16, 17 | |
 
 Numbers skip 7: OAuth was deferred (see [Deferred](#deferred-not-in-this-plan)).
@@ -459,10 +459,18 @@ revision picker itself shipped in PR 1.
 - Line diff in `services/textDiff.ts` (LCS after trimming the common start and end;
   reports "too large" past 4M cells instead of running long).
 
-### PR 19 — Clear policy-violation display (U4, part)
+### PR 19 — Clear policy-violation display (U4, part) ✅
 
 Show Compose policy rejections as a list (service, key, how to fix) instead of raw log
 text. The volume-mapping display waits for the volume-model redesign (deferred S2).
+
+**Shipped notes:**
+- `validateComposePolicy` returns `{ service, key, problem, fix }` per violation; the
+  deploy log keeps the `services.<name>.<key>: …` line, now with the fix appended.
+- `GET /api/projects/:id/compose-policy` checks the selected Compose file in the
+  checkout. The project page shows the violations as a table above the tabs, before
+  any deploy is attempted, and refetches when a project action ends (after a pull).
+- No checkout or no file selected yet returns an empty list, not an error.
 
 ### PR 20 — Command palette (U6)
 

@@ -1,6 +1,7 @@
 import type {
   AuditLogQuery,
   RevisionPreview,
+  ComposePolicyResult,
   AuditLogResult,
   Project,
   DeployTrigger,
@@ -286,6 +287,9 @@ export const api = {
     request<ProjectDomain[]>(`/projects/${projectId}/domains`),
   getProjectIngressTargets: (projectId: number, composeFile?: string) =>
     request<ComposeIngressTarget[]>(`/projects/${projectId}/ingress-targets${buildQuery({composeFile})}`),
+  /** Policy violations in the selected Compose file of the checkout. */
+  getProjectComposePolicy: (projectId: number) =>
+    request<ComposePolicyResult>(`/projects/${projectId}/compose-policy`),
   getProjectComposeVariables: (projectId: number) =>
     request<ComposeVariableStatus[]>(`/projects/${projectId}/compose-variables`),
   getProjectComposeEnvFiles: (projectId: number, composeFile?: string) =>

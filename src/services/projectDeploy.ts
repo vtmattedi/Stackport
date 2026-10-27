@@ -9,7 +9,7 @@ import { normalizeRelativePath, resolveContainedPath } from "../utils/safePath";
 import { emitProjectDeploy, type ProjectDeployEvent } from "./realtime";
 import { actionRegistry, projectRepoKey } from "./actionRegistry";
 import { loadYamlDoc } from "./composeYaml";
-import { validateComposePolicy } from "./composePolicy";
+import { formatPolicyViolation, validateComposePolicy, type PolicyViolation } from "./composePolicy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./composeNetworking";
 import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
@@ -154,6 +154,14 @@ export async function getProjectComposeEnvFiles(projectId: number, selectedFile?
     const existsInSource = !!target && await fs.stat(target).then((stat) => stat.isFile()).catch(() => false);
     return { ...ref, existsInSource };
   }));
+}
+
+/** The selected Compose file in the checkout, checked against the policy a deploy
+ *  enforces, so violations show before anyone deploys. A file that doesn't parse has
+ *  none here: the deploy leaves that to docker compose too. */
+export async function getProjectComposePolicy(projectId: number): Promise<{ composeFile: string; violations: PolicyViolation[] }> {
+  const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
+  return { composeFile, violations: validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations };
 }
 
 export interface ComposeVariableStatus extends ComposeVariableRef {
@@ -333,7 +341,7 @@ async function checkComposePolicy(repoPath: string, composeFile: string): Promis
   if (result.ok) return { ok: true, message: "" };
   return {
     ok: false,
-    message: `Deployment rejected — compose policy violation:\n\n${result.violations.join("\n")}\n`,
+    message: `Deployment rejected — compose policy violation:\n\n${result.violations.map(formatPolicyViolation).join("\n")}\n`,
   };
 }
 

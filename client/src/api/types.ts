@@ -940,3 +940,17 @@ export interface RevisionPreview {
   /** Rollback previews only: the revision the rollback will restore. */
   targetId?: number;
 }
+
+/** GET /projects/:id/compose-policy (server: services/composePolicy.ts). */
+export interface PolicyViolation {
+  service: string;
+  key: string;
+  problem: string;
+  fix: string;
+}
+
+export interface ComposePolicyResult {
+  /** Null when there is no checkout or no Compose file selected yet. */
+  composeFile: string | null;
+  violations: PolicyViolation[];
+}

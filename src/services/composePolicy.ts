@@ -35,15 +35,31 @@ function longFormVolumeHostPath(entry: Record<string, unknown>): string | null {
   return typeof source === "string" ? source : null;
 }
 
-function checkService(name: string, service: Record<string, unknown>, violations: string[]): void {
+/** One rule a service breaks, with what to change. `key` is the Compose key under
+ *  the service (`ports`, `volumes`, ...). */
+export interface PolicyViolation {
+  service: string;
+  key: string;
+  problem: string;
+  fix: string;
+}
+
+/** The single-line form used in deploy logs. */
+export function formatPolicyViolation(v: PolicyViolation): string {
+  return `services.${v.service}.${v.key}: ${v.problem} ${v.fix}`;
+}
+
+function checkService(name: string, service: Record<string, unknown>, violations: PolicyViolation[]): void {
+  const add = (key: string, problem: string, fix: string): number => violations.push({ service: name, key, problem, fix });
+
   const privileged = service["privileged"];
   if (privileged === true || privileged === "true") {
-    violations.push(`services.${name}.privileged: privileged containers are not allowed for managed projects.`);
+    add("privileged", "privileged containers are not allowed for managed projects.", 'Remove "privileged: true".');
   }
 
   for (const [field, label] of [["network_mode", "network_mode: host"], ["pid", "pid: host"], ["ipc", "ipc: host"]] as const) {
     if (service[field] === "host") {
-      violations.push(`services.${name}.${field}: "${label}" is not allowed for managed projects.`);
+      add(field, `"${label}" is not allowed for managed projects.`, `Remove "${field}: host"; services reach each other by name on the project network.`);
     }
   }
 
@@ -51,22 +67,23 @@ function checkService(name: string, service: Record<string, unknown>, violations
   if (Array.isArray(capAdd)) {
     for (const cap of capAdd) {
       if (typeof cap === "string" && DANGEROUS_CAPS.has(cap.toUpperCase())) {
-        violations.push(`services.${name}.cap_add: capability "${cap}" is not allowed for managed projects.`);
+        add("cap_add", `capability "${cap}" is not allowed for managed projects.`, `Remove "${cap}" and add only the specific capabilities the service needs.`);
       }
     }
   }
 
   const devices = service["devices"];
   if (Array.isArray(devices) && devices.length > 0) {
-    violations.push(`services.${name}.devices: device access is not allowed for managed projects.`);
+    add("devices", "device access is not allowed for managed projects.", 'Remove "devices:".');
   }
 
   const ports = service["ports"];
   if (Array.isArray(ports) && ports.length > 0) {
-    violations.push(
-      `services.${name}.ports: host port publication is not allowed for managed projects. ` +
-      `Use "expose:" for the container-internal port instead, and configure the public route ` +
-      `(domain -> service -> container port) on the project's domain settings.`
+    add(
+      "ports",
+      "host port publication is not allowed for managed projects.",
+      `Use "expose:" for the container port instead, then route a domain to the service ` +
+      `(or add a TCP port) in the project's Domains tab.`,
     );
   }
 
@@ -79,7 +96,7 @@ function checkService(name: string, service: Record<string, unknown>, violations
           ? longFormVolumeHostPath(entry as Record<string, unknown>)
           : null;
       if (hostPath && isDangerousHostPath(hostPath)) {
-        violations.push(`services.${name}.volumes: mounting host path "${hostPath}" is not allowed for managed projects.`);
+        add("volumes", `mounting host path "${hostPath}" is not allowed for managed projects.`, "Use a named volume or a path inside the project folder.");
       }
     }
   }
@@ -89,8 +106,8 @@ function checkService(name: string, service: Record<string, unknown>, violations
  *  service-qualified and actionable. `ok: true` (empty violations) means the file may
  *  proceed to `up`. Never mutates the input — a violation is reported and the deploy
  *  is rejected, never silently stripped/rewritten (SP_dockerization.md §6, §14). */
-export function validateComposePolicy(doc: unknown): { ok: boolean; violations: string[] } {
-  const violations: string[] = [];
+export function validateComposePolicy(doc: unknown): { ok: boolean; violations: PolicyViolation[] } {
+  const violations: PolicyViolation[] = [];
   if (!doc || typeof doc !== "object") return { ok: true, violations };
   const services = (doc as Record<string, unknown>)["services"];
   if (!services || typeof services !== "object") return { ok: true, violations };

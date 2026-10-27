@@ -1,3 +1,4 @@
+import { PolicyViolations } from "./project/PolicyViolations";
 import { RevisionPreview } from "../components/RevisionPreview";
 import { lazy, memo, Suspense, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
@@ -878,6 +879,7 @@ export default function ProjectDetails() {
                 finished={finishedAction}
                 latestRevision={revisions[0] ?? null}
               />
+              <PolicyViolations projectId={project.id} />
             </div>
 
             <Tabs value={tab} onValueChange={(next) => navigate(`/projects/${project.id}/${next}`)} className={styles.projectTabs}>
