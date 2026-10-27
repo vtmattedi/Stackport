@@ -23,6 +23,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../com
 import { useConfirm } from "../components/ConfirmDialog";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { NumberInput } from "../components/NumberInput";
 import { api, ApiError } from "../api/client";
 import type {
   ActionRecord,
@@ -1520,13 +1521,13 @@ export default function ProjectDetails() {
                   </div>
                 </div>
                 <div className="row-actions">
-                  <Input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={65535}
                     placeholder="Public port"
-                    value={newTcpPublicPort}
-                    onChange={(e) => setNewTcpPublicPort(e.target.value)}
+                    aria-label="Public port"
+                    value={newTcpPublicPort === "" ? null : Number(newTcpPublicPort)}
+                    onValueChange={(port) => setNewTcpPublicPort(port == null ? "" : String(port))}
                     className={styles.portInput}
                   />
                   <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}

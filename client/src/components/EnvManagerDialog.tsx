@@ -5,7 +5,9 @@ import { api, ApiError } from "../api/client";
 import { EMPTY_VARIABLE, normalizeEnvRelativePath, parseEnvText } from "../lib/env";
 import { notify } from "../lib/notify";
 import { cn } from "../lib/utils";
+import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { useConfirm } from "./ConfirmDialog";
+import { NumberInput } from "./NumberInput";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
@@ -42,12 +44,17 @@ function generateRandomValue(size: number, format: KeyFormat): string {
   return format === "base64url" ? base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") : base64;
 }
 
+const KEY_FORMAT_OPTIONS: AppSelectOption[] = [
+  { value: "base64", label: "base64" },
+  { value: "base64url", label: "base64url" },
+  { value: "hex", label: "hex" },
+];
+
 function RandomValueButton({ onGenerate }: { onGenerate: (value: string) => void }) {
   const [open, setOpen] = useState(false);
-  const [size, setSize] = useState("32");
+  const [size, setSize] = useState<number | null>(32);
   const [format, setFormat] = useState<KeyFormat>("base64");
-  const parsedSize = Number(size);
-  const validSize = Number.isInteger(parsedSize) && parsedSize >= 1 && parsedSize <= 65536;
+  const validSize = size != null && Number.isInteger(size) && size >= 1 && size <= 65536;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -56,24 +63,16 @@ function RandomValueButton({ onGenerate }: { onGenerate: (value: string) => void
           <WandSparkles size={13} />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className={styles.generatorPopover}>
+      <PopoverContent align="end" collisionPadding={12} className={styles.generatorPopover}>
         <div className={styles.generatorTitle}>Generate with kg settings</div>
         <div className={styles.generatorGrid}>
           <div className="field">
             <label>Bytes</label>
-            <Input type="number" min="1" max="65536" value={size} onChange={(event) => setSize(event.target.value)} />
+            <NumberInput min={1} max={65536} value={size} onValueChange={setSize} aria-label="Bytes" />
           </div>
           <div className="field">
             <label>Format</label>
-            <select
-              className={styles.generatorSelect}
-              value={format}
-              onChange={(event) => setFormat(event.target.value as KeyFormat)}
-            >
-              <option value="base64">base64</option>
-              <option value="base64url">base64url</option>
-              <option value="hex">hex</option>
-            </select>
+            <AppSelect value={format} onValueChange={(value) => setFormat(value as KeyFormat)} options={KEY_FORMAT_OPTIONS} />
           </div>
         </div>
         <Button
@@ -81,7 +80,8 @@ function RandomValueButton({ onGenerate }: { onGenerate: (value: string) => void
           size="xs"
           disabled={!validSize}
           onClick={() => {
-            onGenerate(generateRandomValue(parsedSize, format));
+            if (!validSize) return;
+            onGenerate(generateRandomValue(size, format));
             setOpen(false);
           }}
         >
@@ -568,7 +568,13 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
                     <Button type="button" variant="ghost" size="icon-xs" onClick={() => void copyValue(variable)} disabled={!variable.value} title="Copy value" aria-label={`Copy ${variable.key || "value"}`}>
                       <Copy size={13} />
                     </Button>
-                    {!variable.value && <RandomValueButton onGenerate={(value) => updateEnvVariable(index, "value", value)} />}
+                    {variable.value ? (
+                      <Button type="button" variant="ghost" size="icon-xs" onClick={() => updateEnvVariable(index, "value", "")} title="Clear value" aria-label={`Clear ${variable.key || "value"}`}>
+                        <X size={13} />
+                      </Button>
+                    ) : (
+                      <RandomValueButton onGenerate={(value) => updateEnvVariable(index, "value", value)} />
+                    )}
                   </div>
                   <Button type="button" variant="ghost" size="icon-xs" onClick={() => removeEnvVariable(index)} title="Remove variable" aria-label={`Remove ${variable.key || "variable"}`}>
                     <Trash2 size={13} />

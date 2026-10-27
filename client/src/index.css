@@ -359,22 +359,6 @@ input[type="datetime-local"] {
   &:focus { border-color: var(--brand); }
 }
 
-select {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  padding: 7px 10px;
-  font-size: 13px;
-  font-family: var(--font);
-  outline: none;
-  width: 100%;
-  transition: border-color 0.15s;
-  cursor: pointer;
-
-  &:focus { border-color: var(--brand); }
-}
-
 textarea {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -707,7 +691,8 @@ tr:last-child td { border-bottom: none; }
 }
 
 [data-slot="select-content"] {
-  z-index: 400;
+  /* Above modals (500) and popovers (700) so selects work inside them. */
+  z-index: 900;
   width: var(--radix-select-trigger-width, auto);
   max-height: min(320px, var(--radix-select-content-available-height));
   min-width: var(--radix-select-trigger-width, 8rem);

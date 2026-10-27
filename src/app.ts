@@ -8,6 +8,7 @@ import { errorHandler } from "./middleware/errorHandler";
 import router from "./routes";
 import githubHooksRouter from "./routes/githubHooks";
 import { getReadiness } from "./services/readiness";
+import { runningSha } from "./services/appVersion";
 
 const app = express();
 
@@ -80,6 +81,11 @@ app.use("/api", (_req, res) => {
 // In development, Vite serves the frontend on its own port with a proxy to this server.
 if (config.nodeEnv === "production") {
   const clientDist = path.join(__dirname, "../client/dist");
+  // The PWA polls this to notice a new deploy (client/src/pwa.ts). The build's own
+  // version.json only changes when package.json does; the commit changes every release.
+  app.get("/version.json", (_req, res) => {
+    res.set("Cache-Control", "no-store").json({version: runningSha() ?? "unknown"});
+  });
   app.use(express.static(clientDist));
   app.use((_req, res, next) => {
     res.sendFile(path.join(clientDist, "index.html"), (err?: Error) => {

@@ -1,8 +1,7 @@
-import { NavLink, Outlet } from "react-router-dom";
 import { BarChart2, LayoutDashboard, Cpu, Radar, ScrollText, ShieldAlert, RefreshCw } from "lucide-react";
-import { cn } from "../../lib/utils";
+import SubShell from "../../components/SubShell";
 import { AppSelect } from "../../components/AppSelect";
-import { MultiSelect } from "../../components/MultiSelect";
+import { ProjectPicker } from "../../components/ProjectPicker";
 import { TooltipProvider } from "../../components/ui/tooltip";
 import { InsightsProvider, useInsights, useScope } from "./InsightsContext";
 import { useRequestSample } from "./data";
@@ -22,7 +21,7 @@ function FilterBar() {
   const { options } = useScope();
   return (
     <div className={styles.filterBar}>
-      <MultiSelect options={options} selected={scope} onChange={setScope} allLabel="All projects" triggerClassName={styles.scopeSelect} />
+      <ProjectPicker items={options} selected={scope} onChange={setScope} triggerClassName={styles.scopeSelect} />
       <AppSelect value={period} onValueChange={(v) => setPeriod(v as PeriodId)} options={PERIODS} triggerClassName={styles.periodSelect} size="sm" />
       <button type="button" className="btn btn-ghost btn-sm" onClick={refresh} title="Reload every section">
         <RefreshCw size={13} />
@@ -32,23 +31,18 @@ function FilterBar() {
   );
 }
 
-function SectionNav() {
+/** High-severity count from the recent sample, shown on the Anomalies section link. */
+function useAnomalyBadge() {
   const { flagged } = useRequestSample();
   const high = flagged.filter((x) => x.flags.some((f) => f.sev === "high")).length;
+  return high > 0 ? <span className={styles.sectionBadge}>{high}</span> : null;
+}
+
+function InsightsShell() {
+  const badge = useAnomalyBadge();
+  const sections = INSIGHTS_SECTIONS.map((s) => (s.path === "anomalies" ? { ...s, badge } : s));
   return (
-    <nav className={styles.sectionNav} aria-label="Insights sections">
-      {INSIGHTS_SECTIONS.map(({ path, label, icon: Icon }) => (
-        <NavLink
-          key={path}
-          to={`/insights/${path}`}
-          className={({ isActive }) => cn(styles.sectionLink, isActive && styles.sectionLinkActive)}
-        >
-          <Icon size={14} />
-          {label}
-          {path === "anomalies" && high > 0 && <span className={styles.sectionBadge}>{high}</span>}
-        </NavLink>
-      ))}
-    </nav>
+    <SubShell title="Insights" icon={BarChart2} basePath="/insights" sections={sections} actions={<FilterBar />}/>
   );
 }
 
@@ -57,18 +51,7 @@ export default function InsightsLayout() {
   return (
     <InsightsProvider>
       <TooltipProvider>
-        <main className="main main-wide">
-          <div className={styles.header}>
-            <h1 className="page-title"><BarChart2 size={18} />Insights</h1>
-            <FilterBar />
-          </div>
-          <div className={styles.shell}>
-            <SectionNav />
-            <div className={styles.body}>
-              <Outlet />
-            </div>
-          </div>
-        </main>
+        <InsightsShell />
       </TooltipProvider>
     </InsightsProvider>
   );

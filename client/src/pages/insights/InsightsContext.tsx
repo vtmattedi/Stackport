@@ -1,23 +1,10 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useLocalStorageState } from "../../hooks/useLocalStorageState";
 import { useSystem } from "../../context/SystemContext";
 import type { Project } from "../../api/types";
+import type { ProjectPickerItem } from "../../components/ProjectPicker";
 import { periodInfo, type PeriodId } from "./shared";
 import { DEFAULT_RULES, type RuleId } from "./traffic";
-
-export function useLocalStorageState<T>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const [state, setState] = useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? (JSON.parse(raw) as T) : initial;
-    } catch {
-      return initial;
-    }
-  });
-  useEffect(() => {
-    try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* storage unavailable */ }
-  }, [key, state]);
-  return [state, setState];
-}
 
 /** Value used in the project filter for StackPort's own domain, which isn't a project row. */
 export const STACKPORT_SCOPE = "stackport";
@@ -113,8 +100,6 @@ export function useInsightsQuery<T>(key: string | null, fetcher: () => Promise<T
   return state;
 }
 
-export interface ScopeOption { value: string; label: string }
-
 /**
  * Resolves the project filter for both data sources: project ids for container
  * resources, and hostnames for nginx traffic (a project can own several domains).
@@ -126,8 +111,8 @@ export function useScope() {
 
   return useMemo(() => {
     const all = projects ?? [];
-    const options: ScopeOption[] = all.map((p) => ({ value: String(p.id), label: p.name }));
-    if (appDomain) options.push({ value: STACKPORT_SCOPE, label: "StackPort" });
+    const options: ProjectPickerItem[] = all.map((p) => ({ value: String(p.id), label: p.name, group: p.groupName }));
+    if (appDomain) options.push({ value: STACKPORT_SCOPE, label: "StackPort", group: "System" });
 
     const selectedProjects = scope.length > 0 ? all.filter((p) => scope.includes(String(p.id))) : all;
     const projectIds = scope.length > 0 ? selectedProjects.map((p) => p.id) : [];
