@@ -46,3 +46,27 @@ export function formatTimeAgo(ts: string | null | undefined, fallback = "Never")
   if (d < 7)     return `${d}d ago`;
   return formatShortDateTime(ts, fallback);
 }
+
+/** 1536 -> "1.5 KB"; binary units, one decimal under 10. */
+export function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+  return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
+/** Bytes per second, e.g. "1.5 MB/s". */
+export function formatRate(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+/** Seconds to "3d 4h", "5h 12m" or "7m". */
+export function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}

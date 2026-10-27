@@ -433,6 +433,13 @@ ensure_env_file() {
     echo "GIT_BRANCH=$(configured_branch)"
     echo "STACKPORT_REPO_URL=$(git -C "$APP_DIR" remote get-url origin 2>/dev/null || true)"
     echo "STACKPORT_COMMIT=$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null || true)"
+    # Mounted read-only for free-disk checks; only written when Docker's data root
+    # was moved (docker-compose.system.yml defaults to /var/lib/docker).
+    local docker_root
+    docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+    if [[ -n "$docker_root" && "$docker_root" != "/var/lib/docker" ]]; then
+      echo "STACKPORT_DOCKER_ROOT=$docker_root"
+    fi
   } > "$target"
   # This file is bind-mounted read-only into the stackport container and read by
   # its unprivileged `node` user (UID/GID 1000, the same assumption ensure_directories/

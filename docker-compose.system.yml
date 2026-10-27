@@ -32,6 +32,12 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
       # Compose reads this container path; HOST_PROJECT_ROOT resolves host mounts.
       - ./docker-compose.system.yml:/app/docker-compose.system.yml:ro
+      # Host metrics, read-only (src/services/hostInfo.ts). Docker's data root for
+      # free disk space (the build guard and storage cleanup need it), the host's
+      # /sys for its network interfaces, /etc/hostname for its name.
+      - ${STACKPORT_DOCKER_ROOT:-/var/lib/docker}:/host/docker-root:ro
+      - /sys:/host/sys:ro
+      - /etc/hostname:/host/etc/hostname:ro
 
   nginx:
     image: nginx:1.27-alpine

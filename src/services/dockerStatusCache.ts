@@ -1,5 +1,5 @@
 import { execFile } from "child_process";
-import { statfs } from "fs/promises";
+import { readDockerRootDiskSpace } from "./hostInfo";
 import { pollingCadenceS } from "../config/pollingCadence";
 import { SingleFlightCache } from "../utils/singleFlightCache";
 
@@ -60,26 +60,18 @@ export interface DiskFreeSpace {
 // filesystems (e.g. Docker's data-root moved to a separate volume).
 async function fetchDockerRootFreeSpace(): Promise<DiskFreeSpace> {
   const info = await run("docker", ["info", "--format", "{{json .DockerRootDir}}"]);
-  if (!info.ok) return { ok: false, dockerRoot: null, freeBytes: null, totalBytes: null };
-
-  let dockerRoot: string;
-  try {
-    dockerRoot = JSON.parse(info.stdout.trim()) as string;
-  } catch {
-    return { ok: false, dockerRoot: null, freeBytes: null, totalBytes: null };
+  let dockerRoot: string | null = null;
+  if (info.ok) {
+    try { dockerRoot = JSON.parse(info.stdout.trim()) as string; } catch { /* the mount alone is enough */ }
   }
 
-  try {
-    const stats = await statfs(dockerRoot);
-    return {
-      ok: true,
-      dockerRoot,
-      freeBytes: stats.bavail * stats.bsize,
-      totalBytes: stats.blocks * stats.bsize,
-    };
-  } catch {
-    return { ok: false, dockerRoot, freeBytes: null, totalBytes: null };
-  }
+  // Stackport runs in a container: the path `docker info` reports is the host's, and
+  // only reachable through the read-only mount (docker-compose.system.yml). Without
+  // it, storage state is "unknown" and the build guard and cleanup never act.
+  const space = await readDockerRootDiskSpace(dockerRoot);
+  return space
+    ? { ok: true, dockerRoot, freeBytes: space.freeBytes, totalBytes: space.totalBytes }
+    : { ok: false, dockerRoot, freeBytes: null, totalBytes: null };
 }
 
 const dockerRootFreeSpaceCache = new SingleFlightCache<DiskFreeSpace>(

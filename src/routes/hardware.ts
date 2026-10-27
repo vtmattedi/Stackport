@@ -2,6 +2,8 @@ import { Router, Request, Response } from "express";
 import * as os from "os";
 import { requireAuth } from "../middleware/auth";
 import { getDatabase } from "../config/database";
+import { getDockerRootFreeSpaceCached } from "../services/dockerStatusCache";
+import { readHostname } from "../services/hostInfo";
 
 const router = Router();
 router.use(requireAuth);
@@ -12,6 +14,9 @@ interface SampleRow {
   mem_used_mb: number;
   mem_total_mb: number;
   load1: number;
+  net_rx_bps: number | null;
+  net_tx_bps: number | null;
+  disk_used_pct: number | null;
   sampled_at: string;
 }
 
@@ -22,6 +27,9 @@ interface BucketRow {
   mem_avg: number;
   mem_max: number;
   load1_avg: number;
+  rx_avg: number | null;
+  tx_avg: number | null;
+  disk_avg: number | null;
 }
 
 function rowToSample(r: SampleRow) {
@@ -31,6 +39,9 @@ function rowToSample(r: SampleRow) {
     memUsedMb: r.mem_used_mb,
     memTotalMb: r.mem_total_mb,
     load1: r.load1,
+    netRxBps: r.net_rx_bps,
+    netTxBps: r.net_tx_bps,
+    diskUsedPct: r.disk_used_pct,
     sampledAt: r.sampled_at,
   };
 }
@@ -44,7 +55,8 @@ function clampHours(value: unknown): number {
   return Math.min(Math.max(n, MIN_HOURS), MAX_HOURS);
 }
 
-export function getHardwareSnapshot(hours = 24) {
+/** Latest sample, bucketed history, and the host facts the UI shows next to them. */
+export async function getHardwareSnapshot(hours = 24) {
   const db = getDatabase();
   const clamped = clampHours(hours);
 
@@ -57,16 +69,25 @@ export function getHardwareSnapshot(hours = 24) {
       MAX(cpu_percent) AS cpu_max,
       AVG(mem_percent) AS mem_avg,
       MAX(mem_percent) AS mem_max,
-      AVG(load1) AS load1_avg
+      AVG(load1) AS load1_avg,
+      AVG(net_rx_bps) AS rx_avg,
+      AVG(net_tx_bps) AS tx_avg,
+      AVG(disk_used_pct) AS disk_avg
     FROM hardware_samples
     WHERE sampled_at >= datetime('now', ?)
     GROUP BY bucket
     ORDER BY bucket ASC
   `).all(`-${clamped} hours`) as BucketRow[];
 
+  const disk = await getDockerRootFreeSpaceCached().catch(() => null);
   return {
     cpuCount: os.cpus().length,
-    hostname: os.hostname(),
+    hostname: await readHostname(),
+    uptimeS: os.uptime(),
+    /** Docker's filesystem; null when it can't be read (data root not mounted). */
+    disk: disk?.ok && disk.freeBytes !== null && disk.totalBytes !== null
+      ? { freeBytes: disk.freeBytes, totalBytes: disk.totalBytes, path: disk.dockerRoot }
+      : null,
     latest: latest ? rowToSample(latest) : null,
     history: history.map((h) => ({
       ts: h.bucket,
@@ -75,13 +96,16 @@ export function getHardwareSnapshot(hours = 24) {
       memAvg: h.mem_avg,
       memMax: h.mem_max,
       load1: h.load1_avg,
+      netRxBps: h.rx_avg,
+      netTxBps: h.tx_avg,
+      diskUsedPct: h.disk_avg,
     })),
   };
 }
 
 // GET /api/hardware?hours=24 — latest sample plus 5-minute bucketed history
-router.get("/", (req: Request, res: Response): void => {
-  res.json(getHardwareSnapshot(clampHours(req.query.hours)));
+router.get("/", async (req: Request, res: Response): Promise<void> => {
+  res.json(await getHardwareSnapshot(clampHours(req.query.hours)));
 });
 
 export default router;

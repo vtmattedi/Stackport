@@ -62,9 +62,9 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 19 | Clear policy-violation display | U4 (part) | 🟡 | S | — | ✅ |
 | 20 | Command palette | U6 | ⚪ | M | 16, 17 | ✅ |
 | 21 | Socket reconnects and ping indicator | — | 🟠 | S | — | ✅ `cbda58a` |
-| 22 | Notifications settings layout | — | ⚪ | S | — | |
-| 23 | Version card: version, branch, collapsible changes | — | ⚪ | S | — | |
-| 24 | Host metrics from the container (disk, network, hostname) | — | 🟠 | M | — | |
+| 22 | Notifications settings layout | — | ⚪ | S | — | ✅ |
+| 23 | Version card: version, branch, collapsible changes | — | ⚪ | S | — | ✅ |
+| 24 | Host metrics from the container (disk, network, hostname) | — | 🟠 | M | — | ✅ |
 | 25 | Status strip: actions, host, connection | — | 🟡 | M | 21, 24 | |
 
 Numbers skip 7: OAuth was deferred (see [Deferred](#deferred-not-in-this-plan)).
@@ -505,19 +505,19 @@ subscriptions on every connect. The ping shows the median of five samples, skips
 hidden tabs, says "No response" after two misses and replaces the connection after
 three. The server only pushes channel data that changed.
 
-### PR 22 — Notifications settings layout
+### PR 22 — Notifications settings layout ✅
 
 Match the other sections: full-width card, one title (no repeated card title), Send
 test and Save as small buttons in the card header, provider/key and from/to side by
 side, the email log as its own card.
 
-### PR 23 — Version card
+### PR 23 — Version card ✅
 
 Headline the version (`1.0.27`), then branch, short commit, message and date. The
 "updates ready" and "not released yet" commit lists become collapsibles, closed by
 default, with the count in the summary.
 
-### PR 24 — Host metrics from the container
+### PR 24 — Host metrics from the container ✅
 
 Since Stackport runs in a container: CPU, memory and load are already host-wide; the
 hostname is the container's; free disk space reads `/var/lib/docker`, which isn't
@@ -533,6 +533,23 @@ automatic cleanup never act (regression); network was never collected.
 - Every reader falls back to today's behaviour while its mount is missing (hosts on an
   older Compose file until their next update).
 - No host agent: nothing here changes the host. (`docs/deprecated/` is dropped.)
+
+**Shipped notes:**
+- `services/hostInfo.ts`: hostname, network totals (interfaces with a `device` link;
+  by name if none has one), disk space. Paths from `HOST_SYS_PATH`,
+  `HOST_DOCKER_ROOT_PATH`, `HOST_HOSTNAME_PATH` (defaults `/host/...`).
+- The free-space check tries the mount first and no longer needs `docker info` to
+  succeed. `statfs` works on the root-only data root as the container's `node` user
+  (checked: only the parent directories need to be traversable).
+- Migration 005 adds `net_rx_bps`, `net_tx_bps`, `disk_used_pct` to
+  `hardware_samples`. Rates are null across a counter reset or an interface change.
+- Host > Hardware: disk and network tiles and charts, hostname and uptime. Without
+  the mounts the tiles say "Not available until Stackport is updated".
+- `stackport.sh` writes `STACKPORT_DOCKER_ROOT` only for a moved data root; the
+  Compose default covers `/var/lib/docker`, also for hosts whose updater still runs
+  the previous script.
+- Not verified on a real host: the mounts themselves (tested with the sandbox's own
+  `/sys` and a stand-in directory).
 
 ### PR 25 — Status strip
 
