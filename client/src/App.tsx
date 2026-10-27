@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useParams } from "react-router-dom";
 import { Loader } from "lucide-react";
 import { isAuthenticated } from "./api/client";
 import Nav from "./components/Nav";
@@ -17,7 +17,6 @@ const Projects = lazy(() => import("./pages/Projects"));
 const ProjectDetails = lazy(() => import("./pages/ProjectDetails"));
 const Credentials = lazy(() => import("./pages/Credentials"));
 const System = lazy(() => import("./pages/System"));
-const Infrastructure = lazy(() => import("./pages/Infrastructure"));
 const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
 const GeneralSection = lazy(() => import("./pages/settings/GeneralSection"));
 const DeployTriggersSection = lazy(() => import("./pages/settings/DeployTriggersSection"));
@@ -30,6 +29,13 @@ const InsightsResources = lazy(() => import("./pages/insights/ResourcesSection")
 const InsightsTraffic = lazy(() => import("./pages/insights/TrafficSection"));
 const InsightsRequests = lazy(() => import("./pages/insights/RequestsSection"));
 const InsightsAnomalies = lazy(() => import("./pages/insights/AnomaliesSection"));
+
+/** /system was renamed Host; keeps old links (section and ?tab=) working. */
+function LegacySystemRedirect() {
+  const { section } = useParams();
+  const { search } = useLocation();
+  return <Navigate to={`/host${section ? `/${section}` : ""}${search}`} replace />;
+}
 
 /** Shared shell for every signed-in page. Mounted once as a layout route, so
  *  navigating between pages keeps SystemProvider (and its live subscriptions and
@@ -68,15 +74,17 @@ export default function App() {
             <Route path="/logs" element={<Logs />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:id/:tab?" element={<ProjectDetails />} />
-            <Route path="/credentials" element={<Credentials />} />
-            <Route path="/system/:section?" element={<System />} />
-            <Route path="/infrastructure/:section?" element={<Infrastructure />} />
+            <Route path="/credentials" element={<Navigate to="/settings/credentials" replace />} />
+            <Route path="/host/:section?" element={<System />} />
+            <Route path="/system/:section?" element={<LegacySystemRedirect />} />
+            <Route path="/infrastructure/*" element={<Navigate to="/host/hardware" replace />} />
             <Route path="/settings" element={<SettingsLayout />}>
               <Route index element={<Navigate to="general" replace />} />
               <Route path="general" element={<GeneralSection />} />
               <Route path="deploy-triggers" element={<DeployTriggersSection />} />
               <Route path="infrastructure" element={<Navigate to="/settings/general" replace />} />
               <Route path="notifications" element={<NotificationsSection />} />
+              <Route path="credentials" element={<Credentials />} />
               <Route path="mcp" element={<McpSection />} />
               <Route path="maintenance" element={<MaintenanceSection />} />
               <Route path="*" element={<Navigate to="general" replace />} />
@@ -94,8 +102,8 @@ export default function App() {
             <Route path="/traffic" element={<Navigate to="/insights/traffic" replace />} />
           </Route>
           <Route path="/integrations" element={<Navigate to="/settings/general" replace />} />
-          <Route path="/vps" element={<Navigate to="/infrastructure/host" replace />} />
-          <Route path="/hardware" element={<Navigate to="/infrastructure/host" replace />} />
+          <Route path="/vps" element={<Navigate to="/host/hardware" replace />} />
+          <Route path="/hardware" element={<Navigate to="/host/hardware" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <Toaster position="top-right" />

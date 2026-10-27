@@ -101,163 +101,159 @@ export default function Credentials() {
 
   return (
     <>
-      <main className="main">
-        <h1 className="page-title"><ShieldCheck size={20} />Credentials</h1>
-
-        <div className="card">
-          <div className="card-title"><Plus size={12} />Add Credential</div>
-          {addError && <div className="alert alert-error">{addError}</div>}
-          <form onSubmit={handleAdd} className={styles.addForm}>
+      <div className="card">
+        <div className="card-title"><Plus size={12} />Add Credential</div>
+        {addError && <div className="alert alert-error">{addError}</div>}
+        <form onSubmit={handleAdd} className={styles.addForm}>
+          <div className="field">
+            <label>Type</label>
+            <AppSelect
+              value={credentialType}
+              onValueChange={(value) => setCredentialType((value as "github" | "api_key") || "github")}
+              options={CREDENTIAL_TYPE_OPTIONS}
+            />
+          </div>
+          <div className="field">
+            <label>Alias <span className="hint">(a–z, 0–9, _ -)</span></label>
+            <input
+              type="text"
+              placeholder={credentialType === "github" ? "github-myrepo" : "resend-api-key"}
+              value={alias}
+              onChange={(e) => setAlias(e.target.value)}
+              required
+            />
+          </div>
+          {credentialType === "github" && (
             <div className="field">
-              <label>Type</label>
-              <AppSelect
-                value={credentialType}
-                onValueChange={(value) => setCredentialType((value as "github" | "api_key") || "github")}
-                options={CREDENTIAL_TYPE_OPTIONS}
-              />
-            </div>
-            <div className="field">
-              <label>Alias <span className="hint">(a–z, 0–9, _ -)</span></label>
+              <label>Username</label>
               <input
                 type="text"
-                placeholder={credentialType === "github" ? "github-myrepo" : "resend-api-key"}
-                value={alias}
-                onChange={(e) => setAlias(e.target.value)}
+                placeholder="github-user"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
                 required
               />
             </div>
-            {credentialType === "github" && (
-              <div className="field">
-                <label>Username</label>
-                <input
-                  type="text"
-                  placeholder="github-user"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  required
-                />
-              </div>
-            )}
-            <div className="field">
-              <label>{credentialType === "github" ? "Token" : "API Key"}</label>
-              <div className={styles.secretInput}>
-                <input
-                  type={showSecret ? "text" : "password"}
-                  placeholder={credentialType === "github" ? "ghp_..." : "re_..."}
-                  value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
-                  required
-                />
-                <button
-                  type="button"
-                  className="btn-icon"
-                  onClick={() => setShowSecret((v) => !v)}
-                  title={showSecret ? "Hide" : "Show"}
-                  tabIndex={-1}
-                >
-                  {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
-            {credentialType === "github" && (
-              <p className={styles.tokenHelp}>
-                <a className="ext-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">Create a fine-grained token</a>{" "}
-                scoped to the repos Stackport deploys, with <strong>Contents: read</strong>. Add <strong>Webhooks: read and write</strong> if you want
-                Stackport to install deploy webhooks for you. A classic token needs <span className="mono">repo</span> (and <span className="mono">admin:repo_hook</span> for webhooks).
-              </p>
-            )}
-            <div className={`field ${styles.descriptionField}`}>
-              <label>Description <span className="hint">(optional)</span></label>
+          )}
+          <div className="field">
+            <label>{credentialType === "github" ? "Token" : "API Key"}</label>
+            <div className={styles.secretInput}>
               <input
-                type="text"
-                placeholder={credentialType === "github" ? "GitHub token for private repo" : "Resend API key"}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                type={showSecret ? "text" : "password"}
+                placeholder={credentialType === "github" ? "ghp_..." : "re_..."}
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                required
               />
-            </div>
-            <div className={styles.formActions}>
-              <button type="submit" className="btn btn-primary" disabled={adding}>
-                <Plus size={14} />{adding ? "Adding…" : "Add credential"}
+              <button
+                type="button"
+                className="btn-icon"
+                onClick={() => setShowSecret((v) => !v)}
+                title={showSecret ? "Hide" : "Show"}
+                tabIndex={-1}
+              >
+                {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
               </button>
             </div>
-          </form>
-        </div>
-
-        <div className="card">
-          <div className="card-title"><ShieldCheck size={12} />Credentials</div>
-          <p className="muted-text" style={{ marginBottom: 12 }}>
-            Secrets are stored AES-256-GCM encrypted. They are never returned by the API.
-          </p>
-          {loading ? (
-            <div className="empty">Loading…</div>
-          ) : credentials.length === 0 ? (
-            <div className="empty">No credentials yet.</div>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Alias</th>
-                    <th>Type</th>
-                    <th>Username</th>
-                    <th>Description</th>
-                    <th>Secret</th>
-                    <th>Default</th>
-                    <th>Created</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {credentials.map((c) => (
-                    <tr key={c.id}>
-                      <td><span className="mono">{c.alias}</span></td>
-                      <td>{typeLabel(c.type)}</td>
-                      <td>
-                        <span className="mono">
-                          {c.type === "github" ? (c.username ?? "Missing username") : "—"}
-                        </span>
-                      </td>
-                      <td>{c.description ?? <span className="muted-text">—</span>}</td>
-                      <td><span className="muted-text mono">••••••••</span></td>
-                      <td>
-                        {c.type === "github" ? (
-                          <button
-                            type="button"
-                            className={c.isDefault ? "btn btn-secondary btn-sm" : "btn btn-ghost btn-sm"}
-                            onClick={() => void handleToggleDefault(c)}
-                            title={c.isDefault ? "Clear default token" : "Make default token"}
-                            disabled={savingDefaultId === c.id}
-                          >
-                            {savingDefaultId === c.id ? (
-                              <Loader size={12} className="spin" />
-                            ) : (
-                              <Star size={12} fill={c.isDefault ? "currentColor" : "none"} />
-                            )}
-                            {c.isDefault ? "Default" : "Set"}
-                          </button>
-                        ) : (
-                          <span className="muted-text">—</span>
-                        )}
-                      </td>
-                      <td className="mono">{formatShortDate(c.createdAt)}</td>
-                      <td>
-                        <div className="row-actions">
-                          <button
-                            className="btn btn-danger"
-                            onClick={() => void handleDelete(c.id, c.alias)}
-                          >
-                            <Trash2 size={12} />Delete
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          </div>
+          {credentialType === "github" && (
+            <p className={styles.tokenHelp}>
+              <a className="ext-link" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">Create a fine-grained token</a>{" "}
+              scoped to the repos Stackport deploys, with <strong>Contents: read</strong>. Add <strong>Webhooks: read and write</strong> if you want
+              Stackport to install deploy webhooks for you. A classic token needs <span className="mono">repo</span> (and <span className="mono">admin:repo_hook</span> for webhooks).
+            </p>
           )}
-        </div>
-      </main>
+          <div className={`field ${styles.descriptionField}`}>
+            <label>Description <span className="hint">(optional)</span></label>
+            <input
+              type="text"
+              placeholder={credentialType === "github" ? "GitHub token for private repo" : "Resend API key"}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </div>
+          <div className={styles.formActions}>
+            <button type="submit" className="btn btn-primary" disabled={adding}>
+              <Plus size={14} />{adding ? "Adding…" : "Add credential"}
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="card">
+        <div className="card-title"><ShieldCheck size={12} />Credentials</div>
+        <p className="muted-text" style={{ marginBottom: 12 }}>
+          Secrets are stored AES-256-GCM encrypted. They are never returned by the API.
+        </p>
+        {loading ? (
+          <div className="empty">Loading…</div>
+        ) : credentials.length === 0 ? (
+          <div className="empty">No credentials yet.</div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Alias</th>
+                  <th>Type</th>
+                  <th>Username</th>
+                  <th>Description</th>
+                  <th>Secret</th>
+                  <th>Default</th>
+                  <th>Created</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {credentials.map((c) => (
+                  <tr key={c.id}>
+                    <td><span className="mono">{c.alias}</span></td>
+                    <td>{typeLabel(c.type)}</td>
+                    <td>
+                      <span className="mono">
+                        {c.type === "github" ? (c.username ?? "Missing username") : "—"}
+                      </span>
+                    </td>
+                    <td>{c.description ?? <span className="muted-text">—</span>}</td>
+                    <td><span className="muted-text mono">••••••••</span></td>
+                    <td>
+                      {c.type === "github" ? (
+                        <button
+                          type="button"
+                          className={c.isDefault ? "btn btn-secondary btn-sm" : "btn btn-ghost btn-sm"}
+                          onClick={() => void handleToggleDefault(c)}
+                          title={c.isDefault ? "Clear default token" : "Make default token"}
+                          disabled={savingDefaultId === c.id}
+                        >
+                          {savingDefaultId === c.id ? (
+                            <Loader size={12} className="spin" />
+                          ) : (
+                            <Star size={12} fill={c.isDefault ? "currentColor" : "none"} />
+                          )}
+                          {c.isDefault ? "Default" : "Set"}
+                        </button>
+                      ) : (
+                        <span className="muted-text">—</span>
+                      )}
+                    </td>
+                    <td className="mono">{formatShortDate(c.createdAt)}</td>
+                    <td>
+                      <div className="row-actions">
+                        <button
+                          className="btn btn-danger"
+                          onClick={() => void handleDelete(c.id, c.alias)}
+                        >
+                          <Trash2 size={12} />Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </>
   );
 }

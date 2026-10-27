@@ -19,10 +19,10 @@ export interface RunningItem {
 /** Where a running action is followed: its project, or the System tab it belongs to. */
 function hrefFor(record: ActionSummary): string {
   if (record.projectId !== undefined) return `/projects/${record.projectId}`;
-  if (record.key.startsWith("system:certbot:")) return "/system/certbot";
-  if (record.key.startsWith("system:docker")) return "/system/docker";
-  if (record.key.startsWith("system:nginx")) return "/system/nginx";
-  return "/system";
+  if (record.key.startsWith("system:certbot:")) return "/host/certbot";
+  if (record.key.startsWith("system:docker")) return "/host/docker";
+  if (record.key.startsWith("system:nginx")) return "/host/nginx";
+  return "/host";
 }
 
 /** Every action running on the server right now (project builds, deploys and SSL, plus

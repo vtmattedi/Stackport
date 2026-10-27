@@ -57,7 +57,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 14 | Label the traffic window | R2 | ⚪ | S | — | ✅ |
 | 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | ✅ |
 | 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | ✅ |
-| 17 | Navigation consolidation | U1 | 🟡 | M | 13, 16 | |
+| 17 | Navigation consolidation | U1 | 🟡 | M | 13, 16 | ✅ |
 | 18 | Deploy and rollback preview | U3 | 🟡 | M | 1 | |
 | 19 | Clear policy-violation display | U4 (part) | 🟡 | S | — | |
 | 20 | Command palette | U6 | ⚪ | M | 16, 17 | |
@@ -419,12 +419,22 @@ existing query parameters such as `?setup=` keep working.
 - Overview and Deploys stay in `ProjectDetails.tsx`: they share the action handlers the
   toolbar uses. The file went from about 1,840 to 1,107 lines.
 
-### PR 17 — Navigation consolidation (U1)
+### PR 17 — Navigation consolidation (U1) ✅
 
 From System, Infrastructure and Settings → Infrastructure overlapping, to:
 **Projects · Insights · Logs · Host** (Docker, nginx, certificates, hardware)
 **· Settings** (general, deploy triggers, notifications, credentials, MCP, maintenance).
 Every old route redirects.
+
+**Shipped notes:**
+- Host (`/host/:section`) has Nginx, Docker, Certbot and Hardware. The old
+  Infrastructure page is now the Hardware section (`pages/HardwareSection.tsx`).
+- Credentials moved to `/settings/credentials`; every "manage credentials" link points
+  there.
+- Main nav: Projects, Host, Logs, Insights, Settings (mobile: the same, with More).
+- Redirects: `/system/:section` → `/host/:section` (query string kept, so old
+  `?tab=` links still resolve), `/infrastructure/*`, `/hardware`, `/vps` →
+  `/host/hardware`, `/credentials` → `/settings/credentials`.
 
 ### PR 18 — Deploy and rollback preview (U3)
 

@@ -1,17 +1,17 @@
-import { Navigate, useParams } from "react-router-dom";
-import { Cpu, Loader, Monitor, RefreshCw } from "lucide-react";
+import { Cpu, Loader, RefreshCw } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../api/client";
 import type { HardwareData } from "../api/types";
 import { useChannelData } from "../context/SocketContext";
-import SubShell, { SubShellSectionHeader } from "../components/SubShell";
+import { SubShellSectionHeader } from "../components/SubShell";
 import { cn } from "../lib/utils";
 import { CHART_GRID_COLOR as GRID_COLOR, CHART_TICK as TICK, CHART_TOOLTIP_STYLE as TOOLTIP_STYLE, formatChartTick as formatTick, formatMb, formatPercentValue } from "../lib/charts";
 import hardwareStyles from "./Hardware.module.scss";
 
-function HardwareSection() {
+/** Live and historical usage of the machine Stackport runs on (Host > Hardware). */
+export function HardwareSection() {
   const { data, connected, refresh } = useChannelData<HardwareData>("hardware", {
     fallback: () => api.getHardware(24),
   });
@@ -21,7 +21,7 @@ function HardwareSection() {
   return (
     <>
       <SubShellSectionHeader
-        title="Local host"
+        title="Hardware"
         icon={Cpu}
         description="Live usage of the machine Stackport runs on."
         actions={
@@ -101,20 +101,5 @@ function HardwareSection() {
         </div>
       </div>
     </>
-  );
-}
-
-const INFRASTRUCTURE_SECTIONS = [
-  { path: "host", label: "Local host", icon: Cpu },
-] as const;
-
-export default function Infrastructure() {
-  const { section } = useParams();
-  // "vps" was the Hostinger section, since removed.
-  if (section !== "host") return <Navigate to="/infrastructure/host" replace />;
-  return (
-    <SubShell title="Infrastructure" icon={Monitor} basePath="/infrastructure" sections={INFRASTRUCTURE_SECTIONS}>
-      <HardwareSection />
-    </SubShell>
   );
 }
