@@ -143,6 +143,14 @@ export function getProjectDeployment(projectId: number, deploymentId: number): P
   return row ? rowToDetail(row) : null;
 }
 
+/** The revision that is running, if any deploy has recorded one. */
+export function getActiveDeployment(projectId: number): ProjectDeploymentDetail | null {
+  const row = getDatabase()
+    .prepare("SELECT * FROM project_deployments WHERE project_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1")
+    .get(projectId) as DeploymentRow | undefined;
+  return row ? rowToDetail(row) : null;
+}
+
 function isRestorable(row: DeploymentRow): boolean {
   return (row.status === "active" || row.status === "superseded")
     && row.commit_sha !== null && row.compose_file_name !== null && row.effective_compose !== null;

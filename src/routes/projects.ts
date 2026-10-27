@@ -1,3 +1,4 @@
+import { previewDeploy, previewRollback } from "../services/deployPreview";
 import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../config/database";
 import { requireAuth } from "../middleware/auth";
@@ -483,6 +484,34 @@ router.get("/:id/deployments", requireAuth, (req: Request<{ id: string }>, res: 
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   res.json(listProjectDeployments(id));
+});
+
+/** What a deploy would change; read-only. `?branch=` as for POST /:id/deploy. */
+router.get("/:id/deploy-preview", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  const rawBranch = typeof req.query["branch"] === "string" ? req.query["branch"].trim() : "";
+  if (rawBranch && !isValidBranchName(rawBranch)) { res.status(400).json({ error: "Invalid branch name" }); return; }
+  res.json(await previewDeploy(project, rawBranch || null));
+});
+
+/** What a rollback would change; read-only. `?deploymentId=` as for POST /:id/rollback. */
+router.get("/:id/rollback-preview", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  const raw = req.query["deploymentId"];
+  let deploymentId: number | undefined;
+  if (raw !== undefined) {
+    deploymentId = typeof raw === "string" && /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
+    if (!Number.isInteger(deploymentId) || deploymentId <= 0) { res.status(400).json({ error: "deploymentId must be a positive integer" }); return; }
+  }
+  const result = await previewRollback(project, deploymentId);
+  if (!result.ok) { res.status(409).json({ error: result.error }); return; }
+  res.json({ ...result.preview, targetId: result.targetId });
 });
 
 router.post("/:id/rollback", requireAuth, (req: Request<{ id: string }>, res: Response): void => {

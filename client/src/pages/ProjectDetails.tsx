@@ -1,3 +1,4 @@
+import { RevisionPreview } from "../components/RevisionPreview";
 import { lazy, memo, Suspense, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
@@ -335,6 +336,13 @@ export default function ProjectDetails() {
         : "Checks out the newest earlier revision you haven't already rolled back from, with its exact commit and compose file, then redeploys from it. The current deployment stays recorded in history.",
       confirmLabel: "Roll back",
       destructive: true,
+      body: (
+        <RevisionPreview
+          direction="rollback"
+          queryKey={["project", project.id, "rollback-preview", target?.id ?? "default"]}
+          load={() => api.getRollbackPreview(project.id, target?.id)}
+        />
+      ),
     });
     if (!ok) return;
     setRollingBack(true);
@@ -350,6 +358,23 @@ export default function ProjectDetails() {
   async function runProjectCommand(action: "pull" | "compose" | "deploy" | "recreate" | "force-rebuild", opts?: { branch?: string }) {
     if (!project) return;
     await startProjectAction(project.id, action, opts);
+  }
+
+  async function handleDeploy(branch: string | undefined) {
+    if (!project) return;
+    const ok = await confirm({
+      title: `Deploy ${branch ?? project.autoDeployBranch ?? "the branch"}?`,
+      description: "Pulls the branch head, then runs docker compose up -d --build.",
+      confirmLabel: "Deploy",
+      body: (
+        <RevisionPreview
+          direction="deploy"
+          queryKey={["project", project.id, "deploy-preview", branch ?? null]}
+          load={() => api.getDeployPreview(project.id, branch)}
+        />
+      ),
+    });
+    if (ok) await runProjectCommand("deploy", branch ? { branch } : undefined);
   }
 
   async function redeployService(service: string) {
@@ -653,7 +678,7 @@ export default function ProjectDetails() {
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() => void runProjectCommand("deploy", pullBranch ? { branch: pullBranch } : undefined)}
+                      onClick={() => void handleDeploy(pullBranch || undefined)}
                       disabled={repoBusy || !project.githubRepo || !selectedBranch || project.paused}
                       title={selectedBranch ? `Pull ${selectedBranch}, then docker compose up -d --build` : "Pick a branch first"}
                     >

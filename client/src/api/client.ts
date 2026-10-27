@@ -1,5 +1,6 @@
 import type {
   AuditLogQuery,
+  RevisionPreview,
   AuditLogResult,
   Project,
   DeployTrigger,
@@ -388,6 +389,12 @@ export const api = {
     request<ProjectBranchesResult>(`/projects/${projectId}/branches${refresh ? "?refresh=1" : ""}`),
   issueProjectDomainSsl: (projectId: number, domainId: number) =>
     requestActionStart(`/projects/${projectId}/domains/${domainId}/ssl/issue`),
+  /** What a deploy would change (commits since the running revision, Compose diff). */
+  getDeployPreview: (projectId: number, branch?: string | null) =>
+    request<RevisionPreview>(`/projects/${projectId}/deploy-preview${branch ? `?branch=${encodeURIComponent(branch)}` : ""}`),
+  /** What a rollback would change; no `deploymentId` previews the default target. */
+  getRollbackPreview: (projectId: number, deploymentId?: number) =>
+    request<RevisionPreview>(`/projects/${projectId}/rollback-preview${deploymentId ? `?deploymentId=${deploymentId}` : ""}`),
   getProjectDeploys: (projectId: number) =>
     request<ProjectDeploy[]>(`/projects/${projectId}/deploys`),
   listApiTokens: () => request<ApiToken[]>("/api-tokens"),

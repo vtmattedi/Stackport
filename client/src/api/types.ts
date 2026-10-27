@@ -893,3 +893,50 @@ export interface ApiToken {
   expiresAt: string | null;
   revokedAt: string | null;
 }
+
+/** GET /projects/:id/deploy-preview and /rollback-preview (server: services/deployPreview.ts). */
+export interface PreviewCommit {
+  sha: string;
+  message: string;
+  author: string | null;
+  date: string | null;
+}
+
+export interface PreviewRevision {
+  sha: string | null;
+  branch: string | null;
+  composeFileName: string | null;
+}
+
+export interface DiffLine {
+  type: "context" | "add" | "remove";
+  text: string;
+}
+
+export interface DiffHunk {
+  oldStart: number;
+  newStart: number;
+  lines: DiffLine[];
+}
+
+export interface RevisionPreview {
+  from: PreviewRevision | null;
+  to: PreviewRevision;
+  commits: {
+    status: "ahead" | "behind" | "diverged" | "identical";
+    added: PreviewCommit[];
+    addedTotal: number;
+    removed: PreviewCommit[];
+    removedTotal: number;
+  } | null;
+  commitsNote: string | null;
+  compose: {
+    fromFile: string | null;
+    toFile: string | null;
+    basis: "source" | "effective";
+    diff: { identical: boolean; tooLarge: boolean; hunks: DiffHunk[] };
+  } | null;
+  composeNote: string | null;
+  /** Rollback previews only: the revision the rollback will restore. */
+  targetId?: number;
+}

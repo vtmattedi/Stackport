@@ -11,10 +11,14 @@ interface ConfirmOptions {
   /** For irreversible actions: the confirm button stays disabled until this exact text
    *  (usually the project or service name) is typed. */
   requireText?: string;
+  /** Extra content under the description, such as a preview of what changes. The
+   *  panel widens to fit it. */
+  body?: ReactNode;
 }
 
-interface ConfirmState extends Required<Omit<ConfirmOptions, "requireText">> {
+interface ConfirmState extends Required<Omit<ConfirmOptions, "requireText" | "body">> {
   requireText: string | null;
+  body: ReactNode;
 }
 
 type Resolver = (value: boolean) => void;
@@ -34,6 +38,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       cancelLabel: options.cancelLabel ?? "Cancel",
       destructive: options.destructive ?? false,
       requireText: options.requireText ?? null,
+      body: options.body ?? null,
     });
     setTyped("");
     return new Promise<boolean>((resolve) => {
@@ -52,13 +57,14 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       {children}
       {state && (
         <div className="confirm-backdrop" role="presentation" onMouseDown={() => close(false)}>
-          <div className="confirm-panel" role="dialog" aria-modal="true" aria-label={state.title} onMouseDown={(event) => event.stopPropagation()}>
+          <div className={state.body ? "confirm-panel confirm-panel-wide" : "confirm-panel"} role="dialog" aria-modal="true" aria-label={state.title} onMouseDown={(event) => event.stopPropagation()}>
             <div className="confirm-icon">
               <AlertTriangle size={18} />
             </div>
             <div className="confirm-copy">
               <h2>{state.title}</h2>
               {state.description && <p>{state.description}</p>}
+              {state.body}
               {state.requireText !== null && (
                 <label className="confirm-require">
                   <span>Type <strong className="mono">{state.requireText}</strong> to confirm</span>

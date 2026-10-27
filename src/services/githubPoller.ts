@@ -65,7 +65,14 @@ const MAX_BRANCH_PAGES = 10;
 /** Rate-limit headroom from the most recent GitHub response, surfaced in poll output. */
 let lastRateRemaining: number | null = null;
 
-function httpGet(url: string, token: string | null): Promise<GitHubResponse> {
+/** A GitHub REST GET for other services (deploy previews); same headers, conditional
+ *  cache and error messages as the poller's own requests. */
+export async function githubApiGet(path: string, token: string | null): Promise<unknown> {
+  // Not cached: compare responses carry patches and every preview URL is different.
+  return (await httpGet(`https://api.github.com${path}`, token, false)).body;
+}
+
+function httpGet(url: string, token: string | null, useCache = true): Promise<GitHubResponse> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {
       "User-Agent": "stackport-github-poller/1.0",
@@ -74,7 +81,7 @@ function httpGet(url: string, token: string | null): Promise<GitHubResponse> {
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const cacheKey = `${token ? "auth" : "anon"}:${url}`;
-    const cached = etagCache.get(cacheKey);
+    const cached = useCache ? etagCache.get(cacheKey) : undefined;
     if (cached) headers["If-None-Match"] = cached.etag;
 
     const req = https.get(url, { headers }, (res) => {
@@ -105,7 +112,7 @@ function httpGet(url: string, token: string | null): Promise<GitHubResponse> {
             return;
           }
           const parsed = JSON.parse(body) as unknown;
-          if (etag) etagCache.set(cacheKey, { etag, body: parsed });
+          if (etag && useCache) etagCache.set(cacheKey, { etag, body: parsed });
           resolve({ status: res.statusCode ?? 200, body: parsed, etag, rateRemaining });
         } catch (err) {
           reject(err);

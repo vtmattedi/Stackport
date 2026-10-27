@@ -58,7 +58,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | ✅ |
 | 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | ✅ |
 | 17 | Navigation consolidation | U1 | 🟡 | M | 13, 16 | ✅ |
-| 18 | Deploy and rollback preview | U3 | 🟡 | M | 1 | |
+| 18 | Deploy and rollback preview | U3 | 🟡 | M | 1 | ✅ |
 | 19 | Clear policy-violation display | U4 (part) | 🟡 | S | — | |
 | 20 | Command palette | U6 | ⚪ | M | 16, 17 | |
 
@@ -436,11 +436,28 @@ Every old route redirects.
   `?tab=` links still resolve), `/infrastructure/*`, `/hardware`, `/vps` →
   `/host/hardware`, `/credentials` → `/settings/credentials`.
 
-### PR 18 — Deploy and rollback preview (U3)
+### PR 18 — Deploy and rollback preview (U3) ✅
 
 Before a deploy: the commits between the running revision and the target. Before a
 rollback or restore: the same, plus a diff of the effective Compose files. The
 revision picker itself shipped in PR 1.
+
+**Shipped notes:**
+- `GET /api/projects/:id/deploy-preview?branch=` and `/rollback-preview?deploymentId=`
+  (`services/deployPreview.ts`). Read-only: nothing touches the checkout, so a preview
+  works while another action holds the project.
+- Commits come from GitHub's compare API with the project's token: added and removed
+  commits (the newest 50 of each, with totals), and whether the two have diverged.
+- Compose diff: for a rollback, the effective files exactly as each revision ran (from
+  `project_deployments`); for a deploy, the running revision's source file against the
+  same file at the branch head (fetched from GitHub). The effective file of a deploy
+  doesn't exist until Stackport writes it.
+- A GitHub failure (rate limit, private repo without a token) shows as a note in the
+  dialog; the deploy or rollback can still be confirmed.
+- Redeploy now asks for confirmation, with the preview. Roll back and Restore show it
+  in their existing confirmation. `ConfirmDialog` gained a `body` slot.
+- Line diff in `services/textDiff.ts` (LCS after trimming the common start and end;
+  reports "too large" past 4M cells instead of running long).
 
 ### PR 19 — Clear policy-violation display (U4, part)
 
