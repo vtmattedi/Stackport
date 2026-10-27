@@ -21,7 +21,6 @@ const Infrastructure = lazy(() => import("./pages/Infrastructure"));
 const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
 const GeneralSection = lazy(() => import("./pages/settings/GeneralSection"));
 const DeployTriggersSection = lazy(() => import("./pages/settings/DeployTriggersSection"));
-const InfrastructureSection = lazy(() => import("./pages/settings/InfrastructureSection"));
 const NotificationsSection = lazy(() => import("./pages/settings/NotificationsSection"));
 const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
@@ -76,7 +75,7 @@ export default function App() {
               <Route index element={<Navigate to="general" replace />} />
               <Route path="general" element={<GeneralSection />} />
               <Route path="deploy-triggers" element={<DeployTriggersSection />} />
-              <Route path="infrastructure" element={<InfrastructureSection />} />
+              <Route path="infrastructure" element={<Navigate to="/settings/general" replace />} />
               <Route path="notifications" element={<NotificationsSection />} />
               <Route path="mcp" element={<McpSection />} />
               <Route path="maintenance" element={<MaintenanceSection />} />
@@ -94,8 +93,8 @@ export default function App() {
             <Route path="/metrics" element={<Navigate to="/insights/overview" replace />} />
             <Route path="/traffic" element={<Navigate to="/insights/traffic" replace />} />
           </Route>
-          <Route path="/integrations" element={<Navigate to="/settings/infrastructure" replace />} />
-          <Route path="/vps" element={<Navigate to="/infrastructure/vps" replace />} />
+          <Route path="/integrations" element={<Navigate to="/settings/general" replace />} />
+          <Route path="/vps" element={<Navigate to="/infrastructure/host" replace />} />
           <Route path="/hardware" element={<Navigate to="/infrastructure/host" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

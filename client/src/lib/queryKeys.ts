@@ -9,7 +9,6 @@ export const queryKeys = {
   projectActions: (id: number) => ["project", id, "actions"] as const,
   system: ["system"] as const,
   systemActions: ["system", "actions"] as const,
-  vps: ["vps"] as const,
   githubPoller: ["github-poller"] as const,
   apiTokens: ["api-tokens"] as const,
 };

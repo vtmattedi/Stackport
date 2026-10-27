@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
@@ -7,12 +7,10 @@ import { actionTracker, waitForActionResult } from "./ActionTracker";
 import type {
   ActionRecord,
   ActionStartResponse,
-  FirewallProfile,
   GitHubPollerConfig,
   Project,
   SystemActionsSnapshot,
   SystemData,
-  VpsData,
 } from "../api/types";
 import { useChannelData, useSocket } from "./SocketContext";
 
@@ -53,9 +51,7 @@ const PROJECT_ACTION_REQUEST: Record<ProjectActionKind, (projectId: number, opts
 export interface SystemSnapshot {
   system: SystemData | null;
   projects: Project[] | null;
-  vps: VpsData | null;
   github: GitHubPollerConfig | null;
-  firewallProfiles: FirewallProfile[] | null;
   systemActions: SystemActionsSnapshot;
 }
 
@@ -64,9 +60,7 @@ export interface SystemSnapshot {
 interface SystemActionsValue {
   refreshSystem: () => void;
   refreshProjects: () => void;
-  refreshVps: () => void;
   refreshGithub: () => Promise<void>;
-  refreshFirewall: (providerId?: number) => Promise<void>;
   /** Start a project repo-slot action (pull/compose/deploy/stop/build), tracking a toast + GET /projects/:id/actions until it finishes — even if the caller unmounts. */
   startProjectAction: (projectId: number, kind: ProjectActionKind, opts?: ProjectActionOpts) => Promise<ActionRecord | null>;
   /** Redeploy (rebuild + restart) a single compose service, tracking a build-progress toast until it finishes. Shares the project's repo action slot. */
@@ -123,8 +117,8 @@ async function runAction(start: () => Promise<ActionStartResponse>, label: strin
 }
 
 /**
- * Loads system-wide state (projects, system/docker/nginx/certbot, vps, github
- * poller config, firewall profiles, in-flight system actions) on mount and
+ * Loads system-wide state (projects, system/docker/nginx/certbot, github poller
+ * config, in-flight system actions) on mount and
  * keeps it current via WS. Also owns the "start an action -> toast -> wait
  * for completion" lifecycle for nginx/certbot/project actions, so toasts
  * survive page navigation.
@@ -133,10 +127,8 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
   const { subscribeSystemActionsSync, unsubscribeSystemActionsSync } = useSocket();
   const { data: system, refresh: refreshSystem } = useChannelData<SystemData>("system", { fallback: () => api.getSystem() });
   const { data: projects, refresh: refreshProjects } = useChannelData<Project[]>("projects", { fallback: () => api.listProjects() });
-  const { data: vps, refresh: refreshVps } = useChannelData<VpsData>("vps", { fallback: () => api.getVm() });
   const queryClient = useQueryClient();
   const { data: github = null } = useQuery({ queryKey: queryKeys.githubPoller, queryFn: () => api.getGithubPollerConfig() });
-  const [firewallProfiles, setFirewallProfiles] = useState<FirewallProfile[] | null>(null);
   // The nginx, certbot and docker slots: refetched when a system action starts or ends
   // (ActionTracker invalidates them), and pushed by the server on connect.
   const { data: systemActions = EMPTY_SYSTEM_ACTIONS } = useQuery({
@@ -152,19 +144,6 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     await queryClient.invalidateQueries({ queryKey: queryKeys.githubPoller });
   }, [queryClient]);
 
-  const firstProviderId = vps?.providers[0]?.id;
-  const refreshFirewall = useCallback(async (providerId?: number) => {
-    const id = providerId ?? firstProviderId;
-    if (id == null) {
-      setFirewallProfiles(null);
-      return;
-    }
-    try {
-      setFirewallProfiles(await api.listFirewallProfiles(id));
-    } catch { /* non-critical */ }
-  }, [firstProviderId]);
-
-  useEffect(() => { void refreshFirewall(firstProviderId); }, [firstProviderId, refreshFirewall]);
 
   useEffect(() => {
     const handler = (snap: SystemActionsSnapshot) => queryClient.setQueryData(queryKeys.systemActions, snap);
@@ -226,16 +205,16 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
   }, [refreshSystem]);
 
   const actions = useMemo<SystemActionsValue>(() => ({
-    refreshSystem, refreshProjects, refreshVps, refreshGithub, refreshFirewall,
+    refreshSystem, refreshProjects, refreshGithub,
     startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, issueProjectDomainSsl, applyNginx, updateNginxAppConfig, certbotAction, pruneDockerCache,
   }), [
-    refreshSystem, refreshProjects, refreshVps, refreshGithub, refreshFirewall,
+    refreshSystem, refreshProjects, refreshGithub,
     startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, issueProjectDomainSsl, applyNginx, updateNginxAppConfig, certbotAction, pruneDockerCache,
   ]);
 
   const snapshot = useMemo<SystemSnapshot>(
-    () => ({ system, projects, vps, github, firewallProfiles, systemActions }),
-    [system, projects, vps, github, firewallProfiles, systemActions],
+    () => ({ system, projects, github, systemActions }),
+    [system, projects, github, systemActions],
   );
 
   // A tiny external store over `snapshot`, so a component can subscribe to just the

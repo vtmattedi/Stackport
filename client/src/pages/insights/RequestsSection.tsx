@@ -50,15 +50,13 @@ export function RequestDetail({ entry, onClose }: { entry: NginxLogEntry; onClos
     ["User-agent", entry.ua || "—"],
   ];
 
-  async function blockAtEdge() {
+  async function copyIp() {
     try {
       await navigator.clipboard.writeText(entry.ip);
-      notify.success(`${entry.ip} copied. Add a DROP rule under Settings → Infrastructure → Firewall.`);
-    } catch {
-      notify.success(`Add a DROP rule for ${entry.ip} under Settings → Infrastructure → Firewall.`);
+      notify.success(`${entry.ip} copied.`);
+    } catch (err) {
+      notify.error(err, "Couldn't copy the IP");
     }
-    onClose();
-    navigate("/settings/infrastructure");
   }
 
   return (
@@ -85,8 +83,8 @@ export function RequestDetail({ entry, onClose }: { entry: NginxLogEntry; onClos
           <button type="button" className="btn btn-ghost" onClick={() => { onClose(); navigate(`/insights/requests?q=${encodeURIComponent(entry.ip)}`); }}>
             <Search size={13} />Filter this IP
           </button>
-          <button type="button" className="btn btn-ghost" onClick={() => void blockAtEdge()}>
-            <Copy size={13} />Block IP at edge
+          <button type="button" className="btn btn-ghost" onClick={() => void copyIp()}>
+            <Copy size={13} />Copy IP
           </button>
         </div>
       </div>

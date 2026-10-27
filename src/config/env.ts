@@ -38,8 +38,6 @@ export const config = {
   logDir: process.env["LOG_DIR"] ?? "./logs",
   sqlitePath: process.env["SQLITE_PATH"] ?? "./data/stackport.sqlite",
   deployRoot: process.env["DEPLOY_ROOT"] ?? "./data/repos",
-  hostingerApiKey: process.env["HOSTINGER_API_KEY"] ?? "",
-  hostingerVmId: process.env["HOSTINGER_VM_ID"] ?? "",
   nginxPath: process.env["NGINX_PATH"] ?? "/etc/nginx",
   appServiceName: process.env["APP_SERVICE_NAME"] ?? "stackport",
   // Real host checkout path used by Docker Compose to resolve system mounts.

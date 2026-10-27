@@ -15,20 +15,6 @@ import type {
   ProjectRepoFolderScanResult,
   ProjectEnvFile,
   Credential,
-  VmData,
-  VpsData,
-  VpsProvider,
-  MonitoredVm,
-  FirewallProfile,
-  FirewallRule,
-  FirewallAction,
-  FirewallProtocol,
-  FirewallSource,
-  ProviderFirewall,
-  FirewallSyncResult,
-  VmInfo,
-  VmMetrics,
-  VmDebug,
   SystemData,
   ComposeActionResult,
   DockerContainerLogsResult,
@@ -427,57 +413,6 @@ export const api = {
   clearDefaultCredential: () =>
     request<void>("/credentials/default", { method: "DELETE" }),
   deleteCredential: (id: number) => request<void>(`/credentials/${id}`, { method: "DELETE" }),
-
-  // VPS
-  getVm: () => request<VpsData>("/vps"),
-  saveHostingerProvider: (data: { id?: number; name?: string; credentialId?: number | null }) =>
-    request<VpsProvider>("/vpi", {
-      method: "POST",
-      body: JSON.stringify({
-        action: "create",
-        options: {
-          type: "hostinger",
-          ...data,
-        },
-      }),
-    }),
-  listProviderVms: (providerId: number) =>
-    request<Record<string, unknown>[]>(`/vps/providers/${providerId}/vms`),
-  addMonitoredVm: (data: { providerId: number; vmId: string; label?: string | null }) =>
-    request<MonitoredVm>("/vps/monitored", { method: "POST", body: JSON.stringify(data) }),
-  removeMonitoredVm: (id: number) =>
-    request<void>(`/vps/monitored/${id}`, { method: "DELETE" }),
-  refreshVps: () => request<{ vms: VmData[] }>("/vps/refresh", { method: "POST" }),
-  resetVm: (providerId: number, vmId: string) =>
-    request<unknown>(`/vps/providers/${providerId}/vms/${encodeURIComponent(vmId)}/reset`, { method: "POST" }),
-  listProviderFirewalls: (providerId: number) =>
-    request<ProviderFirewall[]>(`/vps/providers/${providerId}/firewalls`),
-  getProviderFirewall: (providerId: number, firewallId: string) =>
-    request<ProviderFirewall>(`/vps/providers/${providerId}/firewalls/${encodeURIComponent(firewallId)}`),
-  listFirewallProfiles: (providerId?: number) =>
-    request<FirewallProfile[]>(`/vps/firewall/profiles${buildQuery({ providerId: providerId ?? "" })}`),
-  createFirewallProfile: (data: { providerId: number; name: string; remoteFirewallId?: string | null }) =>
-    request<FirewallProfile>("/vps/firewall/profiles", { method: "POST", body: JSON.stringify(data) }),
-  updateFirewallProfile: (profileId: number, data: { name?: string; remoteFirewallId?: string | null }) =>
-    request<FirewallProfile>(`/vps/firewall/profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(data) }),
-  deleteFirewallProfile: (profileId: number) =>
-    request<void>(`/vps/firewall/profiles/${profileId}`, { method: "DELETE" }),
-  createFirewallRule: (profileId: number, data: {
-    action: FirewallAction;
-    protocol: FirewallProtocol;
-    port: string;
-    source: FirewallSource;
-    sourceDetail: string;
-  }) => request<FirewallRule>(`/vps/firewall/profiles/${profileId}/rules`, { method: "POST", body: JSON.stringify(data) }),
-  deleteFirewallRule: (profileId: number, ruleId: number) =>
-    request<void>(`/vps/firewall/profiles/${profileId}/rules/${ruleId}`, { method: "DELETE" }),
-  syncFirewallProfile: (profileId: number, data: { vmId?: string | null; activate?: boolean }) =>
-    request<FirewallSyncResult>(`/vps/firewall/profiles/${profileId}/sync`, { method: "POST", body: JSON.stringify(data) }),
-  getVmInfo: () => request<VmInfo>("/vps/info"),
-  getVmMetrics: () => request<VmMetrics>("/vps/metrics"),
-  getVmDebug: () => request<VmDebug>("/vps/debug"),
-  vmAction: (action: "reset") =>
-    request<unknown>(`/vps/${action}`, { method: "POST" }),
 
   // System
   getSystem: () => request<SystemData>("/system"),

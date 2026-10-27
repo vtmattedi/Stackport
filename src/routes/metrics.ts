@@ -4,7 +4,6 @@ import { execFile } from "child_process";
 import * as os from "os";
 import { requireAuth } from "../middleware/auth";
 import { getDatabase } from "../config/database";
-import { cachedVms } from "../services/vps";
 import { HEALTH_CHECK_USER_AGENT } from "../services/healthChecker";
 
 const router = Router();
@@ -178,21 +177,20 @@ function getServerIps(): Set<string> {
   for (const iface of Object.values(os.networkInterfaces())) {
     for (const addr of (iface ?? [])) ips.add(addr.address);
   }
-  // Health checks hit public domains that route back through nginx, so the
-  // logged source is the VPS's public IP (NAT'd by the cloud provider) —
-  // never visible via os.networkInterfaces(). Pull it from the cached
-  // Hostinger VM data instead.
-  try {
-    for (const vm of cachedVms()) {
-      const addrs = (vm as { ipAddresses?: unknown }).ipAddresses;
-      if (Array.isArray(addrs)) {
-        for (const addr of addrs) if (typeof addr === "string") ips.add(addr);
-      }
-    }
-  } catch {
-    // VPS not configured — fall back to interface/loopback IPs only
-  }
+  // Health checks hit public domains that route back through nginx, so the logged
+  // source is the server's public IP (NAT'd by the cloud provider), which
+  // os.networkInterfaces() never shows. Every request carrying the health-check user
+  // agent came from this server, so its source IP is learned from the logs instead.
+  for (const ip of learnedSelfIps) ips.add(ip);
   return ips;
+}
+
+/** Source IPs seen on Stackport's own health-check requests (see getServerIps). */
+const learnedSelfIps = new Set<string>();
+const MAX_LEARNED_SELF_IPS = 16;
+
+function learnSelfIp(entry: { ip: string; ua?: string | null }): void {
+  if (entry.ua === HEALTH_CHECK_USER_AGENT && learnedSelfIps.size < MAX_LEARNED_SELF_IPS) learnedSelfIps.add(entry.ip);
 }
 
 interface DomainAgg {
@@ -262,6 +260,7 @@ function parseNginxContent(
   for (let i = startIdx; i < lines.length; i++) {
     const entry = parseNginxLine(lines[i]);
     if (!entry) continue;
+    learnSelfIp(entry);
     if (excludeIps.has(entry.ip)) continue;
     if (excludeSelf && entry.ua === HEALTH_CHECK_USER_AGENT) continue;
     if (entry.host) hasExtendedFormat = true;
@@ -448,6 +447,7 @@ function extractNginxEntries(
   for (let i = lines.length - 1; i >= startIdx; i--) {
     const entry = parseNginxLine(lines[i]);
     if (!entry) continue;
+    learnSelfIp(entry);
     if (excludeIps.has(entry.ip)) continue;
     if (excludeSelf && entry.ua === HEALTH_CHECK_USER_AGENT) continue;
     if (entry.host) hasExtendedFormat = true;

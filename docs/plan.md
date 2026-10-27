@@ -53,7 +53,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | ✅ |
 | 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | ✅ |
 | 12 | Webhooks first, poller as fallback | R3 | 🟡 | S | — | ✅ |
-| 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | |
+| 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | ✅ |
 | 14 | Label the traffic window | R2 | ⚪ | S | — | |
 | 15 | Safer destructive actions, env paste | U2, U5 | 🟡 | S–M | — | |
 | 16 | Project page as routed tabs | T4 | 🟡 | L | 9 | |
@@ -357,12 +357,20 @@ GitHub projects to the webhook when Stackport is on HTTPS. A hook still `waiting
 its first delivery stays on the 30-minute check: there's no reliable "set up at" time
 to tell a new hook from a broken one.
 
-### PR 13 — Remove the Hostinger feature (R1)
+### PR 13 — Remove the Hostinger feature (R1) ✅
 
 Not used on any deployed install (D1). Remove the UI, routes and services (about 1,600
 lines). Stored Hostinger API key credentials stay in the credentials list for the
 admin to delete. The database tables stay, unused, so `stackport rollback` to the
 previous version still finds its schema (PR 2's additive-only rule).
+
+**Shipped notes:** removed the VPS service and routes (`/api/vps`, `/api/vpi`), the
+`vps` socket channel, the `HOSTINGER_*` env settings, the Infrastructure → VPS section,
+Settings → Infrastructure (providers, monitored VMs, firewall) and their client API and
+types. Insights used the cached VM list to recognize the server's own public IP; it now
+learns that IP from requests carrying Stackport's health-check user agent. Insights'
+"Block IP at edge" (which pointed at the removed firewall page) is now "Copy IP". Old
+URLs redirect.
 
 ### PR 14 — Label the traffic window (R2)
 

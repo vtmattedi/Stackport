@@ -2,7 +2,6 @@ import { Server as SocketIOServer, Socket } from "socket.io";
 import { getDatabase } from "../config/database";
 import { rowToProject, type ProjectRow } from "../entities/Project";
 import { getSystemSnapshot } from "../routes/system";
-import { fetchVpsSnapshot, refreshVpsSnapshot } from "../routes/vps";
 import { getHardwareSnapshot } from "../routes/hardware";
 import { setRealtimeServer } from "./realtime";
 import { verifyStoredAuthToken } from "./authTokens";
@@ -11,7 +10,7 @@ import { attachDomains } from "./projectDomains";
 import { bindDockerShellEvents } from "./dockerShellSocket";
 import { bindDockerLogsEvents } from "./dockerLogsSocket";
 
-type Channel = "system" | "projects" | "vps" | "hardware";
+type Channel = "system" | "projects" | "hardware";
 
 /** Action ids are UUIDs, or "legacy-<n>" for deploys copied from project_deploys. */
 const ACTION_ID_RE = /^(?:[0-9a-f-]{36}|legacy-[0-9]+)$/;
@@ -19,11 +18,10 @@ const ACTION_ID_RE = /^(?:[0-9a-f-]{36}|legacy-[0-9]+)$/;
 const INTERVALS_MS: Record<Channel, number> = {
   system:   5_000,
   projects: 10_000,
-  vps:      15 * 60_000,
   hardware: 15_000,
 };
 
-async function fetchChannel(channel: Channel, refreshUpstream = false): Promise<unknown> {
+async function fetchChannel(channel: Channel): Promise<unknown> {
   switch (channel) {
     case "system":
       return getSystemSnapshot();
@@ -33,8 +31,6 @@ async function fetchChannel(channel: Channel, refreshUpstream = false): Promise<
         .all() as ProjectRow[];
       return attachDomains(rows.map(rowToProject));
     }
-    case "vps":
-      return refreshUpstream ? refreshVpsSnapshot() : fetchVpsSnapshot();
     case "hardware":
       return getHardwareSnapshot();
   }
@@ -170,15 +166,15 @@ export class SocketManager {
       return;
     }
     void this.pushToRoom(channel);
-    const timer = setInterval(() => void this.pushToRoom(channel, channel === "vps"), INTERVALS_MS[channel]);
+    const timer = setInterval(() => void this.pushToRoom(channel), INTERVALS_MS[channel]);
     this.timers.set(channel, timer);
   }
 
-  private async pushToRoom(channel: Channel, refreshUpstream = false): Promise<void> {
+  private async pushToRoom(channel: Channel): Promise<void> {
     const size = this.io.sockets.adapter.rooms.get(channel)?.size ?? 0;
     if (size === 0) { this.stopPolling(channel); return; }
     try {
-      const data = await fetchChannel(channel, refreshUpstream);
+      const data = await fetchChannel(channel);
       this.io.to(channel).emit(`data:${channel}`, data);
     } catch { /* silent — client keeps last data */ }
   }

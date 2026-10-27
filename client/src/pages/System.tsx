@@ -376,7 +376,8 @@ export default function System() {
   const [searchParams] = useSearchParams();
   const tab = searchParams.get("tab");
   if (tab === "github") return <Navigate to="/settings/deploy-triggers" replace />;
-  if (tab === "firewall") return <Navigate to="/settings/infrastructure" replace />;
+  // The firewall tab was the Hostinger firewall, since removed.
+  if (tab === "firewall") return <Navigate to="/system" replace />;
   if (!section || !isSystemTab(section)) {
     return <Navigate to={`/system/${tab && isSystemTab(tab) ? tab : "nginx"}`} replace />;
   }

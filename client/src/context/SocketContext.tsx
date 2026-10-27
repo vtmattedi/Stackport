@@ -236,7 +236,6 @@ export function useSocketLatency(): number | null {
 const CHANNEL_KEYS: Record<string, readonly unknown[]> = {
   system: queryKeys.system,
   projects: queryKeys.projects,
-  vps: queryKeys.vps,
 };
 
 /**
