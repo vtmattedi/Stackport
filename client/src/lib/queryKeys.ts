@@ -1,6 +1,7 @@
 /** Every query key in one place, so invalidation can't miss a spelling. */
 export const queryKeys = {
   runningActions: ["actions", "running"] as const,
+  recentActions: ["actions", "recent"] as const,
   action: (id: string) => ["actions", id] as const,
   projects: ["projects"] as const,
   project: (id: number) => ["project", id] as const,

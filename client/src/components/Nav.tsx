@@ -3,18 +3,19 @@ import { NavLink, Link, useNavigate, useLocation } from "react-router-dom";
 import { HoverCard } from "radix-ui";
 import {
   ScrollText, FolderDot, Gauge, LogOut, Settings as SettingsIcon,
-  ShieldCheck, Cpu, Wifi, WifiOff, ChevronLeft, ChevronRight,
+  ShieldCheck, Cpu, ChevronLeft, ChevronRight,
   Layers, Box, Loader, BarChart2, Star, Menu, Search,
 } from "lucide-react";
 import { api, clearToken } from "../api/client";
-import { useSocket, useSocketLatency } from "../context/SocketContext";
+import { useSocket } from "../context/SocketContext";
 import { useSystem } from "../context/SystemContext";
 import { cn } from "../lib/utils";
 import { deriveProjectStatus, findProjectStack, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
 import { StackPortBrand } from "../logo/StackPortBrand";
 import styles from "./Nav.module.scss";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
-import { RunningActionsList, useRunningActions } from "./RunningActions";
+import { ActionsPanel, useRunningActions } from "./RunningActions";
+import { ConnectionRow, HostPanel, StatusStrip } from "./StatusStrip";
 import { openCommandPalette, PALETTE_SHORTCUT } from "./CommandPalette";
 import type { Project, SystemData } from "../api/types";
 
@@ -129,8 +130,7 @@ function ProjectsSubmenu({ projects }: { projects: Project[] | null }) {
 export default function Nav() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { connected, disconnect } = useSocket();
-  const latency = useSocketLatency();
+  const { disconnect } = useSocket();
   const { system, projects } = useSystem();
   const running = useRunningActions();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -154,11 +154,6 @@ export default function Nav() {
         navigate("/");
       });
   }
-
-  const statusLabel = !connected ? "Disconnected"
-    : latency.unresponsive ? "No response"
-    : latency.ms != null ? `${latency.ms} ms` : "Connected";
-  const statusClass = cn(styles.navStatus, connected && (latency.unresponsive ? styles.unresponsive : styles.connected));
 
   const mobileLink = ({ isActive }: { isActive: boolean }) => cn(styles.mobileLink, isActive && styles.mobileLinkActive);
 
@@ -270,28 +265,7 @@ export default function Nav() {
       </div>
 
       <div className={styles.navFooter}>
-        {running.length > 0 && (
-          <Popover>
-            <PopoverTrigger asChild>
-              <button type="button" className={cn(styles.navLink, styles.runningBtn)} title={`${running.length} running`}>
-                <Loader size={16} className="spin" />
-                <span className={styles.runningCount}>{running.length}</span>
-                <span className={styles.linkText}>Running</span>
-              </button>
-            </PopoverTrigger>
-            <PopoverContent side="right" align="end" className={styles.runningPopover}>
-              <div className={styles.submenuHeader}>Running now</div>
-              <RunningActionsList items={running} />
-            </PopoverContent>
-          </Popover>
-        )}
-        <span
-          className={statusClass}
-          title={latency.unresponsive ? "The server stopped answering pings; reconnecting if it doesn't recover" : statusLabel}
-        >
-          {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
-          <span className={styles.linkText}>{statusLabel}</span>
-        </span>
+        <StatusStrip />
         <button
           className={cn(styles.navLink, styles.logoutBtn)}
           title="Logout"
@@ -320,13 +294,10 @@ export default function Nav() {
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="end" className={styles.moreMenu}>
-          {running.length > 0 && (
-            <>
-              <div className={styles.submenuHeader}>Running now</div>
-              <RunningActionsList items={running} onNavigate={() => setMoreOpen(false)} />
-              <div className={styles.moreSeparator} />
-            </>
-          )}
+          <ActionsPanel onNavigate={() => setMoreOpen(false)} />
+          <div className={styles.moreSeparator} />
+          <HostPanel onNavigate={() => setMoreOpen(false)} />
+          <div className={styles.moreSeparator} />
           {([
             ["/settings", "Settings", SettingsIcon],
           ] as const).map(([to, label, Icon]) => (
@@ -341,10 +312,7 @@ export default function Nav() {
           </button>
           <div className={styles.moreSeparator} />
           <div className={styles.moreFooter}>
-            <span className={statusClass}>
-              {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
-              <span>{statusLabel}</span>
-            </span>
+            <ConnectionRow inMenu />
             <button type="button" className={styles.submenuItem} onClick={logout}>
               <LogOut size={15} />
               <span className={styles.submenuItemLabel}>Logout</span>

@@ -65,7 +65,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 22 | Notifications settings layout | — | ⚪ | S | — | ✅ |
 | 23 | Version card: version, branch, collapsible changes | — | ⚪ | S | — | ✅ |
 | 24 | Host metrics from the container (disk, network, hostname) | — | 🟠 | M | — | ✅ |
-| 25 | Status strip: actions, host, connection | — | 🟡 | M | 21, 24 | |
+| 25 | Status strip: actions, host, connection | — | 🟡 | M | 21, 24 | ✅ |
 
 Numbers skip 7: OAuth was deferred (see [Deferred](#deferred-not-in-this-plan)).
 
@@ -551,7 +551,7 @@ automatic cleanup never act (regression); network was never collected.
 - Not verified on a real host: the mounts themselves (tested with the sandbox's own
   `/sys` and a stand-in directory).
 
-### PR 25 — Status strip
+### PR 25 — Status strip ✅
 
 One fixed row above Logout, three indicators with their own popovers; the layout never
 shifts:
@@ -567,6 +567,18 @@ shifts:
   Wi-Fi icon; latency in the expanded sidebar and tooltip.
 - Mobile: the strip at the top of the More menu; the More icon keeps its badge for
   running actions.
+
+**Shipped notes:**
+- `components/StatusStrip.tsx`: three rows replace the Running button and the Wi-Fi
+  status. Popovers open on hover (150 ms) or click. Collapsed sidebar: corner badges
+  with the running count (always, 0 included) and CPU %; expanded: the same as text.
+- The action tracker keeps the last 20 actions that finished while the page was open
+  (`useRecentlyFinishedActions`), memory only, with a Clear button; a reload empties it.
+- Host popover: ring gauges for CPU, memory and disk (amber from 75 %, red from 90 %),
+  load, network, uptime, hostname, a 1-hour CPU/memory sparkline. It reads the
+  `hardware` channel, so every page now subscribes to it (about 1 KB, pushed only on
+  change since PR 21).
+- Phone: the More menu shows the actions panel, the host panel and the connection row.
 
 ## Decisions
 

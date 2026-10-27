@@ -10,6 +10,8 @@ type Listener = (record: ActionSummary) => void;
 
 /** Finished records kept so a waiter that starts late still gets its answer. */
 const MAX_FINISHED = 200;
+/** Finished actions the status strip lists; memory only, so a reload clears them. */
+const MAX_RECENT = 20;
 
 /**
  * The client's single view of server actions, fed by the socket's action:started and
@@ -20,6 +22,7 @@ const MAX_FINISHED = 200;
 class ActionTracker {
   private running = new Map<string, ActionSummary>();
   private finished = new Map<string, ActionSummary>();
+  private recent: ActionSummary[] = [];
   private waiters = new Map<string, ((record: ActionSummary) => void)[]>();
   private startListeners = new Set<Listener>();
   private finishListeners = new Set<Listener>();
@@ -61,7 +64,19 @@ class ActionTracker {
     for (const resolve of this.waiters.get(record.id) ?? []) resolve(record);
     this.waiters.delete(record.id);
     for (const listener of this.finishListeners) listener(record);
+    this.recent = [record, ...this.recent].slice(0, MAX_RECENT);
+    this.publishRecent();
     invalidateFor(record);
+  }
+
+  /** Actions that finished while this page was open, newest first. */
+  recentlyFinished(): ActionSummary[] {
+    return this.recent;
+  }
+
+  clearRecentlyFinished(): void {
+    this.recent = [];
+    this.publishRecent();
   }
 
   /** Resolves with the action's final record once it has finished. */
@@ -89,6 +104,10 @@ class ActionTracker {
 
   private publishRunning(): void {
     queryClient.setQueryData(queryKeys.runningActions, this.runningActions());
+  }
+
+  private publishRecent(): void {
+    queryClient.setQueryData(queryKeys.recentActions, this.recent);
   }
 }
 
@@ -142,6 +161,17 @@ export function useRunningActionRecords(): ActionSummary[] {
     queryFn: () => actionTracker.runningActions(),
     staleTime: Infinity,
     initialData: () => actionTracker.runningActions(),
+  });
+  return data;
+}
+
+/** Actions that finished while this page was open, newest first (memory only). */
+export function useRecentlyFinishedActions(): ActionSummary[] {
+  const { data } = useQuery({
+    queryKey: queryKeys.recentActions,
+    queryFn: () => actionTracker.recentlyFinished(),
+    staleTime: Infinity,
+    initialData: () => actionTracker.recentlyFinished(),
   });
   return data;
 }

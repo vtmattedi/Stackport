@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
-import { Loader } from "lucide-react";
+import { CircleCheck, CircleX, Loader } from "lucide-react";
 import type { ActionSummary } from "../api/types";
-import { useRunningActionRecords } from "../context/ActionTracker";
+import { actionTracker, useRecentlyFinishedActions, useRunningActionRecords } from "../context/ActionTracker";
 import { jsonEqual, useSystemSelector } from "../context/SystemContext";
 import { actionLabel } from "../lib/actionLabels";
 import { TimeAgo } from "./TimeAgo";
@@ -14,6 +14,9 @@ export interface RunningItem {
   subject: string | null;
   href: string;
   startedAt: string;
+  /** Set once finished: whether it succeeded, and when. */
+  ok?: boolean | null;
+  completedAt?: string | null;
 }
 
 /** Where a running action is followed: its project, or the System tab it belongs to. */
@@ -28,12 +31,20 @@ function hrefFor(record: ActionSummary): string {
 /** Every action running on the server right now (project builds, deploys and SSL, plus
  *  nginx, certbot and docker jobs), kept current by the action tracker's socket events. */
 export function useRunningActions(): RunningItem[] {
-  const running = useRunningActionRecords();
+  return useActionItems(useRunningActionRecords());
+}
+
+/** Actions that finished while this page was open, newest first; a reload clears them. */
+export function useRecentActions(): RunningItem[] {
+  return useActionItems(useRecentlyFinishedActions());
+}
+
+function useActionItems(records: ActionSummary[]): RunningItem[] {
   const projectNames = useSystemSelector(
     (s) => Object.fromEntries((s.projects ?? []).map((p) => [p.id, p.name])) as Record<number, string>,
     jsonEqual,
   );
-  return running.map((record) => {
+  return records.map((record) => {
     const domain = typeof record.meta?.["domain"] === "string" ? record.meta["domain"] : null;
     return {
       id: record.id,
@@ -41,6 +52,7 @@ export function useRunningActions(): RunningItem[] {
       subject: (record.projectId !== undefined ? projectNames[record.projectId] : null) ?? domain,
       href: hrefFor(record),
       startedAt: record.startedAt,
+      ...(record.status !== "running" ? { ok: record.ok, completedAt: record.completedAt } : {}),
     };
   });
 }
@@ -53,14 +65,41 @@ export function RunningActionsList({ items, onNavigate }: { items: RunningItem[]
       {items.map((item) => (
         <li key={item.id}>
           <Link to={item.href} className={styles.item} onClick={onNavigate}>
-            <Loader size={13} className="spin" />
+            {item.completedAt === undefined ? <Loader size={13} className="spin" />
+              : item.ok ? <CircleCheck size={13} className={styles.ok} /> : <CircleX size={13} className={styles.failed} />}
             <span className={styles.text}>
               <span className={styles.label}>{item.subject ? `${item.subject}: ` : ""}{item.label}</span>
-              <span className={styles.meta}>started <TimeAgo ts={item.startedAt} /></span>
+              <span className={styles.meta}>
+                {item.completedAt === undefined
+                  ? <>started <TimeAgo ts={item.startedAt} /></>
+                  : <>{item.ok ? "finished" : "failed"} {item.completedAt ? <TimeAgo ts={item.completedAt} /> : null}</>}
+              </span>
             </span>
           </Link>
         </li>
       ))}
     </ul>
+  );
+}
+
+/** The action runner's current state for the status strip: what runs now, then what
+ *  finished since this page loaded. */
+export function ActionsPanel({ onNavigate }: { onNavigate?: () => void }) {
+  const running = useRunningActions();
+  const recent = useRecentActions();
+  return (
+    <div className={styles.panel}>
+      <div className={styles.heading}>Running now</div>
+      <RunningActionsList items={running} onNavigate={onNavigate} />
+      {recent.length > 0 && (
+        <>
+          <div className={styles.heading}>
+            Finished since this page loaded
+            <button type="button" className={styles.clear} onClick={() => actionTracker.clearRecentlyFinished()}>Clear</button>
+          </div>
+          <RunningActionsList items={recent} onNavigate={onNavigate} />
+        </>
+      )}
+    </div>
   );
 }
