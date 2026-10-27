@@ -61,6 +61,11 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 18 | Deploy and rollback preview | U3 | 🟡 | M | 1 | ✅ |
 | 19 | Clear policy-violation display | U4 (part) | 🟡 | S | — | ✅ |
 | 20 | Command palette | U6 | ⚪ | M | 16, 17 | ✅ |
+| 21 | Socket reconnects and ping indicator | — | 🟠 | S | — | ✅ `cbda58a` |
+| 22 | Notifications settings layout | — | ⚪ | S | — | ✅ |
+| 23 | Version card: version, branch, collapsible changes | — | ⚪ | S | — | ✅ |
+| 24 | Host metrics from the container (disk, network, hostname) | — | 🟠 | M | — | ✅ |
+| 25 | Status strip: actions, host, connection | — | 🟡 | M | 21, 24 | ✅ |
 
 Numbers skip 7: OAuth was deferred (see [Deferred](#deferred-not-in-this-plan)).
 
@@ -489,6 +494,91 @@ existing Radix primitives.
 - The Host flyout heading still said "System"; fixed.
 
 ---
+
+## Phase 6: host data and status
+
+### PR 21 — Socket reconnects and ping indicator ✅
+
+A reconnect left the client in no server rooms, so pages stopped receiving pushes
+while showing "connected". The client now rejoins its (reference-counted)
+subscriptions on every connect. The ping shows the median of five samples, skips
+hidden tabs, says "No response" after two misses and replaces the connection after
+three. The server only pushes channel data that changed.
+
+### PR 22 — Notifications settings layout ✅
+
+Match the other sections: full-width card, one title (no repeated card title), Send
+test and Save as small buttons in the card header, provider/key and from/to side by
+side, the email log as its own card.
+
+### PR 23 — Version card ✅
+
+Headline the version (`1.0.27`), then branch, short commit, message and date. The
+"updates ready" and "not released yet" commit lists become collapsibles, closed by
+default, with the count in the summary.
+
+### PR 24 — Host metrics from the container ✅
+
+Since Stackport runs in a container: CPU, memory and load are already host-wide; the
+hostname is the container's; free disk space reads `/var/lib/docker`, which isn't
+mounted, so storage state is always "unknown" and the pre-build guard and the
+automatic cleanup never act (regression); network was never collected.
+
+- Read-only mounts in `docker-compose.system.yml`: Docker's data root (path from
+  `docker info`, written to `.env` by `stackport.sh`), the host's `/sys` (its network
+  interfaces), `/etc/hostname`.
+- Sample network RX/TX (physical interfaces only: not `lo`, `veth*`, `docker0`,
+  `br-*`) with the CPU sample; additive migration for the columns.
+- Hardware snapshot gains disk, network rates and uptime.
+- Every reader falls back to today's behaviour while its mount is missing (hosts on an
+  older Compose file until their next update).
+- No host agent: nothing here changes the host. (`docs/deprecated/` is dropped.)
+
+**Shipped notes:**
+- `services/hostInfo.ts`: hostname, network totals (interfaces with a `device` link;
+  by name if none has one), disk space. Paths from `HOST_SYS_PATH`,
+  `HOST_DOCKER_ROOT_PATH`, `HOST_HOSTNAME_PATH` (defaults `/host/...`).
+- The free-space check tries the mount first and no longer needs `docker info` to
+  succeed. `statfs` works on the root-only data root as the container's `node` user
+  (checked: only the parent directories need to be traversable).
+- Migration 005 adds `net_rx_bps`, `net_tx_bps`, `disk_used_pct` to
+  `hardware_samples`. Rates are null across a counter reset or an interface change.
+- Host > Hardware: disk and network tiles and charts, hostname and uptime. Without
+  the mounts the tiles say "Not available until Stackport is updated".
+- `stackport.sh` writes `STACKPORT_DOCKER_ROOT` only for a moved data root; the
+  Compose default covers `/var/lib/docker`, also for hosts whose updater still runs
+  the previous script.
+- Not verified on a real host: the mounts themselves (tested with the sandbox's own
+  `/sys` and a stand-in directory).
+
+### PR 25 — Status strip ✅
+
+One fixed row above Logout, three indicators with their own popovers; the layout never
+shifts:
+
+- **Actions:** the action runner's current state. The count of running actions,
+  shown even at 0; spinning while something runs. Popover: running now, then actions
+  that finished since the page loaded (kept in memory only; a reload clears them).
+  No notification store, no read state, no retention. Replaces the Running button.
+- **Host:** CPU % and memory %. Hover or click: ring gauges for CPU, memory and disk,
+  then load, network in/out, uptime, hostname, a 1-hour sparkline, and a link to
+  Host > Hardware.
+- **Connection:** a coloured dot (connected, no response, disconnected) instead of the
+  Wi-Fi icon; latency in the expanded sidebar and tooltip.
+- Mobile: the strip at the top of the More menu; the More icon keeps its badge for
+  running actions.
+
+**Shipped notes:**
+- `components/StatusStrip.tsx`: three rows replace the Running button and the Wi-Fi
+  status. Popovers open on hover (150 ms) or click. Collapsed sidebar: corner badges
+  with the running count (always, 0 included) and CPU %; expanded: the same as text.
+- The action tracker keeps the last 20 actions that finished while the page was open
+  (`useRecentlyFinishedActions`), memory only, with a Clear button; a reload empties it.
+- Host popover: ring gauges for CPU, memory and disk (amber from 75 %, red from 90 %),
+  load, network, uptime, hostname, a 1-hour CPU/memory sparkline. It reads the
+  `hardware` channel, so every page now subscribes to it (about 1 KB, pushed only on
+  change since PR 21).
+- Phone: the More menu shows the actions panel, the host panel and the connection row.
 
 ## Decisions
 

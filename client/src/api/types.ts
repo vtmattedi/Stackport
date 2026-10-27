@@ -786,6 +786,11 @@ export interface HardwareSample {
   memUsedMb: number;
   memTotalMb: number;
   load1: number;
+  /** Host network throughput (bytes/s); null without the host /sys mount. */
+  netRxBps: number | null;
+  netTxBps: number | null;
+  /** Docker's filesystem; null without the Docker data root mount. */
+  diskUsedPct: number | null;
   sampledAt: string;
 }
 
@@ -796,11 +801,17 @@ export interface HardwareHistoryPoint {
   memAvg: number;
   memMax: number;
   load1: number;
+  netRxBps: number | null;
+  netTxBps: number | null;
+  diskUsedPct: number | null;
 }
 
 export interface HardwareData {
   cpuCount: number;
   hostname: string;
+  uptimeS: number;
+  /** Docker's filesystem now; null when it can't be read. */
+  disk: { freeBytes: number; totalBytes: number; path: string | null } | null;
   latest: HardwareSample | null;
   history: HardwareHistoryPoint[];
 }

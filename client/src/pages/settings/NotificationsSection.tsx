@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Bell, Check, Loader, Send, AlertCircle } from "lucide-react";
+import { AlertCircle, Bell, Check, KeyRound, Loader, Mail, Save, Send } from "lucide-react";
 import { AppSelect } from "../../components/AppSelect";
 import { ApiKeySelect } from "../../components/ApiKeySelect";
+import { Button } from "../../components/ui/button";
 import { Switch } from "../../components/ui/switch";
-import { api, ApiError } from "../../api/client";
+import { api } from "../../api/client";
 import type { NotificationConfig, NotificationLogEntry, Credential } from "../../api/types";
 import { formatShortDateTime } from "../../lib/format";
+import { notify } from "../../lib/notify";
+import { cn } from "../../lib/utils";
 import styles from "../Settings.module.scss";
+import systemStyles from "../System.module.scss";
 
 /** Email alerts for project health, with a test send and the recent email log. */
 export default function NotificationsSection() {
@@ -20,8 +24,6 @@ export default function NotificationsSection() {
   const [notifTo, setNotifTo] = useState("");
   const [savingNotif, setSavingNotif] = useState(false);
   const [testingNotif, setTestingNotif] = useState(false);
-  const [notifError, setNotifError] = useState("");
-  const [notifSuccess, setNotifSuccess] = useState("");
   const [notifLogs, setNotifLogs] = useState<NotificationLogEntry[]>([]);
 
   useEffect(() => {
@@ -30,35 +32,42 @@ export default function NotificationsSection() {
     }).catch(() => {});
   }, []);
 
+  function applyConfig(cfg: NotificationConfig) {
+    setNotifConfig(cfg);
+    setNotifEnabled(cfg.enabled);
+    setNotifProvider(cfg.provider);
+    setNotifCredentialId(cfg.credentialId);
+    setNotifFrom(cfg.fromAddress);
+    setNotifTo(cfg.toAddress);
+  }
+
   useEffect(() => {
-    api.getNotificationConfig().then((cfg) => {
-      setNotifConfig(cfg);
-      setNotifEnabled(cfg.enabled);
-      setNotifProvider(cfg.provider);
-      setNotifCredentialId(cfg.credentialId);
-      setNotifFrom(cfg.fromAddress);
-      setNotifTo(cfg.toAddress);
-    }).catch(() => {});
+    api.getNotificationConfig().then(applyConfig).catch(() => {});
     api.getNotificationLogs().then(setNotifLogs).catch(() => {});
   }, []);
 
-  async function saveNotifications(e: React.FormEvent) {
-    e.preventDefault();
+  const changed = notifConfig ? (
+    notifEnabled !== notifConfig.enabled ||
+    notifProvider !== notifConfig.provider ||
+    notifCredentialId !== notifConfig.credentialId ||
+    notifFrom !== notifConfig.fromAddress ||
+    notifTo !== notifConfig.toAddress
+  ) : true;
+
+  async function saveNotifications(e?: React.FormEvent) {
+    e?.preventDefault();
     setSavingNotif(true);
-    setNotifError("");
-    setNotifSuccess("");
     try {
-      const updated = await api.updateNotificationConfig({
+      applyConfig(await api.updateNotificationConfig({
         enabled: notifEnabled,
         provider: notifProvider,
         fromAddress: notifFrom,
         toAddress: notifTo,
         credentialId: notifCredentialId,
-      });
-      setNotifConfig(updated);
-      setNotifSuccess("Notification settings saved.");
+      }));
+      notify.success("Notification settings saved.");
     } catch (err) {
-      setNotifError(err instanceof ApiError ? err.message : "Failed to save notification settings");
+      notify.error(err, "Failed to save notification settings");
     } finally {
       setSavingNotif(false);
     }
@@ -66,123 +75,141 @@ export default function NotificationsSection() {
 
   async function sendTestNotification() {
     setTestingNotif(true);
-    setNotifError("");
-    setNotifSuccess("");
     try {
       await api.testNotification();
-      setNotifSuccess("Test email sent successfully.");
+      notify.success("Test email sent.");
     } catch (err) {
-      setNotifError(err instanceof ApiError ? err.message : "Failed to send test email");
+      notify.error(err, "Failed to send test email");
     } finally {
       setTestingNotif(false);
       api.getNotificationLogs().then(setNotifLogs).catch(() => {});
     }
   }
 
+  const testBlocked = !notifConfig?.hasApiKey ? "Save an API key first" : changed ? "Save your changes first" : undefined;
+
   return (
-      <div className="card" style={{ maxWidth: 560 }}>
-        <div className="card-title"><Bell size={13} />Notifications</div>
-        {notifError && <div className="alert alert-error">{notifError}</div>}
-        {notifSuccess && (
-          <div className="alert alert-success">
-            <Check size={14} />{notifSuccess}
-          </div>
-        )}
-        <form className={styles.settingsForm} onSubmit={(e) => void saveNotifications(e)}>
-          <div className="field">
-            <label>Provider</label>
-            <AppSelect
-              value={notifProvider}
-              onValueChange={(value) => setNotifProvider(value as NotificationConfig["provider"])}
-              options={[
-                { value: "resend", label: "Resend" },
-                { value: "mw", label: "MW Email Service" },
-              ]}
-            />
-          </div>
-          <div className="field">
-            <label>API key</label>
-            <ApiKeySelect
-              credentials={apiKeyCredentials}
-              value={notifCredentialId}
-              onValueChange={setNotifCredentialId}
-              placeholder={notifProvider === "mw" ? "MW Email Service API key" : "Resend API key"}
-            />
-            {apiKeyCredentials.length === 0 && (
-              <span className="hint">Add an API Key credential on the <Link className="ext-link" to="/settings/credentials">Credentials</Link> first.</span>
-            )}
-          </div>
-          <div className="field">
-            <label>From address</label>
-            <input
-              type="email"
-              value={notifFrom}
-              onChange={(e) => setNotifFrom(e.target.value)}
-              placeholder="alerts@yourdomain.com"
-              required
-            />
-          </div>
-          <div className="field">
-            <label>To address</label>
-            <input
-              type="email"
-              value={notifTo}
-              onChange={(e) => setNotifTo(e.target.value)}
-              placeholder="you@example.com"
-              required
-            />
-          </div>
-          <div className="field">
-            <label className={styles.switchField}>
-              <Switch checked={notifEnabled} onCheckedChange={setNotifEnabled} />
-              <span>
-                <span>Enable notifications</span>
-                <span>Send project health alerts to the configured email address.</span>
-              </span>
-            </label>
-          </div>
-          <div className="row-actions">
-            <button
+    <div className={styles.sectionStack}>
+      <section className={systemStyles.systemPanel}>
+        <div className={systemStyles.sectionTitle}>
+          <Bell size={14} />
+          Email alerts
+          {notifConfig && (
+            <span className={cn(systemStyles.titleMeta, "mono")} style={{ fontSize: "0.78rem" }}>
+              {notifConfig.enabled ? "enabled" : "disabled"}
+            </span>
+          )}
+          <div className={cn("row-actions", systemStyles.titleActions)}>
+            <Button
               type="button"
-              className="btn btn-ghost"
+              variant="outline"
+              size="xs"
               onClick={() => void sendTestNotification()}
-              disabled={testingNotif || !notifConfig?.hasApiKey}
-              title={!notifConfig?.hasApiKey ? "Save an API key first" : undefined}
+              disabled={testingNotif || !!testBlocked}
+              title={testBlocked ?? "Send a test email to the To address"}
             >
-              {testingNotif ? <Loader size={13} className="spin" /> : <Send size={13} />}
+              {testingNotif ? <Loader size={12} className="spin" /> : <Send size={12} />}
               Send test
-            </button>
-            <button type="submit" className="btn btn-primary" disabled={savingNotif}>
-              {savingNotif ? <Loader size={13} className="spin" /> : <Check size={13} />}
+            </Button>
+            <Button
+              type="submit"
+              form="notification-settings"
+              variant="outline"
+              size="xs"
+              disabled={savingNotif || !changed}
+            >
+              {savingNotif ? <Loader size={12} className="spin" /> : <Save size={12} />}
               Save
-            </button>
+            </Button>
+          </div>
+        </div>
+        <form id="notification-settings" className={styles.settingsForm} onSubmit={(e) => void saveNotifications(e)}>
+          <label className={styles.switchField}>
+            <Switch checked={notifEnabled} onCheckedChange={setNotifEnabled} />
+            <span>
+              <span>Enable notifications</span>
+              <span>Send project health alerts to the configured email address.</span>
+            </span>
+          </label>
+          <div className={styles.fieldGrid}>
+            <div className="field">
+              <label>Provider</label>
+              <AppSelect
+                value={notifProvider}
+                onValueChange={(value) => setNotifProvider(value as NotificationConfig["provider"])}
+                options={[
+                  { value: "resend", label: "Resend" },
+                  { value: "mw", label: "MW Email Service" },
+                ]}
+              />
+            </div>
+            <div className="field">
+              <label><KeyRound size={12} />API key</label>
+              <ApiKeySelect
+                credentials={apiKeyCredentials}
+                value={notifCredentialId}
+                onValueChange={setNotifCredentialId}
+                placeholder={notifProvider === "mw" ? "MW Email Service API key" : "Resend API key"}
+              />
+              {apiKeyCredentials.length === 0 && (
+                <span className="hint">Add an API Key credential on the <Link className="ext-link" to="/settings/credentials">Credentials</Link> first.</span>
+              )}
+            </div>
+            <div className="field">
+              <label>From address</label>
+              <input
+                type="email"
+                value={notifFrom}
+                onChange={(e) => setNotifFrom(e.target.value)}
+                placeholder="alerts@yourdomain.com"
+                required
+              />
+            </div>
+            <div className="field">
+              <label>To address</label>
+              <input
+                type="email"
+                value={notifTo}
+                onChange={(e) => setNotifTo(e.target.value)}
+                placeholder="you@example.com"
+                required
+              />
+            </div>
           </div>
         </form>
-        {notifLogs.length > 0 && (
-          <>
-            <div className="card-title" style={{ marginTop: 20 }}>Email Log</div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr><th>Type</th><th>Result</th><th>Project</th><th>Sent</th></tr>
-                </thead>
-                <tbody>
-                  {notifLogs.slice(0, 10).map((log) => (
-                    <tr key={log.id}>
-                      <td>{log.eventType === "test" ? "Test" : "Alert"}</td>
-                      <td style={{ color: log.result === "ok" ? "var(--success)" : "var(--danger)" }}>
-                        {log.result === "ok" ? <Check size={12} style={{ display: "inline", marginRight: 4 }} /> : <AlertCircle size={12} style={{ display: "inline", marginRight: 4 }} />}
-                        {log.result}
-                      </td>
-                      <td>{log.projectName ?? "—"}</td>
-                      <td>{formatShortDateTime(log.sentAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
+      </section>
+
+      <section className={systemStyles.systemPanel}>
+        <div className={systemStyles.sectionTitle}>
+          <Mail size={14} />
+          Email log
+          <span className={systemStyles.titleMeta}>last 10</span>
+        </div>
+        {notifLogs.length === 0 ? (
+          <p className="muted-text" style={{ margin: 0, fontSize: "0.82rem" }}>No emails sent yet.</p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Type</th><th>Result</th><th>Project</th><th>Sent</th></tr>
+              </thead>
+              <tbody>
+                {notifLogs.slice(0, 10).map((log) => (
+                  <tr key={log.id}>
+                    <td>{log.eventType === "test" ? "Test" : "Alert"}</td>
+                    <td style={{ color: log.result === "ok" ? "var(--success)" : "var(--danger)" }}>
+                      {log.result === "ok" ? <Check size={12} style={{ display: "inline", marginRight: 4 }} /> : <AlertCircle size={12} style={{ display: "inline", marginRight: 4 }} />}
+                      {log.result}
+                    </td>
+                    <td>{log.projectName ?? "—"}</td>
+                    <td>{formatShortDateTime(log.sentAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-      </div>
+      </section>
+    </div>
   );
 }

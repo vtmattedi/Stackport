@@ -43,6 +43,8 @@ function isChannel(s: string): s is Channel {
 export class SocketManager {
   private io: SocketIOServer;
   private timers = new Map<Channel, NodeJS.Timeout>();
+  /** The last payload pushed to each channel's room, serialized. */
+  private lastSent = new Map<Channel, string>();
 
   constructor(io: SocketIOServer) {
     this.io = io;
@@ -85,7 +87,7 @@ export class SocketManager {
       socket.on("subscribe", (ch: unknown) => {
         if (typeof ch !== "string" || !isChannel(ch)) return;
         void socket.join(ch);
-        this.ensurePolling(ch);
+        this.ensurePolling(ch, socket);
       });
 
       socket.on("unsubscribe", (ch: unknown) => {
@@ -158,11 +160,13 @@ export class SocketManager {
 
   // ── Polling lifecycle ─────────────────────────────────────────────────────
 
-  private ensurePolling(channel: Channel): void {
+  private ensurePolling(channel: Channel, subscriber: Socket): void {
     if (this.timers.has(channel)) {
-      // Already polling — do an immediate push just for the new subscriber via the room
-      // (the next tick will also deliver it)
-      void this.pushToRoom(channel);
+      // Already polling: the new subscriber gets its own copy now. Ticks only push
+      // changes, so it might otherwise wait indefinitely.
+      fetchChannel(channel)
+        .then((data) => subscriber.emit(`data:${channel}`, data))
+        .catch(() => { /* the next change reaches it */ });
       return;
     }
     void this.pushToRoom(channel);
@@ -175,6 +179,11 @@ export class SocketManager {
     if (size === 0) { this.stopPolling(channel); return; }
     try {
       const data = await fetchChannel(channel);
+      // Unchanged data isn't sent again: it would cost every client bandwidth (a big
+      // system snapshot every 5 s) and queue ahead of anything else on the socket.
+      const serialized = JSON.stringify(data);
+      if (serialized === this.lastSent.get(channel)) return;
+      this.lastSent.set(channel, serialized);
       this.io.to(channel).emit(`data:${channel}`, data);
     } catch { /* silent — client keeps last data */ }
   }
@@ -199,6 +208,7 @@ export class SocketManager {
   private stopPolling(channel: Channel): void {
     const t = this.timers.get(channel);
     if (t) { clearInterval(t); this.timers.delete(channel); }
+    this.lastSent.delete(channel);
   }
 
   // ── Shutdown ──────────────────────────────────────────────────────────────
