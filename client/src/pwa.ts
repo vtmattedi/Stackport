@@ -13,8 +13,8 @@ async function fetchDeployedVersion(): Promise<string | null> {
   }
 }
 
-// bump-version.cjs writes public/version.json on every build. There's no
-// controlling TTY-equivalent push here — we just poll it, and when it
+// The server answers /version.json with the running commit (src/app.ts), so it
+// changes with every release. There's no push here — we just poll it, and when it
 // changes, ask the already-installed service worker to check for a new one.
 // registerType: "autoUpdate" takes it from there (installs + activates the
 // new worker and reloads controlled clients without prompting).

@@ -13,6 +13,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Written to .env by stackport.sh (ensure_env_file).
+        STACKPORT_COMMIT: ${STACKPORT_COMMIT:-}
     container_name: stackport
     restart: unless-stopped
     ports:

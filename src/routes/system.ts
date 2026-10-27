@@ -1,5 +1,4 @@
 import path from "path";
-import * as fs from "fs/promises";
 import { Router, Request, Response } from "express";
 import { execFile } from "child_process";
 import { getDatabase } from "../config/database";
@@ -39,6 +38,7 @@ import { isSystemComposeProject } from "../services/systemResources";
 import { getStorageState, getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../services/dockerStorage";
 
 import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../services/selfUpdate";
+import { getAppVersion, checkForUpdates } from "../services/appVersion";
 
 const router = Router();
 
@@ -75,30 +75,6 @@ interface RunResult {
   notFound: boolean;
 }
 
-interface BuildInfo {
-  name: string;
-  version: string;
-  builtAt: string | null;
-  gitCommit: string;
-  gitBranch: string;
-  gitMessage: string;
-}
-
-interface AppVersionInfo {
-  backend: BuildInfo;
-  frontend: BuildInfo;
-}
-
-interface AppUpdateCheck {
-  ok: boolean;
-  repo: string | null;
-  branch: string | null;
-  localCommit: string | null;
-  remoteCommit: string | null;
-  hasUpdate: boolean;
-  output: string;
-}
-
 function run(
   cmd: string,
   args: string[],
@@ -120,42 +96,6 @@ export function privileged(cmd: string, args: string[]): { cmd: string; args: st
   return { cmd: "sudo", args: ["-n", cmd, ...args] };
 }
 
-
-async function readJson<T>(filePath: string): Promise<T | null> {
-  try {
-    return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function readBuildInfo(rootDir: string): Promise<BuildInfo> {
-  const [buildInfo, pkg] = await Promise.all([
-    readJson<Partial<BuildInfo>>(path.join(rootDir, "build-info.json")),
-    readJson<{ name?: string; version?: string }>(path.join(rootDir, "package.json")),
-  ]);
-
-  return {
-    name: buildInfo?.name ?? pkg?.name ?? path.basename(rootDir),
-    version: buildInfo?.version ?? pkg?.version ?? "0.0.0",
-    builtAt: buildInfo?.builtAt ?? null,
-    gitCommit: buildInfo?.gitCommit ?? "",
-    gitBranch: buildInfo?.gitBranch ?? "",
-    gitMessage: buildInfo?.gitMessage ?? "",
-  };
-}
-
-async function getAppVersionInfo(): Promise<AppVersionInfo> {
-  const appRoot = path.resolve(__dirname, "..");
-  const repoRoot = path.resolve(appRoot, "..");
-  const sourceRoot = path.basename(appRoot) === "dist" ? repoRoot : process.cwd();
-  const clientRoot = path.join(sourceRoot, "client");
-  const [backend, frontend] = await Promise.all([
-    readBuildInfo(sourceRoot),
-    readBuildInfo(clientRoot),
-  ]);
-  return { backend, frontend };
-}
 
 // ── Self-update git credentials ───────────────────────────────────────────────
 
@@ -193,72 +133,6 @@ function gitCredentialHeader(credentialId: number | null): string | null {
   } catch {
     return null;
   }
-}
-
-function appRepoUrl(repo: string): string {
-  if (/^https?:\/\//.test(repo) || repo.startsWith("git@")) return repo;
-  return `https://github.com/${repo}.git`;
-}
-
-async function getConfiguredAppRepo(): Promise<string | null> {
-  const envRepo = process.env["APP_GITHUB_REPO"] ?? process.env["GITHUB_REPO"];
-  if (envRepo) return appRepoUrl(envRepo);
-  const result = await run("git", ["remote", "get-url", "origin"], { cwd: process.cwd() });
-  const repo = result.stdout.trim();
-  return result.ok && repo ? repo : null;
-}
-
-async function getConfiguredAppBranch(version?: AppVersionInfo): Promise<string | null> {
-  if (process.env["GIT_BRANCH"]) return process.env["GIT_BRANCH"];
-  const result = await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: process.cwd() });
-  const branch = result.stdout.trim();
-  if (result.ok && branch && branch !== "HEAD") return branch;
-  return version?.backend.gitBranch || version?.frontend.gitBranch || "main";
-}
-
-async function checkAppUpdate(): Promise<AppUpdateCheck> {
-  const version = await getAppVersionInfo();
-  const repo = await getConfiguredAppRepo();
-  const branch = await getConfiguredAppBranch(version);
-  if (!repo || !branch) {
-    return { ok: false, repo, branch, localCommit: null, remoteCommit: null, hasUpdate: false, output: "App git repository or branch is not configured." };
-  }
-
-  const localGit = await run("git", ["rev-parse", "HEAD"], { cwd: process.cwd() });
-  const localCommit = localGit.ok && localGit.stdout.trim()
-    ? localGit.stdout.trim()
-    : version.backend.gitCommit || version.frontend.gitCommit || null;
-  const authHeader = gitCredentialHeader(getAppUpdateCredentialId());
-  const args = [
-    ...(authHeader ? ["-c", `http.extraHeader=${authHeader}`] : []),
-    "ls-remote",
-    repo,
-    `refs/heads/${branch}`,
-  ];
-  const remote = await run("git", args, { timeoutMs: 60_000, cwd: process.cwd() });
-  const output = [remote.stdout, remote.stderr].filter(Boolean).join("\n").trim();
-  if (!remote.ok) {
-    return { ok: false, repo, branch, localCommit, remoteCommit: null, hasUpdate: false, output: output || "Failed to query remote commit." };
-  }
-
-  const remoteCommit = remote.stdout.trim().split(/\s+/)[0] || null;
-  const localComparable = localCommit ?? "";
-  const remoteComparable = remoteCommit ?? "";
-  const sameCommit = !!localComparable && !!remoteComparable && (
-    localComparable === remoteComparable ||
-    remoteComparable.startsWith(localComparable) ||
-    localComparable.startsWith(remoteComparable)
-  );
-
-  return {
-    ok: !!remoteCommit,
-    repo,
-    branch,
-    localCommit,
-    remoteCommit,
-    hasUpdate: !!remoteCommit && !sameCommit,
-    output: output || (remoteCommit ? "Remote commit found." : "Branch not found on remote."),
-  };
 }
 
 function parseNdjson(s: string): Record<string, unknown>[] {
@@ -492,7 +366,7 @@ router.get("/", requireAuth, async (_req: Request, res: Response): Promise<void>
 });
 
 router.get("/version", requireAuth, async (_req: Request, res: Response): Promise<void> => {
-  res.json(await getAppVersionInfo());
+  res.json(await getAppVersion());
 });
 
 router.get("/update-config", requireAuth, (_req: Request, res: Response): void => {
@@ -555,7 +429,7 @@ router.post("/update", requireAuth, async (req: Request, res: Response): Promise
 });
 
 router.get("/update/check", requireAuth, async (_req: Request, res: Response): Promise<void> => {
-  res.json(await checkAppUpdate());
+  res.json(await checkForUpdates(gitCredentialHeader(getAppUpdateCredentialId())));
 });
 
 router.post("/nginx/reload", requireAuth, async (req: Request, res: Response): Promise<void> => {
@@ -855,7 +729,7 @@ export default router;
 
 // ── Exported snapshot for socket manager ─────────────────────────────────────
 export async function getSystemSnapshot() {
-  const [docker, nginx, certbot, version] = await Promise.allSettled([getDockerData(), getNginxData(), getCertbotStatus(), getAppVersionInfo()]);
+  const [docker, nginx, certbot, version] = await Promise.allSettled([getDockerData(), getNginxData(), getCertbotStatus(), getAppVersion()]);
   return {
     docker: docker.status === "fulfilled" ? docker.value : { available: false, reason: String(docker.reason) },
     nginx:  nginx.status === "fulfilled"  ? nginx.value  : { available: false, reason: String(nginx.reason) },

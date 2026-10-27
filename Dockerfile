@@ -53,6 +53,11 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 RUN mkdir -p /app/data /app/logs && chown -R node:node /app/data /app/logs
 
+# The commit this image was built from (stackport.sh passes it). Last, so a new commit
+# only rebuilds this layer.
+ARG STACKPORT_COMMIT=""
+ENV STACKPORT_COMMIT=$STACKPORT_COMMIT
+
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
