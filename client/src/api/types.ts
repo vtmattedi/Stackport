@@ -155,6 +155,8 @@ export interface ProjectDeploymentRevision {
   triggeredBy: string;
   blockedReason: string | null;
   createdAt: string;
+  /** Set when a rollback moved away from this revision; Roll back skips it by default. */
+  rolledBackAt: string | null;
 }
 
 export interface EnvVariable {

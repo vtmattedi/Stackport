@@ -8,6 +8,13 @@ import styles from "../ProjectDetails.module.scss";
 
 const TRIGGER_LABEL: Record<ProjectDeploy["triggeredBy"], string> = { auto: "poller", webhook: "webhook", manual: "manual" };
 
+/** A revision that may be restored, as far as the client can tell; the server makes
+ *  the final call (it also compares the stored compose files). */
+function isRestorable(rev: ProjectDeploymentRevision, active: ProjectDeploymentRevision | null): boolean {
+  if (rev.status !== "superseded" || !rev.commitSha || !rev.composeFileName) return false;
+  return !active || rev.commitSha !== active.commitSha || rev.composeFileName !== active.composeFileName;
+}
+
 /** Everything about past deploys in one place: what ran (and what started it), and the
  *  revisions Roll back can restore. */
 export function DeploymentsCard({ deploys, revisions, loading, rollingBack, onRollback }: {
@@ -15,10 +22,11 @@ export function DeploymentsCard({ deploys, revisions, loading, rollingBack, onRo
   revisions: ProjectDeploymentRevision[];
   loading: boolean;
   rollingBack: boolean;
-  onRollback: () => void;
+  /** No target: the server's default (newest earlier revision not rolled back from). */
+  onRollback: (target?: ProjectDeploymentRevision) => void;
 }) {
-  const restorable = revisions.filter((r) => r.status !== "failed").length;
   const active = revisions.find((r) => r.status === "active") ?? null;
+  const canRollBack = revisions.some((r) => !r.rolledBackAt && isRestorable(r, active));
   return (
     <ExpandableCard
       icon={<History size={13} />}
@@ -33,9 +41,11 @@ export function DeploymentsCard({ deploys, revisions, loading, rollingBack, onRo
           type="button"
           variant="outline"
           size="xs"
-          onClick={onRollback}
-          disabled={rollingBack || restorable < 2}
-          title={restorable < 2 ? "Needs an earlier successful revision to go back to" : "Restore the previous successful revision's commit and compose file, then redeploy"}
+          onClick={() => onRollback()}
+          disabled={rollingBack || !canRollBack}
+          title={canRollBack
+            ? "Restore the newest earlier revision you haven't rolled back from, then redeploy"
+            : "Needs an earlier successful revision to go back to. Use Restore on a revision to pick one explicitly"}
         >
           {rollingBack ? <Loader size={12} className="spin" /> : <RotateCw size={12} />}
           Roll back
@@ -70,7 +80,24 @@ export function DeploymentsCard({ deploys, revisions, loading, rollingBack, onRo
                 <span className={cn(styles.statusPill, rev.status === "active" ? styles.statusUp : rev.status === "failed" ? styles.statusDown : styles.statusUnknown)}>{rev.status}</span>
                 <span className="mono">{rev.commitSha ? rev.commitSha.slice(0, 7) : "—"}</span>
                 <span className={styles.historyMessage}>{[rev.branch, rev.composeFileName].filter(Boolean).join(" · ")}</span>
+                {rev.rolledBackAt && (
+                  <span className={styles.historyMeta} title="A rollback moved away from this revision, so Roll back skips it. Restore still works.">
+                    rolled back
+                  </span>
+                )}
                 <span className={styles.historyMeta}><TimeAgo ts={rev.createdAt} /></span>
+                {isRestorable(rev, active) && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => onRollback(rev)}
+                    disabled={rollingBack}
+                    aria-label={`Restore revision ${rev.commitSha?.slice(0, 7)}`}
+                  >
+                    Restore
+                  </Button>
+                )}
               </li>
             ))}
           </ul>

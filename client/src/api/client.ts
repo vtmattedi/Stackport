@@ -393,7 +393,11 @@ export const api = {
     request<ProjectDeploy[]>(`/projects/${projectId}/deploys`),
   getProjectDeploymentRevisions: (projectId: number) =>
     request<ProjectDeploymentRevision[]>(`/projects/${projectId}/deployments`),
-  rollbackProject: (projectId: number) => requestActionStart(`/projects/${projectId}/rollback`),
+  /** Without `deploymentId`, the server picks the newest earlier revision not rolled back from. */
+  rollbackProject: (projectId: number, deploymentId?: number) =>
+    requestActionStart(`/projects/${projectId}/rollback`, deploymentId
+      ? { method: "POST", body: JSON.stringify({ deploymentId }) }
+      : undefined),
   getProjectLogs: (projectId: number, tail: number, service?: string) => {
     const params = new URLSearchParams({ tail: String(tail) });
     if (service) params.set("service", service);

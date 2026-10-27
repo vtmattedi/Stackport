@@ -13,7 +13,7 @@ import { validateComposePolicy } from "./composePolicy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./composeNetworking";
 import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
-import { recordFailedDeployment, recordSuccessfulDeployment, getPreviousSuccessfulDeployment } from "./projectDeployments";
+import { recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./projectDeployments";
 import { notifyDeployBlocked } from "./notificationService";
 import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
@@ -703,7 +703,15 @@ export function isValidBranchName(value: string): boolean {
     && !value.endsWith(".lock");
 }
 
-async function ensureRepo(project: Project, repoPath: string, action: ProjectDeployEvent["action"], branch?: string | null): Promise<RunResult[]> {
+export const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/;
+
+/** With `commitSha`, checks out exactly that commit (it must be on the branch)
+ *  instead of the branch tip, so an auto-deploy runs the commit that triggered it
+ *  rather than whatever was pushed after it. */
+async function ensureRepo(project: Project, repoPath: string, action: ProjectDeployEvent["action"], branch?: string | null, commitSha?: string | null): Promise<RunResult[]> {
+  if (commitSha && !COMMIT_SHA_RE.test(commitSha)) {
+    return [{ ok: false, output: `Invalid commit SHA "${commitSha}".`, stdout: "", command: "git checkout" }];
+  }
   await fs.mkdir(deployRoot(), { recursive: true });
   const gitDir = path.join(repoPath, ".git");
   const hasCheckout = await fs.stat(gitDir).then((stat) => stat.isDirectory()).catch(() => false);
@@ -724,7 +732,10 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
       timeoutMs: 300_000,
       publicArgs: publicGitArgs(args),
     });
-    return [clone];
+    if (!clone.ok || !commitSha) return [clone];
+    const pinnedBranch = branch ?? project.autoDeployBranch;
+    if (!pinnedBranch) return [clone, noBranchResult()];
+    return [clone, ...await checkoutPinnedCommit(project.id, action, repoPath, commitSha, pinnedBranch)];
   }
 
   // Discard local modifications before pulling — e.g. composeNetworking.ts's
@@ -758,14 +769,8 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   // permanently in detached-HEAD state — there's no "currently checked out branch"
   // to introspect the way a floating `git pull` used to allow.
   const effectiveBranch = branch ?? project.autoDeployBranch;
-  if (!effectiveBranch) {
-    return [fetch, {
-      ok: false,
-      output: "No branch configured to deploy — set an auto-deploy branch or specify one explicitly.",
-      stdout: "",
-      command: "git checkout",
-    }];
-  }
+  if (!effectiveBranch) return [fetch, noBranchResult()];
+  if (commitSha) return [fetch, ...await checkoutPinnedCommit(project.id, action, repoPath, commitSha, effectiveBranch)];
 
   const revParse = await run(project.id, action, "git", ["rev-parse", `origin/${effectiveBranch}`], {
     cwd: repoPath,
@@ -779,6 +784,32 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
     timeoutMs: 60_000,
   });
   return [fetch, revParse, checkout];
+}
+
+function noBranchResult(): RunResult {
+  return {
+    ok: false,
+    output: "No branch configured to deploy — set an auto-deploy branch or specify one explicitly.",
+    stdout: "",
+    command: "git checkout",
+  };
+}
+
+/** Checks out `sha` after confirming it is on `origin/<branch>`. A commit that left
+ *  the branch (e.g. a force-push) fails the deploy instead of running code that is no
+ *  longer on it; the newer tip arrives as its own deploy. */
+export async function checkoutPinnedCommit(projectId: number, action: ProjectDeployEvent["action"], repoPath: string, sha: string, branch: string): Promise<RunResult[]> {
+  const onBranch = await run(projectId, action, "git", ["merge-base", "--is-ancestor", sha, `origin/${branch}`], {
+    cwd: repoPath,
+    timeoutMs: 30_000,
+  });
+  if (!onBranch.ok) {
+    const message = `Commit ${sha.slice(0, 7)} is not on origin/${branch} (was it force-pushed away?). Not deploying it.\n`;
+    emit(projectId, action, "stderr", message);
+    return [{ ...onBranch, output: `${onBranch.output}\n${message}` }];
+  }
+  const checkout = await run(projectId, action, "git", ["checkout", sha], { cwd: repoPath, timeoutMs: 60_000 });
+  return [onBranch, checkout];
 }
 
 /** Dry-run validates a directory's docker-compose file without starting anything —
@@ -891,7 +922,7 @@ async function readComposeFileSafe(repoPath: string, composeFile: string | null)
   return fs.readFile(path.join(repoPath, composeFile), "utf8").catch(() => null);
 }
 
-async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null): Promise<DeployResult> {
+async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null, pinnedSha?: string | null): Promise<DeployResult> {
   const project = getProjectById(projectId);
   if (!project) {
     return { ok: false, projectId, repoPath: "", output: "Project not found", action };
@@ -908,7 +939,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   let composeFile: string | null;
   if (pullFirst) {
     emit(projectId, action, "status", "Stage 1/2: pull from GitHub\n");
-    const repoResults = await ensureRepo(project, repoPath, action, branch);
+    const repoResults = await ensureRepo(project, repoPath, action, branch, pinnedSha);
     output.push(...repoResults.map((result) => result.output));
 
     if (repoResults.some((result) => !result.ok)) {
@@ -1017,9 +1048,10 @@ export function buildProject(projectId: number): Promise<DeployResult> {
   return runProjectAction(projectId, "build");
 }
 
-/** Pull (optionally switching to `branch`, else the auto-deploy branch) then `docker compose up -d --build`. */
-export function deployProject(projectId: number, triggeredBy: "manual" | "auto" = "manual", branch?: string | null): Promise<DeployResult> {
-  return runProjectAction(projectId, "deploy", true, triggeredBy, branch);
+/** Pull (optionally switching to `branch`, else the auto-deploy branch) then `docker compose up -d --build`.
+ *  `commitSha` deploys that commit instead of the branch tip (see ensureRepo). */
+export function deployProject(projectId: number, triggeredBy: "manual" | "auto" = "manual", branch?: string | null, commitSha?: string | null): Promise<DeployResult> {
+  return runProjectAction(projectId, "deploy", true, triggeredBy, branch, commitSha);
 }
 
 export async function pullProject(projectId: number, branch?: string | null, triggeredBy: "manual" | "auto" = "manual"): Promise<DeployResult> {
@@ -1414,13 +1446,13 @@ export async function getProjectLogs(
   });
 }
 
-/** Phase 1.7 — restores the previous successful deployment's exact source commit and
- *  effective compose file, then redeploys from that restored artifact rather than
+/** Phase 1.7 — restores a successful deployment's exact source commit and effective
+ *  compose file, then redeploys from that restored artifact rather than
  *  re-fetching/re-augmenting from the current repository state. "Restore what was
  *  actually running", not "reconstruct an old state from current configuration"
- *  (stackport_yml.md §17). A deployment with no prior successful revision (e.g. a
- *  project's very first deploy) has nothing to roll back to. */
-export async function rollbackProject(projectId: number): Promise<DeployResult> {
+ *  (stackport_yml.md §17). Restores `deploymentId`, or by default the revision
+ *  resolveRollbackTarget picks; the revision it replaces is marked rolled back from. */
+export async function rollbackProject(projectId: number, deploymentId?: number): Promise<DeployResult> {
   const action = "recreate" as const; // closest existing action kind for the WS event union — a whole-stack up
   const project = getProjectById(projectId);
   if (!project) {
@@ -1430,11 +1462,16 @@ export async function rollbackProject(projectId: number): Promise<DeployResult> 
     return { ok: false, projectId, repoPath: "", output: "Project is paused", action };
   }
 
-  const previous = getPreviousSuccessfulDeployment(projectId);
-  if (!previous || !previous.commitSha || !previous.composeFileName || previous.effectiveCompose == null) {
-    const message = "No previous successful deployment to roll back to.\n";
+  const resolved = resolveRollbackTarget(projectId, deploymentId);
+  if (!resolved.ok) {
+    const message = `${resolved.error}\n`;
     emit(projectId, action, "stderr", message, { ok: false, done: true });
     return { ok: false, projectId, repoPath: projectRepoDir(project), output: message, action };
+  }
+  const previous = resolved.target;
+  // resolveRollbackTarget only returns revisions with all three recorded.
+  if (!previous.commitSha || !previous.composeFileName || previous.effectiveCompose == null) {
+    throw new Error("Rollback target is missing its commit or compose file");
   }
 
   const repoPath = projectRepoDir(project);
@@ -1476,7 +1513,7 @@ export async function rollbackProject(projectId: number): Promise<DeployResult> 
       sourceCompose: previous.sourceCompose,
       effectiveCompose: previous.effectiveCompose,
       triggeredBy: "manual",
-    });
+    }, { rollback: true });
   } else {
     recordFailedDeployment(
       projectId,

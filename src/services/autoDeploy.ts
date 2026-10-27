@@ -39,7 +39,7 @@ function start(projectId: number, commit: AutoDeployCommit, source: AutoDeploySo
     ).run(projectId, commit.sha, commit.commitMessage, commit.commitAuthor, source, new Date().toISOString());
     const deployId = deployRow.lastInsertRowid as number;
     try {
-      const result = await deployProject(projectId, "auto");
+      const result = await deployProject(projectId, "auto", null, commit.sha);
       db.prepare("UPDATE project_deploys SET status = ?, completed_at = ? WHERE id = ?")
         .run(result.ok ? "success" : "failed", new Date().toISOString(), deployId);
       return { ok: result.ok, output: result.output };

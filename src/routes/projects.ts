@@ -59,7 +59,7 @@ import {
   setProjectDomainSsl,
 } from "../services/projectDomains";
 import { stageAndApplyUpload } from "../services/projectUpload";
-import { listProjectDeployments } from "../services/projectDeployments";
+import { listProjectDeployments, resolveRollbackTarget } from "../services/projectDeployments";
 import {
   deleteTcpExposure,
   findPublishedPortConflict,
@@ -506,11 +506,26 @@ router.post("/:id/rollback", requireAuth, (req: Request<{ id: string }>, res: Re
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
 
+  const rawDeploymentId: unknown = req.body?.deploymentId;
+  if (rawDeploymentId !== undefined && rawDeploymentId !== null
+    && !(typeof rawDeploymentId === "number" && Number.isInteger(rawDeploymentId) && rawDeploymentId > 0)) {
+    res.status(400).json({ error: "deploymentId must be a positive integer" });
+    return;
+  }
+  const deploymentId = typeof rawDeploymentId === "number" ? rawDeploymentId : undefined;
+  // Checked again when the rollback runs; this is for an immediate, clear answer.
+  const target = resolveRollbackTarget(id, deploymentId);
+  if (!target.ok) { res.status(409).json({ error: target.error }); return; }
+
   const user = req.user ?? "unknown";
   const key = projectRepoKey(id);
-  const started = actionRegistry.tryStart(key, "rollback", { projectId: id }, async () => {
-    const result = await rollbackProject(id);
-    auditLog(user, "project.rollback", String(id), result.ok ? "ok" : "fail", { repoPath: result.repoPath });
+  const started = actionRegistry.tryStart(key, "rollback", { projectId: id, deploymentId: target.target.id }, async () => {
+    // The resolved id, so the revision that runs is the one announced in the response.
+    const result = await rollbackProject(id, target.target.id);
+    auditLog(user, "project.rollback", String(id), result.ok ? "ok" : "fail", {
+      repoPath: result.repoPath,
+      deploymentId: target.target.id,
+    });
     return { ok: result.ok, output: result.output };
   });
   if (!started) { respondActionBusy(res, key, "An action is already running for this project"); return; }

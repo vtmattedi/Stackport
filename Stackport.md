@@ -58,7 +58,11 @@ TCP proxies use `alpine/socat:1.8.0.3`, are independently reconciled at StackPor
 
 Every successful `up` records a `project_deployments` row: the resolved git commit SHA, branch, compose file name, and both the *source* compose content (as pulled from git) and the *effective* compose content (after StackPort's own network-augmentation rewrite) — the exact bytes that actually ran. A failed/rejected deploy records a `failed` row with the blocking reason instead, without touching the currently-active revision. `ensureRepo` pins each deploy to an exact commit SHA (detached HEAD), not a floating branch — deploys are reproducible, not "whatever `git pull` happened to bring in."
 
-`rollbackProject()` finds the previous successful revision, checks out its exact SHA, restores its stored *effective* compose content directly (not a fresh git checkout + re-augmentation), and redeploys from that artifact. Exposed as `POST /:id/rollback` and a "Roll back" button on the project detail page's deployment history list.
+`rollbackProject()` checks out a successful revision's exact SHA, restores its stored *effective* compose content directly (not a fresh git checkout + re-augmentation), and redeploys from that artifact. Exposed as `POST /:id/rollback` (optional body `{ "deploymentId": n }`), a "Roll back" button on the project detail page's Deployments card, and a "Restore" button on each earlier revision.
+
+Without a `deploymentId`, the target is the newest earlier revision that differs from the running one and that no rollback has moved away from: a rollback marks the revision it replaces (`rolled_back_at`), so rolling back twice keeps going back instead of returning to the broken revision. A revision marked this way can still be restored explicitly. Revisions are ordered by id, since `created_at` has one-second resolution.
+
+Auto-deploys (poller and webhook) deploy the commit that triggered them, not whatever the branch tip is by the time the deploy starts. If that commit is no longer on the branch (for example after a force-push), the deploy fails with that reason; the new tip arrives as its own deploy.
 
 ### 1.7 Docker storage management
 

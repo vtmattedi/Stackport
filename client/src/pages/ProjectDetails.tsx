@@ -525,18 +525,20 @@ export default function ProjectDetails() {
     }
   }
 
-  async function handleRollback() {
+  async function handleRollback(target?: ProjectDeploymentRevision) {
     if (!project) return;
     const ok = await confirm({
-      title: "Roll back to the previous deployment?",
-      description: "Checks out the previous successful revision's exact commit and compose file, then redeploys from it. The current deployment stays recorded in history.",
+      title: target?.commitSha ? `Restore revision ${target.commitSha.slice(0, 7)}?` : "Roll back to the previous deployment?",
+      description: target
+        ? "Checks out this revision's exact commit and compose file, then redeploys from it. The current deployment stays recorded in history."
+        : "Checks out the newest earlier revision you haven't already rolled back from, with its exact commit and compose file, then redeploys from it. The current deployment stays recorded in history.",
       confirmLabel: "Roll back",
       destructive: true,
     });
     if (!ok) return;
     setRollingBack(true);
     try {
-      const final = await startProjectAction(project.id, "rollback");
+      const final = await startProjectAction(project.id, "rollback", target ? { deploymentId: target.id } : undefined);
       if (final?.ok) notify.success("Rolled back successfully.");
       else notify.error(new Error(final?.log || "Rollback failed"), "Rollback failed");
       void loadRevisions();
@@ -1792,7 +1794,7 @@ export default function ProjectDetails() {
               revisions={revisions}
               loading={loadingDeploys}
               rollingBack={rollingBack}
-              onRollback={() => void handleRollback()}
+              onRollback={(target) => void handleRollback(target)}
             />
 
             <ResourceUsageCard projectId={project.id} />

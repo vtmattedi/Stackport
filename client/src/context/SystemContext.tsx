@@ -24,6 +24,8 @@ type CertbotOp = "issue" | "renew" | "delete";
 interface ProjectActionOpts {
   /** "pull"/"deploy" only — checks out this branch before pulling instead of the default one. */
   branch?: string;
+  /** "rollback" only — the revision to restore instead of the default previous one. */
+  deploymentId?: number;
 }
 
 const PROJECT_ACTION_LABELS: Record<ProjectActionKind, string> = {
@@ -68,7 +70,7 @@ const PROJECT_ACTION_REQUEST: Record<ProjectActionKind, (projectId: number, opts
   build: (projectId) => api.buildProject(projectId),
   recreate: (projectId) => api.recreateProject(projectId),
   "force-rebuild": (projectId) => api.forceRebuildProject(projectId),
-  rollback: (projectId) => api.rollbackProject(projectId),
+  rollback: (projectId, opts) => api.rollbackProject(projectId, opts?.deploymentId),
 };
 
 /** The live, frequently-changing half of the system context. */
