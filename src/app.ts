@@ -7,6 +7,7 @@ import { globalLimiter } from "./middleware/rateLimiter";
 import { errorHandler } from "./middleware/errorHandler";
 import router from "./routes";
 import githubHooksRouter from "./routes/githubHooks";
+import mcpRouter from "./mcp/httpServer";
 import { getReadiness } from "./services/readiness";
 import { runningSha } from "./services/appVersion";
 
@@ -72,6 +73,7 @@ app.get("/health/ready", async (_req, res) => {
   });
 });
 
+app.use("/mcp", mcpRouter);
 app.use("/api", router);
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "API route not found" });

@@ -47,7 +47,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 3 | README, package name, stale todos | T6 | ⚪ | S | — | ✅ |
 | 4 | Health-gated deploys | C3 | 🟠 | M | 2 | ✅ |
 | 5 | ~~One deploy-history table~~ folded into PR 8 | T2 | 🟡 | — | — | ↪ 8 |
-| 6 | API tokens and read-only MCP over HTTP | MCP-1, S5 (part) | 🟠 | M–L | 2 | |
+| 6 | API tokens and read-only MCP over HTTP | MCP-1, S5 (part) | 🟠 | M–L | 2 | ✅ |
 | 8 | Action runner, server side (includes T2) | RUN-1, T2 | 🟠 | L | 2 | |
 | 9 | Data layer foundation and runner client | T5a, RUN-2 | 🟡 | M | 8 | |
 | 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | |
@@ -157,7 +157,8 @@ enabled (D2).
 - The three copies of the alert-sending code in `notificationService.ts` are one helper.
 - The project update logic exists twice (`routes/projects.ts` for the UI,
   `projectAdmin.ts` for the MCP server); both validate the new fields with the same
-  parsers. Merging them is left for PR 6, which touches the MCP side.
+  parsers. Merging them remains open: the new HTTP MCP doesn't use either, so PR 6
+  didn't need to.
 
 **Tests:** URL scheme, no health check, immediate pass, pass within the grace period,
 timeout, unhealthy marking, settings validation. The auto-rollback path is not covered
@@ -187,7 +188,7 @@ The existing stdio server (`src/mcp/server.ts`) stays as it is. The new server r
 **inside the Stackport process**, so it shares the per-project action lock and never
 writes to the database from a second process.
 
-### PR 6 — API tokens and read-only MCP over HTTP (MCP-1, S5 part)
+### PR 6 — API tokens and read-only MCP over HTTP (MCP-1, S5 part) ✅
 
 **Auth:**
 - New table `api_tokens`: id, name, `token_hash` (SHA-256), display prefix, scopes,

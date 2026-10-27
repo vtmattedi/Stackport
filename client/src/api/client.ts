@@ -58,6 +58,7 @@ import type {
   ProjectResourceData,
   ProjectResourceSummary,
   RunningProjectAction,
+  ApiToken,
 } from "./types";
 
 const TOKEN_KEY = "stackport_token";
@@ -391,6 +392,10 @@ export const api = {
     requestActionStart(`/projects/${projectId}/domains/${domainId}/ssl/issue`),
   getProjectDeploys: (projectId: number) =>
     request<ProjectDeploy[]>(`/projects/${projectId}/deploys`),
+  listApiTokens: () => request<ApiToken[]>("/api-tokens"),
+  createApiToken: (name: string, expiresInDays: number | null) =>
+    request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays }) }),
+  revokeApiToken: (id: number) => request<void>(`/api-tokens/${id}`, { method: "DELETE" }),
   getProjectDeploymentRevisions: (projectId: number) =>
     request<ProjectDeploymentRevision[]>(`/projects/${projectId}/deployments`),
   /** Without `deploymentId`, the server picks the newest earlier revision not rolled back from. */

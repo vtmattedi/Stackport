@@ -226,6 +226,20 @@ A project's health check is a path on one of its domains, fetched over HTTPS or 
 6. Stored secrets (GitHub tokens, API keys, per-credential values) are AES-256-GCM encrypted at rest and never echoed back by any API response.
 7. Admin-recovery credential generation requires local root (`docker exec` on the daemon socket) — there is no HTTP endpoint that can trigger it.
 8. `stackport uninstall` preserves state by default; `--purge` is explicit, strongly confirmed, and refuses to run non-interactively.
+9. API tokens for the MCP endpoint are stored only as SHA-256 hashes, shown once, scoped (`read` only today), revocable and optionally expiring. They are accepted only on `/mcp` and admin session tokens are never accepted there (§9).
+
+---
+
+## 9. MCP (read-only, token auth)
+
+Stackport serves a Model Context Protocol endpoint at `https://<stackport-domain>/mcp` (Streamable HTTP, stateless, JSON responses), inside the app process, so it reads the same state the UI does and never writes.
+
+- **Tokens:** created, listed and revoked in Settings → MCP (`/api/api-tokens`, admin session required). Each token is shown once; only its hash and a short display prefix are stored. Every tool call is written to the audit log with the token id, and each token is rate-limited to 120 requests per minute on top of the per-IP limit.
+- **Tools:** `stackport_status` (version and project counts), `stackport_list_projects` (repository as `owner/name`, branch, deploy trigger, paused, health, last commit, pending deploy, domains), `stackport_get_project` (the same plus Compose file, last 10 deployments, containers and the running action).
+- **Never returned:** anything stored encrypted, credential ids, env files (names or values), nginx extra config, webhook slugs or secrets, build and action logs. Outputs are built field by field in `src/mcp/readModel.ts`; `tests/mcpHttp.test.ts` checks the exact key sets and that planted secrets never appear.
+- **Clients:** Claude Code (`claude mcp add --transport http stackport https://<domain>/mcp --header "Authorization: Bearer spk_…"`) and Claude Desktop. claude.ai custom connectors require OAuth, which is not supported yet.
+
+The older stdio server (`npm run mcp`, `src/mcp/server.ts`) is unchanged: it runs as a separate process with direct database access and write tools, and is only reachable by someone who can already run commands in the Stackport container.
 
 ---
 

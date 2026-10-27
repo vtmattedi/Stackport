@@ -23,6 +23,7 @@ const DeployTriggersSection = lazy(() => import("./pages/settings/DeployTriggers
 const InfrastructureSection = lazy(() => import("./pages/settings/InfrastructureSection"));
 const NotificationsSection = lazy(() => import("./pages/settings/NotificationsSection"));
 const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
+const McpSection = lazy(() => import("./pages/settings/McpSection"));
 const InsightsLayout = lazy(() => import("./pages/insights/InsightsLayout"));
 const InsightsOverview = lazy(() => import("./pages/insights/OverviewSection"));
 const InsightsResources = lazy(() => import("./pages/insights/ResourcesSection"));
@@ -75,6 +76,7 @@ export default function App() {
               <Route path="deploy-triggers" element={<DeployTriggersSection />} />
               <Route path="infrastructure" element={<InfrastructureSection />} />
               <Route path="notifications" element={<NotificationsSection />} />
+              <Route path="mcp" element={<McpSection />} />
               <Route path="maintenance" element={<MaintenanceSection />} />
               <Route path="*" element={<Navigate to="general" replace />} />
             </Route>

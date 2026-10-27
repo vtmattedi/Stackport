@@ -1,5 +1,5 @@
 import { Outlet, useLocation } from "react-router-dom";
-import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Server, Bell, Wrench } from "lucide-react";
+import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Server, Bell, Wrench, KeyRound } from "lucide-react";
 import SubShell, { SubShellSectionHeader } from "../../components/SubShell";
 
 export const SETTINGS_SECTIONS = [
@@ -7,6 +7,7 @@ export const SETTINGS_SECTIONS = [
   { path: "deploy-triggers", label: "Deploy triggers", icon: GitBranch, description: "How new commits reach Stackport: the GitHub poller and webhooks." },
   { path: "infrastructure", label: "Infrastructure", icon: Server, description: "VPS provider access, monitored VMs and firewall rules." },
   { path: "notifications", label: "Notifications", icon: Bell, description: "Email alerts for project health, a test send and the recent email log." },
+  { path: "mcp", label: "MCP", icon: KeyRound, description: "API tokens for the read-only MCP endpoint." },
   { path: "maintenance", label: "Maintenance", icon: Wrench, description: "Housekeeping checks for the deploy folder." },
 ] as const;
 

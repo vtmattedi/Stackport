@@ -966,3 +966,15 @@ export interface ProjectResourcesTimeseries {
   granularity: "5m" | "day";
   series: ProjectResourceTimeseriesSeries[];
 }
+
+/** An API token for the MCP endpoint. The token value itself is only returned once, on creation. */
+export interface ApiToken {
+  id: number;
+  name: string;
+  prefix: string;
+  scopes: string[];
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+}

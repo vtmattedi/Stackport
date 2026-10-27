@@ -369,11 +369,11 @@ export function renderDeployUnhealthyEmail({
   rollback,
   occurredAt,
 }: DeployUnhealthyEmailParams): string {
-  const intro = {
-    none: "StackPort deployed a new revision, but its health check did not pass in time. The new revision is still running.",
-    done: "StackPort deployed a new revision, but its health check did not pass in time, so it rolled back automatically.",
-    failed: "StackPort deployed a new revision, but its health check did not pass in time. It tried to roll back automatically, but the rollback failed too, so the project needs attention now.",
-  }[rollback];
+  const intro = rollback === "done"
+    ? "StackPort deployed a new revision, but its health check did not pass in time, so it rolled back automatically."
+    : rollback === "failed"
+      ? "StackPort deployed a new revision, but its health check did not pass in time. It tried to roll back automatically, but the rollback failed too, so the project needs attention now."
+      : "StackPort deployed a new revision, but its health check did not pass in time. The new revision is still running.";
   return renderStackPortEmail({
     previewText: `${projectName} was deployed but its health check did not pass.`,
     eyebrow: "Deploy",
