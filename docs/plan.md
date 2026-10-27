@@ -1,6 +1,6 @@
 # Stackport improvement plan
 
-Status: agreed scope, October 2026. Branch: `claude/peaceful-pasteur-evt5pf`.
+Status: shipped as **1.2.0** (October 2026). What it left open is in [`docs/1.3/`](1.3/README.md).
 
 This plan covers correctness fixes, technical debt, UI/UX, feature removals, a read-only
 MCP server with real authentication, and a unified action runner. Most security
@@ -590,6 +590,8 @@ shifts:
 | D4 | One PR per item, or one branch? | One branch, one commit (or a few) per row |
 
 ## Deferred (not in this plan)
+
+Carried into [`docs/1.3/`](1.3/README.md), with effort ratings and fixes.
 
 Needs a separate design against what is already deployed:
 
