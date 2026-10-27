@@ -1,4 +1,4 @@
-## things we need to implement:
+Planned work is tracked in [`docs/plan.md`](docs/plan.md).
 
-1- MCP: Create MCP area in interfaces, add token creation to credential and granular approvals, MCP acitons expanse.
-2- Implement weebhooks -> deploy (webhook is attached to a project).
+GitHub webhook deploys are implemented (see `Stackport.md`). MCP token auth and
+approvals are PR 6 in the plan.

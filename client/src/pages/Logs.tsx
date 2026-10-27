@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, type FormEvent } from "react";
+import { useState, useCallback, type FormEvent } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ScrollText, RefreshCw, CheckCircle2, XCircle, Search, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "../api/client";
 import type { AuditEntry } from "../api/types";
@@ -59,47 +60,30 @@ function rangeToFromIso(range: LogRange): string | undefined {
 }
 
 export default function Logs() {
-  const [logs, setLogs] = useState<AuditEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [filters, setFilters] = useState<LogFilters>(EMPTY_FILTERS);
   const [draftFilters, setDraftFilters] = useState<LogFilters>(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async (manual = false) => {
-    if (manual) setRefreshing(true);
-    setError(null);
-    try {
-      const data = await api.getLogs({
-        actor: filters.actor || undefined,
-        action: filters.action || undefined,
-        target: filters.target || undefined,
-        from: rangeToFromIso(filters.range),
-        page,
-        pageSize: PAGE_SIZE,
-      });
-      setLogs(data.entries);
-      setTotal(data.total);
-      setPage(data.page);
-      setTotalPages(data.totalPages);
-      setLastRefresh(new Date());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load audit logs");
-    } finally {
-      setLoading(false);
-      if (manual) setRefreshing(false);
-    }
-  }, [filters, page]);
-
-  useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 15_000);
-    return () => clearInterval(timer);
-  }, [load]);
+  const query = useQuery({
+    queryKey: ["audit-logs", filters, page],
+    queryFn: () => api.getLogs({
+      actor: filters.actor || undefined,
+      action: filters.action || undefined,
+      target: filters.target || undefined,
+      from: rangeToFromIso(filters.range),
+      page,
+      pageSize: PAGE_SIZE,
+    }),
+    refetchInterval: 15_000,
+    placeholderData: keepPreviousData,
+  });
+  const logs: AuditEntry[] = query.data?.entries ?? [];
+  const total = query.data?.total ?? 0;
+  const totalPages = query.data?.totalPages ?? 1;
+  const loading = query.isLoading;
+  const refreshing = query.isFetching && !query.isLoading;
+  const lastRefresh = query.dataUpdatedAt ? new Date(query.dataUpdatedAt) : null;
+  const error = query.error ? (query.error instanceof Error ? query.error.message : "Failed to load audit logs") : null;
+  const load = useCallback(async (_manual = false) => { await query.refetch(); }, [query]);
 
   function handleFilterSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();

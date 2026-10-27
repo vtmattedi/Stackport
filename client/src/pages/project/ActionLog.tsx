@@ -1,32 +1,11 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, ChevronRight, Loader, XCircle } from "lucide-react";
 import type { ProjectDeploymentRevision } from "../../api/types";
 import { actionLabel } from "../../lib/actionLabels";
 import { cn } from "../../lib/utils";
 import { TimeAgo } from "../../components/TimeAgo";
+import { useActionOutput } from "../../hooks/useActionOutput";
 import styles from "../ProjectDetails.module.scss";
-
-export interface LogStore {
-  get: () => string;
-  set: (text: string) => void;
-  append: (chunk: string) => void;
-  subscribe: (listener: () => void) => () => void;
-}
-
-export function createLogStore(): LogStore {
-  let text = "";
-  const listeners = new Set<() => void>();
-  const notifyAll = () => { for (const listener of listeners) listener(); };
-  return {
-    get: () => text,
-    set: (next) => { text = next; notifyAll(); },
-    append: (chunk) => { text += chunk; notifyAll(); },
-    subscribe: (listener) => {
-      listeners.add(listener);
-      return () => { listeners.delete(listener); };
-    },
-  };
-}
 
 /** The last repo-slot action that finished on this page (or was found finished on load). */
 export interface FinishedAction {
@@ -48,14 +27,16 @@ function summary(action: FinishedAction, revision: ProjectDeploymentRevision | n
 }
 
 /** One line saying how the last action ended, with its log folded underneath.
- *  The log opens by itself while an action runs or after one fails. */
-export function ActionResult({ store, running, finished, latestRevision }: {
-  store: LogStore;
+ *  The log opens by itself while an action runs or after one fails. `actionId` is
+ *  the running action, else the last finished one: its output is attached live, so
+ *  leaving and coming back (or reloading) mid-build picks the log up where it is. */
+export function ActionResult({ actionId, running, finished, latestRevision }: {
+  actionId: string | null;
   running: boolean;
   finished: FinishedAction | null;
   latestRevision: ProjectDeploymentRevision | null;
 }) {
-  const log = useSyncExternalStore(store.subscribe, store.get, store.get);
+  const { text: log } = useActionOutput(actionId);
   const failed = finished?.ok === false;
   const [open, setOpen] = useState(running || failed);
   const ref = useRef<HTMLPreElement | null>(null);

@@ -104,3 +104,32 @@ test("payloads larger than the app-wide JSON limit still arrive", async () => {
   const res = await deliver(push("5".repeat(40), { commits: [{ message: "x".repeat(40_000) }] }));
   assert.equal(res.status, 202);
 });
+
+test("the poller covers webhook projects whose hook is failing, at the normal interval", async () => {
+  const { selectProjectsToPoll } = await import("../src/services/githubPoller");
+  const db = getDatabase();
+  const make = (name: string, trigger: string, hookStatus: string | null, checkedMinutesAgo: number | null) => {
+    const { id } = createProject({ name, sourceType: "github", githubRepo: `o/${name}` });
+    db.prepare("UPDATE projects SET deploy_trigger = ?, hook_status = ?, github_checked_at = ? WHERE id = ?").run(
+      trigger, hookStatus, checkedMinutesAgo === null ? null : new Date(Date.now() - checkedMinutesAgo * 60_000).toISOString(), id,
+    );
+    return id;
+  };
+  const poller = make("sel-poller", "poller", null, 1);
+  const healthy = make("sel-healthy", "webhook", "verified", 5);
+  const stale = make("sel-stale", "webhook", "verified", 45);
+  const failing = make("sel-failing", "webhook", "failing", 1);
+  const manual = make("sel-manual", "manual", null, null);
+
+  const ids = (on: boolean) => new Set(selectProjectsToPoll(on).map((r) => r.id));
+  const withSafety = ids(true);
+  assert.ok(withSafety.has(poller));
+  assert.ok(!withSafety.has(healthy), "a working hook checked recently is left alone");
+  assert.ok(withSafety.has(stale), "the 30-minute safety check");
+  assert.ok(withSafety.has(failing), "a failing hook is polled every time");
+  assert.ok(!withSafety.has(manual));
+
+  const withoutSafety = ids(false);
+  assert.ok(withoutSafety.has(poller));
+  assert.ok(!withoutSafety.has(failing) && !withoutSafety.has(stale), "turning the safety check off means webhook projects aren't polled");
+});

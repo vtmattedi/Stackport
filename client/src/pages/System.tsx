@@ -4,7 +4,7 @@ import {
   Cpu, RefreshCw, Loader, Box, Layers, AlertCircle,
   RotateCw, Play, Square, Hammer, ChevronDown, ChevronRight, X, FileText, Save, Eye, Settings,
   ShieldCheck, ShieldX, KeyRound, Trash2, Mail,
-  SquareTerminal, Radio,
+  SquareTerminal, Radio, Gauge,
 } from "lucide-react";
 import NginxCode from "../components/NginxCode";
 // The terminal dialogs pull in xterm (~90 KB gzipped); load it only when one opens.
@@ -27,6 +27,7 @@ import { formatShortDateTime } from "../lib/format";
 import { cn } from "../lib/utils";
 import styles from "./System.module.scss";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { HardwareSection } from "./HardwareSection";
 import SubShell, { SubShellSectionHeader } from "../components/SubShell";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -229,7 +230,7 @@ function ContainerTable({ containers }: { containers: ContainerInfo[] }) {
 
 type ComposeOp = "up" | "down" | "build";
 type CertbotOp = "issue" | "renew" | "delete";
-type SystemTab = "nginx" | "docker" | "certbot";
+type SystemTab = "nginx" | "docker" | "certbot" | "hardware";
 
 const STACK_COLLAPSE_KEY = "stackport_system_collapsed_stacks";
 const NGINX_DOC_KEY = "stackport_system_nginx_doc";
@@ -244,7 +245,7 @@ function readCollapsedStacks(): Record<string, boolean> {
 }
 
 function isSystemTab(value: string): value is SystemTab {
-  return value === "docker" || value === "nginx" || value === "certbot";
+  return value === "docker" || value === "nginx" || value === "certbot" || value === "hardware";
 }
 
 function readNginxDocumentKind(): NginxDocumentKind {
@@ -369,16 +370,18 @@ function StackRow({ stack, onAction, activeOp, result, onDismissResult, collapse
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-/** Sections live at /system/:section; old /system?tab= links (including the
- *  poller and firewall, which moved to Settings) still land in the right place. */
+/** The Host page: sections live at /host/:section. Old /system/:section and
+ *  /system?tab= links (including the poller and firewall, which moved to Settings)
+ *  still land in the right place. */
 export default function System() {
   const { section } = useParams();
   const [searchParams] = useSearchParams();
   const tab = searchParams.get("tab");
   if (tab === "github") return <Navigate to="/settings/deploy-triggers" replace />;
-  if (tab === "firewall") return <Navigate to="/settings/infrastructure" replace />;
+  // The firewall tab was the Hostinger firewall, since removed.
+  if (tab === "firewall") return <Navigate to="/host" replace />;
   if (!section || !isSystemTab(section)) {
-    return <Navigate to={`/system/${tab && isSystemTab(tab) ? tab : "nginx"}`} replace />;
+    return <Navigate to={`/host/${tab && isSystemTab(tab) ? tab : "nginx"}`} replace />;
   }
   return <SystemPage activeTab={section} />;
 }
@@ -1404,23 +1407,32 @@ function SystemPage({ activeTab }: { activeTab: SystemTab }) {
 
   return (
     <SubShell
-      title="System"
+      title="Host"
       icon={Cpu}
-      basePath="/system"
+      basePath="/host"
       sections={[
         { path: "nginx", label: "Nginx", icon: Layers, status: sectionStatus(nginxSelectorOk) },
         { path: "docker", label: "Docker", icon: Box, status: sectionStatus(dockerSelectorOk) },
         { path: "certbot", label: "Certbot", icon: ShieldCheck, status: sectionStatus(certbotSelectorOk) },
+        { path: "hardware", label: "Hardware", icon: Gauge },
       ]}
-      actions={
+      // Hardware has its own data and Refresh; this one reloads the system snapshot.
+      actions={activeTab === "hardware" ? undefined : (
         <Button type="button" variant="outline" size="xs" onClick={refresh} disabled={loading}>
           <RefreshCw size={13} />
           Refresh
         </Button>
-      }
+      )}
     >
-      {headers[activeTab]}
-      <section className={styles.systemPanel}>{loading ? <SystemSkeleton /> : panels[activeTab]}</section>
+      {activeTab === "hardware" ? (
+        // Its own data and header; it doesn't wait for the system snapshot.
+        <HardwareSection />
+      ) : (
+        <>
+          {headers[activeTab]}
+          <section className={styles.systemPanel}>{loading ? <SystemSkeleton /> : panels[activeTab]}</section>
+        </>
+      )}
     </SubShell>
   );
 }

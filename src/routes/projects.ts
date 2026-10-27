@@ -1,3 +1,4 @@
+import { previewDeploy, previewRollback } from "../services/deployPreview";
 import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../config/database";
 import { requireAuth } from "../middleware/auth";
@@ -18,6 +19,8 @@ import {
   ensureProjectProxyNetwork,
   getProjectById,
   getProjectComposeEnvFiles,
+  getProjectComposeVariables,
+  getProjectComposePolicy,
   getProjectIngressTargets,
   getProjectComposeFileContent,
   getProjectLogs,
@@ -43,9 +46,10 @@ import {
 } from "../services/projectDeploy";
 import { getProjectBranches, resetGithubTrackingIfChanged } from "../services/githubPoller";
 import { runCertbotAction } from "../services/certbot";
-import { actionRegistry, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../services/actionRegistry";
+import { actionRegistry, DEPLOY_KINDS_SQL, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../services/actionRegistry";
+import { deleteProjectActionLogs } from "../services/actionLog";
 import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "./projectResources";
-import { createProject as adminCreateProject, parseProjectGroupName, ProjectAdminError } from "../services/projectAdmin";
+import { createProject as adminCreateProject, parseBoolean, parseDeployHealthGrace, parseProjectGroupName, ProjectAdminError } from "../services/projectAdmin";
 import {
   addProjectDomain,
   attachDomains,
@@ -59,7 +63,7 @@ import {
   setProjectDomainSsl,
 } from "../services/projectDomains";
 import { stageAndApplyUpload } from "../services/projectUpload";
-import { listProjectDeployments } from "../services/projectDeployments";
+import { listProjectDeployments, resolveRollbackTarget } from "../services/projectDeployments";
 import {
   deleteTcpExposure,
   findPublishedPortConflict,
@@ -154,24 +158,6 @@ router.get("/", requireAuth, (_req: Request, res: Response): void => {
     .prepare("SELECT * FROM projects ORDER BY favorite DESC, name ASC")
     .all() as ProjectRow[];
   res.json(attachDomains(rows.map(rowToProject)));
-});
-
-/** Snapshot of every project repo/ssl action still running, with project names attached — lets the client resume toasts for actions started before it connected (e.g. a build kicked off from another tab, or one still running across a page reload). */
-router.get("/actions/running", requireAuth, (_req: Request, res: Response): void => {
-  const rows = getDatabase()
-    .prepare("SELECT id, name FROM projects")
-    .all() as Pick<ProjectRow, "id" | "name">[];
-  const names = new Map(rows.map((row) => [row.id, row.name]));
-
-  const running = actionRegistry
-    .list("project:")
-    .filter((action) => action.status === "running" && (action.key.endsWith(":repo") || action.key.endsWith(":ssl")))
-    .map((action) => ({
-      action,
-      projectId: action.projectId ?? null,
-      projectName: action.projectId != null ? names.get(action.projectId) ?? null : null,
-    }));
-  res.json(running);
 });
 
 router.get("/repo-folder-scan", requireAuth, async (_req: Request, res: Response): Promise<void> => {
@@ -501,16 +487,59 @@ router.get("/:id/deployments", requireAuth, (req: Request<{ id: string }>, res: 
   res.json(listProjectDeployments(id));
 });
 
+/** What a deploy would change; read-only. `?branch=` as for POST /:id/deploy. */
+router.get("/:id/deploy-preview", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  const rawBranch = typeof req.query["branch"] === "string" ? req.query["branch"].trim() : "";
+  if (rawBranch && !isValidBranchName(rawBranch)) { res.status(400).json({ error: "Invalid branch name" }); return; }
+  res.json(await previewDeploy(project, rawBranch || null));
+});
+
+/** What a rollback would change; read-only. `?deploymentId=` as for POST /:id/rollback. */
+router.get("/:id/rollback-preview", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  const raw = req.query["deploymentId"];
+  let deploymentId: number | undefined;
+  if (raw !== undefined) {
+    deploymentId = typeof raw === "string" && /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
+    if (!Number.isInteger(deploymentId) || deploymentId <= 0) { res.status(400).json({ error: "deploymentId must be a positive integer" }); return; }
+  }
+  const result = await previewRollback(project, deploymentId);
+  if (!result.ok) { res.status(409).json({ error: result.error }); return; }
+  res.json({ ...result.preview, targetId: result.targetId });
+});
+
 router.post("/:id/rollback", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
 
+  const rawDeploymentId: unknown = req.body?.deploymentId;
+  if (rawDeploymentId !== undefined && rawDeploymentId !== null
+    && !(typeof rawDeploymentId === "number" && Number.isInteger(rawDeploymentId) && rawDeploymentId > 0)) {
+    res.status(400).json({ error: "deploymentId must be a positive integer" });
+    return;
+  }
+  const deploymentId = typeof rawDeploymentId === "number" ? rawDeploymentId : undefined;
+  // Checked again when the rollback runs; this is for an immediate, clear answer.
+  const target = resolveRollbackTarget(id, deploymentId);
+  if (!target.ok) { res.status(409).json({ error: target.error }); return; }
+
   const user = req.user ?? "unknown";
   const key = projectRepoKey(id);
-  const started = actionRegistry.tryStart(key, "rollback", { projectId: id }, async () => {
-    const result = await rollbackProject(id);
-    auditLog(user, "project.rollback", String(id), result.ok ? "ok" : "fail", { repoPath: result.repoPath });
+  const started = actionRegistry.tryStart(key, "rollback", { projectId: id, deploymentId: target.target.id }, async () => {
+    // The resolved id, so the revision that runs is the one announced in the response.
+    const result = await rollbackProject(id, target.target.id);
+    auditLog(user, "project.rollback", String(id), result.ok ? "ok" : "fail", {
+      repoPath: result.repoPath,
+      deploymentId: target.target.id,
+    });
     return { ok: result.ok, output: result.output };
   });
   if (!started) { respondActionBusy(res, key, "An action is already running for this project"); return; }
@@ -626,6 +655,26 @@ router.get("/:id/compose-env-files", requireAuth, async (req: Request<{ id: stri
   if (req.query.composeFile !== undefined && typeof req.query.composeFile !== "string") { res.status(400).json({ error: "Invalid Compose file" }); return; }
   try { res.json(await getProjectComposeEnvFiles(id, req.query.composeFile as string | undefined)); }
   catch (err) { res.status(400).json({ error: (err as Error).message }); }
+});
+
+/** Variables the Compose file interpolates and whether the root `.env` defines them. */
+router.get("/:id/compose-variables", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  if (req.query.composeFile !== undefined && typeof req.query.composeFile !== "string") { res.status(400).json({ error: "Invalid Compose file" }); return; }
+  try { res.json(await getProjectComposeVariables(id, req.query.composeFile as string | undefined)); }
+  catch (err) { res.status(400).json({ error: (err as Error).message }); }
+});
+
+/** Policy violations in the selected Compose file of the checkout. No checkout or no
+ *  file selected yet is not an error here: there is just nothing to check. */
+router.get("/:id/compose-policy", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  try { res.json(await getProjectComposePolicy(id)); }
+  catch { res.json({ composeFile: null, violations: [] }); }
 });
 
 router.get("/:id/domains", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
@@ -921,6 +970,8 @@ router.post("/:id/stop-purge", requireAuth, (req: Request<{ id: string }>, res: 
   const key = projectRepoKey(id);
   const started = actionRegistry.tryStart(key, "stop-purge", { projectId: id }, async () => {
     const result = await stopAndPurgeProject(id);
+    // Deleting the project's data includes its stored action logs (not this run's).
+    if (result.ok) deleteProjectActionLogs(id);
     auditLog(user, "project.stop-purge", String(id), result.ok ? "ok" : "fail", {
       repoPath: result.repoPath,
     });
@@ -1113,18 +1164,22 @@ router.get("/:id/branches", requireAuth, async (req: Request<{ id: string }>, re
   }
 });
 
-interface ProjectDeployRow {
-  id: number;
+interface DeployActionRow {
+  id: string;
   project_id: number;
+  kind: string;
   commit_sha: string | null;
   commit_message: string | null;
   commit_author: string | null;
+  branch: string | null;
   triggered_by: string;
   status: string;
-  created_at: string;
-  completed_at: string | null;
+  started_at: string;
+  finished_at: string | null;
+  log_path: string | null;
 }
 
+/** Recent deploy-type actions (manual, auto, webhook, rollback, ...) from the actions log. */
 router.get("/:id/deploys", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
@@ -1136,19 +1191,33 @@ router.get("/:id/deploys", requireAuth, (req: Request<{ id: string }>, res: Resp
   }
 
   const rows = db.prepare(
-    "SELECT * FROM project_deploys WHERE project_id = ? ORDER BY created_at DESC LIMIT 50"
-  ).all(id) as ProjectDeployRow[];
+    `SELECT * FROM actions WHERE project_id = ? AND kind IN (${DEPLOY_KINDS_SQL}) ORDER BY started_at DESC LIMIT 50`
+  ).all(id) as DeployActionRow[];
   res.json(rows.map((r) => ({
     id: r.id,
     projectId: r.project_id,
+    kind: r.kind,
     commitSha: r.commit_sha,
     commitMessage: r.commit_message,
     commitAuthor: r.commit_author,
+    branch: r.branch,
     triggeredBy: r.triggered_by,
     status: r.status,
-    createdAt: r.created_at,
-    completedAt: r.completed_at,
+    createdAt: r.started_at,
+    completedAt: r.finished_at,
+    hasLog: r.log_path !== null,
   })));
+});
+
+/** Deletes every stored action log for the project (Clear logs). Action history stays. */
+router.delete("/:id/action-logs", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  const deleted = deleteProjectActionLogs(id);
+  auditLog(req.user ?? "unknown", "project.clear-action-logs", project.name, "ok", { deleted });
+  res.json({ deleted });
 });
 
 router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
@@ -1298,6 +1367,16 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
     }
   }
 
+  let newDeployHealthGraceS = existing.deploy_health_grace_s ?? 60;
+  let newAutoRollbackUnhealthy = !!existing.auto_rollback_unhealthy;
+  try {
+    if (req.body.deployHealthGraceS !== undefined) newDeployHealthGraceS = parseDeployHealthGrace(req.body.deployHealthGraceS);
+    if (req.body.autoRollbackUnhealthy !== undefined) newAutoRollbackUnhealthy = parseBoolean(req.body.autoRollbackUnhealthy, "autoRollbackUnhealthy");
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+
   const appNginx = getNginxAppConfig();
 
   if (newInternalPort !== null && db.prepare("SELECT id FROM projects WHERE internal_port = ? AND id <> ?").get(newInternalPort, id)) {
@@ -1313,10 +1392,11 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
   db.prepare(
     `UPDATE projects
      SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_domain_id = ?, health_check_interval_s = ?,
+         deploy_health_grace_s = ?, auto_rollback_unhealthy = ?,
          github_repo = ?, credential_id = ?, github_credential_id = ?,
          auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
      WHERE id = ?`
-  ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newHealthCheckDomainId, newIntervalS, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
+  ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newHealthCheckDomainId, newIntervalS, newDeployHealthGraceS, newAutoRollbackUnhealthy ? 1 : 0, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
   resetGithubTrackingIfChanged(db, id, existing, newGhRepo, newAutoDeployBranch);
   moveWebhookIfRepoChanged(id, existing.github_repo, newGhRepo);
 
@@ -1354,6 +1434,8 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
     const warning = await disableWebhook(id);
     if (warning) console.warn(`[webhooks] ${row.name}: ${warning}`);
   }
+  // Action rows go with the project (ON DELETE CASCADE); their log files don't.
+  deleteProjectActionLogs(id);
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   healthChecker.unschedule(id);
 

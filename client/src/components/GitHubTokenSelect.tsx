@@ -71,7 +71,7 @@ export function GitHubTokenSelect({
       onValueChange={(nextValue) => {
         setHasUserSelected(true);
         if (nextValue === ADD_VALUE) {
-          navigate("/credentials");
+          navigate("/settings/credentials");
           return;
         }
         onValueChange(nextValue === NONE_VALUE ? null : Number(nextValue));

@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { NavLink, Link, useNavigate, useLocation } from "react-router-dom";
 import { HoverCard } from "radix-ui";
 import {
-  ScrollText, FolderDot, Monitor, LogOut, Settings as SettingsIcon,
+  ScrollText, FolderDot, Gauge, LogOut, Settings as SettingsIcon,
   ShieldCheck, Cpu, Wifi, WifiOff, ChevronLeft, ChevronRight,
-  Layers, Box, Loader, BarChart2, Star, Menu,
+  Layers, Box, Loader, BarChart2, Star, Menu, Search,
 } from "lucide-react";
 import { api, clearToken } from "../api/client";
 import { useSocket, useSocketLatency } from "../context/SocketContext";
@@ -15,6 +15,7 @@ import { StackPortBrand } from "../logo/StackPortBrand";
 import styles from "./Nav.module.scss";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { RunningActionsList, useRunningActions } from "./RunningActions";
+import { openCommandPalette, PALETTE_SHORTCUT } from "./CommandPalette";
 import type { Project, SystemData } from "../api/types";
 
 // Keep in sync with $submenu-open-delay in Nav.module.scss: the trigger's
@@ -28,6 +29,7 @@ const SYSTEM_TABS: { tab: string; label: string; icon: typeof Layers }[] = [
   { tab: "nginx", label: "Nginx", icon: Layers },
   { tab: "docker", label: "Docker", icon: Box },
   { tab: "certbot", label: "Certbot", icon: ShieldCheck },
+  { tab: "hardware", label: "Hardware", icon: Gauge },
 ];
 
 function dockerHasRunning(docker: SystemData["docker"]): boolean {
@@ -56,10 +58,10 @@ function SystemSubmenu({ system }: { system: SystemData | null }) {
 
   return (
     <>
-      <div className={styles.submenuHeader}>System</div>
+      <div className={styles.submenuHeader}>Host</div>
       <div className={styles.submenuList}>
         {SYSTEM_TABS.map(({ tab, label, icon: Icon }) => (
-          <Link key={tab} to={`/system/${tab}`} className={styles.submenuItem}>
+          <Link key={tab} to={`/host/${tab}`} className={styles.submenuItem}>
             <Icon size={14} className={tabIconClass(states[tab])} />
             <span className={styles.submenuItemLabel}>{label}</span>
           </Link>
@@ -137,7 +139,7 @@ export default function Nav() {
   });
 
   const projectsActive = location.pathname.startsWith("/projects");
-  const systemActive = location.pathname.startsWith("/system");
+  const systemActive = location.pathname.startsWith("/host");
 
   useEffect(() => {
     localStorage.setItem("sidebar-expanded", String(expanded));
@@ -182,6 +184,16 @@ export default function Nav() {
       </div>
 
       <div className={styles.navLinks}>
+        <button
+          type="button"
+          className={styles.navLink}
+          title={`Search (${PALETTE_SHORTCUT})`}
+          onClick={openCommandPalette}
+        >
+          <Search size={16} />
+          <span className={styles.linkText}>Search</span>
+          <kbd className={styles.navKbd}>{PALETTE_SHORTCUT}</kbd>
+        </button>
         <HoverCard.Root openDelay={SUBMENU_OPEN_DELAY_MS} closeDelay={150}>
           <HoverCard.Trigger asChild>
             <NavLink
@@ -206,24 +218,15 @@ export default function Nav() {
           </HoverCard.Portal>
         </HoverCard.Root>
 
-        <NavLink
-          to="/credentials"
-          title="Credentials"
-          className={({ isActive }) => cn(styles.navLink, isActive && styles.active)}
-        >
-          <ShieldCheck size={16} />
-          <span className={styles.linkText}>Credentials</span>
-        </NavLink>
-
         <HoverCard.Root openDelay={SUBMENU_OPEN_DELAY_MS} closeDelay={150}>
           <HoverCard.Trigger asChild>
             <NavLink
-              to="/system"
-              title="System"
+              to="/host"
+              title="Host"
               className={cn(styles.navLink, styles.hasSubmenu, systemActive && styles.active)}
             >
               <Cpu size={16} />
-              <span className={styles.linkText}>System</span>
+              <span className={styles.linkText}>Host</span>
             </NavLink>
           </HoverCard.Trigger>
           <HoverCard.Portal>
@@ -239,14 +242,6 @@ export default function Nav() {
           </HoverCard.Portal>
         </HoverCard.Root>
 
-        <NavLink
-          to="/infrastructure"
-          title="Infrastructure"
-          className={({ isActive }) => cn(styles.navLink, isActive && styles.active)}
-        >
-          <Monitor size={16} />
-          <span className={styles.linkText}>Infrastructure</span>
-        </NavLink>
         <NavLink
           to="/logs"
           title="Logs"
@@ -310,7 +305,7 @@ export default function Nav() {
     {/* Phones: the sidebar becomes a bottom bar with the busiest pages and a More menu. */}
     <nav className={styles.mobileBar} aria-label="Main">
       <NavLink to="/projects" className={mobileLink}><FolderDot size={18} /><span>Projects</span></NavLink>
-      <NavLink to="/system" className={mobileLink}><Cpu size={18} /><span>System</span></NavLink>
+      <NavLink to="/host" className={mobileLink}><Cpu size={18} /><span>Host</span></NavLink>
       <NavLink to="/insights" className={mobileLink}><BarChart2 size={18} /><span>Insights</span></NavLink>
       <NavLink to="/logs" className={mobileLink}><ScrollText size={18} /><span>Logs</span></NavLink>
       <Popover open={moreOpen} onOpenChange={setMoreOpen}>
@@ -332,8 +327,6 @@ export default function Nav() {
             </>
           )}
           {([
-            ["/credentials", "Credentials", ShieldCheck],
-            ["/infrastructure", "Infrastructure", Monitor],
             ["/settings", "Settings", SettingsIcon],
           ] as const).map(([to, label, Icon]) => (
             <NavLink key={to} to={to} className={({ isActive }) => cn(styles.submenuItem, isActive && styles.moreItemActive)} onClick={() => setMoreOpen(false)}>
@@ -341,6 +334,10 @@ export default function Nav() {
               <span className={styles.submenuItemLabel}>{label}</span>
             </NavLink>
           ))}
+          <button type="button" className={styles.submenuItem} onClick={() => { setMoreOpen(false); openCommandPalette(); }}>
+            <Search size={15} />
+            <span className={styles.submenuItemLabel}>Search</span>
+          </button>
           <div className={styles.moreSeparator} />
           <div className={styles.moreFooter}>
             <span className={cn(styles.navStatus, connected && styles.connected)}>

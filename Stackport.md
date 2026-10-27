@@ -1,6 +1,6 @@
 # StackPort — Technical Overview
 
-StackPort is a self-hosted DevOps control plane: a Node/Express backend + React client that deploys GitHub-repo or manually-uploaded projects via `docker compose`, fronts them with its own containerized nginx reverse proxy, issues Let's Encrypt certificates, and monitors the host (and optionally a Hostinger VPS fleet) — all from a single admin UI/API.
+StackPort is a self-hosted DevOps control plane: a Node/Express backend + React client that deploys GitHub-repo or manually-uploaded projects via `docker compose`, fronts them with its own containerized nginx reverse proxy, issues Let's Encrypt certificates, and monitors the host — all from a single admin UI/API. (The optional Hostinger VPS fleet and firewall integration was removed in October 2026; its database tables are kept, unused, so `stackport rollback` still works.)
 
 StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today; see `docs/deprecated/` for the design docs that shaped it (kept as historical record, not current reference) and `Skills.md` for the operational guide to preparing a repository for deployment.
 
@@ -58,7 +58,11 @@ TCP proxies use `alpine/socat:1.8.0.3`, are independently reconciled at StackPor
 
 Every successful `up` records a `project_deployments` row: the resolved git commit SHA, branch, compose file name, and both the *source* compose content (as pulled from git) and the *effective* compose content (after StackPort's own network-augmentation rewrite) — the exact bytes that actually ran. A failed/rejected deploy records a `failed` row with the blocking reason instead, without touching the currently-active revision. `ensureRepo` pins each deploy to an exact commit SHA (detached HEAD), not a floating branch — deploys are reproducible, not "whatever `git pull` happened to bring in."
 
-`rollbackProject()` finds the previous successful revision, checks out its exact SHA, restores its stored *effective* compose content directly (not a fresh git checkout + re-augmentation), and redeploys from that artifact. Exposed as `POST /:id/rollback` and a "Roll back" button on the project detail page's deployment history list.
+`rollbackProject()` checks out a successful revision's exact SHA, restores its stored *effective* compose content directly (not a fresh git checkout + re-augmentation), and redeploys from that artifact. Exposed as `POST /:id/rollback` (optional body `{ "deploymentId": n }`), a "Roll back" button on the project detail page's Deployments card, and a "Restore" button on each earlier revision.
+
+Without a `deploymentId`, the target is the newest earlier revision that differs from the running one and that no rollback has moved away from: a rollback marks the revision it replaces (`rolled_back_at`), so rolling back twice keeps going back instead of returning to the broken revision. A revision marked this way can still be restored explicitly. Revisions are ordered by id, since `created_at` has one-second resolution.
+
+Auto-deploys (poller and webhook) deploy the commit that triggered them, not whatever the branch tip is by the time the deploy starts. If that commit is no longer on the branch (for example after a force-push), the deploy fails with that reason; the new tip arrives as its own deploy.
 
 ### 1.7 Docker storage management
 
@@ -208,6 +212,10 @@ Pull, Docker Compose (no pull), Deploy (pull+build+up, what auto-deploy triggers
 
 Unchanged in shape from earlier versions of the system: named `.env` files per project (written to disk right before every build/deploy), an auto-deploy branch the GitHub poller watches, and a health-check endpoint/interval StackPort polls independently.
 
+A project's health check is a path on one of its domains, fetched over HTTPS or HTTP to match the domain's SSL setting. With a path and a domain set, every deploy and rollback is verified: after `docker compose up` succeeds, Stackport polls the check every 3 seconds for the project's grace period (default 60 s, 5–600 s). If it never passes, the revision stays the running (`active`) one but is marked unhealthy (`health_failed_at`), the action reports failure, and a "deploy failed its health check" alert is sent when notifications are enabled. With **Roll back if unhealthy** turned on (off by default), a failed deploy then rolls back to the default rollback target; a rollback that fails its own check never triggers another. Without a health check path, a deploy counts as successful once its containers start, as before.
+
+**Deploy triggers.** Each GitHub project picks one: `webhook` (GitHub calls Stackport on every push; needs Stackport published on an HTTPS domain), `poller` (Stackport asks GitHub at the poll interval), or `manual`. New projects start on the webhook when it's available. With the poller's webhook safety check on (the default), webhook projects are also checked every 30 minutes, since a push sent while Stackport was down is never redelivered; if that check finds a commit the hook didn't deliver, the hook is marked failing and the project is polled at the normal interval until a delivery succeeds again.
+
 ---
 
 ## 7. Security model summary
@@ -220,6 +228,21 @@ Unchanged in shape from earlier versions of the system: named `.env` files per p
 6. Stored secrets (GitHub tokens, API keys, per-credential values) are AES-256-GCM encrypted at rest and never echoed back by any API response.
 7. Admin-recovery credential generation requires local root (`docker exec` on the daemon socket) — there is no HTTP endpoint that can trigger it.
 8. `stackport uninstall` preserves state by default; `--purge` is explicit, strongly confirmed, and refuses to run non-interactively.
+9. API tokens for the MCP endpoint are stored only as SHA-256 hashes, shown once, scoped (`read` only today), revocable and optionally expiring. They are accepted only on `/mcp` and admin session tokens are never accepted there (§9).
+10. Action output is stored on disk, masked and time-limited (§10). Masking covers stored credentials and the project's managed env values; it can't cover secrets an app prints that Stackport doesn't manage. Note that managed env values themselves are stored in plain text in the database (`project_env_files.variables_json`), unlike credentials.
+
+---
+
+## 9. MCP (read-only, token auth)
+
+Stackport serves a Model Context Protocol endpoint at `https://<stackport-domain>/mcp` (Streamable HTTP, stateless, JSON responses), inside the app process, so it reads the same state the UI does and never writes.
+
+- **Tokens:** created, listed and revoked in Settings → MCP (`/api/api-tokens`, admin session required). Each token is shown once; only its hash and a short display prefix are stored. Every tool call is written to the audit log with the token id, and each token is rate-limited to 120 requests per minute on top of the per-IP limit.
+- **Tools:** `stackport_status` (version and project counts), `stackport_list_projects` (repository as `owner/name`, branch, deploy trigger, paused, health, last commit, pending deploy, domains), `stackport_get_project` (the same plus Compose file, last 10 deployments, containers and the running action).
+- **Never returned:** anything stored encrypted, credential ids, env files (names or values), nginx extra config, webhook slugs or secrets, build and action logs. Outputs are built field by field in `src/mcp/readModel.ts`; `tests/mcpHttp.test.ts` checks the exact key sets and that planted secrets never appear.
+- **Clients:** Claude Code (`claude mcp add --transport http stackport https://<domain>/mcp --header "Authorization: Bearer spk_…"`) and Claude Desktop. claude.ai custom connectors require OAuth, which is not supported yet.
+
+The older stdio server (`npm run mcp`, `src/mcp/server.ts`) is unchanged: it runs as a separate process with direct database access and write tools, and is only reachable by someone who can already run commands in the Stackport container.
 
 ---
 
@@ -245,10 +268,24 @@ Unchanged in shape from earlier versions of the system: named `.env` files per p
 
 The application checkout (`/var/lib/stackport/app`) is disposable and rebuildable at any time via `stackport update`/`rollback`; persistent state never lives inside it or inside a container image.
 
+## 10. Actions and their logs
+
+Every action (deploys, pulls, rollbacks, stops, SSL issuance, nginx applies, certbot runs, Docker prunes) goes through one runner, `src/services/actionRegistry.ts`, which allows one action per slot (a project's build/deploy slot, each domain's SSL slot, nginx, ...).
+
+- **History:** each run is a row in the `actions` table: kind, project, status (`running`, `success`, `failed`, `cancelled`, `interrupted`), who or what triggered it, the commit and branch for deploy-type actions, and start and end times. Rows still `running` when Stackport starts are marked `interrupted`: their processes died with the previous Stackport process. This table is also the deploy log behind Insights and "Recent deploys", replacing `project_deploys` (whose rows were copied in once; the table is kept, unwritten, for `stackport rollback`).
+- **Output:** numbered chunks, sent every 100 ms to clients that attach over the socket (`action:attach {id, fromSeq}` replays and then streams), and appended to `<LOG_DIR>/actions/<id>.log`. Actions that don't stream (nginx, certbot, SSL, prune) store their final output. `GET /api/actions/:id/log` returns a stored log; `GET /api/actions/running` lists running actions.
+
+**What is stored, and for how long.** Build output often prints environment values, so:
+
+- **Masking:** before output is streamed or written, every stored credential and the project's managed env values (6 characters or longer) are replaced with `***`. A trailing partial line is held back up to a second so a value split across two writes is still caught. Secrets an app prints that Stackport doesn't manage are not masked.
+- **Retention:** a log file is kept for the newest 20 runs per slot and never longer than 30 days; action rows (no output) are kept 180 days for Insights. Retention runs after every action and at startup.
+- **Deletion:** a project's log files are deleted when the project is deleted, after a successful Stop & Delete Data, and on request (`DELETE /api/projects/:id/action-logs`, the Clear logs button).
+- **Permissions:** the directory is `0700` and each file `0600`, owned by the app user.
+
 ## Traffic and Docker logs
 
 Traffic uses authenticated `/api/metrics/nginx` and `/api/metrics/nginx/requests` endpoints to read `docker logs stackport-nginx`. Generated access logs include host, user agent and request duration for domain filters, health-check exclusion and response-time statistics. No host log mount or sudo is needed.
 
-Docker retains three rotated 10 MB files. Traffic reads at most 20,000 recent lines and a bounded byte window; selected periods filter retained history and do not guarantee archival coverage. Container recreation starts new log history. Clearing Traffic stores a persistent cutoff without deleting Docker logs. Custom templates must preserve the `stackport` access-log format and stdout destination.
+Docker retains three rotated 10 MB files. Traffic reads at most 20,000 recent lines and a bounded byte window; selected periods filter retained history and do not guarantee archival coverage. Each traffic response includes `coverage` (the oldest entry read, whether the line or byte cap cut the read short, and any Clear cutoff), and Insights says so whenever the data doesn't span the whole selected period. Container recreation starts new log history. Clearing Traffic stores a persistent cutoff without deleting Docker logs. Custom templates must preserve the `stackport` access-log format and stdout destination.
 
 Host installation and runtime-switch write APIs are removed. Nginx config/template, reload, certificate actions and Docker log APIs remain authenticated and operate on Docker containers.

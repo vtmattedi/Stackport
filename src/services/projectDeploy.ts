@@ -9,14 +9,16 @@ import { normalizeRelativePath, resolveContainedPath } from "../utils/safePath";
 import { emitProjectDeploy, type ProjectDeployEvent } from "./realtime";
 import { actionRegistry, projectRepoKey } from "./actionRegistry";
 import { loadYamlDoc } from "./composeYaml";
-import { validateComposePolicy } from "./composePolicy";
+import { formatPolicyViolation, validateComposePolicy, type PolicyViolation } from "./composePolicy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./composeNetworking";
 import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
-import { recordFailedDeployment, recordSuccessfulDeployment, getPreviousSuccessfulDeployment } from "./projectDeployments";
-import { notifyDeployBlocked } from "./notificationService";
+import { markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./projectDeployments";
+import { healthCheckUrl, probeHealth, type HealthProbe } from "./healthChecker";
+import { notifyDeployBlocked, notifyDeployUnhealthy, type DeployRollbackOutcome } from "./notificationService";
 import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
+import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./composeVariables";
 
 export interface EnvVariable {
   key: string;
@@ -151,6 +153,42 @@ export async function getProjectComposeEnvFiles(projectId: number, selectedFile?
     // A committed or uploaded file counts; one StackPort wrote on an earlier deploy is a managed env file instead.
     const existsInSource = !!target && await fs.stat(target).then((stat) => stat.isFile()).catch(() => false);
     return { ...ref, existsInSource };
+  }));
+}
+
+/** The selected Compose file in the checkout, checked against the policy a deploy
+ *  enforces, so violations show before anyone deploys. A file that doesn't parse has
+ *  none here: the deploy leaves that to docker compose too. */
+export async function getProjectComposePolicy(projectId: number): Promise<{ composeFile: string; violations: PolicyViolation[] }> {
+  const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
+  return { composeFile, violations: validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations };
+}
+
+export interface ComposeVariableStatus extends ComposeVariableRef {
+  /** Where Compose would find it: the managed root `.env`, a `.env` in the repository,
+   *  or neither (then it falls back to its default, or Stackport's own environment;
+   *  see docs/plan.md S14). */
+  definedIn: "managed" | "repository" | null;
+}
+
+/** The variables the selected Compose file interpolates, and whether the project's
+ *  root `.env` defines them. */
+export async function getProjectComposeVariables(projectId: number, selectedFile?: string): Promise<ComposeVariableStatus[]> {
+  const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId, selectedFile);
+  const refs = extractComposeVariables(await readRawComposeDoc(repoPath, composeFile));
+  const managed = new Set(
+    listProjectEnvFiles(projectId)
+      .filter((file) => file.relativePath === ".env")
+      .flatMap((file) => file.variables.map((variable) => variable.key)),
+  );
+  const repoEnvPath = resolveContainedPath(repoPath, ".env");
+  // A path resolveContainedPath kept inside the checkout.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
+  const repoText = repoEnvPath ? await fs.readFile(repoEnvPath, "utf8").catch(() => "") : "";
+  const repository = dotenvKeys(repoText);
+  return refs.map((ref) => ({
+    ...ref,
+    definedIn: managed.has(ref.name) ? "managed" : repository.has(ref.name) ? "repository" : null,
   }));
 }
 
@@ -303,7 +341,7 @@ async function checkComposePolicy(repoPath: string, composeFile: string): Promis
   if (result.ok) return { ok: true, message: "" };
   return {
     ok: false,
-    message: `Deployment rejected — compose policy violation:\n\n${result.violations.join("\n")}\n`,
+    message: `Deployment rejected — compose policy violation:\n\n${result.violations.map(formatPolicyViolation).join("\n")}\n`,
   };
 }
 
@@ -703,7 +741,15 @@ export function isValidBranchName(value: string): boolean {
     && !value.endsWith(".lock");
 }
 
-async function ensureRepo(project: Project, repoPath: string, action: ProjectDeployEvent["action"], branch?: string | null): Promise<RunResult[]> {
+export const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/;
+
+/** With `commitSha`, checks out exactly that commit (it must be on the branch)
+ *  instead of the branch tip, so an auto-deploy runs the commit that triggered it
+ *  rather than whatever was pushed after it. */
+async function ensureRepo(project: Project, repoPath: string, action: ProjectDeployEvent["action"], branch?: string | null, commitSha?: string | null): Promise<RunResult[]> {
+  if (commitSha && !COMMIT_SHA_RE.test(commitSha)) {
+    return [{ ok: false, output: `Invalid commit SHA "${commitSha}".`, stdout: "", command: "git checkout" }];
+  }
   await fs.mkdir(deployRoot(), { recursive: true });
   const gitDir = path.join(repoPath, ".git");
   const hasCheckout = await fs.stat(gitDir).then((stat) => stat.isDirectory()).catch(() => false);
@@ -724,7 +770,10 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
       timeoutMs: 300_000,
       publicArgs: publicGitArgs(args),
     });
-    return [clone];
+    if (!clone.ok || !commitSha) return [clone];
+    const pinnedBranch = branch ?? project.autoDeployBranch;
+    if (!pinnedBranch) return [clone, noBranchResult()];
+    return [clone, ...await checkoutPinnedCommit(project.id, action, repoPath, commitSha, pinnedBranch)];
   }
 
   // Discard local modifications before pulling — e.g. composeNetworking.ts's
@@ -758,14 +807,8 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   // permanently in detached-HEAD state — there's no "currently checked out branch"
   // to introspect the way a floating `git pull` used to allow.
   const effectiveBranch = branch ?? project.autoDeployBranch;
-  if (!effectiveBranch) {
-    return [fetch, {
-      ok: false,
-      output: "No branch configured to deploy — set an auto-deploy branch or specify one explicitly.",
-      stdout: "",
-      command: "git checkout",
-    }];
-  }
+  if (!effectiveBranch) return [fetch, noBranchResult()];
+  if (commitSha) return [fetch, ...await checkoutPinnedCommit(project.id, action, repoPath, commitSha, effectiveBranch)];
 
   const revParse = await run(project.id, action, "git", ["rev-parse", `origin/${effectiveBranch}`], {
     cwd: repoPath,
@@ -779,6 +822,32 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
     timeoutMs: 60_000,
   });
   return [fetch, revParse, checkout];
+}
+
+function noBranchResult(): RunResult {
+  return {
+    ok: false,
+    output: "No branch configured to deploy — set an auto-deploy branch or specify one explicitly.",
+    stdout: "",
+    command: "git checkout",
+  };
+}
+
+/** Checks out `sha` after confirming it is on `origin/<branch>`. A commit that left
+ *  the branch (e.g. a force-push) fails the deploy instead of running code that is no
+ *  longer on it; the newer tip arrives as its own deploy. */
+export async function checkoutPinnedCommit(projectId: number, action: ProjectDeployEvent["action"], repoPath: string, sha: string, branch: string): Promise<RunResult[]> {
+  const onBranch = await run(projectId, action, "git", ["merge-base", "--is-ancestor", sha, `origin/${branch}`], {
+    cwd: repoPath,
+    timeoutMs: 30_000,
+  });
+  if (!onBranch.ok) {
+    const message = `Commit ${sha.slice(0, 7)} is not on origin/${branch} (was it force-pushed away?). Not deploying it.\n`;
+    emit(projectId, action, "stderr", message);
+    return [{ ...onBranch, output: `${onBranch.output}\n${message}` }];
+  }
+  const checkout = await run(projectId, action, "git", ["checkout", sha], { cwd: repoPath, timeoutMs: 60_000 });
+  return [onBranch, checkout];
 }
 
 /** Dry-run validates a directory's docker-compose file without starting anything —
@@ -891,7 +960,7 @@ async function readComposeFileSafe(repoPath: string, composeFile: string | null)
   return fs.readFile(path.join(repoPath, composeFile), "utf8").catch(() => null);
 }
 
-async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null): Promise<DeployResult> {
+async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null, pinnedSha?: string | null): Promise<DeployResult> {
   const project = getProjectById(projectId);
   if (!project) {
     return { ok: false, projectId, repoPath: "", output: "Project not found", action };
@@ -908,7 +977,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   let composeFile: string | null;
   if (pullFirst) {
     emit(projectId, action, "status", "Stage 1/2: pull from GitHub\n");
-    const repoResults = await ensureRepo(project, repoPath, action, branch);
+    const repoResults = await ensureRepo(project, repoPath, action, branch, pinnedSha);
     output.push(...repoResults.map((result) => result.output));
 
     if (repoResults.some((result) => !result.ok)) {
@@ -954,6 +1023,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   // "effective" copy captured after a successful `up` below is what actually ran.
   const sourceCompose = await readComposeFileSafe(repoPath, composeFile);
   const commitSha = await currentCommitSha(projectId, action, repoPath);
+  actionRegistry.annotate(projectRepoKey(projectId), { commitSha, branch: deployedBranch });
 
   try {
     const written = await writeEnvFiles(repoPath, listProjectEnvFiles(projectId));
@@ -987,6 +1057,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       : ["up", "-d", "--build"];
   const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, 900_000);
   output.push(compose.output);
+  let healthy = true;
   if (composeArgs[0] === "up") {
     if (compose.ok) {
       await snapshotDeployedCompose(repoPath, composeFile);
@@ -994,6 +1065,9 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       recordSuccessfulDeployment(projectId, {
         commitSha, branch: deployedBranch, composeFileName: composeFile, sourceCompose, effectiveCompose, triggeredBy,
       });
+      const health = await gateOnHealth(project, action, commitSha, true);
+      output.push(health.output);
+      healthy = health.ok;
     } else {
       recordFailedDeployment(
         projectId,
@@ -1002,10 +1076,11 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       );
     }
   }
-  emit(projectId, action, "status", `${action} ${compose.ok ? "completed" : "failed"}\n`, { ok: compose.ok, done: true });
+  const ok = compose.ok && healthy;
+  emit(projectId, action, "status", `${action} ${ok ? "completed" : "failed"}\n`, { ok, done: true });
 
   return {
-    ok: compose.ok,
+    ok,
     projectId,
     repoPath,
     output: output.join("\n\n"),
@@ -1017,9 +1092,10 @@ export function buildProject(projectId: number): Promise<DeployResult> {
   return runProjectAction(projectId, "build");
 }
 
-/** Pull (optionally switching to `branch`, else the auto-deploy branch) then `docker compose up -d --build`. */
-export function deployProject(projectId: number, triggeredBy: "manual" | "auto" = "manual", branch?: string | null): Promise<DeployResult> {
-  return runProjectAction(projectId, "deploy", true, triggeredBy, branch);
+/** Pull (optionally switching to `branch`, else the auto-deploy branch) then `docker compose up -d --build`.
+ *  `commitSha` deploys that commit instead of the branch tip (see ensureRepo). */
+export function deployProject(projectId: number, triggeredBy: "manual" | "auto" = "manual", branch?: string | null, commitSha?: string | null): Promise<DeployResult> {
+  return runProjectAction(projectId, "deploy", true, triggeredBy, branch, commitSha);
 }
 
 export async function pullProject(projectId: number, branch?: string | null, triggeredBy: "manual" | "auto" = "manual"): Promise<DeployResult> {
@@ -1414,13 +1490,89 @@ export async function getProjectLogs(
   });
 }
 
-/** Phase 1.7 — restores the previous successful deployment's exact source commit and
- *  effective compose file, then redeploys from that restored artifact rather than
+const HEALTH_POLL_INTERVAL_MS = 3_000;
+
+export interface HealthGateDeps {
+  probe: (url: string) => Promise<HealthProbe>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+}
+
+const realHealthGateDeps: HealthGateDeps = {
+  probe: probeHealth,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
+};
+
+/** Polls the project's health check until it passes or the project's grace period
+ *  (deploy_health_grace_s) runs out. Null when the project has no health check, in
+ *  which case the deploy is not verified, as before. */
+export async function verifyDeployHealth(
+  projectId: number,
+  action: ProjectDeployEvent["action"],
+  deps: HealthGateDeps = realHealthGateDeps,
+): Promise<{ healthy: boolean; url: string } | null> {
+  const project = getProjectById(projectId);
+  const url = project ? healthCheckUrl({
+    id: project.id,
+    paused: project.paused ? 1 : 0,
+    health_check_endpoint: project.healthCheckEndpoint,
+    health_check_domain_id: project.healthCheckDomainId,
+  }) : null;
+  if (!project || !url) return null;
+
+  const graceMs = project.deployHealthGraceS * 1000;
+  emit(projectId, action, "status", `Checking health: GET ${url} (up to ${project.deployHealthGraceS}s)\n`);
+  const startedAt = deps.now();
+  for (;;) {
+    const probe = await deps.probe(url);
+    if (probe.status === "up") {
+      emit(projectId, action, "status", `Health check passed${probe.responseMs !== null ? ` (${probe.responseMs} ms)` : ""}\n`);
+      return { healthy: true, url };
+    }
+    if (deps.now() - startedAt + HEALTH_POLL_INTERVAL_MS > graceMs) break;
+    await deps.sleep(HEALTH_POLL_INTERVAL_MS);
+  }
+  emit(projectId, action, "stderr", `Health check did not pass within ${project.deployHealthGraceS}s.\n`);
+  return { healthy: false, url };
+}
+
+/** After a successful `up`: verifies health, and on failure marks the running revision
+ *  unhealthy, notifies, and, when the project opted in and `allowAutoRollback`, rolls
+ *  back. Rollbacks pass false, so a failing rollback never triggers another one. */
+async function gateOnHealth(
+  project: Project,
+  action: ProjectDeployEvent["action"],
+  commitSha: string | null,
+  allowAutoRollback: boolean,
+): Promise<{ ok: boolean; output: string }> {
+  const result = await verifyDeployHealth(project.id, action);
+  if (!result) return { ok: true, output: "" };
+  if (result.healthy) return { ok: true, output: `Health check passed: ${result.url}\n` };
+
+  markActiveDeploymentUnhealthy(project.id);
+  const lines = [`Deployed, but the health check did not pass: ${result.url}\n`];
+  let rollback: DeployRollbackOutcome = "none";
+  if (allowAutoRollback && project.autoRollbackUnhealthy) {
+    emit(project.id, action, "status", "Rolling back automatically (project setting)\n");
+    const restored = await rollbackProject(project.id, undefined, { nested: true });
+    lines.push(restored.output);
+    rollback = restored.ok ? "done" : "failed";
+  }
+  void notifyDeployUnhealthy(project.name, commitSha, result.url, rollback);
+  return { ok: false, output: lines.join("\n") };
+}
+
+/** Phase 1.7 — restores a successful deployment's exact source commit and effective
+ *  compose file, then redeploys from that restored artifact rather than
  *  re-fetching/re-augmenting from the current repository state. "Restore what was
  *  actually running", not "reconstruct an old state from current configuration"
- *  (stackport_yml.md §17). A deployment with no prior successful revision (e.g. a
- *  project's very first deploy) has nothing to roll back to. */
-export async function rollbackProject(projectId: number): Promise<DeployResult> {
+ *  (stackport_yml.md §17). Restores `deploymentId`, or by default the revision
+ *  resolveRollbackTarget picks; the revision it replaces is marked rolled back from. */
+export async function rollbackProject(projectId: number, deploymentId?: number, opts: { nested?: boolean } = {}): Promise<DeployResult> {
+  // Nested inside another action (an automatic rollback after a failed health check):
+  // that action sends the single final "done" event, so the client doesn't end early.
+  const done = (ok: boolean): Partial<ProjectDeployEvent> => (opts.nested ? {} : { ok, done: true });
   const action = "recreate" as const; // closest existing action kind for the WS event union — a whole-stack up
   const project = getProjectById(projectId);
   if (!project) {
@@ -1430,11 +1582,16 @@ export async function rollbackProject(projectId: number): Promise<DeployResult> 
     return { ok: false, projectId, repoPath: "", output: "Project is paused", action };
   }
 
-  const previous = getPreviousSuccessfulDeployment(projectId);
-  if (!previous || !previous.commitSha || !previous.composeFileName || previous.effectiveCompose == null) {
-    const message = "No previous successful deployment to roll back to.\n";
-    emit(projectId, action, "stderr", message, { ok: false, done: true });
+  const resolved = resolveRollbackTarget(projectId, deploymentId);
+  if (!resolved.ok) {
+    const message = `${resolved.error}\n`;
+    emit(projectId, action, "stderr", message, done(false));
     return { ok: false, projectId, repoPath: projectRepoDir(project), output: message, action };
+  }
+  const previous = resolved.target;
+  // resolveRollbackTarget only returns revisions with all three recorded.
+  if (!previous.commitSha || !previous.composeFileName || previous.effectiveCompose == null) {
+    throw new Error("Rollback target is missing its commit or compose file");
   }
 
   const repoPath = projectRepoDir(project);
@@ -1444,7 +1601,7 @@ export async function rollbackProject(projectId: number): Promise<DeployResult> 
   const hasCheckout = await fs.stat(path.join(repoPath, ".git")).then((stat) => stat.isDirectory()).catch(() => false);
   if (!hasCheckout) {
     const message = "Repository checkout not found.\n";
-    emit(projectId, action, "stderr", message, { ok: false, done: true });
+    emit(projectId, action, "stderr", message, done(false));
     return { ok: false, projectId, repoPath, output: message, action };
   }
 
@@ -1453,7 +1610,7 @@ export async function rollbackProject(projectId: number): Promise<DeployResult> 
   const checkout = await run(projectId, action, "git", ["checkout", previous.commitSha], { cwd: repoPath, timeoutMs: 60_000 });
   output.push(checkout.output);
   if (!checkout.ok) {
-    emit(projectId, action, "stderr", "Rollback failed: could not check out the previous revision.\n", { ok: false, done: true });
+    emit(projectId, action, "stderr", "Rollback failed: could not check out the previous revision.\n", done(false));
     return { ok: false, projectId, repoPath, output: output.join("\n\n"), action };
   }
 
@@ -1461,7 +1618,7 @@ export async function rollbackProject(projectId: number): Promise<DeployResult> 
     await fs.writeFile(path.join(repoPath, previous.composeFileName), previous.effectiveCompose, "utf8");
   } catch (err) {
     const message = `Rollback failed: could not restore compose file (${err instanceof Error ? err.message : String(err)}).\n`;
-    emit(projectId, action, "stderr", message, { ok: false, done: true });
+    emit(projectId, action, "stderr", message, done(false));
     return { ok: false, projectId, repoPath, output: output.join("\n\n") + message, action };
   }
 
@@ -1476,7 +1633,7 @@ export async function rollbackProject(projectId: number): Promise<DeployResult> 
       sourceCompose: previous.sourceCompose,
       effectiveCompose: previous.effectiveCompose,
       triggeredBy: "manual",
-    });
+    }, { rollback: true });
   } else {
     recordFailedDeployment(
       projectId,
@@ -1484,9 +1641,15 @@ export async function rollbackProject(projectId: number): Promise<DeployResult> 
       "rollback: docker compose up failed"
     );
   }
-  emit(projectId, action, "status", `rollback ${compose.ok ? "completed" : "failed"}\n`, { ok: compose.ok, done: true });
+  let ok = compose.ok;
+  if (compose.ok) {
+    const health = await gateOnHealth(project, action, previous.commitSha, false);
+    output.push(health.output);
+    ok = health.ok;
+  }
+  emit(projectId, action, "status", `rollback ${ok ? "completed" : "failed"}\n`, done(ok));
 
-  return { ok: compose.ok, projectId, repoPath, output: output.join("\n\n"), action };
+  return { ok, projectId, repoPath, output: output.join("\n\n"), action };
 }
 
 export async function stopAndPurgeProject(projectId: number): Promise<DeployResult> {

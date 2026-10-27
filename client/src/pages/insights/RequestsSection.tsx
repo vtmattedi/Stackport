@@ -9,7 +9,7 @@ import { Switch } from "../../components/ui/switch";
 import { Badge } from "../../components/ui/badge";
 import { useInsights } from "./InsightsContext";
 import { useRequestSample } from "./data";
-import { ChartState, formatClock, formatMs, Notice } from "./shared";
+import { ChartState, CoverageNote, formatClock, formatMs, Notice } from "./shared";
 import { flagsFor, LOG_LIMIT, maskIp, severityVariant, statusColor } from "./traffic";
 import styles from "./Insights.module.scss";
 
@@ -50,15 +50,13 @@ export function RequestDetail({ entry, onClose }: { entry: NginxLogEntry; onClos
     ["User-agent", entry.ua || "—"],
   ];
 
-  async function blockAtEdge() {
+  async function copyIp() {
     try {
       await navigator.clipboard.writeText(entry.ip);
-      notify.success(`${entry.ip} copied. Add a DROP rule under Settings → Infrastructure → Firewall.`);
-    } catch {
-      notify.success(`Add a DROP rule for ${entry.ip} under Settings → Infrastructure → Firewall.`);
+      notify.success(`${entry.ip} copied.`);
+    } catch (err) {
+      notify.error(err, "Couldn't copy the IP");
     }
-    onClose();
-    navigate("/settings/infrastructure");
   }
 
   return (
@@ -85,8 +83,8 @@ export function RequestDetail({ entry, onClose }: { entry: NginxLogEntry; onClos
           <button type="button" className="btn btn-ghost" onClick={() => { onClose(); navigate(`/insights/requests?q=${encodeURIComponent(entry.ip)}`); }}>
             <Search size={13} />Filter this IP
           </button>
-          <button type="button" className="btn btn-ghost" onClick={() => void blockAtEdge()}>
-            <Copy size={13} />Block IP at edge
+          <button type="button" className="btn btn-ghost" onClick={() => void copyIp()}>
+            <Copy size={13} />Copy IP
           </button>
         </div>
       </div>
@@ -103,7 +101,7 @@ const STATUS_FILTERS = [
 ];
 
 export default function RequestsSection() {
-  const { maskIps, rules } = useInsights();
+  const { maskIps, rules, hours, periodLabel } = useInsights();
   const sample = useRequestSample();
   const [params, setParams] = useSearchParams();
   const search = params.get("q") ?? "";
@@ -166,6 +164,7 @@ export default function RequestsSection() {
         {rows.length.toLocaleString()} of {sample.entries.length.toLocaleString()} requests
         {sample.data?.truncated ? ` · the most recent ${LOG_LIMIT} in this window` : ""}
       </div>
+      <CoverageNote coverage={sample.data?.coverage} hours={hours} periodLabel={periodLabel} />
 
       {sample.data && !sample.data.available ? (
         <Notice tone="bad">{sample.data.error ?? "Nginx access log not found."}</Notice>

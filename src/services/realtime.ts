@@ -1,6 +1,6 @@
 import { Server as SocketIOServer } from "socket.io";
 import type { Project } from "../entities/Project";
-import { actionRegistry, projectRepoKey } from "./actionRegistry";
+import { actionRegistry, projectRepoKey, type ActionRecord } from "./actionRegistry";
 import { buildProgressTracker, type BuildPhase } from "./buildProgressTracker";
 
 let io: SocketIOServer | null = null;
@@ -58,7 +58,8 @@ function emitProjectBuildProgress(event: ProjectBuildProgressEvent): void {
 }
 
 export function emitProjectDeploy(event: ProjectDeployEvent): void {
-  io?.to(`deploy:${event.projectId}`).emit("project:deploy", event);
+  // Output reaches clients through the action registry (masked, numbered, attached
+  // per action); this only feeds it and the build-progress estimate.
   const key = projectRepoKey(event.projectId);
   actionRegistry.append(key, event.message);
 
@@ -116,10 +117,24 @@ export function emitProjectDataUpdate(projectId: number, project: Project): void
   });
 }
 
-// A bare "something started or finished" ping for the app-wide running-actions list;
-// clients refetch the lists rather than this carrying (and duplicating) the records.
-actionRegistry.onStart(() => { io?.to("global").emit("actions:changed"); });
-actionRegistry.onFinish(() => { io?.to("global").emit("actions:changed"); });
+/** An action without its log, as sent to every client on start and finish. */
+export function actionSummary(record: ActionRecord): Omit<ActionRecord, "log"> {
+  const { log: _log, ...summary } = record;
+  return summary;
+}
+
+// action:started and action:finished carry the record to every client. Output goes
+// only to clients that attached to the action (socketManager's action:attach), in its
+// own room.
+actionRegistry.onStart((record) => {
+  io?.to("global").emit("action:started", actionSummary(record));
+});
+actionRegistry.onFinish((record) => {
+  io?.to("global").emit("action:finished", actionSummary(record));
+});
+actionRegistry.onOutput((record, chunk) => {
+  io?.to(`action:${record.id}`).emit("action:output", { id: record.id, chunks: [chunk], nextSeq: chunk.seq + 1, done: false });
+});
 
 export function emitGlobalEvent(event: GlobalRealtimeEvent): void {
   io?.to("global").emit("global:event", event);

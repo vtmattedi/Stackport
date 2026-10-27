@@ -9,14 +9,14 @@ import { useInsights, useScope, STACKPORT_SCOPE } from "./InsightsContext";
 import { useRequestSample, useTraffic } from "./data";
 import {
   ChartState, formatBytes, formatDay, formatHourBucket, formatMs, formatPct, Notice, Panel, SeriesLegend,
-  SeriesTooltip, StatRow, StatTile, STATUS_COLORS,
+  SeriesTooltip, StatRow, StatTile, STATUS_COLORS, CoverageNote,
 } from "./shared";
 import { maskIp, splitSeries, statusClasses, statusRates } from "./traffic";
 import { HealthCheckToggle } from "./RequestsSection";
 import styles from "./Insights.module.scss";
 
 export default function TrafficSection() {
-  const { periodLabel, maskIps, setScope } = useInsights();
+  const { periodLabel, hours, maskIps, setScope } = useInsights();
   const { hostOwner, appDomain } = useScope();
   const traffic = useTraffic();
   const sample = useRequestSample();
@@ -65,6 +65,7 @@ export default function TrafficSection() {
       <div className={styles.sectionTools}>
         <HealthCheckToggle />
       </div>
+      <CoverageNote coverage={traffic.data?.coverage} hours={hours} periodLabel={periodLabel} />
 
       <StatRow>
         <StatTile label="Requests" value={traffic.loading ? "—" : t.requests.toLocaleString()} sub={peak > 0 ? `peak ${peak.toLocaleString()} / ${granularity === "hour" ? "hour" : "day"}` : `last ${periodLabel}`} />

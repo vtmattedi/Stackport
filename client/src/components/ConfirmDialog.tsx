@@ -8,9 +8,18 @@ interface ConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
   destructive?: boolean;
+  /** For irreversible actions: the confirm button stays disabled until this exact text
+   *  (usually the project or service name) is typed. */
+  requireText?: string;
+  /** Extra content under the description, such as a preview of what changes. The
+   *  panel widens to fit it. */
+  body?: ReactNode;
 }
 
-interface ConfirmState extends Required<ConfirmOptions> {}
+interface ConfirmState extends Required<Omit<ConfirmOptions, "requireText" | "body">> {
+  requireText: string | null;
+  body: ReactNode;
+}
 
 type Resolver = (value: boolean) => void;
 
@@ -18,6 +27,7 @@ const ConfirmContext = createContext<((options: ConfirmOptions) => Promise<boole
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ConfirmState | null>(null);
+  const [typed, setTyped] = useState("");
   const resolverRef = useRef<Resolver | null>(null);
 
   const confirm = useCallback((options: ConfirmOptions) => {
@@ -27,7 +37,10 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       confirmLabel: options.confirmLabel ?? "Confirm",
       cancelLabel: options.cancelLabel ?? "Cancel",
       destructive: options.destructive ?? false,
+      requireText: options.requireText ?? null,
+      body: options.body ?? null,
     });
+    setTyped("");
     return new Promise<boolean>((resolve) => {
       resolverRef.current = resolve;
     });
@@ -44,13 +57,29 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       {children}
       {state && (
         <div className="confirm-backdrop" role="presentation" onMouseDown={() => close(false)}>
-          <div className="confirm-panel" role="dialog" aria-modal="true" aria-label={state.title} onMouseDown={(event) => event.stopPropagation()}>
+          <div className={state.body ? "confirm-panel confirm-panel-wide" : "confirm-panel"} role="dialog" aria-modal="true" aria-label={state.title} onMouseDown={(event) => event.stopPropagation()}>
             <div className="confirm-icon">
               <AlertTriangle size={18} />
             </div>
             <div className="confirm-copy">
               <h2>{state.title}</h2>
               {state.description && <p>{state.description}</p>}
+              {state.body}
+              {state.requireText !== null && (
+                <label className="confirm-require">
+                  <span>Type <strong className="mono">{state.requireText}</strong> to confirm</span>
+                  <input
+                    type="text"
+                    autoFocus
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={typed}
+                    onChange={(event) => setTyped(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter" && typed === state.requireText) close(true); }}
+                    aria-label={`Type ${state.requireText} to confirm`}
+                  />
+                </label>
+              )}
             </div>
             <div className="confirm-actions">
               <Button type="button" variant="outline" size="sm" onClick={() => close(false)}>
@@ -61,6 +90,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
                 variant={state.destructive ? "outline" : "default"}
                 size="sm"
                 className={state.destructive ? "confirm-danger" : undefined}
+                disabled={state.requireText !== null && typed !== state.requireText}
                 onClick={() => close(true)}
               >
                 {state.confirmLabel}

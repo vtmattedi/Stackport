@@ -1,9 +1,9 @@
 import { Router } from "express";
+import { DEPLOY_KINDS_SQL } from "../services/actionRegistry";
 import { execFile } from "child_process";
 import * as os from "os";
 import { requireAuth } from "../middleware/auth";
 import { getDatabase } from "../config/database";
-import { cachedVms } from "../services/vps";
 import { HEALTH_CHECK_USER_AGENT } from "../services/healthChecker";
 
 const router = Router();
@@ -52,14 +52,14 @@ router.get("/", (req, res) => {
   const days = clampDays(req.query.days);
   const projectIds = parseProjectIds(req.query.projects);
   // Ids are validated integers, so inlining them is safe and keeps every query a single prepare.
-  const deployScope = projectIds ? ` AND project_id IN (${projectIds.join(",")})` : "";
+  const deployScope = `${projectIds ? ` AND project_id IN (${projectIds.join(",")})` : ""} AND kind IN (${DEPLOY_KINDS_SQL})`;
   const projectScope = projectIds ? ` AND id IN (${projectIds.join(",")})` : "";
 
   // Deploy stats: grouped by day + status, over the requested window
   const deployRows = db.prepare(`
-    SELECT date(created_at) AS day, status, COUNT(*) AS cnt
-    FROM project_deploys
-    WHERE created_at >= datetime('now', ?)${deployScope}
+    SELECT date(started_at) AS day, status, COUNT(*) AS cnt
+    FROM actions
+    WHERE started_at >= datetime('now', ?)${deployScope}
     GROUP BY day, status
     ORDER BY day ASC
   `).all(`-${days} days`) as Array<{ day: string; status: string; cnt: number }>;
@@ -72,18 +72,18 @@ router.get("/", (req, res) => {
   }
 
   const windowArg = `-${days} days`;
-  const totalDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
-  const successDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE status = 'success' AND created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
-  const failedDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE status = 'failed' AND created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
+  const totalDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM actions WHERE started_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
+  const successDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM actions WHERE status = 'success' AND started_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
+  const failedDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM actions WHERE status = 'failed' AND started_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
 
   const recentFailedDeploys = db.prepare(`
-    SELECT pd.id, pd.project_id, p.name AS project_name, pd.created_at
-    FROM project_deploys pd
+    SELECT pd.id, pd.project_id, p.name AS project_name, pd.started_at AS created_at
+    FROM actions pd
     JOIN projects p ON p.id = pd.project_id
-    WHERE pd.status = 'failed' AND pd.created_at >= datetime('now', ?)${deployScope.replace("project_id", "pd.project_id")}
-    ORDER BY pd.created_at DESC
+    WHERE pd.status = 'failed' AND pd.started_at >= datetime('now', ?)${deployScope.replace("project_id", "pd.project_id").replace("kind", "pd.kind")}
+    ORDER BY pd.started_at DESC
     LIMIT 10
-  `).all(windowArg) as Array<{ id: number; project_id: number; project_name: string; created_at: string }>;
+  `).all(windowArg) as Array<{ id: string; project_id: number; project_name: string; created_at: string }>;
 
   // Health check stats from projects — a live snapshot of current status, not
   // windowed by period: there's no history of past checks to filter, only the
@@ -177,21 +177,20 @@ function getServerIps(): Set<string> {
   for (const iface of Object.values(os.networkInterfaces())) {
     for (const addr of (iface ?? [])) ips.add(addr.address);
   }
-  // Health checks hit public domains that route back through nginx, so the
-  // logged source is the VPS's public IP (NAT'd by the cloud provider) —
-  // never visible via os.networkInterfaces(). Pull it from the cached
-  // Hostinger VM data instead.
-  try {
-    for (const vm of cachedVms()) {
-      const addrs = (vm as { ipAddresses?: unknown }).ipAddresses;
-      if (Array.isArray(addrs)) {
-        for (const addr of addrs) if (typeof addr === "string") ips.add(addr);
-      }
-    }
-  } catch {
-    // VPS not configured — fall back to interface/loopback IPs only
-  }
+  // Health checks hit public domains that route back through nginx, so the logged
+  // source is the server's public IP (NAT'd by the cloud provider), which
+  // os.networkInterfaces() never shows. Every request carrying the health-check user
+  // agent came from this server, so its source IP is learned from the logs instead.
+  for (const ip of learnedSelfIps) ips.add(ip);
   return ips;
+}
+
+/** Source IPs seen on Stackport's own health-check requests (see getServerIps). */
+const learnedSelfIps = new Set<string>();
+const MAX_LEARNED_SELF_IPS = 16;
+
+function learnSelfIp(entry: { ip: string; ua?: string | null }): void {
+  if (entry.ua === HEALTH_CHECK_USER_AGENT && learnedSelfIps.size < MAX_LEARNED_SELF_IPS) learnedSelfIps.add(entry.ip);
 }
 
 interface DomainAgg {
@@ -261,6 +260,7 @@ function parseNginxContent(
   for (let i = startIdx; i < lines.length; i++) {
     const entry = parseNginxLine(lines[i]);
     if (!entry) continue;
+    learnSelfIp(entry);
     if (excludeIps.has(entry.ip)) continue;
     if (excludeSelf && entry.ua === HEALTH_CHECK_USER_AGENT) continue;
     if (entry.host) hasExtendedFormat = true;
@@ -370,19 +370,42 @@ function parseNginxContent(
   };
 }
 
-function readNginxLog(periodHours: number, bytes: number, cb: (err: Error | null, stdout: string) => void): void {
+/** What the traffic numbers actually cover: the oldest log entry read, whether the read
+ *  was cut short by the line or byte cap (so older traffic in the period is missing),
+ *  and the Clear cutoff if one applies. */
+export interface LogCoverage {
+  oldestAt: string | null;
+  capped: boolean;
+  clearedAt: string | null;
+}
+
+const LOG_LINE_CAP = 20_000;
+
+function oldestEntryAt(content: string): string | null {
+  for (const line of content.split("\n")) {
+    const entry = line ? parseNginxLine(line) : null;
+    if (entry?.date) return entry.date.toISOString();
+  }
+  return null;
+}
+
+function readNginxLog(periodHours: number, bytes: number, cb: (err: Error | null, stdout: string, coverage: LogCoverage) => void): void {
   const row = getDatabase().prepare("SELECT value FROM app_meta WHERE key = ?").get(CLEARED_AT_KEY) as { value: string } | undefined;
   const cutoff = row ? Date.parse(row.value) : 0;
   const since = new Date(Math.max(Date.now() - periodHours * 3600_000, Number.isFinite(cutoff) ? cutoff : 0)).toISOString();
   // Official nginx writes access logs to stdout and errors to stderr. Reading the
   // Docker API works as the app user without host log permissions or sudo.
-  execFile("docker", ["logs", "--since", since, "--tail", "20000", "stackport-nginx"],
+  const clearedAt = row && cutoff > Date.now() - periodHours * 3600_000 ? row.value : null;
+  execFile("docker", ["logs", "--since", since, "--tail", String(LOG_LINE_CAP), "stackport-nginx"],
     { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
-      if (err) { cb(new Error("Cannot read stackport-nginx Docker logs. Check the container and Docker access."), ""); return; }
+      if (err) { cb(new Error("Cannot read stackport-nginx Docker logs. Check the container and Docker access."), "", { oldestAt: null, capped: false, clearedAt }); return; }
       // Preserve complete lines when bounding the returned window.
       const content = Buffer.from(stdout);
-      const tail = content.length > bytes ? content.subarray(content.length - bytes).toString("utf8") : stdout;
-      cb(null, content.length > bytes ? tail.slice(tail.indexOf("\n") + 1) : tail);
+      const byteCapped = content.length > bytes;
+      const tail = byteCapped ? content.subarray(content.length - bytes).toString("utf8") : stdout;
+      const text = byteCapped ? tail.slice(tail.indexOf("\n") + 1) : tail;
+      const lineCapped = stdout.split("\n").filter(Boolean).length >= LOG_LINE_CAP;
+      cb(null, text, { oldestAt: oldestEntryAt(text), capped: byteCapped || lineCapped, clearedAt });
     });
 }
 
@@ -398,18 +421,19 @@ router.get("/nginx", (req, res) => {
   const excludeSelf = excludeServerIp || excludeHealthChecks;
   const excludeIps = excludeServerIp ? serverIps : new Set<string>();
 
-  const parse = (stdout: string, logPath: string) =>
+  const parse = (stdout: string, logPath: string, coverage: LogCoverage) =>
     res.json({
       available: true,
       logPath,
       period: periodKey,
       serverIps: Array.from(serverIps),
+      coverage,
       ...parseNginxContent(stdout, false, periodHours, excludeIps, excludeSelf),
     });
 
-  readNginxLog(periodHours, tailBytes, (err, stdout) => {
+  readNginxLog(periodHours, tailBytes, (err, stdout, coverage) => {
     if (err) { res.json({ available: false, error: err.message, serverIps: Array.from(serverIps) }); return; }
-    parse(stdout, NGINX_LOG_SOURCE);
+    parse(stdout, NGINX_LOG_SOURCE, coverage);
   });
 });
 
@@ -447,6 +471,7 @@ function extractNginxEntries(
   for (let i = lines.length - 1; i >= startIdx; i--) {
     const entry = parseNginxLine(lines[i]);
     if (!entry) continue;
+    learnSelfIp(entry);
     if (excludeIps.has(entry.ip)) continue;
     if (excludeSelf && entry.ua === HEALTH_CHECK_USER_AGENT) continue;
     if (entry.host) hasExtendedFormat = true;
@@ -486,18 +511,19 @@ router.get("/nginx/requests", (req, res) => {
   const hostFilter = typeof req.query.host === "string" && req.query.host ? req.query.host : undefined;
   const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "500"), 10) || 500, 1), 2000);
 
-  const parse = (stdout: string, logPath: string) =>
+  const parse = (stdout: string, logPath: string, coverage: LogCoverage) =>
     res.json({
       available: true,
       logPath,
       period: periodKey,
       serverIps: Array.from(serverIps),
+      coverage,
       ...extractNginxEntries(stdout, false, periodHours, excludeIps, excludeSelf, hostFilter, limit),
     });
 
-  readNginxLog(periodHours, tailBytes, (err, stdout) => {
+  readNginxLog(periodHours, tailBytes, (err, stdout, coverage) => {
     if (err) { res.json({ available: false, error: err.message, serverIps: Array.from(serverIps) }); return; }
-    parse(stdout, NGINX_LOG_SOURCE);
+    parse(stdout, NGINX_LOG_SOURCE, coverage);
   });
 });
 

@@ -2,7 +2,9 @@ import {
   createContext, useContext, useEffect, useMemo, useRef, useState, useCallback,
 } from "react";
 import { io, Socket } from "socket.io-client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getToken, clearToken } from "../api/client";
+import { queryKeys } from "../lib/queryKeys";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -10,10 +12,6 @@ interface SocketContextValue {
   connected: boolean;
   subscribe: <T>(channel: string, handler: (data: T) => void) => void;
   unsubscribe: <T>(channel: string, handler: (data: T) => void) => void;
-  subscribeDeploy: <T>(projectId: number, handler: (data: T) => void) => void;
-  unsubscribeDeploy: <T>(projectId: number, handler: (data: T) => void) => void;
-  subscribeDeploySync: <T>(handler: (data: T) => void) => void;
-  unsubscribeDeploySync: <T>(handler: (data: T) => void) => void;
   subscribeProject: <T>(projectId: number, handler: (data: T) => void) => void;
   unsubscribeProject: <T>(projectId: number, handler: (data: T) => void) => void;
   subscribeGlobal: <T>(handler: (data: T) => void) => void;
@@ -130,31 +128,9 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     s.off(`data:${channel}`, handler as (d: unknown) => void);
   }, []);
 
-  const subscribeDeploy = useCallback(<T,>(projectId: number, handler: (data: T) => void) => {
-    const s = getOrCreate();
-    if (!s) return;
-    s.emit("deploy:subscribe", projectId);
-    s.on("project:deploy", handler as (d: unknown) => void);
-  }, [getOrCreate]);
 
-  const unsubscribeDeploy = useCallback(<T,>(projectId: number, handler: (data: T) => void) => {
-    const s = socketRef.current;
-    if (!s) return;
-    s.emit("deploy:unsubscribe", projectId);
-    s.off("project:deploy", handler as (d: unknown) => void);
-  }, []);
 
-  const subscribeDeploySync = useCallback(<T,>(handler: (data: T) => void) => {
-    const s = getOrCreate();
-    if (!s) return;
-    s.on("project:deploy:sync", handler as (d: unknown) => void);
-  }, [getOrCreate]);
 
-  const unsubscribeDeploySync = useCallback(<T,>(handler: (data: T) => void) => {
-    const s = socketRef.current;
-    if (!s) return;
-    s.off("project:deploy:sync", handler as (d: unknown) => void);
-  }, []);
 
   const subscribeProject = useCallback(<T,>(projectId: number, handler: (data: T) => void) => {
     const s = getOrCreate();
@@ -225,8 +201,8 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo<SocketContextValue>(() => ({
-    connected, subscribe, unsubscribe, subscribeDeploy, unsubscribeDeploy, subscribeDeploySync, unsubscribeDeploySync, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off,
-  }), [connected, subscribe, unsubscribe, subscribeDeploy, unsubscribeDeploy, subscribeDeploySync, unsubscribeDeploySync, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off]);
+    connected, subscribe, unsubscribe, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off,
+  }), [connected, subscribe, unsubscribe, subscribeProject, unsubscribeProject, subscribeGlobal, unsubscribeGlobal, subscribeSystemActionsSync, unsubscribeSystemActionsSync, refresh, disconnect, emit, emitWithAck, on, off]);
 
   return (
     <SocketContext.Provider value={value}>
@@ -255,6 +231,18 @@ export function useSocketLatency(): number | null {
  * An optional `fallback` REST fetcher runs immediately so the page
  * renders right away; socket pushes override it with live data.
  */
+/** The query key each pushed channel lives under, shared with code that invalidates it
+ *  (the action tracker refetches projects and system when an action ends). */
+const CHANNEL_KEYS: Record<string, readonly unknown[]> = {
+  system: queryKeys.system,
+  projects: queryKeys.projects,
+};
+
+/**
+ * Data the server pushes on a channel, held in the query cache so every component
+ * reading the channel shares one copy: seeded over REST (`fallback`), then replaced by
+ * each push, and refetched over REST when something invalidates it.
+ */
 export function useChannelData<T>(
   channel: string,
   options?: { fallback?: () => Promise<T> },
@@ -264,25 +252,29 @@ export function useChannelData<T>(
   refresh: () => void;
 } {
   const { subscribe, unsubscribe, connected, refresh: socketRefresh } = useSocket();
-  const [data, setData] = useState<T | null>(null);
-  // Callers pass an inline arrow; a ref keeps `refresh` stable across renders.
+  const queryClient = useQueryClient();
+  const key = CHANNEL_KEYS[channel] ?? ["channel", channel];
+  // Callers pass an inline arrow; a ref keeps the query function stable across renders.
   const fallbackRef = useRef(options?.fallback);
   fallbackRef.current = options?.fallback;
+
+  const { data } = useQuery({
+    queryKey: key,
+    queryFn: () => (fallbackRef.current ? fallbackRef.current() : Promise.resolve(null as T)),
+    // Pushes keep it current while subscribed; invalidation still refetches.
+    staleTime: Infinity,
+  });
+
   // Channels re-push on a timer whether or not anything changed; skipping identical
   // payloads keeps every consumer from re-rendering on a no-op push.
-  const lastJsonRef = useRef<string | null>(null);
   const accept = useCallback((next: T) => {
-    let json: string | null = null;
-    try { json = JSON.stringify(next); } catch { /* unserializable — always accept */ }
-    if (json !== null && json === lastJsonRef.current) return;
-    lastJsonRef.current = json;
-    setData(next);
-  }, []);
-
-  // Immediate REST seed — runs once on mount, socket overrides it when connected
-  useEffect(() => {
-    fallbackRef.current?.().then(accept).catch(() => {});
-  }, [accept]);
+    const current = queryClient.getQueryData<T>(key);
+    try {
+      if (current !== undefined && JSON.stringify(current) === JSON.stringify(next)) return;
+    } catch { /* unserializable: always accept */ }
+    queryClient.setQueryData(key, next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryClient, channel]);
 
   // Live socket subscription
   useEffect(() => {
@@ -293,8 +285,9 @@ export function useChannelData<T>(
   const refresh = useCallback(() => {
     socketRefresh(channel);
     // When socket is offline, fall back to REST for the manual refresh too
-    if (!connected) fallbackRef.current?.().then(accept).catch(() => {});
-  }, [channel, socketRefresh, connected, accept]);
+    if (!connected) void queryClient.invalidateQueries({ queryKey: key });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel, socketRefresh, connected, queryClient]);
 
-  return { data, connected, refresh };
+  return { data: (data ?? null) as T | null, connected, refresh };
 }

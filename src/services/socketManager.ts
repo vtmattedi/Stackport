@@ -2,7 +2,6 @@ import { Server as SocketIOServer, Socket } from "socket.io";
 import { getDatabase } from "../config/database";
 import { rowToProject, type ProjectRow } from "../entities/Project";
 import { getSystemSnapshot } from "../routes/system";
-import { fetchVpsSnapshot, refreshVpsSnapshot } from "../routes/vps";
 import { getHardwareSnapshot } from "../routes/hardware";
 import { setRealtimeServer } from "./realtime";
 import { verifyStoredAuthToken } from "./authTokens";
@@ -11,16 +10,18 @@ import { attachDomains } from "./projectDomains";
 import { bindDockerShellEvents } from "./dockerShellSocket";
 import { bindDockerLogsEvents } from "./dockerLogsSocket";
 
-type Channel = "system" | "projects" | "vps" | "hardware";
+type Channel = "system" | "projects" | "hardware";
+
+/** Action ids are UUIDs, or "legacy-<n>" for deploys copied from project_deploys. */
+const ACTION_ID_RE = /^(?:[0-9a-f-]{36}|legacy-[0-9]+)$/;
 
 const INTERVALS_MS: Record<Channel, number> = {
   system:   5_000,
   projects: 10_000,
-  vps:      15 * 60_000,
   hardware: 15_000,
 };
 
-async function fetchChannel(channel: Channel, refreshUpstream = false): Promise<unknown> {
+async function fetchChannel(channel: Channel): Promise<unknown> {
   switch (channel) {
     case "system":
       return getSystemSnapshot();
@@ -30,8 +31,6 @@ async function fetchChannel(channel: Channel, refreshUpstream = false): Promise<
         .all() as ProjectRow[];
       return attachDomains(rows.map(rowToProject));
     }
-    case "vps":
-      return refreshUpstream ? refreshVpsSnapshot() : fetchVpsSnapshot();
     case "hardware":
       return getHardwareSnapshot();
   }
@@ -95,6 +94,23 @@ export class SocketManager {
         this.stopIfEmpty(ch);
       });
 
+      // Generic action output: replay from `fromSeq` (or the whole log), then live
+      // chunks in the action's room. Clients drop chunks with a seq they already have,
+      // so the overlap between replay and live output is harmless.
+      socket.on("action:attach", (payload: unknown) => {
+        const { id, fromSeq } = (payload ?? {}) as { id?: unknown; fromSeq?: unknown };
+        if (typeof id !== "string" || !ACTION_ID_RE.test(id)) return;
+        const from = typeof fromSeq === "number" && Number.isInteger(fromSeq) && fromSeq >= 0 ? fromSeq : 0;
+        void socket.join(`action:${id}`);
+        const replay = actionRegistry.replay(id, from);
+        socket.emit("action:output", replay ?? { id, chunks: [], reset: "", nextSeq: 0, done: true });
+      });
+
+      socket.on("action:detach", (id: unknown) => {
+        if (typeof id !== "string" || !ACTION_ID_RE.test(id)) return;
+        void socket.leave(`action:${id}`);
+      });
+
       socket.on("deploy:subscribe", (projectId: unknown) => {
         if (typeof projectId !== "number" || !Number.isInteger(projectId) || projectId <= 0) return;
         void socket.join(`deploy:${projectId}`);
@@ -150,15 +166,15 @@ export class SocketManager {
       return;
     }
     void this.pushToRoom(channel);
-    const timer = setInterval(() => void this.pushToRoom(channel, channel === "vps"), INTERVALS_MS[channel]);
+    const timer = setInterval(() => void this.pushToRoom(channel), INTERVALS_MS[channel]);
     this.timers.set(channel, timer);
   }
 
-  private async pushToRoom(channel: Channel, refreshUpstream = false): Promise<void> {
+  private async pushToRoom(channel: Channel): Promise<void> {
     const size = this.io.sockets.adapter.rooms.get(channel)?.size ?? 0;
     if (size === 0) { this.stopPolling(channel); return; }
     try {
-      const data = await fetchChannel(channel, refreshUpstream);
+      const data = await fetchChannel(channel);
       this.io.to(channel).emit(`data:${channel}`, data);
     } catch { /* silent — client keeps last data */ }
   }

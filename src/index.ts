@@ -1,4 +1,5 @@
 import { createServer } from "http";
+import { markInterruptedActions } from "./services/actionRegistry";
 import { Server as SocketIOServer } from "socket.io";
 import app from "./app";
 import { config } from "./config/env";
@@ -17,6 +18,7 @@ import { reconcileAllTcpExposures } from "./services/tcpExposures";
 
 try {
   initializeDatabase();
+  markInterruptedActions();
   ensureBootstrapCredential();
   void ensureAppIngress();
   void reconcileAllTcpExposures();

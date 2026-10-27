@@ -65,16 +65,23 @@ const MAX_BRANCH_PAGES = 10;
 /** Rate-limit headroom from the most recent GitHub response, surfaced in poll output. */
 let lastRateRemaining: number | null = null;
 
-function httpGet(url: string, token: string | null): Promise<GitHubResponse> {
+/** A GitHub REST GET for other services (deploy previews); same headers, conditional
+ *  cache and error messages as the poller's own requests. */
+export async function githubApiGet(path: string, token: string | null): Promise<unknown> {
+  // Not cached: compare responses carry patches and every preview URL is different.
+  return (await httpGet(`https://api.github.com${path}`, token, false)).body;
+}
+
+function httpGet(url: string, token: string | null, useCache = true): Promise<GitHubResponse> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {
-      "User-Agent": "stackport-mw-vps-manager-github-poller/1.0",
+      "User-Agent": "stackport-github-poller/1.0",
       "Accept": "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const cacheKey = `${token ? "auth" : "anon"}:${url}`;
-    const cached = etagCache.get(cacheKey);
+    const cached = useCache ? etagCache.get(cacheKey) : undefined;
     if (cached) headers["If-None-Match"] = cached.etag;
 
     const req = https.get(url, { headers }, (res) => {
@@ -105,7 +112,7 @@ function httpGet(url: string, token: string | null): Promise<GitHubResponse> {
             return;
           }
           const parsed = JSON.parse(body) as unknown;
-          if (etag) etagCache.set(cacheKey, { etag, body: parsed });
+          if (etag && useCache) etagCache.set(cacheKey, { etag, body: parsed });
           resolve({ status: res.statusCode ?? 200, body: parsed, etag, rateRemaining });
         } catch (err) {
           reject(err);
@@ -258,6 +265,21 @@ export function resetGithubTrackingIfChanged(
 const FIRST_POLL_DELAY_MS = 15_000;
 const WEBHOOK_SAFETY_INTERVAL_MS = 30 * 60_000;
 
+/** Projects this poll checks: poller-triggered ones; with the safety check on, webhook
+ *  ones whose last check is older than the safety interval (a push sent while Stackport
+ *  was down is never redelivered); and, also with it on, webhook ones whose hook is
+ *  failing, at the normal interval, until a delivery succeeds again (which marks the
+ *  hook verified). */
+export function selectProjectsToPoll(webhookSafetyCheck: boolean, now = Date.now()): ProjectRow[] {
+  const safetyCutoff = new Date(now - WEBHOOK_SAFETY_INTERVAL_MS).toISOString();
+  return getDatabase().prepare(
+    `SELECT * FROM projects WHERE github_repo IS NOT NULL AND github_repo != '' AND paused = 0
+     AND (deploy_trigger = 'poller'
+          OR (? = 1 AND deploy_trigger = 'webhook'
+              AND (hook_status = 'failing' OR github_checked_at IS NULL OR github_checked_at < ?)))`
+  ).all(webhookSafetyCheck ? 1 : 0, safetyCutoff) as ProjectRow[];
+}
+
 class GitHubPoller {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -346,14 +368,7 @@ class GitHubPoller {
     let errorCount = 0;
 
     try {
-      // Webhook projects get a slow safety check on top of their hook: a push sent while
-      // Stackport was down is never redelivered, and this catches it late instead of never.
-      const safetyCutoff = new Date(Date.now() - WEBHOOK_SAFETY_INTERVAL_MS).toISOString();
-      const projects = db.prepare(
-        `SELECT * FROM projects WHERE github_repo IS NOT NULL AND github_repo != '' AND paused = 0
-         AND (deploy_trigger = 'poller'
-              OR (? = 1 AND deploy_trigger = 'webhook' AND (github_checked_at IS NULL OR github_checked_at < ?)))`
-      ).all(cfg.webhookSafetyCheck ? 1 : 0, safetyCutoff) as ProjectRow[];
+      const projects = selectProjectsToPoll(cfg.webhookSafetyCheck);
 
       outputLines.push(`Found ${projects.length} project(s) with GitHub repos`);
 

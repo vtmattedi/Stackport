@@ -75,7 +75,7 @@ function WebhookPanel({ project, info, onChange, reload }: {
         <span className="muted-text">· {state.installedOnGithub ? "installed by Stackport" : "manual install"}</span>
       </div>
       {state.status === "failing" && (
-        <span className={styles.warn}>The safety check found a commit the hook didn't deliver. Check the hook's recent deliveries on GitHub, or reinstall it.</span>
+        <span className={styles.warn}>The safety check found a commit the hook didn't deliver. Until a delivery succeeds, the poller checks this project at its normal interval. Check the hook's recent deliveries on GitHub, or reinstall it.</span>
       )}
 
       {details?.url && !state.installedOnGithub && (

@@ -1,5 +1,7 @@
 import type {
   AuditLogQuery,
+  RevisionPreview,
+  ComposePolicyResult,
   AuditLogResult,
   Project,
   DeployTrigger,
@@ -15,20 +17,6 @@ import type {
   ProjectRepoFolderScanResult,
   ProjectEnvFile,
   Credential,
-  VmData,
-  VpsData,
-  VpsProvider,
-  MonitoredVm,
-  FirewallProfile,
-  FirewallRule,
-  FirewallAction,
-  FirewallProtocol,
-  FirewallSource,
-  ProviderFirewall,
-  FirewallSyncResult,
-  VmInfo,
-  VmMetrics,
-  VmDebug,
   SystemData,
   ComposeActionResult,
   DockerContainerLogsResult,
@@ -57,7 +45,9 @@ import type {
   HardwareData,
   ProjectResourceData,
   ProjectResourceSummary,
-  RunningProjectAction,
+  ApiToken,
+  ActionSummary,
+  ComposeVariableStatus,
 } from "./types";
 
 const TOKEN_KEY = "stackport_token";
@@ -291,12 +281,17 @@ export const api = {
   getProject: (id: number) => request<Project>(`/projects/${id}`),
   createProject: (data: Omit<Partial<Project>, "id" | "createdAt" | "updatedAt" | "lastStatus" | "lastResponseMs" | "lastCheckedAt">) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(data) }),
-  updateProject: (id: number, data: Partial<Pick<Project, "name" | "groupName" | "internalPort" | "healthCheckEndpoint" | "healthCheckDomainId" | "healthCheckIntervalS" | "githubRepo" | "credentialId" | "githubCredentialId" | "autoDeployBranch" | "nginxExtraConfig" | "nginxExtraBlocks">>) =>
+  updateProject: (id: number, data: Partial<Pick<Project, "name" | "groupName" | "internalPort" | "healthCheckEndpoint" | "healthCheckDomainId" | "healthCheckIntervalS" | "deployHealthGraceS" | "autoRollbackUnhealthy" | "githubRepo" | "credentialId" | "githubCredentialId" | "autoDeployBranch" | "nginxExtraConfig" | "nginxExtraBlocks">>) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   listProjectDomains: (projectId: number) =>
     request<ProjectDomain[]>(`/projects/${projectId}/domains`),
   getProjectIngressTargets: (projectId: number, composeFile?: string) =>
     request<ComposeIngressTarget[]>(`/projects/${projectId}/ingress-targets${buildQuery({composeFile})}`),
+  /** Policy violations in the selected Compose file of the checkout. */
+  getProjectComposePolicy: (projectId: number) =>
+    request<ComposePolicyResult>(`/projects/${projectId}/compose-policy`),
+  getProjectComposeVariables: (projectId: number) =>
+    request<ComposeVariableStatus[]>(`/projects/${projectId}/compose-variables`),
   getProjectComposeEnvFiles: (projectId: number, composeFile?: string) =>
     request<ComposeEnvFileRef[]>(`/projects/${projectId}/compose-env-files${buildQuery({composeFile})}`),
   addProjectDomain: (projectId: number, domain: string, service: string, containerPort: number) =>
@@ -380,8 +375,17 @@ export const api = {
   },
   getProjectActions: (projectId: number) =>
     request<ProjectActionsSnapshot>(`/projects/${projectId}/actions`),
-  getRunningProjectActions: () =>
-    request<RunningProjectAction[]>("/projects/actions/running"),
+  listRunningActions: () => request<ActionSummary[]>("/actions/running"),
+  getAction: (id: string) => request<ActionSummary>(`/actions/${encodeURIComponent(id)}`),
+  getActionLog: async (id: string): Promise<string> => {
+    const token = getToken();
+    const res = await fetch(`/api/actions/${encodeURIComponent(id)}/log`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return res.ok ? res.text() : "";
+  },
+  clearProjectActionLogs: (projectId: number) =>
+    request<{ deleted: number }>(`/projects/${projectId}/action-logs`, { method: "DELETE" }),
   cancelProjectAction: (projectId: number) =>
     request<{ ok: boolean }>(`/projects/${projectId}/actions/cancel`, { method: "POST" }),
   /** Cached branch list (kept fresh by the GitHub poller); `refresh` forces a live GitHub fetch. */
@@ -389,11 +393,25 @@ export const api = {
     request<ProjectBranchesResult>(`/projects/${projectId}/branches${refresh ? "?refresh=1" : ""}`),
   issueProjectDomainSsl: (projectId: number, domainId: number) =>
     requestActionStart(`/projects/${projectId}/domains/${domainId}/ssl/issue`),
+  /** What a deploy would change (commits since the running revision, Compose diff). */
+  getDeployPreview: (projectId: number, branch?: string | null) =>
+    request<RevisionPreview>(`/projects/${projectId}/deploy-preview${branch ? `?branch=${encodeURIComponent(branch)}` : ""}`),
+  /** What a rollback would change; no `deploymentId` previews the default target. */
+  getRollbackPreview: (projectId: number, deploymentId?: number) =>
+    request<RevisionPreview>(`/projects/${projectId}/rollback-preview${deploymentId ? `?deploymentId=${deploymentId}` : ""}`),
   getProjectDeploys: (projectId: number) =>
     request<ProjectDeploy[]>(`/projects/${projectId}/deploys`),
+  listApiTokens: () => request<ApiToken[]>("/api-tokens"),
+  createApiToken: (name: string, expiresInDays: number | null) =>
+    request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays }) }),
+  revokeApiToken: (id: number) => request<void>(`/api-tokens/${id}`, { method: "DELETE" }),
   getProjectDeploymentRevisions: (projectId: number) =>
     request<ProjectDeploymentRevision[]>(`/projects/${projectId}/deployments`),
-  rollbackProject: (projectId: number) => requestActionStart(`/projects/${projectId}/rollback`),
+  /** Without `deploymentId`, the server picks the newest earlier revision not rolled back from. */
+  rollbackProject: (projectId: number, deploymentId?: number) =>
+    requestActionStart(`/projects/${projectId}/rollback`, deploymentId
+      ? { method: "POST", body: JSON.stringify({ deploymentId }) }
+      : undefined),
   getProjectLogs: (projectId: number, tail: number, service?: string) => {
     const params = new URLSearchParams({ tail: String(tail) });
     if (service) params.set("service", service);
@@ -409,57 +427,6 @@ export const api = {
   clearDefaultCredential: () =>
     request<void>("/credentials/default", { method: "DELETE" }),
   deleteCredential: (id: number) => request<void>(`/credentials/${id}`, { method: "DELETE" }),
-
-  // VPS
-  getVm: () => request<VpsData>("/vps"),
-  saveHostingerProvider: (data: { id?: number; name?: string; credentialId?: number | null }) =>
-    request<VpsProvider>("/vpi", {
-      method: "POST",
-      body: JSON.stringify({
-        action: "create",
-        options: {
-          type: "hostinger",
-          ...data,
-        },
-      }),
-    }),
-  listProviderVms: (providerId: number) =>
-    request<Record<string, unknown>[]>(`/vps/providers/${providerId}/vms`),
-  addMonitoredVm: (data: { providerId: number; vmId: string; label?: string | null }) =>
-    request<MonitoredVm>("/vps/monitored", { method: "POST", body: JSON.stringify(data) }),
-  removeMonitoredVm: (id: number) =>
-    request<void>(`/vps/monitored/${id}`, { method: "DELETE" }),
-  refreshVps: () => request<{ vms: VmData[] }>("/vps/refresh", { method: "POST" }),
-  resetVm: (providerId: number, vmId: string) =>
-    request<unknown>(`/vps/providers/${providerId}/vms/${encodeURIComponent(vmId)}/reset`, { method: "POST" }),
-  listProviderFirewalls: (providerId: number) =>
-    request<ProviderFirewall[]>(`/vps/providers/${providerId}/firewalls`),
-  getProviderFirewall: (providerId: number, firewallId: string) =>
-    request<ProviderFirewall>(`/vps/providers/${providerId}/firewalls/${encodeURIComponent(firewallId)}`),
-  listFirewallProfiles: (providerId?: number) =>
-    request<FirewallProfile[]>(`/vps/firewall/profiles${buildQuery({ providerId: providerId ?? "" })}`),
-  createFirewallProfile: (data: { providerId: number; name: string; remoteFirewallId?: string | null }) =>
-    request<FirewallProfile>("/vps/firewall/profiles", { method: "POST", body: JSON.stringify(data) }),
-  updateFirewallProfile: (profileId: number, data: { name?: string; remoteFirewallId?: string | null }) =>
-    request<FirewallProfile>(`/vps/firewall/profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(data) }),
-  deleteFirewallProfile: (profileId: number) =>
-    request<void>(`/vps/firewall/profiles/${profileId}`, { method: "DELETE" }),
-  createFirewallRule: (profileId: number, data: {
-    action: FirewallAction;
-    protocol: FirewallProtocol;
-    port: string;
-    source: FirewallSource;
-    sourceDetail: string;
-  }) => request<FirewallRule>(`/vps/firewall/profiles/${profileId}/rules`, { method: "POST", body: JSON.stringify(data) }),
-  deleteFirewallRule: (profileId: number, ruleId: number) =>
-    request<void>(`/vps/firewall/profiles/${profileId}/rules/${ruleId}`, { method: "DELETE" }),
-  syncFirewallProfile: (profileId: number, data: { vmId?: string | null; activate?: boolean }) =>
-    request<FirewallSyncResult>(`/vps/firewall/profiles/${profileId}/sync`, { method: "POST", body: JSON.stringify(data) }),
-  getVmInfo: () => request<VmInfo>("/vps/info"),
-  getVmMetrics: () => request<VmMetrics>("/vps/metrics"),
-  getVmDebug: () => request<VmDebug>("/vps/debug"),
-  vmAction: (action: "reset") =>
-    request<unknown>(`/vps/${action}`, { method: "POST" }),
 
   // System
   getSystem: () => request<SystemData>("/system"),

@@ -109,7 +109,7 @@ export default function NotificationsSection() {
               placeholder={notifProvider === "mw" ? "MW Email Service API key" : "Resend API key"}
             />
             {apiKeyCredentials.length === 0 && (
-              <span className="hint">Add an API Key credential on the <Link className="ext-link" to="/credentials">Credentials page</Link> first.</span>
+              <span className="hint">Add an API Key credential on the <Link className="ext-link" to="/settings/credentials">Credentials</Link> first.</span>
             )}
           </div>
           <div className="field">

@@ -237,3 +237,20 @@
   .variable-row { grid-template-columns: 1fr 34px; }
   .value-field { grid-column: 1 / -1; grid-row: 2; }
 }
+
+// Compose variables the root .env doesn't define.
+.unset-variables {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(230, 168, 23, 0.35);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--dim);
+
+  > span { flex: 1; min-width: 0; }
+  :global(.mono) { color: var(--text); }
+  > button { flex-shrink: 0; }
+}

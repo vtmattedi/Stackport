@@ -36,6 +36,14 @@ interface HealthCheckFailureEmailParams {
   occurredAt: Date;
 }
 
+interface DeployUnhealthyEmailParams {
+  projectName: string;
+  commitSha: string | null;
+  url: string;
+  rollback: "none" | "done" | "failed";
+  occurredAt: Date;
+}
+
 interface DeployBlockedEmailParams {
   projectName: string;
   reason: string;
@@ -348,6 +356,43 @@ export function renderDeployBlockedEmail({
       {
         title: "Suggested next checks",
         body: "Open the project in StackPort, confirm the expected docker-compose file still exists in the repository, and re-run the deploy manually once it's resolved.",
+      },
+    ],
+    footerNote: "This alert is generated only when notification delivery is enabled in StackPort settings.",
+  });
+}
+
+export function renderDeployUnhealthyEmail({
+  projectName,
+  commitSha,
+  url,
+  rollback,
+  occurredAt,
+}: DeployUnhealthyEmailParams): string {
+  const intro = rollback === "done"
+    ? "StackPort deployed a new revision, but its health check did not pass in time, so it rolled back automatically."
+    : rollback === "failed"
+      ? "StackPort deployed a new revision, but its health check did not pass in time. It tried to roll back automatically, but the rollback failed too, so the project needs attention now."
+      : "StackPort deployed a new revision, but its health check did not pass in time. The new revision is still running.";
+  return renderStackPortEmail({
+    previewText: `${projectName} was deployed but its health check did not pass.`,
+    eyebrow: "Deploy",
+    title: "A deploy failed its health check",
+    intro,
+    tone: "danger",
+    statusLabel: rollback === "done" ? "Rolled back" : "Attention needed",
+    details: [
+      { label: "Project", value: projectName },
+      { label: "Commit", value: commitSha ? commitSha.slice(0, 12) : "unknown", mono: true },
+      { label: "Health check", value: url, mono: true },
+      { label: "Detected at", value: formatUtc(occurredAt), mono: true },
+    ],
+    sections: [
+      {
+        title: "Suggested next checks",
+        body: rollback === "done"
+          ? "Open the project in StackPort and check the deploy log and container logs for the failed revision before deploying it again."
+          : "Open the project in StackPort, check the container logs, and roll back from the Deployments card if the app is broken.",
       },
     ],
     footerNote: "This alert is generated only when notification delivery is enabled in StackPort settings.",

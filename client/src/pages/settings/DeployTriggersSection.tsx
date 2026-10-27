@@ -173,7 +173,7 @@ export default function DeployTriggersSection() {
               />
               {ghCredentials.length === 0 && (
                 <div style={{ fontSize: "0.75rem", color: "var(--dim)", marginTop: 3 }}>
-                  Add a GitHub credential on the <Link className="ext-link" to="/credentials">Credentials page</Link> first.
+                  Add a GitHub credential on the <Link className="ext-link" to="/settings/credentials">Credentials</Link> first.
                 </div>
               )}
             </div>

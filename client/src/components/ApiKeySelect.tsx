@@ -54,7 +54,7 @@ export function ApiKeySelect({
       disabled={disabled}
       onValueChange={(nextValue) => {
         if (nextValue === ADD_VALUE) {
-          navigate("/credentials");
+          navigate("/settings/credentials");
           return;
         }
         onValueChange(nextValue === NONE_VALUE ? null : Number(nextValue));

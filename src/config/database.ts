@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 import { config } from "./env";
+import { runMigrations } from "../migrations";
 
 let db: Database.Database | null = null;
 
@@ -563,6 +564,10 @@ export function initializeDatabase(): Database.Database {
     db.exec("ALTER TABLE github_poller_config ADD COLUMN webhook_safety_check INTEGER NOT NULL DEFAULT 1");
   }
   db.exec("INSERT OR IGNORE INTO github_poller_config (id) VALUES (1)");
+
+  // Everything above is the baseline: idempotent, and run on every boot as it always
+  // has been. New schema changes go in src/migrations/, which run once each.
+  runMigrations(db);
 
   return db;
 }

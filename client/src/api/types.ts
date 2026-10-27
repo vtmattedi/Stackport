@@ -38,6 +38,10 @@ export interface Project {
   healthCheckEndpoint: string | null;
   healthCheckDomainId: number | null;
   healthCheckIntervalS: number;
+  /** Seconds a deploy waits for the health check to pass before it counts as unhealthy. */
+  deployHealthGraceS: number;
+  /** Roll back automatically when a deploy fails its health check. */
+  autoRollbackUnhealthy: boolean;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
   lastCheckedAt: string | null;
@@ -129,16 +133,21 @@ export interface GitHubBranch {
   commitAt: string | null;
 }
 
+/** One deploy-type action (deploy, rollback, recreate, ...) from the server's action log. */
 export interface ProjectDeploy {
-  id: number;
+  id: string;
   projectId: number;
+  kind: string;
   commitSha: string | null;
   commitMessage: string | null;
   commitAuthor: string | null;
+  branch: string | null;
   triggeredBy: "manual" | "auto" | "webhook";
-  status: "running" | "success" | "failed";
+  status: "running" | "success" | "failed" | "cancelled" | "interrupted";
   createdAt: string;
   completedAt: string | null;
+  /** Whether its output is still stored (retention deletes it after a while). */
+  hasLog: boolean;
 }
 
 /** Phase 1.7 — a revision/snapshot record (not the same as ProjectDeploy above,
@@ -155,11 +164,23 @@ export interface ProjectDeploymentRevision {
   triggeredBy: string;
   blockedReason: string | null;
   createdAt: string;
+  /** Set when a rollback moved away from this revision; Roll back skips it by default. */
+  rolledBackAt: string | null;
+  /** Set when the post-deploy health check didn't pass in time; the revision still runs. */
+  healthFailedAt: string | null;
 }
 
 export interface EnvVariable {
   key: string;
   value: string;
+}
+
+/** A variable the Compose file interpolates, and where the project defines it. */
+export interface ComposeVariableStatus {
+  name: string;
+  hasDefault: boolean;
+  required: boolean;
+  definedIn: "managed" | "repository" | null;
 }
 
 export interface ProjectEnvFile {
@@ -224,16 +245,7 @@ export interface ProjectBranchesResult {
   fetchedAt: string | null;
 }
 
-export interface ProjectDeployEvent {
-  projectId: number;
-  action: "build" | "deploy" | "stop" | "stop-purge" | "pull" | "compose" | "upload" | "recreate" | "force-rebuild" | "redeploy-service" | "drop-volumes";
-  stream: "stdout" | "stderr" | "status";
-  message: string;
-  ok?: boolean;
-  done?: boolean;
-}
-
-/** Lean, push-only companion to ProjectDeployEvent — arrives only when the build
+/** Build progress for a project's running action — arrives only when the build
  *  progress estimate actually changes, not on every raw output chunk. No log/message
  *  field; on `done`, fetch the final ActionRecord (GET /projects/:id/actions) once
  *  for the full success/fail detail. */
@@ -316,6 +328,19 @@ export interface ActionRecord {
   progress: number | null;
 }
 
+/** An action without its log, as the server sends it on start and finish. */
+export type ActionSummary = Omit<ActionRecord, "log">;
+
+/** A batch of an action's output (socket event action:output). `reset` replaces
+ *  everything before it: sent when the requested chunks are no longer in memory. */
+export interface ActionOutputEvent {
+  id: string;
+  chunks: { seq: number; data: string }[];
+  reset?: string;
+  nextSeq: number;
+  done: boolean;
+}
+
 export interface ActionStartResponse {
   ok: boolean;
   started: boolean;
@@ -336,11 +361,6 @@ export interface SystemActionsSnapshot {
   docker: ActionRecord | null;
 }
 
-export interface RunningProjectAction {
-  action: ActionRecord;
-  projectId: number | null;
-  projectName: string | null;
-}
 
 export interface Credential {
   id: number;
@@ -352,113 +372,6 @@ export interface Credential {
   description: string | null;
   createdAt: string;
   updatedAt: string;
-}
-
-// Normalized VM data returned by GET /vps
-export interface VmData {
-  providerId?: number;
-  id?: number | string;
-  hostname?: string;
-  state?: string;
-  cpus?: number;
-  plan?: string;
-  ipAddresses?: string[];
-  cpu: { pct: number };
-  ram: { bytes: number; totalBytes: number };
-  disk: { bytes: number; totalBytes: number };
-  network: { inBytes: number; outBytes: number };
-  uptimeSec: number;
-  fetchedAt: string;
-}
-
-// Raw fallbacks kept for /info and /metrics passthrough endpoints
-export type VmInfo = Record<string, unknown>;
-export type VmMetrics = Record<string, unknown>;
-export type VmDebug = Record<string, unknown>;
-
-export interface VpsProvider {
-  id: number;
-  type: "hostinger";
-  name: string;
-  hasApiKey: boolean;
-  credentialId: number | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface MonitoredVm {
-  id: number;
-  providerId: number;
-  vmId: string;
-  label: string | null;
-  createdAt: string;
-}
-
-export interface VpsData {
-  configured: boolean;
-  providers: VpsProvider[];
-  monitored: MonitoredVm[];
-  vms: VmData[];
-  vps: VmData | null;
-}
-
-export type FirewallAction = "accept" | "drop";
-export type FirewallProtocol = "TCP" | "UDP" | "ICMP" | "GRE" | "any" | "ESP" | "AH" | "ICMPv6" | "SSH" | "HTTP" | "HTTPS" | "MySQL" | "PostgreSQL";
-export type FirewallSource = "any" | "custom";
-
-export interface FirewallRule {
-  id: number;
-  profileId: number;
-  action: FirewallAction;
-  protocol: FirewallProtocol;
-  port: string;
-  source: FirewallSource;
-  sourceDetail: string;
-  position: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface FirewallProfile {
-  id: number;
-  providerId: number;
-  name: string;
-  remoteFirewallId: string | null;
-  rules: FirewallRule[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ProviderFirewallRule {
-  id?: number | string;
-  action?: string;
-  protocol?: string;
-  port?: string;
-  source?: string;
-  source_detail?: string;
-}
-
-export interface ProviderFirewall {
-  id?: number | string;
-  name?: string;
-  is_synced?: boolean;
-  rules?: ProviderFirewallRule[];
-  data?: {
-    id?: number | string;
-    name?: string;
-    is_synced?: boolean;
-    rules?: ProviderFirewallRule[];
-  };
-}
-
-export interface FirewallSyncResult {
-  profile: FirewallProfile;
-  firewall: ProviderFirewall;
-  createdRemote: boolean;
-  deletedRules: number;
-  createdRules: number;
-  activate: Record<string, unknown> | null;
-  sync: Record<string, unknown> | null;
 }
 
 export interface AuditEntry {
@@ -770,7 +683,7 @@ export interface MetricsData {
     success: number;
     failed: number;
     byDay: Array<{ date: string; success: number; failed: number }>;
-    recentFailures: Array<{ id: number; projectId: number; projectName: string; createdAt: string }>;
+    recentFailures: Array<{ id: string; projectId: number; projectName: string; createdAt: string }>;
   };
   healthChecks: {
     projects: Array<{
@@ -812,12 +725,21 @@ export interface NginxTimePoint {
   serverErrors: number;
 }
 
+/** What a traffic response actually covers (see the server's readNginxLog). */
+export interface LogCoverage {
+  oldestAt: string | null;
+  /** The read hit the line or byte cap, so older traffic in the period is missing. */
+  capped: boolean;
+  clearedAt: string | null;
+}
+
 export interface NginxMetrics {
   available: boolean;
   error?: string;
   logPath?: string;
   period?: string;
   serverIps?: string[];
+  coverage?: LogCoverage;
   totalRequests?: number;
   errorRate?: number;
   statusCodes?: Record<string, number>;
@@ -852,6 +774,7 @@ export interface NginxLogEntriesResult {
   logPath?: string;
   period?: string;
   serverIps?: string[];
+  coverage?: LogCoverage;
   hasExtendedFormat?: boolean;
   entries: NginxLogEntry[];
   truncated: boolean;
@@ -957,4 +880,77 @@ export interface ProjectResourcesTimeseries {
   buckets: string[];
   granularity: "5m" | "day";
   series: ProjectResourceTimeseriesSeries[];
+}
+
+/** An API token for the MCP endpoint. The token value itself is only returned once, on creation. */
+export interface ApiToken {
+  id: number;
+  name: string;
+  prefix: string;
+  scopes: string[];
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+}
+
+/** GET /projects/:id/deploy-preview and /rollback-preview (server: services/deployPreview.ts). */
+export interface PreviewCommit {
+  sha: string;
+  message: string;
+  author: string | null;
+  date: string | null;
+}
+
+export interface PreviewRevision {
+  sha: string | null;
+  branch: string | null;
+  composeFileName: string | null;
+}
+
+export interface DiffLine {
+  type: "context" | "add" | "remove";
+  text: string;
+}
+
+export interface DiffHunk {
+  oldStart: number;
+  newStart: number;
+  lines: DiffLine[];
+}
+
+export interface RevisionPreview {
+  from: PreviewRevision | null;
+  to: PreviewRevision;
+  commits: {
+    status: "ahead" | "behind" | "diverged" | "identical";
+    added: PreviewCommit[];
+    addedTotal: number;
+    removed: PreviewCommit[];
+    removedTotal: number;
+  } | null;
+  commitsNote: string | null;
+  compose: {
+    fromFile: string | null;
+    toFile: string | null;
+    basis: "source" | "effective";
+    diff: { identical: boolean; tooLarge: boolean; hunks: DiffHunk[] };
+  } | null;
+  composeNote: string | null;
+  /** Rollback previews only: the revision the rollback will restore. */
+  targetId?: number;
+}
+
+/** GET /projects/:id/compose-policy (server: services/composePolicy.ts). */
+export interface PolicyViolation {
+  service: string;
+  key: string;
+  problem: string;
+  fix: string;
+}
+
+export interface ComposePolicyResult {
+  /** Null when there is no checkout or no Compose file selected yet. */
+  composeFile: string | null;
+  violations: PolicyViolation[];
 }

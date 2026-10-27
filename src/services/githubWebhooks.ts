@@ -36,10 +36,10 @@ export interface WebhookDetails {
 export function webhookBaseUrl(): { url: string | null; reason: string | null } {
   const app = getNginxAppConfig();
   if (!app.enabled || !app.domain) {
-    return { url: null, reason: "Stackport isn't published on a domain. Set one up in System > Nginx to use webhooks." };
+    return { url: null, reason: "Stackport isn't published on a domain. Set one up in Host > Nginx to use webhooks." };
   }
   if (!app.useSsl) {
-    return { url: null, reason: `Stackport is served over plain HTTP at ${app.domain}. Turn on SSL in System > Nginx to use webhooks.` };
+    return { url: null, reason: `Stackport is served over plain HTTP at ${app.domain}. Turn on SSL in Host > Nginx to use webhooks.` };
   }
   return { url: `https://${app.domain}`, reason: null };
 }
@@ -64,7 +64,7 @@ function githubRequest(method: string, path: string, token: string, body?: unkno
     const req = https.request(`https://api.github.com${path}`, {
       method,
       headers: {
-        "User-Agent": "stackport-mw-vps-manager-webhooks/1.0",
+        "User-Agent": "stackport-webhooks/1.0",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "Authorization": `Bearer ${token}`,
