@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Box, EllipsisVertical, ExternalLink, FileText, FolderDot, GitBranch,
@@ -29,18 +29,12 @@ import { api, ApiError } from "../api/client";
 import type {
   ActionRecord,
   ContainerInfo,
-  Credential,
   Project,
-  ProjectActionsSnapshot,
-  ProjectDeployEvent,
   ProjectDomain,
   TcpExposure,
-  ProjectEnvFile,
   ProjectResourceData,
   ProjectResourceSampleEvent,
-  ProjectUpdateEvent,
   GitHubBranch,
-  ProjectDeploy,
   ProjectDeploymentRevision,
 } from "../api/types";
 import { useSocket } from "../context/SocketContext";
@@ -53,7 +47,17 @@ import { cn } from "../lib/utils";
 import { notify } from "../lib/notify";
 import styles from "./ProjectDetails.module.scss";
 import { TimeAgo } from "../components/TimeAgo";
-import { ActionResult, createLogStore, type FinishedAction } from "./project/ActionLog";
+import { ActionResult, type FinishedAction } from "./project/ActionLog";
+import {
+  useCredentials,
+  useProjectDeploys,
+  useProjectDomains,
+  useProjectEnvFiles,
+  useProjectQuery,
+  useProjectRepoAction,
+  useProjectRevisions,
+  useProjectTcpExposures,
+} from "./project/useProjectData";
 import { DeploymentsCard } from "./project/DeploymentsCard";
 import { DomainRow, TcpExposureRow } from "./project/IngressRows";
 
@@ -307,18 +311,17 @@ export default function ProjectDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
   const confirm = useConfirm();
-  const {
-    subscribeDeploy,
-    unsubscribeDeploy,
-    subscribeDeploySync,
-    unsubscribeDeploySync,
-    subscribeProject,
-    unsubscribeProject,
-  } = useSocket();
   const { refreshProjects, refreshSystem, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes, certbotAction, issueProjectDomainSsl } = useSystemActions();
   const projectId = Number(id);
-  const [project, setProject] = useState<Project | null>(null);
-  const [domains, setDomains] = useState<ProjectDomain[]>([]);
+  const projectValid = Number.isInteger(projectId) && projectId > 0;
+  // Server data lives in the query cache (useProjectData.ts); socket events and the
+  // action tracker keep it current, so this page holds only UI state.
+  const { project, isLoading: loading, error: projectError, setProject } = useProjectQuery(projectId);
+  const error = projectError ? (projectError instanceof ApiError ? projectError.message : projectError.message || "Failed to load project") : "";
+  const [domains, setDomains] = useProjectDomains(projectId, projectValid);
+  const repoAction = useProjectRepoAction(projectId, projectValid);
+  const repoKind = repoAction.running?.kind ?? null;
+  const runningService = typeof repoAction.running?.meta?.["service"] === "string" ? repoAction.running.meta["service"] as string : null;
 
   // Live system data arrives every few seconds. Each selector below picks only what
   // this page renders, so the page re-renders when that slice changes, not on every push.
@@ -348,23 +351,24 @@ export default function ProjectDetails() {
   );
   // Only group names are used (for the group picker).
   const allProjects = useSystemSelector((snap) => snap.projects, sameProjectGroups);
-  const [credentials, setCredentials] = useState<Credential[]>([]);
-  const [envFiles, setEnvFiles] = useState<ProjectEnvFile[]>([]);
+  const [credentials] = useCredentials();
+  const [envFiles, setEnvFiles] = useProjectEnvFiles(projectId, projectValid);
   const [envManagerOpen, setEnvManagerOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [deploying, setDeploying] = useState(false);
-  const [pullingRepo, setPullingRepo] = useState(false);
+  // What the build/deploy slot is doing comes from the running action itself, so it is
+  // right after a reload or when the action was started elsewhere.
+  const deploying = repoKind === "deploy";
+  const pullingRepo = repoKind === "pull";
   const [pullBranch, setPullBranch] = useState("");
-  const [composingProject, setComposingProject] = useState(false);
-  const [recreatingProject, setRecreatingProject] = useState(false);
-  const [forceRebuilding, setForceRebuilding] = useState(false);
-  const [redeployingService, setRedeployingService] = useState<string | null>(null);
-  const [droppingVolumesService, setDroppingVolumesService] = useState<string | null>(null);
+  const composingProject = repoKind === "compose";
+  const recreatingProject = repoKind === "recreate";
+  const forceRebuilding = repoKind === "force-rebuild";
+  const redeployingService = repoKind === "redeploy-service" ? runningService : null;
+  const droppingVolumesService = repoKind === "drop-volumes" ? runningService : null;
   const [togglingProject, setTogglingProject] = useState(false);
-  const [stoppingProject, setStoppingProject] = useState(false);
-  const [purgingProject, setPurgingProject] = useState(false);
-  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const stoppingProject = repoKind === "stop";
+  const purgingProject = repoKind === "stop-purge";
+  const [uploadingLocal, setUploadingFiles] = useState(false);
+  const uploadingFiles = uploadingLocal || repoKind === "upload";
   const [reuploadOpen, setReuploadOpen] = useState(false);
   const [reuploadComposeFile, setReuploadComposeFile] = useState<File | null>(null);
   const [reuploadSupportFiles, setReuploadSupportFiles] = useState<{ file: File | null; path: string }[]>([]);
@@ -376,13 +380,11 @@ export default function ProjectDetails() {
   const [logStreamContainer, setLogStreamContainer] = useState<ContainerInfo | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
   const [checkingHealth, setCheckingHealth] = useState(false);
-  const [deployOk, setDeployOk] = useState<boolean | null>(null);
-  const [finishedAction, setFinishedAction] = useState<FinishedAction | null>(null);
-  // The action log streams in chunk by chunk; it lives in a small store so only the
-  // <DeployLog> panel re-renders per chunk, not the whole page.
-  const [deployLog] = useState(createLogStore);
-  const setDeployLog = deployLog.set;
-  const runtimeChangedRef = useRef(false);
+  const last = repoAction.last;
+  const finishedAction: FinishedAction | null = last ? { kind: last.kind, ok: last.ok, at: last.completedAt } : null;
+  /** The form was last synced from this version of the project: unsaved edits are
+   *  measured against it, not against the newest push. */
+  const [syncedProject, setSyncedProject] = useState<Project | null>(null);
   const [configRepo, setConfigRepo] = useState("");
   const [configGroupName, setConfigGroupName] = useState("");
   const [configGithubCredentialId, setConfigGithubCredentialId] = useState<number | null>(null);
@@ -391,7 +393,7 @@ export default function ProjectDetails() {
   const [newDomainPort, setNewDomainPort] = useState("");
   const [addingDomain, setAddingDomain] = useState(false);
   const [domainError, setDomainError] = useState("");
-  const [tcpExposures, setTcpExposures] = useState<TcpExposure[]>([]);
+  const [tcpExposures, setTcpExposures] = useProjectTcpExposures(projectId, projectValid);
   const [newTcpPublicPort, setNewTcpPublicPort] = useState("");
   const [newTcpService, setNewTcpService] = useState("");
   const [newTcpContainerPort, setNewTcpContainerPort] = useState("");
@@ -410,74 +412,14 @@ export default function ProjectDetails() {
   const [branches, setBranches] = useState<GitHubBranch[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [branchError, setBranchError] = useState("");
-  const [deploys, setDeploys] = useState<ProjectDeploy[]>([]);
-  const [loadingDeploys, setLoadingDeploys] = useState(false);
-  const [revisions, setRevisions] = useState<ProjectDeploymentRevision[]>([]);
+  const [deploys, , loadingDeploys] = useProjectDeploys(projectId, projectValid);
+  const [revisions] = useProjectRevisions(projectId, projectValid);
   const [rollingBack, setRollingBack] = useState(false);
   const [configNginxExtra, setConfigNginxExtra] = useState("");
   const [configNginxExtraBlocks, setConfigNginxExtraBlocks] = useState("");
 
-  async function load() {
-    if (!Number.isInteger(projectId) || projectId <= 0) {
-      setError("Invalid project id");
-      setLoading(false);
-      return;
-    }
-
-    setError("");
-    setLoading(true);
-    try {
-      const [projectData, credentialData, domainData, tcpExposureData, envFileData] = await Promise.all([
-        api.getProject(projectId),
-        api.listCredentials(),
-        api.listProjectDomains(projectId),
-        api.listTcpExposures(projectId),
-        api.listProjectEnvFiles(projectId),
-      ]);
-      setProject(projectData);
-      syncConfig(projectData);
-      setDomains(domainData);
-      setTcpExposures(tcpExposureData);
-      setCredentials(credentialData);
-      setEnvFiles(envFileData);
-      void syncActions(projectId);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load project");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  /** Restore in-flight action state (spinners/log) after a page load or reconnect. */
-  function applyRepoActionSnapshot(action: NonNullable<ProjectActionsSnapshot["repo"]>) {
-    setDeployLog(action.log);
-    if (action.status === "running") {
-      if (action.kind === "pull") setPullingRepo(true);
-      if (action.kind === "compose") setComposingProject(true);
-      if (action.kind === "recreate") setRecreatingProject(true);
-      if (action.kind === "force-rebuild") setForceRebuilding(true);
-      if (action.kind === "deploy") setDeploying(true);
-      if (action.kind === "stop") setStoppingProject(true);
-      if (action.kind === "stop-purge") setPurgingProject(true);
-      if (action.kind === "upload") setUploadingFiles(true);
-      if (action.kind === "redeploy-service") setRedeployingService((action.meta?.["service"] as string | undefined) ?? null);
-      if (action.kind === "drop-volumes") setDroppingVolumesService((action.meta?.["service"] as string | undefined) ?? null);
-    } else {
-      setDeployOk(action.ok);
-      setFinishedAction({ kind: action.kind, ok: action.ok, at: action.completedAt });
-    }
-  }
-
-  async function syncActions(targetProjectId: number) {
-    try {
-      const actions = await api.getProjectActions(targetProjectId);
-      if (actions.repo) applyRepoActionSnapshot(actions.repo);
-    } catch {
-      // non-critical — live updates will still arrive over WS
-    }
-  }
-
   function syncConfig(projectData: Project) {
+    setSyncedProject(projectData);
     setConfigRepo(projectData.githubRepo ?? "");
     setConfigGroupName(projectData.groupName ?? "");
     setConfigGithubCredentialId(projectData.githubCredentialId);
@@ -509,28 +451,6 @@ export default function ProjectDetails() {
     }
   }
 
-  async function loadDeploys() {
-    if (!project) return;
-    setLoadingDeploys(true);
-    try {
-      const data = await api.getProjectDeploys(project.id);
-      setDeploys(data);
-    } catch {
-      // non-critical
-    } finally {
-      setLoadingDeploys(false);
-    }
-  }
-
-  async function loadRevisions() {
-    if (!project) return;
-    try {
-      setRevisions(await api.getProjectDeploymentRevisions(project.id));
-    } catch {
-      // non-critical
-    }
-  }
-
   async function handleRollback(target?: ProjectDeploymentRevision) {
     if (!project) return;
     const ok = await confirm({
@@ -544,10 +464,8 @@ export default function ProjectDetails() {
     if (!ok) return;
     setRollingBack(true);
     try {
-      const final = await startProjectAction(project.id, "rollback", target ? { deploymentId: target.id } : undefined);
-      if (final?.ok) notify.success("Rolled back successfully.");
-      else notify.error(new Error(final?.log || "Rollback failed"), "Rollback failed");
-      void loadRevisions();
+      // The action toast reports the outcome; revisions refetch when it ends.
+      await startProjectAction(project.id, "rollback", target ? { deploymentId: target.id } : undefined);
       refreshSystem();
     } finally {
       setRollingBack(false);
@@ -556,44 +474,12 @@ export default function ProjectDetails() {
 
   async function runProjectCommand(action: "pull" | "compose" | "deploy" | "recreate" | "force-rebuild", opts?: { branch?: string }) {
     if (!project) return;
-    if (action === "pull") setPullingRepo(true);
-    if (action === "compose") setComposingProject(true);
-    if (action === "recreate") setRecreatingProject(true);
-    if (action === "force-rebuild") setForceRebuilding(true);
-    if (action === "deploy") setDeploying(true);
-    setDeployOk(null);
-    setDeployLog("");
-    const final = await startProjectAction(project.id, action, opts);
-    if (action === "pull") setPullingRepo(false);
-    if (action === "compose") setComposingProject(false);
-    if (action === "recreate") setRecreatingProject(false);
-    if (action === "force-rebuild") setForceRebuilding(false);
-    if (action === "deploy") setDeploying(false);
-    if (!final) {
-      setDeployOk(false);
-    } else if (final.status === "running") {
-      applyRepoActionSnapshot(final);
-    } else {
-      setDeployLog(final.log);
-      setDeployOk(final.ok);
-    }
+    await startProjectAction(project.id, action, opts);
   }
 
   async function redeployService(service: string) {
     if (!project) return;
-    setRedeployingService(service);
-    setDeployOk(null);
-    setDeployLog("");
-    const final = await redeployProjectContainer(project.id, service);
-    setRedeployingService(null);
-    if (!final) {
-      setDeployOk(false);
-    } else if (final.status === "running") {
-      applyRepoActionSnapshot(final);
-    } else {
-      setDeployLog(final.log);
-      setDeployOk(final.ok);
-    }
+    await redeployProjectContainer(project.id, service);
   }
 
   async function dropServiceVolumes(service: string) {
@@ -605,26 +491,12 @@ export default function ProjectDetails() {
       destructive: true,
     });
     if (!ok) return;
-    setDroppingVolumesService(service);
-    setDeployOk(null);
-    setDeployLog("");
-    const final = await dropProjectServiceVolumes(project.id, service);
-    setDroppingVolumesService(null);
-    if (!final) {
-      setDeployOk(false);
-    } else if (final.status === "running") {
-      applyRepoActionSnapshot(final);
-    } else {
-      setDeployLog(final.log);
-      setDeployOk(final.ok);
-    }
+    await dropProjectServiceVolumes(project.id, service);
   }
 
   async function runReupload() {
     if (!project || !reuploadComposeFile) return;
     setUploadingFiles(true);
-    setDeployOk(null);
-    setDeployLog("");
     try {
       const supportFiles = reuploadSupportFiles
         .filter((f): f is { file: File; path: string } => f.file !== null && f.path.trim().length > 0)
@@ -634,20 +506,12 @@ export default function ProjectDetails() {
         notify.error(new Error(started.error ?? "An action is already running"), "Failed to start upload");
         return;
       }
+      // The action toast reports the outcome; the dialog closes once it succeeded.
       const final = started.action ? await waitForActionResult(started.action.id) : null;
-      if (!final) {
-        setDeployOk(false);
-      } else if (final.status === "running") {
-        applyRepoActionSnapshot(final);
-      } else {
-        setDeployLog(final.log);
-        setDeployOk(final.ok);
-        if (final.ok) {
-          setReuploadOpen(false);
-          setReuploadComposeFile(null);
-          setReuploadSupportFiles([]);
-          notify.success(`${project.name} re-uploaded and deployed.`);
-        }
+      if (final?.ok) {
+        setReuploadOpen(false);
+        setReuploadComposeFile(null);
+        setReuploadSupportFiles([]);
       }
     } finally {
       setUploadingFiles(false);
@@ -672,7 +536,6 @@ export default function ProjectDetails() {
     try {
       const updated = await api.checkProject(project.id);
       setProject(updated);
-      if (!runtimeChangedRef.current) syncConfig(updated);
     } catch (err) {
       notify.error(err, "Health check failed");
     } finally {
@@ -689,7 +552,6 @@ export default function ProjectDetails() {
         ? await api.resumeProject(project.id)
         : await api.pauseProject(project.id);
       setProject(updated);
-      if (!runtimeChangedRef.current) syncConfig(updated);
       notify.success(project.paused ? `${project.name} started.` : `${project.name} paused.`, { id: toastId });
       refreshSystem();
     } catch (err) {
@@ -708,19 +570,7 @@ export default function ProjectDetails() {
       destructive: true,
     });
     if (!ok) return;
-    setStoppingProject(true);
-    setDeployOk(null);
-    setDeployLog("");
-    const final = await startProjectAction(project.id, "stop");
-    setStoppingProject(false);
-    if (!final) {
-      setDeployOk(false);
-    } else if (final.status === "running") {
-      applyRepoActionSnapshot(final);
-    } else {
-      setDeployLog(final.log);
-      setDeployOk(final.ok);
-    }
+    await startProjectAction(project.id, "stop");
   }
 
   async function fetchDockerLogs() {
@@ -745,19 +595,7 @@ export default function ProjectDetails() {
       destructive: true,
     });
     if (!ok) return;
-    setPurgingProject(true);
-    setDeployOk(null);
-    setDeployLog("");
-    const final = await startProjectAction(project.id, "stop-purge");
-    setPurgingProject(false);
-    if (!final) {
-      setDeployOk(false);
-    } else if (final.status === "running") {
-      applyRepoActionSnapshot(final);
-    } else {
-      setDeployLog(final.log);
-      setDeployOk(final.ok);
-    }
+    await startProjectAction(project.id, "stop-purge");
   }
 
   async function deleteCurrentProject() {
@@ -920,19 +758,20 @@ export default function ProjectDetails() {
     }
   }
 
-  const runtimeChanged = project ? (
-    configGroupName.trim() !== (project.groupName ?? "") ||
-    configRepo !== (project.githubRepo ?? "") ||
-    configGithubCredentialId !== project.githubCredentialId ||
-    configHealthEndpoint !== (project.healthCheckEndpoint ?? "") ||
-    configHealthDomainId !== project.healthCheckDomainId ||
-    configIntervalS !== project.healthCheckIntervalS ||
-    configHealthGraceS !== project.deployHealthGraceS ||
-    configAutoRollback !== project.autoRollbackUnhealthy ||
-    configAutoDeployBranch !== (project.autoDeployBranch ?? "") ||
-    configNginxExtra !== (project.nginxExtraConfig ?? "") ||
-    configNginxExtraBlocks !== (project.nginxExtraBlocks ?? "") ||
-    configComposeFile !== (project.composeFile ?? "")
+  // Unsaved edits: the form differs from the project version it was filled from.
+  const runtimeChanged = syncedProject ? (
+    configGroupName.trim() !== (syncedProject.groupName ?? "") ||
+    configRepo !== (syncedProject.githubRepo ?? "") ||
+    configGithubCredentialId !== syncedProject.githubCredentialId ||
+    configHealthEndpoint !== (syncedProject.healthCheckEndpoint ?? "") ||
+    configHealthDomainId !== syncedProject.healthCheckDomainId ||
+    configIntervalS !== syncedProject.healthCheckIntervalS ||
+    configHealthGraceS !== syncedProject.deployHealthGraceS ||
+    configAutoRollback !== syncedProject.autoRollbackUnhealthy ||
+    configAutoDeployBranch !== (syncedProject.autoDeployBranch ?? "") ||
+    configNginxExtra !== (syncedProject.nginxExtraConfig ?? "") ||
+    configNginxExtraBlocks !== (syncedProject.nginxExtraBlocks ?? "") ||
+    configComposeFile !== (syncedProject.composeFile ?? "")
   ) : false;
   const runtimeFormId = project ? `project-runtime-${project.id}` : "project-runtime";
 
@@ -944,71 +783,20 @@ export default function ProjectDetails() {
       ), null);
   }
 
+  // New project data (a push, a save, a refetch) refills the form, unless the form
+  // has unsaved edits relative to the version it was last filled from.
   useEffect(() => {
-    runtimeChangedRef.current = runtimeChanged;
-  }, [runtimeChanged]);
-
-  useEffect(() => {
-    void load();
-  }, [projectId]);
+    if (project && !runtimeChanged) syncConfig(project);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project]);
 
   useEffect(() => {
     if (!project) return;
-    void loadDeploys();
-    void loadRevisions();
     // Branch list is cached server-side (refreshed by the GitHub poller), so this is
     // normally instant; it only reaches GitHub when nothing has been cached yet.
     if (project.githubRepo && project.branches.length === 0) void loadBranches(false);
   }, [project?.id]);
 
-
-  useEffect(() => {
-    if (!Number.isInteger(projectId) || projectId <= 0) return;
-    const handler = (event: ProjectDeployEvent) => {
-      if (event.projectId !== projectId) return;
-
-      deployLog.append(event.message);
-      if (event.done) {
-        if (event.action === "pull") setPullingRepo(false);
-        if (event.action === "compose") setComposingProject(false);
-        if (event.action === "recreate") setRecreatingProject(false);
-        if (event.action === "force-rebuild") setForceRebuilding(false);
-        if (event.action === "deploy") setDeploying(false);
-        if (event.action === "stop") setStoppingProject(false);
-        if (event.action === "stop-purge") setPurgingProject(false);
-        if (event.action === "redeploy-service") setRedeployingService(null);
-        if (event.action === "drop-volumes") setDroppingVolumesService(null);
-        setDeployOk(event.ok ?? null);
-        setFinishedAction({ kind: event.action, ok: event.ok ?? null, at: new Date().toISOString() });
-        refreshSystem();
-        // This handler outlives renders, so fetch by id rather than through the project-bound loaders.
-        api.getProjectDeploys(projectId).then(setDeploys).catch(() => {});
-        api.getProjectDeploymentRevisions(projectId).then(setRevisions).catch(() => {});
-      }
-    };
-    subscribeDeploy<ProjectDeployEvent>(projectId, handler);
-    return () => unsubscribeDeploy<ProjectDeployEvent>(projectId, handler);
-  }, [projectId, refreshSystem, subscribeDeploy, unsubscribeDeploy]);
-
-  useEffect(() => {
-    if (!Number.isInteger(projectId) || projectId <= 0) return;
-    const handler = (snapshot: ProjectActionsSnapshot) => {
-      if (snapshot.repo) applyRepoActionSnapshot(snapshot.repo);
-    };
-    subscribeDeploySync<ProjectActionsSnapshot>(handler);
-    return () => unsubscribeDeploySync<ProjectActionsSnapshot>(handler);
-  }, [projectId, subscribeDeploySync, unsubscribeDeploySync]);
-
-  useEffect(() => {
-    if (!Number.isInteger(projectId) || projectId <= 0) return;
-    const handler = (event: ProjectUpdateEvent) => {
-      if (event.projectId !== projectId) return;
-      setProject(event.project);
-      if (!runtimeChangedRef.current) syncConfig(event.project);
-    };
-    subscribeProject<ProjectUpdateEvent>(projectId, handler);
-    return () => unsubscribeProject<ProjectUpdateEvent>(projectId, handler);
-  }, [projectId, subscribeProject, unsubscribeProject]);
 
 
   const repoBusy = pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding ||
@@ -1346,9 +1134,9 @@ export default function ProjectDetails() {
               )}
 
               <ActionResult
-                store={deployLog}
+                actionId={repoAction.running?.id ?? last?.id ?? null}
                 running={repoBusy}
-                finished={finishedAction ?? (deployOk === null ? null : { kind: "", ok: deployOk, at: null })}
+                finished={finishedAction}
                 latestRevision={revisions[0] ?? null}
               />
             </div>

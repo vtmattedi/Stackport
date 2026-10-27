@@ -42,6 +42,7 @@ class ActionTracker {
     if (this.running.has(record.id) || this.finished.has(record.id)) return;
     this.running.set(record.id, record);
     this.publishRunning();
+    if (record.key.startsWith("system:")) void queryClient.invalidateQueries({ queryKey: queryKeys.systemActions });
     for (const listener of this.startListeners) listener(record);
   }
 

@@ -34,21 +34,25 @@ export function useActionOutput(actionId: string | null): ActionOutput {
 
   useEffect(() => {
     if (!actionId || !connected) return;
+    // Sequence bookkeeping happens here, not inside a state updater: updaters must be
+    // pure (StrictMode runs them twice, which would drop every chunk as a duplicate).
     const handler = (event: ActionOutputEvent) => {
       if (event.id !== actionId) return;
-      setOutput((prev) => {
-        let text = prev.text;
-        if (event.reset !== undefined) {
-          text = event.reset;
-          nextSeqRef.current = event.nextSeq;
-        }
-        for (const chunk of event.chunks) {
-          if (chunk.seq < nextSeqRef.current) continue;
-          text += chunk.data;
-          nextSeqRef.current = chunk.seq + 1;
-        }
-        return { text, done: prev.done || event.done };
-      });
+      let reset: string | undefined;
+      if (event.reset !== undefined) {
+        reset = event.reset;
+        nextSeqRef.current = event.nextSeq;
+      }
+      let appended = "";
+      for (const chunk of event.chunks) {
+        if (chunk.seq < nextSeqRef.current) continue;
+        appended += chunk.data;
+        nextSeqRef.current = chunk.seq + 1;
+      }
+      setOutput((prev) => ({
+        text: (reset ?? prev.text) + appended,
+        done: prev.done || event.done,
+      }));
     };
     on<ActionOutputEvent>("action:output", handler);
     emit("action:attach", { id: actionId, fromSeq: nextSeqRef.current });

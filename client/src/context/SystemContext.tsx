@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { queryKeys } from "../lib/queryKeys";
 import { notify } from "../lib/notify";
 import { actionTracker, waitForActionResult } from "./ActionTracker";
 import type {
@@ -90,6 +92,8 @@ interface SystemStore {
   subscribe: (listener: () => void) => () => void;
 }
 
+const EMPTY_SYSTEM_ACTIONS: SystemActionsSnapshot = { nginx: null, certbot: [], docker: null };
+
 const SystemContext = createContext<SystemContextValue | null>(null);
 const SystemActionsContext = createContext<SystemActionsValue | null>(null);
 const SystemStoreContext = createContext<SystemStore | null>(null);
@@ -130,21 +134,23 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
   const { data: system, refresh: refreshSystem } = useChannelData<SystemData>("system", { fallback: () => api.getSystem() });
   const { data: projects, refresh: refreshProjects } = useChannelData<Project[]>("projects", { fallback: () => api.listProjects() });
   const { data: vps, refresh: refreshVps } = useChannelData<VpsData>("vps", { fallback: () => api.getVm() });
-  const [github, setGithub] = useState<GitHubPollerConfig | null>(null);
+  const queryClient = useQueryClient();
+  const { data: github = null } = useQuery({ queryKey: queryKeys.githubPoller, queryFn: () => api.getGithubPollerConfig() });
   const [firewallProfiles, setFirewallProfiles] = useState<FirewallProfile[] | null>(null);
-  const [systemActions, setSystemActions] = useState<SystemActionsSnapshot>({ nginx: null, certbot: [], docker: null });
+  // The nginx, certbot and docker slots: refetched when a system action starts or ends
+  // (ActionTracker invalidates them), and pushed by the server on connect.
+  const { data: systemActions = EMPTY_SYSTEM_ACTIONS } = useQuery({
+    queryKey: queryKeys.systemActions,
+    queryFn: () => api.getSystemActions(),
+  });
   // Action wrappers only need a project's name for toast labels; reading it through a
   // ref keeps their identities stable instead of changing on every projects push.
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
 
   const refreshGithub = useCallback(async () => {
-    try {
-      setGithub(await api.getGithubPollerConfig());
-    } catch { /* non-critical */ }
-  }, []);
-
-  useEffect(() => { void refreshGithub(); }, [refreshGithub]);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.githubPoller });
+  }, [queryClient]);
 
   const firstProviderId = vps?.providers[0]?.id;
   const refreshFirewall = useCallback(async (providerId?: number) => {
@@ -160,26 +166,11 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => { void refreshFirewall(firstProviderId); }, [firstProviderId, refreshFirewall]);
 
-  // Seed the system action slots (nginx, certbot, docker), and refetch them whenever a
-  // system action starts or ends; the server also pushes them on connect.
-  const refreshSystemActions = useCallback(() => {
-    void api.getSystemActions().then(setSystemActions).catch(() => {});
-  }, []);
-  useEffect(() => { refreshSystemActions(); }, [refreshSystemActions]);
   useEffect(() => {
-    const onSystemAction = (record: { key: string }) => {
-      if (record.key.startsWith("system:")) refreshSystemActions();
-    };
-    const offStart = actionTracker.onStarted(onSystemAction);
-    const offFinish = actionTracker.onFinished(onSystemAction);
-    return () => { offStart(); offFinish(); };
-  }, [refreshSystemActions]);
-
-  useEffect(() => {
-    const handler = (snap: SystemActionsSnapshot) => setSystemActions(snap);
+    const handler = (snap: SystemActionsSnapshot) => queryClient.setQueryData(queryKeys.systemActions, snap);
     subscribeSystemActionsSync<SystemActionsSnapshot>(handler);
     return () => unsubscribeSystemActionsSync<SystemActionsSnapshot>(handler);
-  }, [subscribeSystemActionsSync, unsubscribeSystemActionsSync]);
+  }, [queryClient, subscribeSystemActionsSync, unsubscribeSystemActionsSync]);
 
   // ── action wrappers ("fire events") ─────────────────────────────────────────
 

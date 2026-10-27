@@ -49,8 +49,8 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 5 | ~~One deploy-history table~~ folded into PR 8 | T2 | 🟡 | — | — | ↪ 8 |
 | 6 | API tokens and read-only MCP over HTTP | MCP-1, S5 (part) | 🟠 | M–L | 2 | ✅ |
 | 8 | Action runner, server side (includes T2) | RUN-1, T2 | 🟠 | L | 2 | ✅ |
-| 9 | Data layer foundation and runner client | T5a, RUN-2 | 🟡 | M | 8 | |
-| 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | |
+| 9 | Data layer foundation and runner client | T5a, RUN-2 | 🟡 | M | 8 | ✅ |
+| 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | ✅ |
 | 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | |
 | 12 | Webhooks first, poller as fallback | R3 | 🟡 | S–M | — | |
 | 13 | Remove the Hostinger feature | R1 | 🟡 | M | — | |
@@ -284,7 +284,7 @@ across writes), partial-line hold-back, non-streaming output, replay from memory
 from file, annotation, interrupted-on-startup, retention by count and age, deletion,
 the "Recent deploys" route, and the backfill migration.
 
-### PR 9 — Data layer foundation and runner client (T5a, RUN-2)
+### PR 9 — Data layer foundation and runner client (T5a, RUN-2) ✅
 
 Adopt TanStack Query (D3).
 
@@ -297,10 +297,27 @@ Adopt TanStack Query (D3).
 - One `<ActionLog actionId>` component replacing the current three log paths; it keeps
   the last seen sequence number in `sessionStorage` to resume after a reconnect.
 
-### PR 10 — Data layer: remaining pages (T5b)
+### PR 10 — Data layer: remaining pages (T5b) ✅
 
 Migrate the remaining pages and contexts page by page, deleting their hand-written
 fetch/state code as each one moves.
+
+**Shipped notes (PRs 9 and 10):**
+- One client action tracker (`context/ActionTracker.tsx`) replaces six ways of waiting
+  for an action, including both 1.5 s polling loops. Toasts come from one component for
+  every action, whoever started it.
+- The project page derives its busy states, result line and log from the running and
+  last-finished action, and attaches to the log live (`useActionOutput`). Leaving and
+  reopening a project mid-build, or reloading, shows the same log. Its server data
+  (project, domains, TCP ports, env files, deploys, revisions) is in the query cache.
+- Pushed channels (system, projects, VPS) live in the query cache: one copy per
+  channel instead of one per component. Insights' hand-built cache and Logs' interval
+  are queries now.
+- Measured: an idle project page makes no API requests over 30 s.
+- Not moved: one-shot form loads (credentials form, notification and maintenance
+  settings) keep their `useEffect`, as they gain nothing from a shared cache. The
+  `sessionStorage` sequence idea wasn't needed: a reload replays the full log, and a
+  reconnect resumes from the last sequence held in memory.
 
 ### PR 11 — Data layer cleanup (T5c)
 

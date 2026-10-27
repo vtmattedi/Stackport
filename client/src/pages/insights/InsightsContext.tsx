@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocalStorageState } from "../../hooks/useLocalStorageState";
 import { useSystem } from "../../context/SystemContext";
 import type { Project } from "../../api/types";
@@ -8,8 +9,6 @@ import { DEFAULT_RULES, type RuleId } from "./traffic";
 
 /** Value used in the project filter for StackPort's own domain, which isn't a project row. */
 export const STACKPORT_SCOPE = "stackport";
-
-interface CacheEntry { promise: Promise<unknown>; data?: unknown; error?: unknown; settled: boolean }
 
 interface InsightsState {
   period: PeriodId;
@@ -23,10 +22,8 @@ interface InsightsState {
   setMaskIps: (value: boolean) => void;
   rules: Record<RuleId, boolean>;
   setRules: React.Dispatch<React.SetStateAction<Record<RuleId, boolean>>>;
-  /** Bumped by Refresh; every query keyed off it refetches. */
-  refreshToken: number;
+  /** Refetches every Insights query. */
   refresh: () => void;
-  cache: React.MutableRefObject<Map<string, CacheEntry>>;
 }
 
 const InsightsContext = createContext<InsightsState | null>(null);
@@ -37,18 +34,15 @@ export function InsightsProvider({ children }: { children: React.ReactNode }) {
   const [hideHealthChecks, setHideHealthChecks] = useLocalStorageState("insights-hide-health-checks", true);
   const [maskIps, setMaskIps] = useLocalStorageState("traffic-mask-ips", false);
   const [rules, setRules] = useLocalStorageState<Record<RuleId, boolean>>("traffic-rules", DEFAULT_RULES);
-  const [refreshToken, setRefreshToken] = useState(0);
-  const cache = useRef(new Map<string, CacheEntry>());
-
+  const queryClient = useQueryClient();
   const refresh = useCallback(() => {
-    cache.current.clear();
-    setRefreshToken((n) => n + 1);
-  }, []);
+    void queryClient.invalidateQueries({ queryKey: ["insights"] });
+  }, [queryClient]);
 
   const value = useMemo<InsightsState>(() => ({
     period, setPeriod, scope, setScope, hideHealthChecks, setHideHealthChecks,
-    maskIps, setMaskIps, rules, setRules, refreshToken, refresh, cache,
-  }), [period, setPeriod, scope, setScope, hideHealthChecks, setHideHealthChecks, maskIps, setMaskIps, rules, setRules, refreshToken, refresh]);
+    maskIps, setMaskIps, rules, setRules, refresh,
+  }), [period, setPeriod, scope, setScope, hideHealthChecks, setHideHealthChecks, maskIps, setMaskIps, rules, setRules, refresh]);
 
   return <InsightsContext.Provider value={value}>{children}</InsightsContext.Provider>;
 }
@@ -61,43 +55,17 @@ export function useInsights() {
 }
 
 /**
- * Fetch through the shell's cache, so moving between sections reuses what's
- * already loaded instead of refetching. `key` must identify the request fully;
- * pass null to skip.
+ * Fetch through the query cache, so moving between sections reuses what's already
+ * loaded instead of refetching. `key` must identify the request fully; pass null to skip.
  */
 export function useInsightsQuery<T>(key: string | null, fetcher: () => Promise<T>): { data: T | null; loading: boolean; error: boolean } {
-  const { cache, refreshToken } = useInsights();
-  const read = useCallback(() => {
-    const entry = key ? cache.current.get(key) : undefined;
-    return {
-      data: (entry?.data as T | undefined) ?? null,
-      loading: !!key && !entry?.settled,
-      error: !!entry?.error,
-    };
-  }, [cache, key]);
-  const [state, setState] = useState(read);
-  const fetcherRef = useRef(fetcher);
-  fetcherRef.current = fetcher;
-
-  useEffect(() => {
-    if (!key) { setState({ data: null, loading: false, error: false }); return; }
-    let entry = cache.current.get(key);
-    if (!entry) {
-      const created: CacheEntry = { settled: false, promise: Promise.resolve() };
-      created.promise = fetcherRef.current()
-        .then((data) => { created.data = data; })
-        .catch((error: unknown) => { created.error = error ?? true; })
-        .finally(() => { created.settled = true; });
-      cache.current.set(key, created);
-      entry = created;
-    }
-    setState(read());
-    let cancelled = false;
-    void entry.promise.then(() => { if (!cancelled) setState(read()); });
-    return () => { cancelled = true; };
-  }, [cache, key, read, refreshToken]);
-
-  return state;
+  const query = useQuery({
+    queryKey: ["insights", key],
+    queryFn: fetcher,
+    enabled: key !== null,
+    staleTime: 60_000,
+  });
+  return { data: query.data ?? null, loading: key !== null && query.isLoading, error: query.isError };
 }
 
 /**
