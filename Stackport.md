@@ -212,6 +212,8 @@ Pull, Docker Compose (no pull), Deploy (pull+build+up, what auto-deploy triggers
 
 Unchanged in shape from earlier versions of the system: named `.env` files per project (written to disk right before every build/deploy), an auto-deploy branch the GitHub poller watches, and a health-check endpoint/interval StackPort polls independently.
 
+A project's health check is a path on one of its domains, fetched over HTTPS or HTTP to match the domain's SSL setting. With a path and a domain set, every deploy and rollback is verified: after `docker compose up` succeeds, Stackport polls the check every 3 seconds for the project's grace period (default 60 s, 5–600 s). If it never passes, the revision stays the running (`active`) one but is marked unhealthy (`health_failed_at`), the action reports failure, and a "deploy failed its health check" alert is sent when notifications are enabled. With **Roll back if unhealthy** turned on (off by default), a failed deploy then rolls back to the default rollback target; a rollback that fails its own check never triggers another. Without a health check path, a deploy counts as successful once its containers start, as before.
+
 ---
 
 ## 7. Security model summary

@@ -45,7 +45,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 1 | Rollback and auto-deploy correctness | C1, C2 | 🟠 | S | — | ✅ `c893c9c` |
 | 2 | Migration framework | T1 | 🟡 | S–M | — | ✅ |
 | 3 | README, package name, stale todos | T6 | ⚪ | S | — | ✅ |
-| 4 | Health-gated deploys | C3 | 🟠 | M | 2 | |
+| 4 | Health-gated deploys | C3 | 🟠 | M | 2 | ✅ |
 | 5 | One deploy-history table | T2 | 🟡 | M | 2 | |
 | 6 | API tokens and read-only MCP over HTTP | MCP-1, S5 (part) | 🟠 | M–L | 2 | |
 | 8 | Action runner, server side | RUN-1 | 🟠 | M–L | 2 | |
@@ -127,14 +127,15 @@ second process, and an upgrade from a released install (`user_version` 0).
   changes, and the name isn't shown anywhere.
 - Replace `todos.md`: webhook deploys are already implemented; point to this plan.
 
-### PR 4 — Health-gated deploys (C3)
+### PR 4 — Health-gated deploys (C3) ✅
 
 **Problem:** a deploy counts as successful when `docker compose up` exits 0, whether or
 not the app works.
 
 **Approach:**
-- After `up`, if the project has a health check configured, poll it for a configurable
-  window (default 60 s) using the existing `healthChecker`.
+- After `up`, if the project has a health check (a path and a domain), poll it every
+  3 s for the project's grace period (default 60 s, 5–600 s), using the same probe as
+  the periodic monitor. Rollbacks are verified the same way.
 - Pass: record the revision as `active`, as today.
 - Fail (D2): the revision stays `active` (it is what is running), a new
   `health_failed_at` column records the failure (added by a migration; a new status
@@ -149,8 +150,18 @@ not the app works.
 the deploy runs on the new version. Auto-rollback is off for every project until
 enabled (D2).
 
-**Tests:** health pass, health fail without auto-rollback, health fail with
-auto-rollback, no health check configured.
+**Shipped notes:**
+- The health URL now follows the domain's SSL setting; the monitor used to always use
+  HTTPS, so checks on non-SSL domains always reported down.
+- The gate runs whether or not periodic monitoring is on (interval 0), like "Check now".
+- The three copies of the alert-sending code in `notificationService.ts` are one helper.
+- The project update logic exists twice (`routes/projects.ts` for the UI,
+  `projectAdmin.ts` for the MCP server); both validate the new fields with the same
+  parsers. Merging them is left for PR 6, which touches the MCP side.
+
+**Tests:** URL scheme, no health check, immediate pass, pass within the grace period,
+timeout, unhealthy marking, settings validation. The auto-rollback path is not covered
+by an automated test (it runs a real `docker compose`).
 
 ### PR 5 — One deploy-history table (T2)
 

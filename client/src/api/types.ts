@@ -38,6 +38,10 @@ export interface Project {
   healthCheckEndpoint: string | null;
   healthCheckDomainId: number | null;
   healthCheckIntervalS: number;
+  /** Seconds a deploy waits for the health check to pass before it counts as unhealthy. */
+  deployHealthGraceS: number;
+  /** Roll back automatically when a deploy fails its health check. */
+  autoRollbackUnhealthy: boolean;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
   lastCheckedAt: string | null;
@@ -157,6 +161,8 @@ export interface ProjectDeploymentRevision {
   createdAt: string;
   /** Set when a rollback moved away from this revision; Roll back skips it by default. */
   rolledBackAt: string | null;
+  /** Set when the post-deploy health check didn't pass in time; the revision still runs. */
+  healthFailedAt: string | null;
 }
 
 export interface EnvVariable {

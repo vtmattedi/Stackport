@@ -14,6 +14,10 @@ export interface Project {
   healthCheckEndpoint: string | null;
   healthCheckDomainId: number | null;
   healthCheckIntervalS: number;
+  /** How long a deploy waits for the health check to pass before calling it unhealthy. */
+  deployHealthGraceS: number;
+  /** Roll back automatically when a deploy fails its health check (opt-in). */
+  autoRollbackUnhealthy: boolean;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
   lastCheckedAt: string | null;
@@ -93,6 +97,8 @@ export interface ProjectRow {
   branches_json: string | null;
   branches_fetched_at?: string | null;
   deploy_trigger?: string | null;
+  deploy_health_grace_s?: number | null;
+  auto_rollback_unhealthy?: number | null;
   pending_deploy_sha?: string | null;
   github_checked_at?: string | null;
   github_check_error?: string | null;
@@ -120,6 +126,8 @@ export function rowToProject(row: ProjectRow): Project {
     healthCheckEndpoint: row.health_check_endpoint,
     healthCheckDomainId: row.health_check_domain_id,
     healthCheckIntervalS: row.health_check_interval_s,
+    deployHealthGraceS: row.deploy_health_grace_s ?? 60,
+    autoRollbackUnhealthy: !!row.auto_rollback_unhealthy,
     lastStatus: (validStatus.includes(row.last_status) ? row.last_status : "unknown") as
       | "up"
       | "down"

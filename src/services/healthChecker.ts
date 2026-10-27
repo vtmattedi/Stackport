@@ -5,11 +5,47 @@ import { notifyHealthCheckFailure } from "./notificationService";
 import { getProjectHealthCheckDomain } from "./projectDomains";
 
 const MIN_INTERVAL_S = 30;
+const PROBE_TIMEOUT_MS = 10_000;
 
 // Tags outbound health-check requests so nginx metrics can identify and
 // exclude this self-generated traffic reliably — the server's own public IP
 // isn't always known (see getServerIps() in routes/metrics.ts), but the UA is.
 export const HEALTH_CHECK_USER_AGENT = "Stackport-HealthCheck/1.0";
+
+interface HealthTargetRow {
+  id: number;
+  paused: number;
+  health_check_endpoint: string | null;
+  health_check_domain_id: number | null;
+}
+
+/** The URL a project's health check fetches, or null when it has none (no endpoint, no
+ *  domain, or paused). Periodic monitoring additionally needs an interval (schedule);
+ *  "Check now" and the post-deploy check (verifyDeployHealth) don't. */
+export function healthCheckUrl(row: HealthTargetRow): string | null {
+  if (row.paused || !row.health_check_endpoint) return null;
+  const domain = getProjectHealthCheckDomain(row.id, row.health_check_domain_id);
+  if (!domain) return null;
+  return `${domain.useSsl ? "https" : "http"}://${domain.domain}${row.health_check_endpoint}`;
+}
+
+export interface HealthProbe {
+  status: "up" | "down";
+  responseMs: number | null;
+}
+
+export async function probeHealth(url: string): Promise<HealthProbe> {
+  const start = Date.now();
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": HEALTH_CHECK_USER_AGENT },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    return { status: response.ok ? "up" : "down", responseMs: Date.now() - start };
+  } catch {
+    return { status: "down", responseMs: null };
+  }
+}
 
 class HealthChecker {
   private timers = new Map<number, NodeJS.Timeout>();
@@ -47,25 +83,10 @@ class HealthChecker {
   async check(id: number): Promise<void> {
     const db = getDatabase();
     const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
-    const domain = row ? getProjectHealthCheckDomain(id, row.health_check_domain_id) : null;
-    if (!row || !domain || !row.health_check_endpoint || row.paused) return;
+    const url = row ? healthCheckUrl(row) : null;
+    if (!row || !url) return;
 
-    const url = `https://${domain.domain}${row.health_check_endpoint}`;
-
-    const start = Date.now();
-    let status: "up" | "down" = "down";
-    let responseMs: number | null = null;
-
-    try {
-      const response = await fetch(url, {
-        headers: { "User-Agent": HEALTH_CHECK_USER_AGENT },
-        signal: AbortSignal.timeout(10_000),
-      });
-      responseMs = Date.now() - start;
-      status = response.ok ? "up" : "down";
-    } catch {
-      status = "down";
-    }
+    const { status, responseMs } = await probeHealth(url);
 
     const now = new Date().toISOString();
     db.prepare(

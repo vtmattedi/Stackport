@@ -45,7 +45,7 @@ import { getProjectBranches, resetGithubTrackingIfChanged } from "../services/gi
 import { runCertbotAction } from "../services/certbot";
 import { actionRegistry, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../services/actionRegistry";
 import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "./projectResources";
-import { createProject as adminCreateProject, parseProjectGroupName, ProjectAdminError } from "../services/projectAdmin";
+import { createProject as adminCreateProject, parseBoolean, parseDeployHealthGrace, parseProjectGroupName, ProjectAdminError } from "../services/projectAdmin";
 import {
   addProjectDomain,
   attachDomains,
@@ -1313,6 +1313,16 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
     }
   }
 
+  let newDeployHealthGraceS = existing.deploy_health_grace_s ?? 60;
+  let newAutoRollbackUnhealthy = !!existing.auto_rollback_unhealthy;
+  try {
+    if (req.body.deployHealthGraceS !== undefined) newDeployHealthGraceS = parseDeployHealthGrace(req.body.deployHealthGraceS);
+    if (req.body.autoRollbackUnhealthy !== undefined) newAutoRollbackUnhealthy = parseBoolean(req.body.autoRollbackUnhealthy, "autoRollbackUnhealthy");
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return;
+  }
+
   const appNginx = getNginxAppConfig();
 
   if (newInternalPort !== null && db.prepare("SELECT id FROM projects WHERE internal_port = ? AND id <> ?").get(newInternalPort, id)) {
@@ -1328,10 +1338,11 @@ router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Resp
   db.prepare(
     `UPDATE projects
      SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_domain_id = ?, health_check_interval_s = ?,
+         deploy_health_grace_s = ?, auto_rollback_unhealthy = ?,
          github_repo = ?, credential_id = ?, github_credential_id = ?,
          auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
      WHERE id = ?`
-  ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newHealthCheckDomainId, newIntervalS, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
+  ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newHealthCheckDomainId, newIntervalS, newDeployHealthGraceS, newAutoRollbackUnhealthy ? 1 : 0, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
   resetGithubTrackingIfChanged(db, id, existing, newGhRepo, newAutoDeployBranch);
   moveWebhookIfRepoChanged(id, existing.github_repo, newGhRepo);
 

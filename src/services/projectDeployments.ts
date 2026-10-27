@@ -23,6 +23,9 @@ export interface ProjectDeploymentSummary {
   /** When a rollback moved away from this revision; such revisions are skipped by a
    *  default rollback but can still be picked explicitly. */
   rolledBackAt: string | null;
+  /** Set when the revision's post-deploy health check didn't pass in time. It stays
+   *  `active`: it is what is running. */
+  healthFailedAt: string | null;
 }
 
 export interface ProjectDeploymentDetail extends ProjectDeploymentSummary {
@@ -43,6 +46,7 @@ interface DeploymentRow {
   blocked_reason: string | null;
   created_at: string;
   rolled_back_at: string | null;
+  health_failed_at: string | null;
 }
 
 function rowToSummary(row: DeploymentRow): ProjectDeploymentSummary {
@@ -57,6 +61,7 @@ function rowToSummary(row: DeploymentRow): ProjectDeploymentSummary {
     blockedReason: row.blocked_reason,
     createdAt: row.created_at,
     rolledBackAt: row.rolled_back_at,
+    healthFailedAt: row.health_failed_at,
   };
 }
 
@@ -113,6 +118,13 @@ export function recordFailedDeployment(
     VALUES (?, ?, ?, ?, 'failed', ?, ?)
   `).run(projectId, input.commitSha, input.branch, input.composeFileName, input.triggeredBy, blockedReason);
   pruneOldDeployments(projectId);
+}
+
+/** Marks the running revision as having failed its post-deploy health check. */
+export function markActiveDeploymentUnhealthy(projectId: number): void {
+  getDatabase()
+    .prepare("UPDATE project_deployments SET health_failed_at = ? WHERE project_id = ? AND status = 'active'")
+    .run(new Date().toISOString(), projectId);
 }
 
 /** Summaries only (no source/effective compose bodies, which can be sizeable text

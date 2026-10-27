@@ -80,6 +80,11 @@ export function DeploymentsCard({ deploys, revisions, loading, rollingBack, onRo
                 <span className={cn(styles.statusPill, rev.status === "active" ? styles.statusUp : rev.status === "failed" ? styles.statusDown : styles.statusUnknown)}>{rev.status}</span>
                 <span className="mono">{rev.commitSha ? rev.commitSha.slice(0, 7) : "—"}</span>
                 <span className={styles.historyMessage}>{[rev.branch, rev.composeFileName].filter(Boolean).join(" · ")}</span>
+                {rev.healthFailedAt && (
+                  <span className={cn(styles.statusPill, styles.statusDown)} title="The health check didn't pass after this deploy">
+                    unhealthy
+                  </span>
+                )}
                 {rev.rolledBackAt && (
                   <span className={styles.historyMeta} title="A rollback moved away from this revision, so Roll back skips it. Restore still works.">
                     rolled back

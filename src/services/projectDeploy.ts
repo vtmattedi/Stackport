@@ -13,8 +13,9 @@ import { validateComposePolicy } from "./composePolicy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./composeNetworking";
 import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
-import { recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./projectDeployments";
-import { notifyDeployBlocked } from "./notificationService";
+import { markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./projectDeployments";
+import { healthCheckUrl, probeHealth, type HealthProbe } from "./healthChecker";
+import { notifyDeployBlocked, notifyDeployUnhealthy, type DeployRollbackOutcome } from "./notificationService";
 import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
 
@@ -1018,6 +1019,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       : ["up", "-d", "--build"];
   const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, 900_000);
   output.push(compose.output);
+  let healthy = true;
   if (composeArgs[0] === "up") {
     if (compose.ok) {
       await snapshotDeployedCompose(repoPath, composeFile);
@@ -1025,6 +1027,9 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       recordSuccessfulDeployment(projectId, {
         commitSha, branch: deployedBranch, composeFileName: composeFile, sourceCompose, effectiveCompose, triggeredBy,
       });
+      const health = await gateOnHealth(project, action, commitSha, true);
+      output.push(health.output);
+      healthy = health.ok;
     } else {
       recordFailedDeployment(
         projectId,
@@ -1033,10 +1038,11 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       );
     }
   }
-  emit(projectId, action, "status", `${action} ${compose.ok ? "completed" : "failed"}\n`, { ok: compose.ok, done: true });
+  const ok = compose.ok && healthy;
+  emit(projectId, action, "status", `${action} ${ok ? "completed" : "failed"}\n`, { ok, done: true });
 
   return {
-    ok: compose.ok,
+    ok,
     projectId,
     repoPath,
     output: output.join("\n\n"),
@@ -1446,13 +1452,89 @@ export async function getProjectLogs(
   });
 }
 
+const HEALTH_POLL_INTERVAL_MS = 3_000;
+
+export interface HealthGateDeps {
+  probe: (url: string) => Promise<HealthProbe>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+}
+
+const realHealthGateDeps: HealthGateDeps = {
+  probe: probeHealth,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
+};
+
+/** Polls the project's health check until it passes or the project's grace period
+ *  (deploy_health_grace_s) runs out. Null when the project has no health check, in
+ *  which case the deploy is not verified, as before. */
+export async function verifyDeployHealth(
+  projectId: number,
+  action: ProjectDeployEvent["action"],
+  deps: HealthGateDeps = realHealthGateDeps,
+): Promise<{ healthy: boolean; url: string } | null> {
+  const project = getProjectById(projectId);
+  const url = project ? healthCheckUrl({
+    id: project.id,
+    paused: project.paused ? 1 : 0,
+    health_check_endpoint: project.healthCheckEndpoint,
+    health_check_domain_id: project.healthCheckDomainId,
+  }) : null;
+  if (!project || !url) return null;
+
+  const graceMs = project.deployHealthGraceS * 1000;
+  emit(projectId, action, "status", `Checking health: GET ${url} (up to ${project.deployHealthGraceS}s)\n`);
+  const startedAt = deps.now();
+  for (;;) {
+    const probe = await deps.probe(url);
+    if (probe.status === "up") {
+      emit(projectId, action, "status", `Health check passed${probe.responseMs !== null ? ` (${probe.responseMs} ms)` : ""}\n`);
+      return { healthy: true, url };
+    }
+    if (deps.now() - startedAt + HEALTH_POLL_INTERVAL_MS > graceMs) break;
+    await deps.sleep(HEALTH_POLL_INTERVAL_MS);
+  }
+  emit(projectId, action, "stderr", `Health check did not pass within ${project.deployHealthGraceS}s.\n`);
+  return { healthy: false, url };
+}
+
+/** After a successful `up`: verifies health, and on failure marks the running revision
+ *  unhealthy, notifies, and, when the project opted in and `allowAutoRollback`, rolls
+ *  back. Rollbacks pass false, so a failing rollback never triggers another one. */
+async function gateOnHealth(
+  project: Project,
+  action: ProjectDeployEvent["action"],
+  commitSha: string | null,
+  allowAutoRollback: boolean,
+): Promise<{ ok: boolean; output: string }> {
+  const result = await verifyDeployHealth(project.id, action);
+  if (!result) return { ok: true, output: "" };
+  if (result.healthy) return { ok: true, output: `Health check passed: ${result.url}\n` };
+
+  markActiveDeploymentUnhealthy(project.id);
+  const lines = [`Deployed, but the health check did not pass: ${result.url}\n`];
+  let rollback: DeployRollbackOutcome = "none";
+  if (allowAutoRollback && project.autoRollbackUnhealthy) {
+    emit(project.id, action, "status", "Rolling back automatically (project setting)\n");
+    const restored = await rollbackProject(project.id, undefined, { nested: true });
+    lines.push(restored.output);
+    rollback = restored.ok ? "done" : "failed";
+  }
+  void notifyDeployUnhealthy(project.name, commitSha, result.url, rollback);
+  return { ok: false, output: lines.join("\n") };
+}
+
 /** Phase 1.7 — restores a successful deployment's exact source commit and effective
  *  compose file, then redeploys from that restored artifact rather than
  *  re-fetching/re-augmenting from the current repository state. "Restore what was
  *  actually running", not "reconstruct an old state from current configuration"
  *  (stackport_yml.md §17). Restores `deploymentId`, or by default the revision
  *  resolveRollbackTarget picks; the revision it replaces is marked rolled back from. */
-export async function rollbackProject(projectId: number, deploymentId?: number): Promise<DeployResult> {
+export async function rollbackProject(projectId: number, deploymentId?: number, opts: { nested?: boolean } = {}): Promise<DeployResult> {
+  // Nested inside another action (an automatic rollback after a failed health check):
+  // that action sends the single final "done" event, so the client doesn't end early.
+  const done = (ok: boolean): Partial<ProjectDeployEvent> => (opts.nested ? {} : { ok, done: true });
   const action = "recreate" as const; // closest existing action kind for the WS event union — a whole-stack up
   const project = getProjectById(projectId);
   if (!project) {
@@ -1465,7 +1547,7 @@ export async function rollbackProject(projectId: number, deploymentId?: number):
   const resolved = resolveRollbackTarget(projectId, deploymentId);
   if (!resolved.ok) {
     const message = `${resolved.error}\n`;
-    emit(projectId, action, "stderr", message, { ok: false, done: true });
+    emit(projectId, action, "stderr", message, done(false));
     return { ok: false, projectId, repoPath: projectRepoDir(project), output: message, action };
   }
   const previous = resolved.target;
@@ -1481,7 +1563,7 @@ export async function rollbackProject(projectId: number, deploymentId?: number):
   const hasCheckout = await fs.stat(path.join(repoPath, ".git")).then((stat) => stat.isDirectory()).catch(() => false);
   if (!hasCheckout) {
     const message = "Repository checkout not found.\n";
-    emit(projectId, action, "stderr", message, { ok: false, done: true });
+    emit(projectId, action, "stderr", message, done(false));
     return { ok: false, projectId, repoPath, output: message, action };
   }
 
@@ -1490,7 +1572,7 @@ export async function rollbackProject(projectId: number, deploymentId?: number):
   const checkout = await run(projectId, action, "git", ["checkout", previous.commitSha], { cwd: repoPath, timeoutMs: 60_000 });
   output.push(checkout.output);
   if (!checkout.ok) {
-    emit(projectId, action, "stderr", "Rollback failed: could not check out the previous revision.\n", { ok: false, done: true });
+    emit(projectId, action, "stderr", "Rollback failed: could not check out the previous revision.\n", done(false));
     return { ok: false, projectId, repoPath, output: output.join("\n\n"), action };
   }
 
@@ -1498,7 +1580,7 @@ export async function rollbackProject(projectId: number, deploymentId?: number):
     await fs.writeFile(path.join(repoPath, previous.composeFileName), previous.effectiveCompose, "utf8");
   } catch (err) {
     const message = `Rollback failed: could not restore compose file (${err instanceof Error ? err.message : String(err)}).\n`;
-    emit(projectId, action, "stderr", message, { ok: false, done: true });
+    emit(projectId, action, "stderr", message, done(false));
     return { ok: false, projectId, repoPath, output: output.join("\n\n") + message, action };
   }
 
@@ -1521,9 +1603,15 @@ export async function rollbackProject(projectId: number, deploymentId?: number):
       "rollback: docker compose up failed"
     );
   }
-  emit(projectId, action, "status", `rollback ${compose.ok ? "completed" : "failed"}\n`, { ok: compose.ok, done: true });
+  let ok = compose.ok;
+  if (compose.ok) {
+    const health = await gateOnHealth(project, action, previous.commitSha, false);
+    output.push(health.output);
+    ok = health.ok;
+  }
+  emit(projectId, action, "status", `rollback ${ok ? "completed" : "failed"}\n`, done(ok));
 
-  return { ok: compose.ok, projectId, repoPath, output: output.join("\n\n"), action };
+  return { ok, projectId, repoPath, output: output.join("\n\n"), action };
 }
 
 export async function stopAndPurgeProject(projectId: number): Promise<DeployResult> {

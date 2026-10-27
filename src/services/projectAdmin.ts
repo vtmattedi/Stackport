@@ -45,6 +45,8 @@ export interface UpdateProjectInput {
   healthCheckEndpoint?: unknown;
   healthCheckDomainId?: unknown;
   healthCheckIntervalS?: unknown;
+  deployHealthGraceS?: unknown;
+  autoRollbackUnhealthy?: unknown;
   githubRepo?: unknown;
   credentialId?: unknown;
   githubCredentialId?: unknown;
@@ -141,6 +143,12 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
   const healthCheckIntervalS = input.healthCheckIntervalS !== undefined
     ? parseHealthCheckInterval(input.healthCheckIntervalS, existing.health_check_interval_s)
     : existing.health_check_interval_s;
+  const deployHealthGraceS = input.deployHealthGraceS !== undefined
+    ? parseDeployHealthGrace(input.deployHealthGraceS)
+    : existing.deploy_health_grace_s ?? 60;
+  const autoRollbackUnhealthy = input.autoRollbackUnhealthy !== undefined
+    ? parseBoolean(input.autoRollbackUnhealthy, "autoRollbackUnhealthy")
+    : !!existing.auto_rollback_unhealthy;
   const githubRepo = input.githubRepo !== undefined
     ? parseOptionalGithubRepoForUpdate(input.githubRepo)
     : existing.github_repo;
@@ -168,10 +176,11 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
   db.prepare(
     `UPDATE projects
      SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_domain_id = ?, health_check_interval_s = ?,
+         deploy_health_grace_s = ?, auto_rollback_unhealthy = ?,
          github_repo = ?, credential_id = ?, github_credential_id = ?,
          auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
      WHERE id = ?`
-  ).run(name, groupName, internalPort, healthCheckEndpoint, healthCheckDomainId, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
+  ).run(name, groupName, internalPort, healthCheckEndpoint, healthCheckDomainId, healthCheckIntervalS, deployHealthGraceS, autoRollbackUnhealthy ? 1 : 0, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
   resetGithubTrackingIfChanged(db, projectId, existing, githubRepo, autoDeployBranch);
   moveWebhookIfRepoChanged(projectId, existing.github_repo, githubRepo);
 
@@ -345,6 +354,21 @@ function parseHealthCheckInterval(value: unknown, fallback: number): number {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = typeof value === "number" ? value : Number(String(value).trim());
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback;
+}
+
+const MAX_DEPLOY_HEALTH_GRACE_S = 600;
+
+export function parseDeployHealthGrace(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isInteger(parsed) || parsed < 5 || parsed > MAX_DEPLOY_HEALTH_GRACE_S) {
+    throw new ProjectAdminError(400, `deployHealthGraceS must be a whole number of seconds between 5 and ${MAX_DEPLOY_HEALTH_GRACE_S}`);
+  }
+  return parsed;
+}
+
+export function parseBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw new ProjectAdminError(400, `${field} must be true or false`);
+  return value;
 }
 
 function parseOptionalBranch(value: unknown, fallback: string | null): string | null {

@@ -24,6 +24,7 @@ import { useConfirm } from "../components/ConfirmDialog";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { NumberInput } from "../components/NumberInput";
+import { Switch } from "../components/ui/switch";
 import { api, ApiError } from "../api/client";
 import type {
   ActionRecord,
@@ -398,6 +399,8 @@ export default function ProjectDetails() {
   const [configHealthEndpoint, setConfigHealthEndpoint] = useState("");
   const [configHealthDomainId, setConfigHealthDomainId] = useState<number | null>(null);
   const [configIntervalS, setConfigIntervalS] = useState(0);
+  const [configHealthGraceS, setConfigHealthGraceS] = useState(60);
+  const [configAutoRollback, setConfigAutoRollback] = useState(false);
   const [configComposeFile, setConfigComposeFile] = useState("");
   const [composeFileDialogOpen, setComposeFileDialogOpen] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -481,6 +484,8 @@ export default function ProjectDetails() {
     setConfigHealthEndpoint(projectData.healthCheckEndpoint ?? "");
     setConfigHealthDomainId(projectData.healthCheckDomainId);
     setConfigIntervalS(projectData.healthCheckIntervalS);
+    setConfigHealthGraceS(projectData.deployHealthGraceS);
+    setConfigAutoRollback(projectData.autoRollbackUnhealthy);
     setConfigAutoDeployBranch(projectData.autoDeployBranch ?? "");
     setConfigNginxExtra(projectData.nginxExtraConfig ?? "");
     setConfigNginxExtraBlocks(projectData.nginxExtraBlocks ?? "");
@@ -790,6 +795,8 @@ export default function ProjectDetails() {
         healthCheckEndpoint: configHealthEndpoint || null,
         healthCheckDomainId: configHealthDomainId,
         healthCheckIntervalS: configIntervalS,
+        deployHealthGraceS: configHealthGraceS,
+        autoRollbackUnhealthy: configAutoRollback,
         autoDeployBranch: configAutoDeployBranch || null,
         nginxExtraConfig: configNginxExtra.trim() || null,
         nginxExtraBlocks: configNginxExtraBlocks.trim() || null,
@@ -919,6 +926,8 @@ export default function ProjectDetails() {
     configHealthEndpoint !== (project.healthCheckEndpoint ?? "") ||
     configHealthDomainId !== project.healthCheckDomainId ||
     configIntervalS !== project.healthCheckIntervalS ||
+    configHealthGraceS !== project.deployHealthGraceS ||
+    configAutoRollback !== project.autoRollbackUnhealthy ||
     configAutoDeployBranch !== (project.autoDeployBranch ?? "") ||
     configNginxExtra !== (project.nginxExtraConfig ?? "") ||
     configNginxExtraBlocks !== (project.nginxExtraBlocks ?? "") ||
@@ -1687,7 +1696,7 @@ export default function ProjectDetails() {
 
                 <ConfigSection title="Health check" storageKey="health-check">
                   <div className="field">
-                    <label>Domain <span className="hint">(HTTPS target)</span></label>
+                    <label>Domain</label>
                     <AppSelect
                       value={configHealthDomainId === null ? "" : String(configHealthDomainId)}
                       onValueChange={(value) => setConfigHealthDomainId(value ? Number(value) : null)}
@@ -1716,6 +1725,32 @@ export default function ProjectDetails() {
                       }))}
                     />
                   </div>
+                  <div className="field" style={{ minWidth: 140, flex: "none" }}>
+                    <label>After deploy <span className="hint">(wait up to)</span></label>
+                    <NumberInput
+                      min={5}
+                      max={600}
+                      suffix="s"
+                      aria-label="Seconds to wait for the health check after a deploy"
+                      value={configHealthGraceS}
+                      onValueChange={(seconds) => setConfigHealthGraceS(seconds ?? 60)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label className={styles.switchField}>
+                      <Switch checked={configAutoRollback} onCheckedChange={setConfigAutoRollback} />
+                      <span>
+                        <span>Roll back if unhealthy</span>
+                        <span>
+                          When a deploy's health check doesn't pass in time, restore the previous revision.
+                          Otherwise the new revision keeps running and is marked unhealthy.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                  {!configHealthEndpoint && (
+                    <p className="hint">Without a path, deploys aren't verified: a deploy counts as successful once its containers start.</p>
+                  )}
                 </ConfigSection>
               </form>
             </ExpandableCard>
