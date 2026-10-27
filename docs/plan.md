@@ -60,7 +60,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 17 | Navigation consolidation | U1 | 🟡 | M | 13, 16 | ✅ |
 | 18 | Deploy and rollback preview | U3 | 🟡 | M | 1 | ✅ |
 | 19 | Clear policy-violation display | U4 (part) | 🟡 | S | — | ✅ |
-| 20 | Command palette | U6 | ⚪ | M | 16, 17 | |
+| 20 | Command palette | U6 | ⚪ | M | 16, 17 | ✅ |
 
 Numbers skip 7: OAuth was deferred (see [Deferred](#deferred-not-in-this-plan)).
 
@@ -472,10 +472,21 @@ text. The volume-mapping display waits for the volume-model redesign (deferred S
   any deploy is attempted, and refetches when a project action ends (after a pull).
 - No checkout or no file selected yet returns an empty list, not an error.
 
-### PR 20 — Command palette (U6)
+### PR 20 — Command palette (U6) ✅
 
 Cmd/Ctrl-K: jump to a project or settings page, start deploy, open logs. Built on the
 existing Radix primitives.
+
+**Shipped notes:**
+- `components/CommandPalette.tsx` (Radix Dialog), mounted once in the signed-in layout.
+  Opens with Cmd/Ctrl-K or the Search entry in the sidebar and in the mobile More menu.
+- Entries: every project (and its Deploys, Domains, Settings tabs when searching), a
+  Deploy action per GitHub project that isn't paused, Host sections, Logs, Insights
+  and every Settings section. Ranked prefix, then word start, substring, then letters
+  in order; one heading per group.
+- Deploy from the palette opens the project and the same preview confirmation as
+  Redeploy (`useDeployWithPreview`); nothing starts without it.
+- The Host flyout heading still said "System"; fixed.
 
 ---
 

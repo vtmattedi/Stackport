@@ -1,7 +1,10 @@
+import { useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader } from "lucide-react";
-import { ApiError } from "../api/client";
-import type { PreviewCommit, RevisionPreview as Preview } from "../api/types";
+import { api, ApiError } from "../api/client";
+import type { PreviewCommit, Project, RevisionPreview as Preview } from "../api/types";
+import { useSystemActions } from "../context/SystemContext";
+import { useConfirm } from "./ConfirmDialog";
 import { TimeAgo } from "./TimeAgo";
 import styles from "./RevisionPreview.module.scss";
 
@@ -103,4 +106,26 @@ export function RevisionPreview({ queryKey, load, direction }: {
       {data.compose ? <ComposeDiff compose={data.compose} /> : data.composeNote && <div className={styles.note}>{data.composeNote}</div>}
     </div>
   );
+}
+
+/** Deploy with the preview confirmation: used by the project page and the command
+ *  palette. Resolves once the deploy has started, or was cancelled. */
+export function useDeployWithPreview(): (project: Pick<Project, "id" | "autoDeployBranch">, branch?: string) => Promise<void> {
+  const confirm = useConfirm();
+  const { startProjectAction } = useSystemActions();
+  return useCallback(async (project, branch) => {
+    const ok = await confirm({
+      title: `Deploy ${branch ?? project.autoDeployBranch ?? "the branch"}?`,
+      description: "Pulls the branch head, then runs docker compose up -d --build.",
+      confirmLabel: "Deploy",
+      body: (
+        <RevisionPreview
+          direction="deploy"
+          queryKey={["project", project.id, "deploy-preview", branch ?? null]}
+          load={() => api.getDeployPreview(project.id, branch)}
+        />
+      ),
+    });
+    if (ok) await startProjectAction(project.id, "deploy", branch ? { branch } : undefined);
+  }, [confirm, startProjectAction]);
 }

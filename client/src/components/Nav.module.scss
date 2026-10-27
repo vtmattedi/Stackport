@@ -194,6 +194,22 @@ $submenu-open-delay: 0.5s;
   max-width: 140px;
 }
 
+// The palette shortcut, shown on the Search entry when the sidebar is expanded.
+.nav-kbd {
+  display: none;
+  margin-left: auto;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.nav.expanded .nav-kbd {
+  display: inline-block;
+}
+
 // ── Footer ────────────────────────────────────────────────────────────────
 .nav-footer {
   display: flex;

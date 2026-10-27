@@ -4,7 +4,7 @@ import { HoverCard } from "radix-ui";
 import {
   ScrollText, FolderDot, Gauge, LogOut, Settings as SettingsIcon,
   ShieldCheck, Cpu, Wifi, WifiOff, ChevronLeft, ChevronRight,
-  Layers, Box, Loader, BarChart2, Star, Menu,
+  Layers, Box, Loader, BarChart2, Star, Menu, Search,
 } from "lucide-react";
 import { api, clearToken } from "../api/client";
 import { useSocket, useSocketLatency } from "../context/SocketContext";
@@ -15,6 +15,7 @@ import { StackPortBrand } from "../logo/StackPortBrand";
 import styles from "./Nav.module.scss";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { RunningActionsList, useRunningActions } from "./RunningActions";
+import { openCommandPalette, PALETTE_SHORTCUT } from "./CommandPalette";
 import type { Project, SystemData } from "../api/types";
 
 // Keep in sync with $submenu-open-delay in Nav.module.scss: the trigger's
@@ -57,7 +58,7 @@ function SystemSubmenu({ system }: { system: SystemData | null }) {
 
   return (
     <>
-      <div className={styles.submenuHeader}>System</div>
+      <div className={styles.submenuHeader}>Host</div>
       <div className={styles.submenuList}>
         {SYSTEM_TABS.map(({ tab, label, icon: Icon }) => (
           <Link key={tab} to={`/host/${tab}`} className={styles.submenuItem}>
@@ -183,6 +184,16 @@ export default function Nav() {
       </div>
 
       <div className={styles.navLinks}>
+        <button
+          type="button"
+          className={styles.navLink}
+          title={`Search (${PALETTE_SHORTCUT})`}
+          onClick={openCommandPalette}
+        >
+          <Search size={16} />
+          <span className={styles.linkText}>Search</span>
+          <kbd className={styles.navKbd}>{PALETTE_SHORTCUT}</kbd>
+        </button>
         <HoverCard.Root openDelay={SUBMENU_OPEN_DELAY_MS} closeDelay={150}>
           <HoverCard.Trigger asChild>
             <NavLink
@@ -323,6 +334,10 @@ export default function Nav() {
               <span className={styles.submenuItemLabel}>{label}</span>
             </NavLink>
           ))}
+          <button type="button" className={styles.submenuItem} onClick={() => { setMoreOpen(false); openCommandPalette(); }}>
+            <Search size={15} />
+            <span className={styles.submenuItemLabel}>Search</span>
+          </button>
           <div className={styles.moreSeparator} />
           <div className={styles.moreFooter}>
             <span className={cn(styles.navStatus, connected && styles.connected)}>

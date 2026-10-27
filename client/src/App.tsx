@@ -1,3 +1,4 @@
+import { CommandPalette } from "./components/CommandPalette";
 import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useParams } from "react-router-dom";
 import { Loader } from "lucide-react";
@@ -48,6 +49,7 @@ function PrivateLayout() {
         <Nav />
         <GlobalRealtime />
         <GlobalActionToasts />
+        <CommandPalette />
         <div className="app-content">
           <Suspense
             fallback={(

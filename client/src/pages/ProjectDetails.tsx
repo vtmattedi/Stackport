@@ -1,5 +1,5 @@
 import { PolicyViolations } from "./project/PolicyViolations";
-import { RevisionPreview } from "../components/RevisionPreview";
+import { RevisionPreview, useDeployWithPreview } from "../components/RevisionPreview";
 import { lazy, memo, Suspense, useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
@@ -250,6 +250,7 @@ export default function ProjectDetails() {
   const navigate = useNavigate();
   const confirm = useConfirm();
   const { refreshSystem, startProjectAction, redeployProjectContainer, dropProjectServiceVolumes } = useSystemActions();
+  const deployWithPreview = useDeployWithPreview();
   const projectId = Number(id);
   const projectValid = Number.isInteger(projectId) && projectId > 0;
   // Server data lives in the query cache (useProjectData.ts); socket events and the
@@ -362,20 +363,7 @@ export default function ProjectDetails() {
   }
 
   async function handleDeploy(branch: string | undefined) {
-    if (!project) return;
-    const ok = await confirm({
-      title: `Deploy ${branch ?? project.autoDeployBranch ?? "the branch"}?`,
-      description: "Pulls the branch head, then runs docker compose up -d --build.",
-      confirmLabel: "Deploy",
-      body: (
-        <RevisionPreview
-          direction="deploy"
-          queryKey={["project", project.id, "deploy-preview", branch ?? null]}
-          load={() => api.getDeployPreview(project.id, branch)}
-        />
-      ),
-    });
-    if (ok) await runProjectCommand("deploy", branch ? { branch } : undefined);
+    if (project) await deployWithPreview(project, branch);
   }
 
   async function redeployService(service: string) {
