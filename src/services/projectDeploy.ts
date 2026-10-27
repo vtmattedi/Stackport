@@ -174,6 +174,8 @@ export async function getProjectComposeVariables(projectId: number, selectedFile
       .flatMap((file) => file.variables.map((variable) => variable.key)),
   );
   const repoEnvPath = resolveContainedPath(repoPath, ".env");
+  // A path resolveContainedPath kept inside the checkout.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
   const repoText = repoEnvPath ? await fs.readFile(repoEnvPath, "utf8").catch(() => "") : "";
   const repository = dotenvKeys(repoText);
   return refs.map((ref) => ({

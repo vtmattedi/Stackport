@@ -14,7 +14,17 @@ export interface ComposeVariableRef {
 }
 
 // `$$` is an escaped dollar; the alternation consumes it so it never starts a reference.
-const REF_RE = /\$\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])[^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+// The braced form captures its whole body; parseBraced splits the name from the operator.
+const REF_RE = /\$\$|\$\{([^}]*)\}|\$([A-Za-z_]\w*)/g;
+const NAME_RE = /^[A-Za-z_]\w*/;
+
+function parseBraced(body: string): { name: string; op: string } | null {
+  const name = NAME_RE.exec(body)?.[0];
+  if (!name) return null;
+  const rest = body.slice(name.length);
+  const op = rest.startsWith(":") ? rest.slice(0, 2) : rest.slice(0, 1);
+  return { name, op };
+}
 
 function collectStrings(node: unknown, out: string[]): void {
   if (typeof node === "string") {
@@ -35,9 +45,10 @@ export function extractComposeVariables(doc: unknown): ComposeVariableRef[] {
   const refs = new Map<string, ComposeVariableRef>();
   for (const text of strings) {
     for (const match of text.matchAll(REF_RE)) {
-      const name = match[1] ?? match[3];
-      if (!name) continue; // "$$"
-      const op = match[2] ?? "";
+      const braced = match[1] !== undefined ? parseBraced(match[1]) : null;
+      const name = braced?.name ?? match[2];
+      if (!name) continue; // "$$", or "${...}" that isn't a variable name
+      const op = braced?.op ?? "";
       const existing = refs.get(name) ?? { name, hasDefault: false, required: false };
       // A reference with a default somewhere still counts as unset elsewhere; only
       // mark it as defaulted when every use has one.
@@ -54,9 +65,13 @@ export function extractComposeVariables(doc: unknown): ComposeVariableRef[] {
 /** Keys defined in a dotenv-style text (KEY=value, `export KEY=value`, comments ignored). */
 export function dotenvKeys(text: string): Set<string> {
   const keys = new Set<string>();
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
-    if (match) keys.add(match[1]);
+  for (const raw of text.split("\n")) {
+    let line = raw.trim();
+    if (line.startsWith("export ")) line = line.slice("export ".length).trimStart();
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (NAME_RE.exec(key)?.[0] === key) keys.add(key);
   }
   return keys;
 }
