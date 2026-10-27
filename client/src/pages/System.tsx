@@ -31,6 +31,7 @@ import SubShell, { SubShellSectionHeader } from "../components/SubShell";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
+import { NumberInput } from "../components/NumberInput";
 import { Switch } from "../components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -820,15 +821,13 @@ function SystemPage({ activeTab }: { activeTab: SystemTab }) {
                 <div className="row-actions" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 12, marginTop: 8 }}>
                   <div className="field" style={{ maxWidth: 160 }}>
                     <label>Warning below</label>
-                    <Input
-                      type="number"
+                    <NumberInput
                       min={0}
                       step={0.5}
-                      value={(storageThresholdsDraft.warningFreeBytes / (1024 * 1024 * 1024)).toFixed(1)}
-                      onChange={(e) => {
-                        const gb = Number(e.target.value);
-                        if (!Number.isFinite(gb)) return;
-                        setStorageThresholdsDraft({ ...storageThresholdsDraft, warningFreeBytes: Math.round(gb * 1024 * 1024 * 1024) });
+                      suffix="GB"
+                      value={storageThresholdsDraft.warningFreeBytes / (1024 * 1024 * 1024)}
+                      onValueChange={(gb) => {
+                        setStorageThresholdsDraft({ ...storageThresholdsDraft, warningFreeBytes: Math.round((gb ?? 0) * 1024 * 1024 * 1024) });
                         setStorageThresholdsDirty(true);
                       }}
                     />
@@ -836,15 +835,13 @@ function SystemPage({ activeTab }: { activeTab: SystemTab }) {
                   </div>
                   <div className="field" style={{ maxWidth: 160 }}>
                     <label>Critical below</label>
-                    <Input
-                      type="number"
+                    <NumberInput
                       min={0}
                       step={0.5}
-                      value={(storageThresholdsDraft.criticalFreeBytes / (1024 * 1024 * 1024)).toFixed(1)}
-                      onChange={(e) => {
-                        const gb = Number(e.target.value);
-                        if (!Number.isFinite(gb)) return;
-                        setStorageThresholdsDraft({ ...storageThresholdsDraft, criticalFreeBytes: Math.round(gb * 1024 * 1024 * 1024) });
+                      suffix="GB"
+                      value={storageThresholdsDraft.criticalFreeBytes / (1024 * 1024 * 1024)}
+                      onValueChange={(gb) => {
+                        setStorageThresholdsDraft({ ...storageThresholdsDraft, criticalFreeBytes: Math.round((gb ?? 0) * 1024 * 1024 * 1024) });
                         setStorageThresholdsDirty(true);
                       }}
                     />
