@@ -12,6 +12,7 @@ import githubPollerRouter from "./githubPoller";
 import metricsRouter from "./metrics";
 import hardwareRouter from "./hardware";
 import apiTokensRouter from "./apiTokens";
+import actionsRouter from "./actions";
 
 const router = Router();
 
@@ -29,5 +30,6 @@ router.use("/github-poller", githubPollerRouter);
 router.use("/metrics", metricsRouter);
 router.use("/hardware", hardwareRouter);
 router.use("/api-tokens", apiTokensRouter);
+router.use("/actions", actionsRouter);
 
 export default router;

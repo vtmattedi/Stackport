@@ -48,7 +48,7 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 4 | Health-gated deploys | C3 | 🟠 | M | 2 | ✅ |
 | 5 | ~~One deploy-history table~~ folded into PR 8 | T2 | 🟡 | — | — | ↪ 8 |
 | 6 | API tokens and read-only MCP over HTTP | MCP-1, S5 (part) | 🟠 | M–L | 2 | ✅ |
-| 8 | Action runner, server side (includes T2) | RUN-1, T2 | 🟠 | L | 2 | |
+| 8 | Action runner, server side (includes T2) | RUN-1, T2 | 🟠 | L | 2 | ✅ |
 | 9 | Data layer foundation and runner client | T5a, RUN-2 | 🟡 | M | 8 | |
 | 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | |
 | 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | |
@@ -232,7 +232,7 @@ wrong-namespace rejection.
 
 ## Phase 3: action runner and data layer
 
-### PR 8 — Action runner, server side (RUN-1)
+### PR 8 — Action runner, server side (RUN-1, T2) ✅
 
 **Problem:** action tracking has three mechanisms depending on action type, live output
 only for the project build slot, no sequence numbers (lines duplicated or lost around a
@@ -267,8 +267,22 @@ environment values, and persisting it stores them. Required in this PR:
 - **Documentation:** a new entry in `Stackport.md` §7 (security model) describing what
   is stored, where, for how long, and how to delete it.
 
-**Tests:** sequence replay with no duplicates or gaps across attach, masking, retention
-pruning, deletion paths, interrupted-on-startup.
+**Shipped notes:**
+- Built on the existing `actionRegistry`, whose API is unchanged, so every caller kept
+  working; the older socket events (`project:deploy`, `actions:changed`, ...) stay until
+  the client moves to the new ones in PR 9. The older per-line `project:deploy` stream
+  is now masked too.
+- Includes T2 (see PR 5): Insights and "Recent deploys" read deploy-type actions
+  (deploy, rollback, recreate, force rebuild, Compose up, upload) from `actions`, so
+  manual deploys now count.
+- SSL issuance and system actions store only their final output, not live progress.
+- New routes: `GET /api/actions/running`, `GET /api/actions/:id/log`,
+  `DELETE /api/projects/:id/action-logs`.
+
+**Tests:** persistence, numbering and batching, masking (including a secret split
+across writes), partial-line hold-back, non-streaming output, replay from memory and
+from file, annotation, interrupted-on-startup, retention by count and age, deletion,
+the "Recent deploys" route, and the backfill migration.
 
 ### PR 9 — Data layer foundation and runner client (T5a, RUN-2)
 
@@ -390,6 +404,7 @@ Needs a separate design against what is already deployed:
 | S11 Docker socket containment (userns-remap, socket proxy) | 🟠 | |
 | S12 `resolveContainedPath` should resolve symlinks | 🟡 | Unverified whether anything exploitable relies on it |
 | MCP-2 OAuth for claude.ai connectors | 🟡 | Authorization code + PKCE with pre-registered clients, discovery metadata, consent page, short-lived access tokens on the PR 6 token table. Verify Anthropic's custom-connector requirements first |
+| S13 Encrypt managed env values at rest | 🟡 | `project_env_files.variables_json` is plain text, unlike credentials, although `Stackport.md` §7 implied all stored secrets are encrypted. Found during PR 8 |
 | N1 `/version.json` exposes the exact commit without auth | ⚪ | |
 | A1 Deploy prebuilt images by digest | 🟡 | Needs S1 |
 | A2 Scheduled off-host backups | 🟠 | |

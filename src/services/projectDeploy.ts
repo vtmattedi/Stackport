@@ -986,6 +986,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   // "effective" copy captured after a successful `up` below is what actually ran.
   const sourceCompose = await readComposeFileSafe(repoPath, composeFile);
   const commitSha = await currentCommitSha(projectId, action, repoPath);
+  actionRegistry.annotate(projectRepoKey(projectId), { commitSha, branch: deployedBranch });
 
   try {
     const written = await writeEnvFiles(repoPath, listProjectEnvFiles(projectId));

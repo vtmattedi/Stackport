@@ -43,7 +43,8 @@ import {
 } from "../services/projectDeploy";
 import { getProjectBranches, resetGithubTrackingIfChanged } from "../services/githubPoller";
 import { runCertbotAction } from "../services/certbot";
-import { actionRegistry, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../services/actionRegistry";
+import { actionRegistry, DEPLOY_KINDS_SQL, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../services/actionRegistry";
+import { deleteProjectActionLogs } from "../services/actionLog";
 import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "./projectResources";
 import { createProject as adminCreateProject, parseBoolean, parseDeployHealthGrace, parseProjectGroupName, ProjectAdminError } from "../services/projectAdmin";
 import {
@@ -936,6 +937,8 @@ router.post("/:id/stop-purge", requireAuth, (req: Request<{ id: string }>, res: 
   const key = projectRepoKey(id);
   const started = actionRegistry.tryStart(key, "stop-purge", { projectId: id }, async () => {
     const result = await stopAndPurgeProject(id);
+    // Deleting the project's data includes its stored action logs (not this run's).
+    if (result.ok) deleteProjectActionLogs(id);
     auditLog(user, "project.stop-purge", String(id), result.ok ? "ok" : "fail", {
       repoPath: result.repoPath,
     });
@@ -1128,18 +1131,22 @@ router.get("/:id/branches", requireAuth, async (req: Request<{ id: string }>, re
   }
 });
 
-interface ProjectDeployRow {
-  id: number;
+interface DeployActionRow {
+  id: string;
   project_id: number;
+  kind: string;
   commit_sha: string | null;
   commit_message: string | null;
   commit_author: string | null;
+  branch: string | null;
   triggered_by: string;
   status: string;
-  created_at: string;
-  completed_at: string | null;
+  started_at: string;
+  finished_at: string | null;
+  log_path: string | null;
 }
 
+/** Recent deploy-type actions (manual, auto, webhook, rollback, ...) from the actions log. */
 router.get("/:id/deploys", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
@@ -1151,19 +1158,33 @@ router.get("/:id/deploys", requireAuth, (req: Request<{ id: string }>, res: Resp
   }
 
   const rows = db.prepare(
-    "SELECT * FROM project_deploys WHERE project_id = ? ORDER BY created_at DESC LIMIT 50"
-  ).all(id) as ProjectDeployRow[];
+    `SELECT * FROM actions WHERE project_id = ? AND kind IN (${DEPLOY_KINDS_SQL}) ORDER BY started_at DESC LIMIT 50`
+  ).all(id) as DeployActionRow[];
   res.json(rows.map((r) => ({
     id: r.id,
     projectId: r.project_id,
+    kind: r.kind,
     commitSha: r.commit_sha,
     commitMessage: r.commit_message,
     commitAuthor: r.commit_author,
+    branch: r.branch,
     triggeredBy: r.triggered_by,
     status: r.status,
-    createdAt: r.created_at,
-    completedAt: r.completed_at,
+    createdAt: r.started_at,
+    completedAt: r.finished_at,
+    hasLog: r.log_path !== null,
   })));
+});
+
+/** Deletes every stored action log for the project (Clear logs). Action history stays. */
+router.delete("/:id/action-logs", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  const deleted = deleteProjectActionLogs(id);
+  auditLog(req.user ?? "unknown", "project.clear-action-logs", project.name, "ok", { deleted });
+  res.json({ deleted });
 });
 
 router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
@@ -1380,6 +1401,8 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
     const warning = await disableWebhook(id);
     if (warning) console.warn(`[webhooks] ${row.name}: ${warning}`);
   }
+  // Action rows go with the project (ON DELETE CASCADE); their log files don't.
+  deleteProjectActionLogs(id);
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   healthChecker.unschedule(id);
 

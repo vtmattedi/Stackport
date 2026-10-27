@@ -11,7 +11,7 @@ export interface AutoDeployCommit {
   commitAt: string | null;
 }
 
-/** What asked for the deploy; stored as project_deploys.triggered_by. */
+/** What asked for the deploy; stored as actions.triggered_by. */
 export type AutoDeploySource = "auto" | "webhook";
 
 export type AutoDeployOutcome = "started" | "queued";
@@ -32,22 +32,17 @@ function recordCommit(projectId: number, commit: AutoDeployCommit): void {
 }
 
 function start(projectId: number, commit: AutoDeployCommit, source: AutoDeploySource): boolean {
-  const db = getDatabase();
-  const started = actionRegistry.tryStart(projectRepoKey(projectId), "deploy", { projectId, triggeredBy: source }, async () => {
-    const deployRow = db.prepare(
-      "INSERT INTO project_deploys (project_id, commit_sha, commit_message, commit_author, triggered_by, status, created_at) VALUES (?, ?, ?, ?, ?, 'running', ?)"
-    ).run(projectId, commit.sha, commit.commitMessage, commit.commitAuthor, source, new Date().toISOString());
-    const deployId = deployRow.lastInsertRowid as number;
-    try {
-      const result = await deployProject(projectId, "auto", null, commit.sha);
-      db.prepare("UPDATE project_deploys SET status = ?, completed_at = ? WHERE id = ?")
-        .run(result.ok ? "success" : "failed", new Date().toISOString(), deployId);
-      return { ok: result.ok, output: result.output };
-    } catch (err) {
-      db.prepare("UPDATE project_deploys SET status = 'failed', completed_at = ? WHERE id = ?")
-        .run(new Date().toISOString(), deployId);
-      throw err;
-    }
+  // The action row (actions table) is the deploy log: trigger and commit go in its meta.
+  const meta = {
+    projectId,
+    triggeredBy: source,
+    commitSha: commit.sha,
+    commitMessage: commit.commitMessage,
+    commitAuthor: commit.commitAuthor,
+  };
+  const started = actionRegistry.tryStart(projectRepoKey(projectId), "deploy", meta, async () => {
+    const result = await deployProject(projectId, "auto", null, commit.sha);
+    return { ok: result.ok, output: result.output };
   });
   return started !== null;
 }

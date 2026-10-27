@@ -133,16 +133,21 @@ export interface GitHubBranch {
   commitAt: string | null;
 }
 
+/** One deploy-type action (deploy, rollback, recreate, ...) from the server's action log. */
 export interface ProjectDeploy {
-  id: number;
+  id: string;
   projectId: number;
+  kind: string;
   commitSha: string | null;
   commitMessage: string | null;
   commitAuthor: string | null;
+  branch: string | null;
   triggeredBy: "manual" | "auto" | "webhook";
-  status: "running" | "success" | "failed";
+  status: "running" | "success" | "failed" | "cancelled" | "interrupted";
   createdAt: string;
   completedAt: string | null;
+  /** Whether its output is still stored (retention deletes it after a while). */
+  hasLog: boolean;
 }
 
 /** Phase 1.7 — a revision/snapshot record (not the same as ProjectDeploy above,
@@ -778,7 +783,7 @@ export interface MetricsData {
     success: number;
     failed: number;
     byDay: Array<{ date: string; success: number; failed: number }>;
-    recentFailures: Array<{ id: number; projectId: number; projectName: string; createdAt: string }>;
+    recentFailures: Array<{ id: string; projectId: number; projectName: string; createdAt: string }>;
   };
   healthChecks: {
     projects: Array<{

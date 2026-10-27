@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { DEPLOY_KINDS_SQL } from "../services/actionRegistry";
 import { execFile } from "child_process";
 import * as os from "os";
 import { requireAuth } from "../middleware/auth";
@@ -52,14 +53,14 @@ router.get("/", (req, res) => {
   const days = clampDays(req.query.days);
   const projectIds = parseProjectIds(req.query.projects);
   // Ids are validated integers, so inlining them is safe and keeps every query a single prepare.
-  const deployScope = projectIds ? ` AND project_id IN (${projectIds.join(",")})` : "";
+  const deployScope = `${projectIds ? ` AND project_id IN (${projectIds.join(",")})` : ""} AND kind IN (${DEPLOY_KINDS_SQL})`;
   const projectScope = projectIds ? ` AND id IN (${projectIds.join(",")})` : "";
 
   // Deploy stats: grouped by day + status, over the requested window
   const deployRows = db.prepare(`
-    SELECT date(created_at) AS day, status, COUNT(*) AS cnt
-    FROM project_deploys
-    WHERE created_at >= datetime('now', ?)${deployScope}
+    SELECT date(started_at) AS day, status, COUNT(*) AS cnt
+    FROM actions
+    WHERE started_at >= datetime('now', ?)${deployScope}
     GROUP BY day, status
     ORDER BY day ASC
   `).all(`-${days} days`) as Array<{ day: string; status: string; cnt: number }>;
@@ -72,18 +73,18 @@ router.get("/", (req, res) => {
   }
 
   const windowArg = `-${days} days`;
-  const totalDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
-  const successDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE status = 'success' AND created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
-  const failedDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM project_deploys WHERE status = 'failed' AND created_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
+  const totalDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM actions WHERE started_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
+  const successDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM actions WHERE status = 'success' AND started_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
+  const failedDeploys = (db.prepare(`SELECT COUNT(*) AS c FROM actions WHERE status = 'failed' AND started_at >= datetime('now', ?)${deployScope}`).get(windowArg) as { c: number }).c;
 
   const recentFailedDeploys = db.prepare(`
-    SELECT pd.id, pd.project_id, p.name AS project_name, pd.created_at
-    FROM project_deploys pd
+    SELECT pd.id, pd.project_id, p.name AS project_name, pd.started_at AS created_at
+    FROM actions pd
     JOIN projects p ON p.id = pd.project_id
-    WHERE pd.status = 'failed' AND pd.created_at >= datetime('now', ?)${deployScope.replace("project_id", "pd.project_id")}
-    ORDER BY pd.created_at DESC
+    WHERE pd.status = 'failed' AND pd.started_at >= datetime('now', ?)${deployScope.replace("project_id", "pd.project_id").replace("kind", "pd.kind")}
+    ORDER BY pd.started_at DESC
     LIMIT 10
-  `).all(windowArg) as Array<{ id: number; project_id: number; project_name: string; created_at: string }>;
+  `).all(windowArg) as Array<{ id: string; project_id: number; project_name: string; created_at: string }>;
 
   // Health check stats from projects — a live snapshot of current status, not
   // windowed by period: there's no history of past checks to filter, only the

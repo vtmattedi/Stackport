@@ -3,6 +3,7 @@ import type { ProjectDeploy, ProjectDeploymentRevision } from "../../api/types";
 import { ExpandableCard } from "../../components/ExpandableCard";
 import { TimeAgo } from "../../components/TimeAgo";
 import { Button } from "../../components/ui/button";
+import { ACTION_LABEL } from "../../lib/actionLabels";
 import { cn } from "../../lib/utils";
 import styles from "../ProjectDetails.module.scss";
 
@@ -61,7 +62,7 @@ export function DeploymentsCard({ deploys, revisions, loading, rollingBack, onRo
             {deploys.slice(0, 10).map((d) => (
               <li key={d.id}>
                 <span className={cn(styles.statusPill, d.status === "success" ? styles.statusUp : d.status === "failed" ? styles.statusDown : styles.statusUnknown)}>{d.status}</span>
-                <span className={styles.historyMeta}>{TRIGGER_LABEL[d.triggeredBy]}</span>
+                <span className={styles.historyMeta}>{d.kind === "deploy" ? TRIGGER_LABEL[d.triggeredBy] : (ACTION_LABEL[d.kind] ?? d.kind).toLowerCase()}</span>
                 <span className="mono">{d.commitSha ? d.commitSha.slice(0, 7) : "—"}</span>
                 <span className={styles.historyMessage} title={d.commitMessage ?? undefined}>{d.commitMessage ?? ""}</span>
                 <span className={styles.historyMeta}><TimeAgo ts={d.createdAt} /></span>

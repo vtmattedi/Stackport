@@ -13,6 +13,9 @@ import { bindDockerLogsEvents } from "./dockerLogsSocket";
 
 type Channel = "system" | "projects" | "vps" | "hardware";
 
+/** Action ids are UUIDs, or "legacy-<n>" for deploys copied from project_deploys. */
+const ACTION_ID_RE = /^(?:[0-9a-f-]{36}|legacy-[0-9]+)$/;
+
 const INTERVALS_MS: Record<Channel, number> = {
   system:   5_000,
   projects: 10_000,
@@ -93,6 +96,23 @@ export class SocketManager {
         if (typeof ch !== "string" || !isChannel(ch)) return;
         void socket.leave(ch);
         this.stopIfEmpty(ch);
+      });
+
+      // Generic action output: replay from `fromSeq` (or the whole log), then live
+      // chunks in the action's room. Clients drop chunks with a seq they already have,
+      // so the overlap between replay and live output is harmless.
+      socket.on("action:attach", (payload: unknown) => {
+        const { id, fromSeq } = (payload ?? {}) as { id?: unknown; fromSeq?: unknown };
+        if (typeof id !== "string" || !ACTION_ID_RE.test(id)) return;
+        const from = typeof fromSeq === "number" && Number.isInteger(fromSeq) && fromSeq >= 0 ? fromSeq : 0;
+        void socket.join(`action:${id}`);
+        const replay = actionRegistry.replay(id, from);
+        socket.emit("action:output", replay ?? { id, chunks: [], reset: "", nextSeq: 0, done: true });
+      });
+
+      socket.on("action:detach", (id: unknown) => {
+        if (typeof id !== "string" || !ACTION_ID_RE.test(id)) return;
+        void socket.leave(`action:${id}`);
       });
 
       socket.on("deploy:subscribe", (projectId: unknown) => {

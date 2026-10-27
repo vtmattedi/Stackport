@@ -227,6 +227,7 @@ A project's health check is a path on one of its domains, fetched over HTTPS or 
 7. Admin-recovery credential generation requires local root (`docker exec` on the daemon socket) — there is no HTTP endpoint that can trigger it.
 8. `stackport uninstall` preserves state by default; `--purge` is explicit, strongly confirmed, and refuses to run non-interactively.
 9. API tokens for the MCP endpoint are stored only as SHA-256 hashes, shown once, scoped (`read` only today), revocable and optionally expiring. They are accepted only on `/mcp` and admin session tokens are never accepted there (§9).
+10. Action output is stored on disk, masked and time-limited (§10). Masking covers stored credentials and the project's managed env values; it can't cover secrets an app prints that Stackport doesn't manage. Note that managed env values themselves are stored in plain text in the database (`project_env_files.variables_json`), unlike credentials.
 
 ---
 
@@ -264,6 +265,20 @@ The older stdio server (`npm run mcp`, `src/mcp/server.ts`) is unchanged: it run
 ```
 
 The application checkout (`/var/lib/stackport/app`) is disposable and rebuildable at any time via `stackport update`/`rollback`; persistent state never lives inside it or inside a container image.
+
+## 10. Actions and their logs
+
+Every action (deploys, pulls, rollbacks, stops, SSL issuance, nginx applies, certbot runs, Docker prunes) goes through one runner, `src/services/actionRegistry.ts`, which allows one action per slot (a project's build/deploy slot, each domain's SSL slot, nginx, ...).
+
+- **History:** each run is a row in the `actions` table: kind, project, status (`running`, `success`, `failed`, `cancelled`, `interrupted`), who or what triggered it, the commit and branch for deploy-type actions, and start and end times. Rows still `running` when Stackport starts are marked `interrupted`: their processes died with the previous Stackport process. This table is also the deploy log behind Insights and "Recent deploys", replacing `project_deploys` (whose rows were copied in once; the table is kept, unwritten, for `stackport rollback`).
+- **Output:** numbered chunks, sent every 100 ms to clients that attach over the socket (`action:attach {id, fromSeq}` replays and then streams), and appended to `<LOG_DIR>/actions/<id>.log`. Actions that don't stream (nginx, certbot, SSL, prune) store their final output. `GET /api/actions/:id/log` returns a stored log; `GET /api/actions/running` lists running actions.
+
+**What is stored, and for how long.** Build output often prints environment values, so:
+
+- **Masking:** before output is streamed or written, every stored credential and the project's managed env values (6 characters or longer) are replaced with `***`. A trailing partial line is held back up to a second so a value split across two writes is still caught. Secrets an app prints that Stackport doesn't manage are not masked.
+- **Retention:** a log file is kept for the newest 20 runs per slot and never longer than 30 days; action rows (no output) are kept 180 days for Insights. Retention runs after every action and at startup.
+- **Deletion:** a project's log files are deleted when the project is deleted, after a successful Stop & Delete Data, and on request (`DELETE /api/projects/:id/action-logs`, the Clear logs button).
+- **Permissions:** the directory is `0700` and each file `0600`, owned by the app user.
 
 ## Traffic and Docker logs
 
