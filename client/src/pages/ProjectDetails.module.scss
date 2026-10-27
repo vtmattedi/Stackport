@@ -648,7 +648,9 @@
 .ingress-block,
 .ingress-block > * { min-width: 0; }
 
-.ingress-block :global(.row-actions) { flex-wrap: wrap; }
+// Add-domain / expose-port rows: top-aligned so the service picker's hint can sit
+// under it without pushing the input and button off its line.
+.ingress-block > :global(.row-actions) { flex-wrap: wrap; align-items: flex-start; }
 
 @media (max-width: 640px) {
   .domain-input,

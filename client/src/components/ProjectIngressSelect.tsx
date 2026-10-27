@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { api } from "../api/client";
+import { cn } from "../lib/utils";
 import type { ComposeIngressTarget } from "../api/types";
 import { AppSelect } from "./AppSelect";
 import { Button } from "./ui/button";
+import styles from "./ProjectIngressSelect.module.scss";
 
 export function ProjectIngressSelect({ projectId, composeFile, value, onValueChange, disabled, refreshKey }: {
   projectId: number;
@@ -44,16 +46,16 @@ export function ProjectIngressSelect({ projectId, composeFile, value, onValueCha
     return () => { cancelled = true; };
   }, [projectId, composeFile, refreshKey, revision]);
   return (
-    <div style={{ minWidth: 220, flex: 1 }}>
-      <div className="row-actions">
+    <div className={styles.root}>
+      <div className={styles.control}>
         <AppSelect value={value} onValueChange={onValueChange}
           disabled={disabled || loading || targets.length === 0}
           placeholder={loading ? "Reading Compose…" : "Select service and port"}
           options={[{ value: "", label: "Select service and port" }, ...targets.map(t => ({value: `${t.service}:${t.containerPort}`, label: `${t.service}:${t.containerPort}`}))]} />
-        <Button type="button" size="xs" variant="ghost" disabled={disabled || loading} onClick={() => setRevision(r => r + 1)} aria-label="Refresh service and port options"><RefreshCw size={12} /></Button>
+        <Button type="button" size="icon" variant="outline" disabled={disabled || loading} onClick={() => setRevision(r => r + 1)} title="Re-read Compose" aria-label="Refresh service and port options"><RefreshCw size={13} className={loading ? "spin" : undefined} /></Button>
       </div>
-      {error && <div className="muted-text" style={{fontSize: 12}}>{error}</div>}
-      {!loading && !error && !targets.length && <div className="muted-text" style={{fontSize: 12}}>Declare a TCP port with expose in Compose, then refresh.</div>}
+      {error && <div className={cn("muted-text", styles.hint)}>{error}</div>}
+      {!loading && !error && !targets.length && <div className={cn("muted-text", styles.hint)}>Declare a TCP port with expose in Compose, then refresh.</div>}
     </div>
   );
 }

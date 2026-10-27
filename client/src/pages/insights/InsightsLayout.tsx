@@ -42,7 +42,7 @@ function InsightsShell() {
   const badge = useAnomalyBadge();
   const sections = INSIGHTS_SECTIONS.map((s) => (s.path === "anomalies" ? { ...s, badge } : s));
   return (
-    <SubShell title="Insights" icon={BarChart2} basePath="/insights" sections={sections} actions={<FilterBar />} className={styles.wide} />
+    <SubShell title="Insights" icon={BarChart2} basePath="/insights" sections={sections} actions={<FilterBar />}/>
   );
 }
 

@@ -1,0 +1,18 @@
+// The select and its refresh button are one control: they never wrap apart,
+// even inside rows that wrap (Domains & ports).
+.root {
+  flex: 1;
+  min-width: 220px;
+  display: grid;
+  gap: 4px;
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  > :first-child { flex: 1; min-width: 0; }
+}
+
+.hint { font-size: 12px; }
