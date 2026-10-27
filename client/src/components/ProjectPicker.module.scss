@@ -1,0 +1,290 @@
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  // Matches AppSelect's size="sm" height so it sits level with other filters.
+  height: 32px;
+  min-width: 170px;
+  max-width: 280px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+
+  &:hover { border-color: var(--dim); }
+  &:focus-visible { outline: none; border-color: var(--brand); }
+
+  > .trunc { flex: 1; text-align: left; }
+}
+
+.trigger-scoped {
+  border-color: color-mix(in srgb, var(--brand) 55%, var(--border));
+
+  .trigger-icon { color: var(--brand); }
+}
+
+.trigger-icon { flex-shrink: 0; color: var(--dim); }
+
+.trigger-count {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-hover);
+  background: color-mix(in srgb, var(--brand) 18%, transparent);
+}
+
+.chevron { flex-shrink: 0; opacity: 0.6; }
+
+.panel {
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(440px, var(--radix-popover-content-available-height, 440px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.search {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--dim);
+
+  &:focus-within { border-color: var(--brand); }
+
+  input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+}
+
+.clear-search {
+  display: grid;
+  place-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+
+  &:hover { color: var(--text); }
+}
+
+.quick {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.quick-btn {
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+
+  & + & { border-left: 1px solid var(--border); }
+  &:hover:not(:disabled) { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+  &:disabled { opacity: 0.4; cursor: default; }
+}
+
+.quick-btn-active {
+  color: var(--brand-hover);
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px 6px;
+}
+
+.empty {
+  padding: 16px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.group + .group { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
+
+// "only" stays out of the way until its row is hovered or focused.
+.group-head,
+.item-row {
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+
+  &:hover { background: rgba(255, 255, 255, 0.04); }
+  &:hover .only-btn,
+  &:focus-within .only-btn { opacity: 1; }
+}
+
+.group-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-align: left;
+
+  &:focus-visible { outline: none; color: var(--text); }
+}
+
+.group-toggle-on { color: var(--text); }
+
+.group-name { flex: 1; }
+
+.group-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+
+.dial { flex-shrink: 0; }
+
+.dial-track {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 2;
+}
+
+.dial-fill {
+  fill: none;
+  stroke: var(--brand);
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke-dasharray 160ms ease;
+}
+
+.dial-core { fill: var(--brand); }
+
+.items { padding-left: 10px; }
+
+.item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: color 120ms ease;
+
+  &:focus-visible { outline: none; color: var(--text); }
+}
+
+// A small lit bar marks an included project, like a status LED; off is an empty slot.
+.led {
+  flex-shrink: 0;
+  width: 4px;
+  height: 14px;
+  border-radius: 2px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.item-on {
+  color: var(--text);
+
+  .led {
+    background: var(--brand);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--brand) 60%, transparent);
+  }
+}
+
+.only-btn {
+  flex-shrink: 0;
+  margin-right: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+
+  &:hover { color: var(--text); border-color: var(--dim); }
+  &:focus-visible { opacity: 1; outline: none; border-color: var(--brand); }
+
+  // Touch has no hover, so keep it visible there.
+  @media (hover: none) { opacity: 1; }
+}
+
+.foot {
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.trunc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

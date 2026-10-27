@@ -1,7 +1,7 @@
 import { BarChart2, LayoutDashboard, Cpu, Radar, ScrollText, ShieldAlert, RefreshCw } from "lucide-react";
 import SubShell from "../../components/SubShell";
 import { AppSelect } from "../../components/AppSelect";
-import { MultiSelect } from "../../components/MultiSelect";
+import { ProjectPicker } from "../../components/ProjectPicker";
 import { TooltipProvider } from "../../components/ui/tooltip";
 import { InsightsProvider, useInsights, useScope } from "./InsightsContext";
 import { useRequestSample } from "./data";
@@ -21,7 +21,7 @@ function FilterBar() {
   const { options } = useScope();
   return (
     <div className={styles.filterBar}>
-      <MultiSelect options={options} selected={scope} onChange={setScope} allLabel="All projects" triggerClassName={styles.scopeSelect} />
+      <ProjectPicker items={options} selected={scope} onChange={setScope} triggerClassName={styles.scopeSelect} />
       <AppSelect value={period} onValueChange={(v) => setPeriod(v as PeriodId)} options={PERIODS} triggerClassName={styles.periodSelect} size="sm" />
       <button type="button" className="btn btn-ghost btn-sm" onClick={refresh} title="Reload every section">
         <RefreshCw size={13} />

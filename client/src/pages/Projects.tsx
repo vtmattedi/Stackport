@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   FolderDot,
@@ -12,7 +12,8 @@ import {
   Search,
 } from "lucide-react";
 import styles from "./Projects.module.scss";
-import { AppSelect } from "../components/AppSelect";
+import { ProjectPicker } from "../components/ProjectPicker";
+import { useLocalStorageState } from "../hooks/useLocalStorageState";
 import { Button } from "../components/ui/button";
 import { NewProjectWizard } from "../components/project-wizard/NewProjectWizard";
 import {
@@ -64,12 +65,13 @@ export default function Projects() {
   const { projects: projectsData, refreshProjects: refresh, startProjectAction, system } = useSystem();
   const projects = projectsData ?? [];
   const loading = projectsData === null;
-  const [groupFilter, setGroupFilter] = useState("");
-  const groupNames = [...new Set(projects.map(project => project.groupName).filter((name): name is string => !!name))].sort((a, b) => a.localeCompare(b));
+  const [scope, setScope] = useLocalStorageState<string[]>("projects-scope", []);
+  const scopeItems = useMemo(() => projects.map(project => ({ value: String(project.id), label: project.name, group: project.groupName })), [projects]);
+  const scopeIds = new Set(scope.filter(id => scopeItems.some(item => item.value === id)));
   const [search, setSearch] = useState("");
   const searchTerm = search.trim().toLowerCase();
   const visibleProjects = projects
-    .filter(project => !groupFilter || (groupFilter === "ungrouped" ? !project.groupName : project.groupName === groupFilter.slice(6)))
+    .filter(project => scopeIds.size === 0 || scopeIds.has(String(project.id)))
     .filter(project => !searchTerm
       || project.name.toLowerCase().includes(searchTerm)
       || (project.githubRepo ?? "").toLowerCase().includes(searchTerm)
@@ -153,13 +155,12 @@ export default function Projects() {
                   aria-label="Search projects"
                 />
               </label>
-              <AppSelect value={groupFilter} onValueChange={setGroupFilter} size="sm" triggerClassName={styles.groupFilter}
-                options={[{value: "", label: "All groups"}, {value: "ungrouped", label: "Ungrouped"}, ...groupNames.map(group => ({value: `group:${group}`, label: group}))]} />
+              <ProjectPicker items={scopeItems} selected={scope} onChange={setScope} align="end" />
             </div>
             {loading ? (
               <div className="empty">Loading...</div>
             ) : visibleProjects.length === 0 ? (
-              <div className="empty">{!projects.length ? "No projects yet." : searchTerm ? `No projects match "${search.trim()}".` : "No projects in this group."}</div>
+              <div className="empty">{!projects.length ? "No projects yet." : searchTerm ? `No projects match "${search.trim()}".` : "No projects in this selection."}</div>
             ) : (
               <div className="table-wrap">
                 <table className={styles.projectTable}>
