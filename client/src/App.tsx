@@ -22,6 +22,7 @@ const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
 const GeneralSection = lazy(() => import("./pages/settings/GeneralSection"));
 const DeployTriggersSection = lazy(() => import("./pages/settings/DeployTriggersSection"));
 const NotificationsSection = lazy(() => import("./pages/settings/NotificationsSection"));
+const StorageSection = lazy(() => import("./pages/settings/StorageSection"));
 const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
 const InsightsLayout = lazy(() => import("./pages/insights/InsightsLayout"));
@@ -88,6 +89,7 @@ export default function App() {
               <Route path="notifications" element={<NotificationsSection />} />
               <Route path="credentials" element={<Credentials />} />
               <Route path="mcp" element={<McpSection />} />
+              <Route path="storage" element={<StorageSection />} />
               <Route path="maintenance" element={<MaintenanceSection />} />
               <Route path="*" element={<Navigate to="general" replace />} />
             </Route>

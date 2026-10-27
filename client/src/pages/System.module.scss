@@ -438,57 +438,6 @@
   }
 }
 
-.docker-df-panel {
-  display: grid;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgba(13, 17, 23, 0.28);
-  padding: 12px;
-  margin-bottom: 14px;
-}
-
-.docker-df-body { margin-top: 8px; }
-
-.docker-df-empty {
-  color: var(--dim);
-  font-size: 13px;
-}
-
-.docker-df-list {
-  display: grid;
-  gap: 6px;
-}
-
-.docker-df-row {
-  display: grid;
-  grid-template-columns: minmax(90px, 0.7fr) minmax(90px, 0.8fr) minmax(64px, auto) minmax(110px, 1fr);
-  gap: 10px;
-  align-items: center;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-  padding-top: 6px;
-  font-size: 13px;
-
-  span:last-child { justify-self: end; color: var(--dim); }
-
-  @media (max-width: 620px) {
-    grid-template-columns: 1fr 1fr;
-
-    span:last-child { justify-self: start; }
-  }
-}
-
-.docker-df-head {
-  color: var(--dim);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-
-  span:last-child { color: var(--dim); }
-
-  @media (max-width: 620px) { display: none; }
-}
-
 .nginx-doc-panel {
   border: 1px solid var(--border);
   border-radius: var(--radius);
