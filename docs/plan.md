@@ -46,9 +46,9 @@ deployed. See [Deferred](#deferred-not-in-this-plan).
 | 2 | Migration framework | T1 | 🟡 | S–M | — | ✅ |
 | 3 | README, package name, stale todos | T6 | ⚪ | S | — | ✅ |
 | 4 | Health-gated deploys | C3 | 🟠 | M | 2 | ✅ |
-| 5 | One deploy-history table | T2 | 🟡 | M | 2 | |
+| 5 | ~~One deploy-history table~~ folded into PR 8 | T2 | 🟡 | — | — | ↪ 8 |
 | 6 | API tokens and read-only MCP over HTTP | MCP-1, S5 (part) | 🟠 | M–L | 2 | |
-| 8 | Action runner, server side | RUN-1 | 🟠 | M–L | 2 | |
+| 8 | Action runner, server side (includes T2) | RUN-1, T2 | 🟠 | L | 2 | |
 | 9 | Data layer foundation and runner client | T5a, RUN-2 | 🟡 | M | 8 | |
 | 10 | Data layer: remaining pages | T5b | 🟡 | L | 9 | |
 | 11 | Data layer cleanup: remove polling | T5c | 🟡 | S | 10 | |
@@ -163,21 +163,21 @@ enabled (D2).
 timeout, unhealthy marking, settings validation. The auto-rollback path is not covered
 by an automated test (it runs a real `docker compose`).
 
-### PR 5 — One deploy-history table (T2)
+### PR 5 — One deploy-history table (T2): folded into PR 8
 
-**Problem:** `project_deploys` (auto-deploy commit metadata) and `project_deployments`
-(revisions for rollback) overlap. Every auto-deploy writes both.
+**Found while starting it:** the two tables aren't duplicates.
 
-**Approach (safe for existing data):**
-- Add `commit_message`, `commit_author` and `completed_at` to `project_deployments`
-  via a migration. In-progress deploys are tracked by the action runner (PR 8), not a
-  new status value, which the additive-only rule (PR 2) rules out.
-- New deploys write one row only.
-- Existing `project_deploys` rows are left in place and shown read-only until they age
-  out of retention. The table itself stays (unused) because `stackport rollback` may
-  put back code that reads it; see PR 2. No attempt to match and merge old rows, which
-  would be guesswork.
-- The Deployments card shows one list instead of two.
+| Table | What it is | Retention | Read by |
+|---|---|---|---|
+| `project_deployments` | Revision store: commit plus source and effective Compose blobs | 20 per project | Rollback, Revisions list |
+| `project_deploys` | Event log of **auto-deploys only** (manual deploys never write it) | Unbounded | Insights deploy counts and success rate, "Recent deploys" |
+
+Merging them would either grow the revision table without bound or cut Insights
+history to 20 rows, and PR 8's `actions` table is a third action log. So instead, in
+PR 8, `actions` becomes the single deploy log (manual, auto and rollback); Insights and
+"Recent deploys" read from it; a migration copies existing `project_deploys` rows in;
+`project_deploys` stops being written but stays for `stackport rollback`. This also
+fixes manual deploys missing from "Recent deploys" and the success rate.
 
 ---
 
