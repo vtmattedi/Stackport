@@ -33,29 +33,96 @@ interface SocketContextValue {
 }
 
 const SocketContext = createContext<SocketContextValue | null>(null);
+
+/** Round-trip time to the server. `ms` is the median of the last few samples, so one
+ *  sample held up by a busy main thread (the ack callback can only run once the page
+ *  is free) doesn't show as a spike; null until measured. `unresponsive` is set when
+ *  pings stop coming back while the socket still looks connected. */
+export interface SocketLatency {
+  ms: number | null;
+  unresponsive: boolean;
+}
+
+const LATENCY_UNKNOWN: SocketLatency = { ms: null, unresponsive: false };
+const LATENCY_INTERVAL_MS = 5000;
+const LATENCY_TIMEOUT_MS = 3000;
+const LATENCY_SAMPLES = 5;
+/** Missed pings before the indicator says so, and before the connection is replaced:
+ *  the engine's own heartbeat takes up to 45 s to notice a dead connection. */
+const MISSES_UNRESPONSIVE = 2;
+const MISSES_RECONNECT = 3;
+
 // Latency is re-measured every 5 s; it gets its own context so that tick only
 // re-renders the status indicator, not every component that uses the socket.
-const SocketLatencyContext = createContext<number | null>(null);
+const SocketLatencyContext = createContext<SocketLatency>(LATENCY_UNKNOWN);
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+/** Counts per key, so a room is left only when its last subscriber goes. */
+function addRef<K>(map: Map<K, number>, key: K): boolean {
+  const count = map.get(key) ?? 0;
+  map.set(key, count + 1);
+  return count === 0;
+}
+
+function dropRef<K>(map: Map<K, number>, key: K): boolean {
+  const count = map.get(key) ?? 0;
+  if (count <= 1) { map.delete(key); return count === 1; }
+  map.set(key, count - 1);
+  return false;
+}
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export function SocketProvider({ children }: { children: React.ReactNode }) {
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
-  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [latency, setLatency] = useState<SocketLatency>(LATENCY_UNKNOWN);
+  const samplesRef = useRef<number[]>([]);
+  const missesRef = useRef(0);
+  // What this page is subscribed to. Rooms live in the server's socket, so a new
+  // connection starts in none of them: every (re)connect joins these again.
+  const channelRefs = useRef(new Map<string, number>());
+  const projectRefs = useRef(new Map<number, number>());
+
+  const resetLatency = useCallback(() => {
+    samplesRef.current = [];
+    missesRef.current = 0;
+    setLatency(LATENCY_UNKNOWN);
+  }, []);
 
   const measureLatency = useCallback(() => {
     const socket = socketRef.current;
     if (!socket?.connected) {
-      setLatencyMs(null);
+      resetLatency();
       return;
     }
+    // Hidden tabs have their timers throttled and may be frozen outright; samples
+    // taken there measure the browser, not the connection.
+    if (document.hidden) return;
 
     const startedAt = performance.now();
-    socket.timeout(3000).emit("latency:ping", (err: Error | null) => {
-      setLatencyMs(err ? null : Math.round(performance.now() - startedAt));
+    socket.timeout(LATENCY_TIMEOUT_MS).emit("latency:ping", (err: Error | null) => {
+      if (socket !== socketRef.current) return;
+      if (err) {
+        missesRef.current += 1;
+        if (missesRef.current >= MISSES_RECONNECT) {
+          // Half-open connection: replace it now instead of waiting for the heartbeat.
+          resetLatency();
+          socket.disconnect().connect();
+          return;
+        }
+        if (missesRef.current >= MISSES_UNRESPONSIVE) setLatency((current) => ({ ...current, unresponsive: true }));
+        return;
+      }
+      missesRef.current = 0;
+      samplesRef.current = [...samplesRef.current, Math.round(performance.now() - startedAt)].slice(-LATENCY_SAMPLES);
+      setLatency({ ms: median(samplesRef.current), unresponsive: false });
     });
-  }, []);
+  }, [resetLatency]);
 
   // Lazily create the socket on first subscribe (handles the case where the
   // provider mounts before the user has logged in and set a token).
@@ -69,19 +136,21 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       transports: ["websocket", "polling"],
     });
     socket.on("connect", () => {
+      // Also fires on every reconnect, on a server socket that is in no rooms yet.
+      for (const channel of channelRefs.current.keys()) socket.emit("subscribe", channel);
+      for (const projectId of projectRefs.current.keys()) socket.emit("project:subscribe", projectId);
       setConnected(true);
-      measureLatency();
     });
     socket.on("disconnect", () => {
       setConnected(false);
-      setLatencyMs(null);
+      resetLatency();
     });
     socket.io.on("reconnect_attempt", () => {
       socket.auth = { token: getToken() };
     });
     socket.on("connect_error", (err: Error) => {
       setConnected(false);
-      setLatencyMs(null);
+      resetLatency();
       const currentToken = getToken();
       const attemptedToken = (socket.auth as { token?: string }).token;
       // Auth rejection → clear stale token and redirect to login
@@ -97,7 +166,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     });
     socketRef.current = socket;
     return socket;
-  }, [measureLatency]);
+  }, [resetLatency]);
 
   // Cleanup on unmount (e.g. full page reload after logout)
   useEffect(() => {
@@ -109,22 +178,36 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!connected) return;
-    measureLatency();
-    const timer = window.setInterval(measureLatency, 5000);
-    return () => window.clearInterval(timer);
+    // The first sample waits a moment: right after (re)connecting the page is busy
+    // rendering the data that just arrived, which would show as latency.
+    const first = window.setTimeout(measureLatency, 1000);
+    const timer = window.setInterval(measureLatency, LATENCY_INTERVAL_MS);
+    const onVisible = () => {
+      if (document.hidden) return;
+      samplesRef.current = [];
+      missesRef.current = 0;
+      measureLatency();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [connected, measureLatency]);
 
   const subscribe = useCallback(<T,>(channel: string, handler: (data: T) => void) => {
     const s = getOrCreate();
     if (!s) return;
-    s.emit("subscribe", channel);
+    // While disconnected, the connect handler joins it.
+    if (addRef(channelRefs.current, channel) && s.connected) s.emit("subscribe", channel);
     s.on(`data:${channel}`, handler as (d: unknown) => void);
   }, [getOrCreate]);
 
   const unsubscribe = useCallback(<T,>(channel: string, handler: (data: T) => void) => {
     const s = socketRef.current;
     if (!s) return;
-    s.emit("unsubscribe", channel);
+    if (dropRef(channelRefs.current, channel) && s.connected) s.emit("unsubscribe", channel);
     s.off(`data:${channel}`, handler as (d: unknown) => void);
   }, []);
 
@@ -135,14 +218,14 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   const subscribeProject = useCallback(<T,>(projectId: number, handler: (data: T) => void) => {
     const s = getOrCreate();
     if (!s) return;
-    s.emit("project:subscribe", projectId);
+    if (addRef(projectRefs.current, projectId) && s.connected) s.emit("project:subscribe", projectId);
     s.on("project:update", handler as (d: unknown) => void);
   }, [getOrCreate]);
 
   const unsubscribeProject = useCallback(<T,>(projectId: number, handler: (data: T) => void) => {
     const s = socketRef.current;
     if (!s) return;
-    s.emit("project:unsubscribe", projectId);
+    if (dropRef(projectRefs.current, projectId) && s.connected) s.emit("project:unsubscribe", projectId);
     s.off("project:update", handler as (d: unknown) => void);
   }, []);
 
@@ -178,8 +261,8 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     socketRef.current?.disconnect();
     socketRef.current = null;
     setConnected(false);
-    setLatencyMs(null);
-  }, []);
+    resetLatency();
+  }, [resetLatency]);
 
   const emit = useCallback((event: string, payload?: unknown) => {
     socketRef.current?.emit(event, payload);
@@ -206,7 +289,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <SocketContext.Provider value={value}>
-      <SocketLatencyContext.Provider value={latencyMs}>
+      <SocketLatencyContext.Provider value={latency}>
         {children}
       </SocketLatencyContext.Provider>
     </SocketContext.Provider>
@@ -221,8 +304,8 @@ export function useSocket(): SocketContextValue {
   return ctx;
 }
 
-/** Round-trip latency to the server in ms, or null when unknown/disconnected. */
-export function useSocketLatency(): number | null {
+/** Round-trip latency to the server; see SocketLatency. */
+export function useSocketLatency(): SocketLatency {
   return useContext(SocketLatencyContext);
 }
 

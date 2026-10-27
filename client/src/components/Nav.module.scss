@@ -234,6 +234,7 @@ $submenu-open-delay: 0.5s;
   svg { flex-shrink: 0; }
 
   &.connected { color: var(--success); }
+  &.unresponsive { color: var(--warning, #d29922); }
 }
 
 .logout-btn {

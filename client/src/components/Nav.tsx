@@ -130,7 +130,7 @@ export default function Nav() {
   const navigate = useNavigate();
   const location = useLocation();
   const { connected, disconnect } = useSocket();
-  const latencyMs = useSocketLatency();
+  const latency = useSocketLatency();
   const { system, projects } = useSystem();
   const running = useRunningActions();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -155,9 +155,10 @@ export default function Nav() {
       });
   }
 
-  const statusLabel = connected
-    ? latencyMs != null ? `${latencyMs} ms` : ""
-    : "Disconnected";
+  const statusLabel = !connected ? "Disconnected"
+    : latency.unresponsive ? "No response"
+    : latency.ms != null ? `${latency.ms} ms` : "Connected";
+  const statusClass = cn(styles.navStatus, connected && (latency.unresponsive ? styles.unresponsive : styles.connected));
 
   const mobileLink = ({ isActive }: { isActive: boolean }) => cn(styles.mobileLink, isActive && styles.mobileLinkActive);
 
@@ -285,8 +286,8 @@ export default function Nav() {
           </Popover>
         )}
         <span
-          className={cn(styles.navStatus, connected && styles.connected)}
-          title={statusLabel}
+          className={statusClass}
+          title={latency.unresponsive ? "The server stopped answering pings; reconnecting if it doesn't recover" : statusLabel}
         >
           {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
           <span className={styles.linkText}>{statusLabel}</span>
@@ -340,9 +341,9 @@ export default function Nav() {
           </button>
           <div className={styles.moreSeparator} />
           <div className={styles.moreFooter}>
-            <span className={cn(styles.navStatus, connected && styles.connected)}>
+            <span className={statusClass}>
               {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
-              <span>{statusLabel || "Connected"}</span>
+              <span>{statusLabel}</span>
             </span>
             <button type="button" className={styles.submenuItem} onClick={logout}>
               <LogOut size={15} />
