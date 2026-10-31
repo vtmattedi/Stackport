@@ -1,9 +1,11 @@
 # GitHub App integration plan (Stackport 1.3)
 
-Status: **Proposed; not implemented**  
+Status: **Architecture decided (Option B); implementation pending**  
 Target: `1.3` development branch  
 Scope: GitHub App authentication, installation/repository discovery, cloning, and push-triggered deployments.  
 Last reviewed: 2026-10-31
+
+**Decision:** Each self-hosted Stackport instance creates and owns **its own GitHub App using GitHub's App Manifest flow**. The App's webhook, registration redirect, OAuth callback and setup URL use **that instance's HTTPS domain**. There is no central Stackport GitHub service. Manual GitHub App registration is an advanced recovery/enterprise option, not the default.
 
 This plan is based on Stackport's existing TypeScript/Express/SQLite/Docker Compose implementation. It is an implementation proposal, not a claim that a GitHub App or its database tables already exist.
 
@@ -13,11 +15,11 @@ An administrator connects GitHub to Stackport once, authorizes selected reposito
 
 ### Goals
 
-- Register/configure one GitHub App for a self-hosted Stackport instance.
+- Create/register one GitHub App per self-hosted Stackport instance through a guided App Manifest flow (not a shared hosted App).
 - Support multiple GitHub installations/accounts and selected-repository access.
 - List accessible repositories and branches in the new-project wizard; choose a repository, branch, Compose file, then deploy using existing project workflows.
 - Authenticate Git operations and GitHub REST calls using short-lived *installation* access tokens.
-- Receive GitHub App webhook events at one central endpoint, routing authorized pushes to existing `requestAutoDeploy` / `actionRegistry` logic.
+- Receive GitHub App webhook events at one endpoint **on each Stackport instance**, routing authorized pushes to existing `requestAutoDeploy` / `actionRegistry` logic.
 - Handle installation removal, suspension, repository selection changes, renames, token expiration, duplicate deliveries, and missed webhooks.
 - Keep existing PAT/public-repository projects and per-project webhook/poller flows functional during migration.
 - Make GitHub access an explicit per-project selection; never silently switch a project from an unavailable App installation to a more privileged PAT.
@@ -29,7 +31,7 @@ An administrator connects GitHub to Stackport once, authorizes selected reposito
 - Rewriting the Docker deployment engine, health gates, rollbacks, and queue management.
 - Enabling untrusted third-party repositories before Stackport's container isolation security gates are complete.
 
-**Product model:** Stackport is presently administered as a single installation. The first iteration uses a GitHub App configured per Stackport host; it can be installed on multiple GitHub accounts. A future multi-tenant service would require explicit per-user installation ownership and isolation.
+**Product model:** Stackport is self-hosted and each instance has its own domain, GitHub App identity and secrets. A registered App can have multiple repository/account installations as permitted by GitHub App visibility and account ownership. A future multi-tenant service would require explicit per-user installation ownership and isolation.
 
 ## 2. Existing implementation to reuse
 
@@ -47,35 +49,87 @@ An administrator connects GitHub to Stackport once, authorizes selected reposito
 
 References: `docs/1.3/security.md` covers prerequisites S14/S1/S2/S7; `docs/1.3/backlog.md` covers unrelated deferred work.
 
-## 3. GitHub App registration and required permissions
+## 3. Per-instance GitHub App Manifest registration — chosen design
 
-**Proposed app name:** Stackport (must be unique on GitHub; actual slug chosen at registration).
+**Decision: Option B.** Each Stackport deployment creates an independent GitHub App with its own callback/webhook URLs. No Stackport-operated centralized OAuth or webhook relay is required, and different Stackport installations may use unrelated hostnames.
 
-Configure in GitHub's developer settings:
+Example: `https://sp.example.com` and `https://panel.customer.example` each create distinct Apps. Each instance receives only its own App webhooks and holds only its own private key. One GitHub App can still be installed on multiple GitHub accounts, subject to its `public`/private visibility restrictions.
 
-| Setting | Initial value |
-| --- | --- |
-| App visibility | Private for owner-only testing; public when other GitHub accounts must install it |
-| Webhook URL | `https://<stackport-domain>/api/hooks/github/app` |
-| Webhook secret | Random 32+ byte secret, kept in Stackport host secrets |
-| Setup URL | `https://<stackport-domain>/api/github-app/setup` |
-| User authorization callback | `https://<stackport-domain>/api/github-app/oauth/callback` |
-| Repository permissions | **Contents: Read**; Metadata is automatically provided |
-| Webhook subscriptions | `push`, `installation`, `installation_repositories` |
-| Optional later permissions | Commit statuses/Checks only if a feature actually needs them |
+### 3.1 Preflight
 
-There is no need for `Administration` / `Webhooks: Write` just to receive GitHub App webhook events. Unlike the existing PAT system, the App uses its own single webhook subscription.
+- Stackport must have a **stable public HTTPS origin** reachable by GitHub, with a trusted certificate. Block App setup when Stackport is exposed only by HTTP or a raw IP with an untrusted certificate.
+- Determine the origin from Stackport's **trusted, persisted domain configuration**; never derive App redirect/webhook URLs from untrusted Host or X-Forwarded-* request headers.
+- Display the exact generated URLs and domain before sending the user to GitHub. Warn that changing the Stackport domain later requires updating the GitHub App's URLs and completing a new HTTPS health check.
+- Check that no existing App registration is configured before starting. A reinstall/restore should reuse App credentials and IDs rather than registering a different App.
 
-Keep these values in host-managed configuration, not in tracked repository files:
+### 3.2 Manifest generation
 
-- `GITHUB_APP_ID` (non-secret), `GITHUB_APP_CLIENT_ID` (non-secret), and `GITHUB_APP_SLUG`.
-- `GITHUB_APP_PRIVATE_KEY_PATH` points to the PEM private key readable by the Stackport service, not by managed projects.
-- `GITHUB_APP_CLIENT_SECRET` is needed only for the user-authorization code exchange.
-- `GITHUB_APP_WEBHOOK_SECRET` is distinct from the existing generic `WEBHOOK_SECRET` / per-project webhook secrets.
+An authenticated administrator clicks **Settings → GitHub connections → Create GitHub App**. Stackport generates an expiring, one-time, session-bound random `state`, builds the manifest server-side and redirects the administrator to GitHub's App registration form with a POST:
 
-The private key, client secret, webhook secret and recovery configuration must be included in **encrypted off-host Stackport core backups**. Updates and `stackport repair` must preserve them. Never put PEM contents in Git or browser storage.
+- Personal account: `https://github.com/settings/apps/new?state=<nonce>`
+- Organization-owned App: `https://github.com/organizations/<org>/settings/apps/new?state=<nonce>`
+- Body parameter: `manifest`, a JSON string.
 
-**Registration choice:** first support operator-managed App registration for a self-hosted instance. Do not attempt to build a shared hosted App registration/tenant lifecycle into this iteration.
+Example generated manifest (with URLs substituted from this Stackport installation):
+
+```json
+{
+  "name": "Stackport My Server",
+  "url": "https://sp.example.com",
+  "description": "GitHub deployment integration for this Stackport instance",
+  "redirect_url": "https://sp.example.com/api/github-app/manifest/callback",
+  "callback_urls": [
+    "https://sp.example.com/api/github-app/oauth/callback"
+  ],
+  "setup_url": "https://sp.example.com/api/github-app/setup",
+  "setup_on_update": true,
+  "request_oauth_on_install": false,
+  "hook_attributes": {
+    "url": "https://sp.example.com/api/hooks/github/app",
+    "active": true
+  },
+  "public": false,
+  "default_permissions": {
+    "contents": "read"
+  },
+  "default_events": [
+    "push",
+    "installation",
+    "installation_repositories"
+  ]
+}
+```
+
+The name must be unique on GitHub; the administrator can edit it on GitHub's registration screen. `public: false` is suited to a single owner account. If installations on GitHub accounts **other than the App owner** are required, explain the visibility consequences and choose `public: true` deliberately. A public App is installable by other accounts but must still be granted explicit repository access.
+
+For this first version, use `request_oauth_on_install: false` with a dedicated setup URL, then run a separate user-authorization flow to **verify** installation ownership. GitHub does not offer `setup_url` in the same way when authorization-on-install replaces it; do not design both as simultaneous post-install callbacks.
+
+Required App repository permission: **Contents: Read** (Metadata is provided automatically). Subscribe only to `push`, `installation`, and `installation_repositories`. `Administration` or `Webhooks: Write` is not required for the App's own webhook. Add Checks/commit statuses permissions only with later features.
+
+### 3.3 Manifest conversion callback
+
+GitHub redirects to the manifest `redirect_url` with a temporary `code` and the original `state`.
+
+1. Verify an authenticated Stackport admin is completing the original session-bound request and validate the one-time `state` **before** exchanging the code.
+2. Server-side call: `POST https://api.github.com/app-manifests/{code}/conversions`. The temporary code must be exchanged **within one hour**.
+3. Retrieve the new App identity and generated credentials (including App ID, PEM private key, webhook secret and client secret); validate the response.
+4. Persist secrets atomically to host-only encrypted/restricted configuration, e.g. `/etc/stackport/github-app/`, with correct permissions and a controlled read-only mount to the Stackport service.
+5. Never return the PEM, webhook secret or client secret to the browser, logs or event messages. Clear the one-time registration state; report configured App identity and a link to install it.
+6. Finish setup by installing the App on selected GitHub repositories and verifying the resulting installation using the user-authorization flow described in §4.2.
+
+If conversion/storage fails, display a recoverable error. Handle orphaned App registration explicitly rather than silently generating another App. The manifest flow has rate limits.
+
+### 3.4 Domain, configuration and recovery
+
+Store configuration per Stackport instance:
+
+- `GITHUB_APP_ID`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_SLUG` (non-secrets).
+- `GITHUB_APP_PRIVATE_KEY_PATH` (PEM location), `GITHUB_APP_CLIENT_SECRET` and `GITHUB_APP_WEBHOOK_SECRET` (secrets).
+- Persisted public origin and webhook/callback URLs used at registration.
+
+Include App configuration and secrets in **encrypted off-site Stackport core backups**, alongside the database. Host `stackport.sh install/repair/update` must preserve and mount them correctly. On recovery to a replacement VPS, restore existing App credentials and update GitHub App URLs if the public domain changes. Never create a new App automatically on restart or after restoring a backup.
+
+**Manual App registration** remains an advanced alternative for operators who already own a GitHub App. A shared centralized GitHub service is explicitly out of scope for self-hosted Stackport.
 
 ## 4. Authentication and installation linking
 
@@ -112,8 +166,8 @@ async function getInstallationToken(installationId: number): Promise<GithubAcces
 
 Proposed linking protocol:
 
-1. Authenticated Stackport administrator clicks **Connect GitHub**.
-2. Stackport creates an expiring, one-time, session-bound `state` nonce and starts GitHub App user authorization / installation setup.
+1. Once the per-instance App has been registered through §3, an authenticated Stackport administrator clicks **Install / Connect GitHub** for an eligible GitHub account.
+2. Stackport creates a new expiring, one-time, session-bound `state` nonce and starts the GitHub **user authorization** flow independently of the earlier manifest registration flow.
 3. On user authorization callback, validate `state` and exchange the code server-side using the App client credentials.
 4. Use the GitHub *user* access token to verify the user can access/manage the claimed installation, e.g. by listing that user's accessible installations, and confirm the App identity and account.
 5. Persist the verified installation/account association. Discard the user token after linking if no ongoing on-behalf-of-user features require it.
@@ -187,8 +241,10 @@ Consider limiting delivery payload retention (redaction, TTL and size cap), whil
 
 | Route | Authentication | Purpose |
 | --- | --- | --- |
-| `GET /api/github-app/config` | Stackport admin | Show App configured/health status, public callback URLs, never private keys |
-| `POST /api/github-app/connect` | Stackport admin | Begin CSRF-bound authorization/install flow |
+| `GET /api/github-app/config` | Stackport admin | Show per-instance App registration, configured/health status and callback URLs, never private keys |
+| `POST /api/github-app/manifest/start` | Stackport admin | Validate HTTPS domain, create one-time state, prepare GitHub manifest registration POST |
+| `GET /api/github-app/manifest/callback` | Session-bound GitHub redirect + state | Exchange manifest code within one hour; atomically save App ID and secrets |
+| `POST /api/github-app/connect` | Stackport admin | Begin post-registration installation / CSRF-bound user authorization flow |
 | `GET /api/github-app/oauth/callback` | GitHub redirect + one-time state | Exchange user authorization code |
 | `GET /api/github-app/setup` | GitHub redirect + one-time state | Start/complete verified installation linking, never trust query ID alone |
 | `GET /api/github-app/installations` | Stackport admin | List linked installations and status |
@@ -202,7 +258,7 @@ Protect the configuration/mutation routes with existing admin authentication and
 
 ### UI (planned)
 
-- **Settings → GitHub connections:** App configured / webhook status, Connect GitHub, connected accounts, repository access changes, Reconnect, and Disconnect.
+- **Settings → GitHub connections:** if no App exists, show **Create GitHub App** and HTTPS/domain preflight; then show App identity, **Install / Connect GitHub**, connected accounts, repository access changes, Reconnect, and Disconnect. Domain changes show a callback/webhook reconfiguration warning.
 - **New project wizard → Source:** GitHub App (default), Legacy PAT (advanced), or Manual upload. Show installation/account → repository → branch. Reuse existing Compose validation and the one-deploy workflow.
 - **Project settings:** source mode, linked account/repository, granted permissions, auto-deploy branch, last webhook event, connection health; explicit **Migrate from PAT** action.
 - **Deploy triggers:** reuse existing `manual` / `webhook` / `poller` semantics. For an App project, `webhook` means App-wide subscription, not creating/deleting a per-project GitHub hook.
@@ -261,14 +317,17 @@ Other controls: HTTPS-only callbacks; secure cookie/session and CSRF checks; no 
 
 ### Phase A — App configuration and authenticated read-only integration
 
-- [ ] Register test GitHub App with minimum permissions/events and real HTTPS callbacks.
-- [ ] Add host config and PEM persistence through `stackport.sh`; ensure backups capture them.
+- [ ] Implement **per-instance App Manifest generation** and registration POST for personal/organization GitHub accounts using the persisted HTTPS origin.
+- [ ] Implement state-verified manifest callback and `POST /app-manifests/{code}/conversions` (one-hour lifetime).
+- [ ] Persist generated App ID, PEM, client secret and webhook secret in host-only configuration; preserve through `stackport.sh` and encrypted backups.
+- [ ] Offer explicit manual-registration fallback; never create a new App implicitly after restart/restore.
+- [ ] Support separate user-authorization / installation-verification flow after App creation.
 - [ ] Implement App JWT creation, token cache, GitHub REST wrapper and retries.
 - [ ] Add additive schema/migration and connection status endpoint.
 - [ ] Implement state-bound user authorization, installation association verification and repository discovery.
 - [ ] Add GitHub Connections settings page; connect/disconnect/reconcile actions.
 
-**Acceptance:** Admin connects a personal account and an organization, sees only repositories allowed to the App, and can restart Stackport without repeating installation.
+**Acceptance:** Two separate Stackport deployments with unrelated HTTPS domains independently create GitHub Apps through manifests, receive callbacks/webhooks on their own domains, and recover their App identities after restart/restore. Admin can link authorized GitHub installations and see only the repositories granted to each App.
 
 ### Phase B — Deploy from a GitHub App
 
@@ -303,6 +362,8 @@ Other controls: HTTPS-only callbacks; secure cookie/session and CSRF checks; no 
 
 ## 11. Test matrix
 
+- Manifest registration for unique domains, state replay/CSRF, wrong origin, expired conversion code, orphaned App and failed atomic credential storage.
+- App identity/config restoration across restarts and VPS migration; domain-change webhook/callback repair without creating a second App.
 - App JWT signing, expiration and clock skew; installation token single-flight and 401 refresh.
 - Correct scope boundaries for two installations with similarly named repositories.
 - OAuth callback state missing/replayed/expired, spoofed setup `installation_id`, and unauthorized user.
@@ -316,7 +377,7 @@ Other controls: HTTPS-only callbacks; secure cookie/session and CSRF checks; no 
 
 ## 12. Questions to settle before implementation
 
-1. **App ownership:** operator-created App per self-hosted Stackport (proposed) versus a centrally hosted Stackport App in the future.
+1. **Decision settled:** per-instance GitHub App created via Manifest (Option B), with each Stackport domain used for GitHub callbacks/webhooks. Manual registration is an advanced fallback; no central service.
 2. **Connection authority:** first release links installations only to the single Stackport administrator; multi-user authorization is a separate milestone.
 3. **Webhook queue retention:** set bounded payload/metadata retention and maximum retry age; avoid accumulating large sensitive payloads indefinitely.
 4. **UI migration policy:** new projects default to GitHub App when configured, while current PAT projects switch only explicitly.
@@ -324,6 +385,8 @@ Other controls: HTTPS-only callbacks; secure cookie/session and CSRF checks; no 
 
 ## 13. Official GitHub references
 
+- [Registering a GitHub App from a Manifest](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)
+- [Create a GitHub App from a manifest (REST)](https://docs.github.com/en/rest/apps/apps#create-a-github-app-from-a-manifest)
 - [Registering a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app)
 - [Choosing GitHub App permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app)
 - [About the setup URL (spoofable installation IDs)](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/about-the-setup-url)
