@@ -5,8 +5,52 @@ one server. It deploys projects from GitHub or an uploaded Compose file, routes 
 to them through its own nginx container, issues Let's Encrypt certificates, and shows
 logs, resource usage and traffic, all from one web UI.
 
+**[Project website](https://stackport.mattediworks.com/)** ·
+**[Technical overview](Stackport.md)** · **[Deployment guide](Skills.md)**
+
 Stackport runs entirely in Docker. The host needs Docker and the `stackport` management
 CLI; nothing else is installed on it.
+
+## Why I built it
+
+I was managing several applications on a VPS using Docker Compose, nginx and Let's
+Encrypt. Each application meant repeating deployment, domain, certificate and
+troubleshooting work. I built Stackport to bring those operations into one place
+without giving up direct control of the server.
+
+Stackport is intentionally focused on managing multiple applications on a single VPS,
+not replacing Kubernetes or becoming a general-purpose cloud platform. I use it to
+operate MattediWorks services, including my personal site.
+
+## How Stackport works
+
+Stackport runs alongside the applications it manages, but keeps its own infrastructure
+separate. The management application and nginx reverse proxy belong to a dedicated
+Docker Compose project, while each deployed application runs as an independent
+Compose project.
+
+Networking is managed centrally. Applications do not publish ports directly on the
+host; instead, Stackport connects routed services to a shared proxy network and maps
+domains to their internal ports. Explicitly configured raw TCP exposure uses
+Stackport-managed proxy containers. This keeps public exposure under Stackport's
+control rather than individual Compose files.
+
+Deployments from GitHub are tied to specific commits, so Stackport can track which
+revision is running and redeploy an earlier recorded revision. Deployment history also
+retains the resolved Compose configuration. Rolling back application code does not
+automatically restore application data or reverse database migrations.
+
+Because Stackport manages infrastructure, it validates Compose configurations before
+deployment and rejects settings such as privileged containers, host networking and
+dangerous bind mounts. These restrictions reduce accidental exposure and unsafe
+configurations; they are not complete isolation for hostile workloads.
+
+A host-level CLI handles installation, updates, repair and recovery. The web
+interface provides day-to-day deployment controls, container logs, resource
+monitoring and HTTP traffic information.
+
+For the implementation details and design constraints, see the
+[technical overview](Stackport.md).
 
 ## Install
 
