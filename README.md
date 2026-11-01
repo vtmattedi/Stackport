@@ -6,7 +6,7 @@ to them through its own nginx container, issues Let's Encrypt certificates, and 
 logs, resource usage and traffic, all from one web UI.
 
 **[Project website](https://stackport.mattediworks.com/)** ·
-**[Technical overview](Stackport.md)** · **[Deployment guide](Skills.md)**
+**[Technical overview](Stackport.md)** · **[Deployment guide](.agents/skills/stackport/SKILL.md)**
 
 Stackport runs entirely in Docker. The host needs Docker and the `stackport` management
 CLI; nothing else is installed on it.
@@ -89,13 +89,13 @@ Day-to-day host commands: `stackport update`, `stackport rollback`, `stackport s
 Projects are deployed with `docker compose`. Services must use `expose:` for the port
 they listen on, never `ports:`. Stackport decides what is public and routes a domain to
 a `service:port`. Host networking, privileged containers and dangerous bind mounts are
-rejected. See [`Skills.md`](Skills.md) for the full checklist.
+rejected. See [`.agents/skills/stackport/SKILL.md`](.agents/skills/stackport/SKILL.md) for the full checklist.
 
 ## Documentation
 
 - [`Stackport.md`](Stackport.md): architecture, install and host lifecycle, security
   model, and how deploys, rollback, nginx and certificates work.
-- [`Skills.md`](Skills.md): preparing a repository for deployment.
+- [`.agents/skills/stackport/SKILL.md`](.agents/skills/stackport/SKILL.md): the agent skill for preparing a repository for deployment (also exposed as an MCP resource).
 - [`docs/plan.md`](docs/plan.md): the current improvement plan.
 
 ## Development
