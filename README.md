@@ -52,6 +52,23 @@ monitoring and HTTP traffic information.
 For the implementation details and design constraints, see the
 [technical overview](Stackport.md).
 
+## Releases and updates
+
+Stackport separates development from the versions offered to installed servers.
+Changes land on `main`, where GitHub Actions runs CI and upgrade scenarios.
+The upgrade suite starts from the current `stable` revision and tests CLI and
+in-app updates, failed builds and runtimes, and rollback against a newer database.
+Only after both checks pass does the promotion workflow fast-forward `stable`.
+
+New installations and `stackport update` follow `stable` by default; an operator
+can explicitly configure a different branch. Promotion does not update running
+servers automatically. During an update, the host CLI backs up its database,
+checks the replacement's health and rolls back if the update fails.
+
+See [promotion](.github/workflows/promote.yml),
+[upgrade scenarios](.github/workflows/upgrade.yml), and the
+[host lifecycle details](Stackport.md#2-installation-and-host-lifecycle--stackportsh).
+
 ## Install
 
 ```bash
