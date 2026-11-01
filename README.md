@@ -11,46 +11,50 @@ logs, resource usage and traffic, all from one web UI.
 Stackport runs entirely in Docker. The host needs Docker and the `stackport` management
 CLI; nothing else is installed on it.
 
-## Why I built it
+## Problem and scope
 
-I was managing several applications on a VPS using Docker Compose, nginx and Let's
-Encrypt. Each application meant repeating deployment, domain, certificate and
-troubleshooting work. I built Stackport to bring those operations into one place
-without giving up direct control of the server.
+Operating several applications on one VPS usually means maintaining separate
+Docker Compose projects alongside reverse-proxy rules, certificates, deployment
+scripts, and troubleshooting procedures. Stackport provides a single control
+plane for these recurring operations while keeping each application as an
+independent Compose project.
 
-Stackport is intentionally focused on managing multiple applications on a single VPS,
-not replacing Kubernetes or becoming a general-purpose cloud platform. I use it to
-operate MattediWorks services, including my personal site.
+The intended scope is a trusted, single-operator VPS, not a multi-node
+orchestrator or a security boundary for mutually untrusted tenants. Applications
+retain responsibility for their own configuration, data, and security.
 
-## How Stackport works
+## Architecture and design decisions
 
-Stackport runs alongside the applications it manages, but keeps its own infrastructure
-separate. The management application and nginx reverse proxy belong to a dedicated
-Docker Compose project, while each deployed application runs as an independent
-Compose project.
+**Separate management and workload stacks.** Stackport and its nginx proxy run
+in a dedicated Compose project; each managed application runs in its own Compose
+project. This keeps management lifecycle operations separate from application
+deployments, but all workloads still share the host's Docker engine.
 
-Networking is managed centrally. Applications do not publish ports directly on the
-host; instead, Stackport connects routed services to a shared proxy network and maps
-domains to their internal ports. Explicitly configured raw TCP exposure uses
-Stackport-managed proxy containers. This keeps public exposure under Stackport's
-control rather than individual Compose files.
+**Centralize public ingress.** Managed Compose files cannot publish host ports.
+Stackport connects routed services to a shared Docker proxy network and maps
+HTTP domains to their internal service ports. Explicit raw TCP exposures use
+Stackport-owned forwarding containers. This provides one place to manage
+exposure, at the cost of restricting Compose configurations and requiring
+applications to handle their own TLS for raw TCP.
 
-Deployments from GitHub are tied to specific commits, so Stackport can track which
-revision is running and redeploy an earlier recorded revision. Deployment history also
-retains the resolved Compose configuration. Rolling back application code does not
-automatically restore application data or reverse database migrations.
+**Record reproducible deployments.** GitHub deployments resolve to specific
+commits and preserve the effective Compose configuration, making application
+revisions traceable and allowing earlier revisions to be redeployed. This is
+not a data rollback: database migrations and persistent volumes remain the
+application's responsibility.
 
-Because Stackport manages infrastructure, it validates Compose configurations before
-deployment and rejects settings such as privileged containers, host networking and
-dangerous bind mounts. These restrictions reduce accidental exposure and unsafe
-configurations; they are not complete isolation for hostile workloads.
+**Validate Compose before deployment.** Stackport rejects privileged
+containers, host networking, dangerous bind mounts, and other unsafe settings
+rather than silently rewriting them. The policy reduces accidental host
+exposure, but does not provide isolation against hostile workloads.
 
-A host-level CLI handles installation, updates, repair and recovery. The web
-interface provides day-to-day deployment controls, container logs, resource
-monitoring and HTTP traffic information.
+**Keep host recovery independent of the web UI.** A host-level CLI handles
+installation, updates, rollback, repair, and administrator recovery. The UI
+handles routine deployment, logs, monitoring, and traffic inspection. This
+separation allows recovery even when the application UI is unavailable.
 
-For the implementation details and design constraints, see the
-[technical overview](Stackport.md).
+See the [technical overview](Stackport.md) for implementation details and
+operational constraints.
 
 ## Releases and updates
 
@@ -96,7 +100,7 @@ rejected. See [`.agents/skills/stackport/SKILL.md`](.agents/skills/stackport/SKI
 - [`Stackport.md`](Stackport.md): architecture, install and host lifecycle, security
   model, and how deploys, rollback, nginx and certificates work.
 - [`.agents/skills/stackport/SKILL.md`](.agents/skills/stackport/SKILL.md): the agent skill for preparing a repository for deployment (also exposed as an MCP resource).
-- [`docs/plan.md`](docs/plan.md): the current improvement plan.
+- [`docs/plan.md`](docs/plan.md): development plan and historical implementation notes.
 
 ## Development
 
