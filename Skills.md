@@ -7,7 +7,7 @@ description: Adapt Docker Compose projects for deployment on Stackport. Use when
 
 Use this guide when preparing an application repository to deploy on Stackport.
 
-Stackport deploys one GitHub repository (or a manually uploaded Compose file plus support files) as one project. It clones or stages the project, writes configured `.env` files, runs Docker Compose from the project root, and joins routed services to its `stackport-proxy` network. HTTP traffic is routed through Stackport's nginx with optional Let's Encrypt certificates. Generic TCP traffic is routed through Stackport-owned TCP proxy containers without protocol inspection or TLS termination. Prepare the project so this flow is boring and repeatable.
+Stackport deploys one GitHub repository (or a manually uploaded Compose file plus support files) as one project. It clones or stages the project, writes configured `.env` files, runs Docker Compose against the selected top-level Compose file, and joins routed services to its `stackport-proxy` network. HTTP traffic is routed through Stackport's nginx with optional Let's Encrypt certificates. Generic TCP traffic is routed through Stackport-owned TCP proxy containers without protocol inspection or TLS termination. Prepare the project so this flow is boring and repeatable.
 
 ## The one invariant that matters most
 
@@ -16,7 +16,7 @@ Stackport deploys one GitHub repository (or a manually uploaded Compose file plu
 ## Preparation Workflow
 
 1. Inspect the app stack and identify how it starts in production.
-2. Add or repair a root-level `docker-compose.yml` or `compose.yml`.
+2. Locate the existing Compose configuration. Reuse it when possible; do not restructure a working repository just to satisfy Stackport. If there is no compatible top-level Compose file, add a small Stackport-specific file at the repository root.
 3. Ensure the app listens on `0.0.0.0` inside the container, not only `127.0.0.1`.
 4. Use `expose:` (not `ports:`) for every HTTP or TCP container port Stackport must reach. Never add `network_mode: host`.
 5. Move runtime configuration to environment variables or a safe `.env` file path.
@@ -26,7 +26,7 @@ Stackport deploys one GitHub repository (or a manually uploaded Compose file plu
 
 ## Compose Requirements
 
-Stackport only understands Docker Compose at the repository root. Prefer this shape:
+Current GitHub project discovery scans only top-level `.yml`/`.yaml` files in the repository checkout (`scanComposeFiles` in `src/services/projectDeploy.ts`). It does not recursively discover a Compose file in a subdirectory. This is a current implementation constraint, not a requirement that the application source code or Dockerfile live at the repository root. If your existing Compose file is nested, use a minimal root-level Stackport Compose file with correct build contexts, or explicitly discuss the limitation with the operator; do not silently move project files. Example:
 
 ```yaml
 services:
@@ -39,7 +39,7 @@ services:
       - "3000"
 ```
 
-GitHub projects may select any top-level `.yml`/`.yaml` file; default selection priority is `docker-compose.stackport.yml`, then `docker-compose.yml`, then the alphabetically first top-level YAML file. Manual upload requires `docker-compose.yml` or `docker-compose.yaml` and accepts up to 30 small support files (5 MiB maximum per file), preserving their safe relative paths.
+GitHub projects may select any top-level `.yml`/`.yaml` file; current default selection priority is `docker-compose.stackport.yml`, then `docker-compose.yml`, then the alphabetically first top-level YAML file. This behavior is verified in `src/services/projectDeploy.ts` and may change; inspect the deployed version if file selection is critical. Manual upload requires `docker-compose.yml` or `docker-compose.yaml` and accepts up to 30 small support files (5 MiB maximum per file), preserving their safe relative paths.
 
 Web entrypoints normally serve plain HTTP on their exposed container port. Stackport's nginx handles public HTTPS and certificate renewal, and reaches the selected service over Stackport's internal Docker network — not by any host-published port.
 
@@ -136,15 +136,15 @@ For a TCP-only project, configure no HTTP domain. After the project has been pul
 
 ## Installing and operating Stackport itself
 
-On a fresh VPS, point the admin domain at the server and allow SSH, HTTP/80 and HTTPS/443. Run `stackport.sh install`; it installs Docker and missing curl/git/openssl prerequisites, generates configuration and bootstrap credentials, and waits for admin HTTPS before reporting success. Enter the printed bootstrap credential in the browser and set the administrator identity.
+On a fresh VPS, an admin domain is optional: a raw-IP installation uses HTTPS with a self-signed certificate until a domain is configured. If using a domain, point it at the server. Allow the required SSH and ingress ports (normally HTTP/80 and HTTPS/443). Run `stackport.sh install`; it installs Docker and missing curl/git/openssl prerequisites, generates configuration and bootstrap credentials, and waits for admin HTTPS before reporting success. Enter the printed bootstrap credential in the browser and set the administrator identity.
 
 Nginx always runs in `stackport-nginx`. Certbot runs in temporary containers for issuance and automatic renewal; neither needs a host package, systemd service, nor a runtime toggle. System status comes from Docker. Certificates stay under `/etc/letsencrypt`, and ACME files under `/var/lib/stackport/certbot-webroot`; preserve the system Compose mounts rather than changing generated nginx files or private-key permissions.
 
-Use Settings > **Update Stackport**, or `stackport update`, for source updates and system-stack reconciliation. The UI starts a detached Docker job and resumes progress after restart; it reports rollback and failures. Traffic reads Docker's nginx stdout logs (including domain and request time), with bounded retention. Groups organize projects in the navigation submenu; they do not change routing or Compose isolation.
+The host follows the CI-validated `stable` branch by default; `main` is not the default update channel. Use Settings > **Update Stackport**, or `stackport update`, for source updates and system-stack reconciliation. The UI starts a detached Docker job and resumes progress after restart; it reports rollback and failures. Traffic reads Docker's nginx stdout logs (including domain and request time), with bounded retention. Groups organize projects in the navigation submenu; they do not change routing or Compose isolation.
 
 ## Interacting with a running Stackport instance
 
-If you have MCP access to a Stackport host, its tools are self-documenting (titles/descriptions/annotations on each tool, plus a `stackport://skills/project-prep` resource serving this same guide) — inspect what's available at call time rather than relying on a fixed sequence written here, since tool names/parameters can change independently of this document. The current MCP server supports GitHub-backed project creation, env-file management, ingress-target discovery, HTTP domains, and basic project actions. At the time of this guide, manual project upload and TCP-exposure management are UI/API capabilities and may not have MCP tools. Never invent a TCP tool: if it is absent at runtime, prepare and validate the project, then hand the exact `publicPort -> service:containerPort` values to the operator for the project page.
+If you have MCP access to a Stackport host, its tools are self-documenting (titles/descriptions/annotations on each tool, plus a `stackport://skills/project-prep` resource serving this same guide) — inspect what's available at call time rather than relying on a fixed sequence written here, since tool names/parameters can change independently of this document. The MCP server exposes a runtime-dependent tool catalog. In the checked implementation (`src/mcp/server.ts`), GitHub-backed project creation, env-file management, ingress-target discovery, HTTP domains, and project actions are available; manual project upload and TCP-exposure management are handled through the UI/API rather than corresponding MCP tools. Always use the live MCP tool list as the authority, not this snapshot. Never invent a TCP tool: if it is absent at runtime, prepare and validate the project, then hand the exact `publicPort -> service:containerPort` values to the operator for the project page.
 
 The other rules worth stating explicitly:
 
