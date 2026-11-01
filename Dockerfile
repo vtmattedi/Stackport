@@ -48,6 +48,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/client/dist ./client/dist
 COPY --chown=node:node scripts/ ./scripts/
+# Agent skill served through the Stackport MCP resource.
+COPY --chown=node:node .agents/skills/stackport/SKILL.md ./.agents/skills/stackport/SKILL.md
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

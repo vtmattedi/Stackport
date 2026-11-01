@@ -2,7 +2,7 @@
 
 StackPort is a self-hosted DevOps control plane: a Node/Express backend + React client that deploys GitHub-repo or manually-uploaded projects via `docker compose`, fronts them with its own containerized nginx reverse proxy, issues Let's Encrypt certificates, and monitors the host — all from a single admin UI/API. (The optional Hostinger VPS fleet and firewall integration was removed in October 2026; its database tables are kept, unused, so `stackport rollback` still works.)
 
-StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today; see `docs/deprecated/` for the design docs that shaped it (kept as historical record, not current reference) and `Skills.md` for the operational guide to preparing a repository for deployment.
+StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today; see `docs/deprecated/` for the design docs that shaped it (kept as historical record, not current reference) and `.agents/skills/stackport/SKILL.md` for the agent skill used to prepare a repository for deployment. `Skills.md` remains a compatibility copy.
 
 ---
 
@@ -112,6 +112,32 @@ The CLI and Settings share the same source-update and rollback flow. A detached 
 
 ---
 
+### Release promotion and update branch
+
+Development happens on `main`, but installed servers follow `stable` by default.
+On each push to `main`, [`promote.yml`](.github/workflows/promote.yml)
+runs the reusable [CI workflow](.github/workflows/ci.yml) and
+[upgrade scenarios](.github/workflows/upgrade.yml). The upgrade job installs
+the version at the current `stable` tip on a fresh runner and tests the
+transition to the candidate commit, including CLI and in-app update paths,
+broken builds, broken runtimes, and rollback against a newer database.
+If either validation job fails, promotion does not run. The promotion job
+uses a non-forced push, so `stable` only fast-forwards.
+
+The host CLI's `configured_branch()` defaults to `stable`. An explicit
+`stackport install --branch=<name>` saves another branch for subsequent
+updates; `STACKPORT_BRANCH` overrides the configured branch for one invocation.
+The installer script can be downloaded from `main`, but installation still
+checks out `stable` unless overridden.
+
+Promotion is not a fleet rollout: running installations update only when
+the operator invokes `stackport update` (directly or through Settings).
+The updater backs up the Stackport database before switching versions,
+checks the replacement's health, and rolls back to the previous recorded
+version on failure. Managed projects are not updated by this operation.
+Because rollback may run older code on a newer database, schema migrations
+must preserve backward compatibility.
+
 ## 3. First login and administrator identity
 
 StackPort is single-admin — there is no multi-user model. The identity lives in `app_meta` (`admin_username`/`admin_password_hash`), not in a hand-edited `.env` file.
@@ -202,7 +228,7 @@ Closing before the deploy finishes offers to keep or discard the project. A kept
 - No `network_mode: host`, no `privileged: true`, no dangerous bind mounts (§1.4) — a violating file is rejected at deploy time with a specific error, not silently rewritten.
 - The service you register a domain against must actually exist in the compose file (validated server-side before the domain is saved).
 
-See `Skills.md` for the full operational checklist (this is what the StackPort MCP server's `stackport://skills/project-prep` resource also serves).
+See `.agents/skills/stackport/SKILL.md` for the full operational checklist (this is what the StackPort MCP server's `stackport://skills/project-prep` resource also serves).
 
 ### 6.3 Actions
 

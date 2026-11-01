@@ -66,7 +66,7 @@ function redactEnvFile(envFile: ProjectEnvFile): Record<string, unknown> {
 }
 
 async function readSkillsMarkdown(): Promise<string> {
-  const skillsPath = path.resolve(process.cwd(), "Skills.md");
+  const skillsPath = path.resolve(process.cwd(), ".agents/skills/stackport/SKILL.md");
   // eslint-disable-next-line security/detect-non-literal-fs-filename
   return fs.readFile(skillsPath, "utf8");
 }
