@@ -51,6 +51,7 @@ jobs:
       - run: bash -n stackport.sh && bash -n docker-entrypoint.sh
       # ShellCheck ships on GitHub's Ubuntu runners.
       - run: shellcheck -S warning stackport.sh docker-entrypoint.sh
+      - run: bash scripts/tests/buildx.sh
 
   image:
     name: Docker image builds
@@ -58,3 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build --tag stackport:ci .
+      - name: Verify Docker plugins in the shipped image
+        run: |
+          docker run --rm --entrypoint docker stackport:ci buildx version
+          docker run --rm --entrypoint docker stackport:ci compose version
