@@ -20,6 +20,9 @@ import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
 import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./composeVariables";
 
+//temp fix for honest >15m builds 
+const MAX_BUILD_TIME_MS = 60 * 60 * 1000; // 1 hour
+
 export interface EnvVariable {
   key: string;
   value: string;
@@ -1055,7 +1058,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
     : action === "recreate"
       ? ["up", "-d", "--build", "--force-recreate"]
       : ["up", "-d", "--build"];
-  const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, 900_000);
+  const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, MAX_BUILD_TIME_MS );
   output.push(compose.output);
   let healthy = true;
   if (composeArgs[0] === "up") {
