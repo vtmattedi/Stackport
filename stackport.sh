@@ -190,11 +190,47 @@ ensure_supported_os() {
 ensure_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     log "Docker already installed ($(docker --version))"
-    return
+  else
+    log "installing Docker"
+    curl -fsSL https://get.docker.com | sh
+    systemctl enable --now docker >/dev/null 2>&1 || true
   fi
-  log "installing Docker"
-  curl -fsSL https://get.docker.com | sh
-  systemctl enable --now docker >/dev/null 2>&1 || true
+  ensure_buildx
+}
+
+require_buildx() {
+  docker buildx version >/dev/null 2>&1 && return 0
+  error "Docker Buildx is missing or unusable; StackPort builds require 'docker buildx version' to succeed."
+  error "On Ubuntu/Debian with Docker's official apt repository configured, run: sudo apt-get update && sudo apt-get install -y docker-buildx-plugin"
+  error "For other installations, install or repair the Buildx CLI plugin: https://docs.docker.com/build/buildx/"
+  error "Verify with 'sudo docker buildx version', then retry the StackPort command. The running StackPort image has not been changed."
+  return 1
+}
+
+docker_official_apt_available() {
+  local ID=""
+  [[ -f /etc/os-release ]] || return 1
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case "$ID" in ubuntu|debian) ;; *) return 1 ;; esac
+  command -v apt-get >/dev/null 2>&1 && command -v apt-cache >/dev/null 2>&1 || return 1
+  # A configured repository may have no cached indexes yet (e.g. a minimal host).
+  log "refreshing apt metadata to check for Docker's official repository"
+  apt-get update || return 1
+  # Inspect apt's active indexes, so a similarly named distro package is not
+  # mistaken for Docker's plugin. Works with both .list and deb822 .sources.
+  apt-cache policy 2>/dev/null | grep -E 'https?://download\.docker\.com/linux/(ubuntu|debian)(/|[[:space:]])' >/dev/null
+}
+
+ensure_buildx() {
+  docker buildx version >/dev/null 2>&1 && return 0
+  if docker_official_apt_available; then
+    log "installing Docker Buildx from Docker's official apt repository"
+    if ! apt-get install -y --no-install-recommends docker-buildx-plugin; then
+      warn "could not install docker-buildx-plugin"
+    fi
+  fi
+  require_buildx
 }
 
 ensure_prerequisites() {
@@ -475,7 +511,7 @@ start_stackport() {
   seed_nginx_data
   ensure_env_file
   log "building StackPort image"
-  compose build
+  DOCKER_BUILDKIT=1 compose build
   log "starting StackPort"
   compose up -d --force-recreate
 }
@@ -606,6 +642,7 @@ wait_for_url() {
 # were, so the next `stackport update` retries instead of saying "already up to date".
 stage_update() {
   local target="$1"
+  require_buildx || return 1
   cleanup_staging
   mkdir -p "$(dirname "$STAGING_DIR")"
   git -C "$APP_DIR" worktree add --force --detach --quiet "$STAGING_DIR" "$target" || return 1
@@ -620,7 +657,7 @@ stage_update() {
     || { error "new stackport.sh failed its selfcheck"; return 1; }
 
   log "building image for ${target:0:7}"
-  docker build --quiet --build-arg "STACKPORT_COMMIT=$target" --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
+  DOCKER_BUILDKIT=1 docker build --quiet --build-arg "STACKPORT_COMMIT=$target" --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
     || { error "image build failed for ${target:0:7}"; return 1; }
   STAGED_IMAGE="stackport:${target:0:12}"
 }
@@ -758,7 +795,7 @@ rollback_stackport() {
   else
     warn "no saved image for ${previous:0:7} — rebuilding it"
     ensure_env_file
-    compose up -d --build || true
+    DOCKER_BUILDKIT=1 compose up -d --build || true
   fi
 
   if ! healthcheck_stackport; then
@@ -787,6 +824,7 @@ selfcheck_stackport() {
     command -v "$tool" >/dev/null 2>&1 || { error "selfcheck: $tool not found"; failed=1; }
   done
   docker compose version >/dev/null 2>&1 || { error "selfcheck: docker compose not available"; failed=1; }
+  require_buildx || failed=1
   for fn in update_stackport rollback_stackport stage_update verify_running_version create_update_backup; do
     declare -F "$fn" >/dev/null || { error "selfcheck: $fn is not defined"; failed=1; }
   done

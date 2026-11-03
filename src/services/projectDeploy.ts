@@ -20,6 +20,9 @@ import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
 import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./composeVariables";
 
+//temp fix for honest >15m builds 
+const MAX_BUILD_TIME_MS = 60 * 60 * 1000; // 1 hour
+
 export interface EnvVariable {
   key: string;
   value: string;
@@ -381,10 +384,14 @@ async function runCompose(
   }
   const compose = await composeCommand();
   const fileArgs = composeFile ? ["-f", composeFile] : [];
+  const env = dockerEnv();
+  if (args[0] === "build" || (args[0] === "up" && args.includes("--build"))) {
+    env["DOCKER_BUILDKIT"] = "1";
+  }
   const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, ...fileArgs, ...args], {
     cwd: repoPath,
     timeoutMs,
-    env: dockerEnv(),
+    env,
   });
   // Choke point for every docker compose invocation in this file — `up`/`down` are
   // the only subcommands that can change the running container set or which compose
@@ -1055,7 +1062,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
     : action === "recreate"
       ? ["up", "-d", "--build", "--force-recreate"]
       : ["up", "-d", "--build"];
-  const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, 900_000);
+  const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, MAX_BUILD_TIME_MS );
   output.push(compose.output);
   let healthy = true;
   if (composeArgs[0] === "up") {
