@@ -384,10 +384,14 @@ async function runCompose(
   }
   const compose = await composeCommand();
   const fileArgs = composeFile ? ["-f", composeFile] : [];
+  const env = dockerEnv();
+  if (args[0] === "build" || (args[0] === "up" && args.includes("--build"))) {
+    env["DOCKER_BUILDKIT"] = "1";
+  }
   const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, ...fileArgs, ...args], {
     cwd: repoPath,
     timeoutMs,
-    env: dockerEnv(),
+    env,
   });
   // Choke point for every docker compose invocation in this file — `up`/`down` are
   // the only subcommands that can change the running container set or which compose
