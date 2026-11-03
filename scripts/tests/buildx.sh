@@ -90,9 +90,15 @@ grep -q 'running StackPort image has not been changed' "$WORK/stage.log" || fail
 echo 'PASS: missing Buildx aborts before staging or changing the running image'
 
 reset_calls
-if selfcheck_stackport > "$WORK/selfcheck.log" 2>&1; then fail 'selfcheck accepted missing Buildx'; fi
+(
+  git() { return 0; }
+  curl() { return 0; }
+  if selfcheck_stackport > "$WORK/selfcheck.log" 2>&1; then fail 'selfcheck accepted missing Buildx'; fi
+  grep -q 'Docker Buildx is missing or unusable' "$WORK/selfcheck.log" || fail 'selfcheck did not report missing Buildx'
+  BUILDX_READY=1
+  selfcheck_stackport
+)
 BUILDX_READY=1
-selfcheck_stackport
 (
   cleanup_staging() { echo staging-reached > "$WORK/retry"; }
   git() { return 1; }
