@@ -511,7 +511,7 @@ start_stackport() {
   seed_nginx_data
   ensure_env_file
   log "building StackPort image"
-  compose build
+  DOCKER_BUILDKIT=1 compose build
   log "starting StackPort"
   compose up -d --force-recreate
 }
@@ -657,7 +657,7 @@ stage_update() {
     || { error "new stackport.sh failed its selfcheck"; return 1; }
 
   log "building image for ${target:0:7}"
-  docker build --quiet --build-arg "STACKPORT_COMMIT=$target" --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
+  DOCKER_BUILDKIT=1 docker build --quiet --build-arg "STACKPORT_COMMIT=$target" --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
     || { error "image build failed for ${target:0:7}"; return 1; }
   STAGED_IMAGE="stackport:${target:0:12}"
 }
@@ -795,7 +795,7 @@ rollback_stackport() {
   else
     warn "no saved image for ${previous:0:7} — rebuilding it"
     ensure_env_file
-    compose up -d --build || true
+    DOCKER_BUILDKIT=1 compose up -d --build || true
   fi
 
   if ! healthcheck_stackport; then
