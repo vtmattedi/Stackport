@@ -48,7 +48,7 @@ async function api(route: string, method = "GET", body?: unknown, authenticated 
 
 test("every push API requires an admin session", async () => {
   for (const [path, method] of [["/config", "GET"], ["/config", "PUT"], ["/subscriptions", "GET"],
-    ["/subscriptions", "POST"], ["/subscriptions/1", "DELETE"], ["/test", "POST"]]) {
+    ["/subscriptions", "POST"], ["/subscriptions/1", "DELETE"], ["/test", "POST"], ["/status", "GET"], ["/subscriptions/resolve", "POST"]]) {
     assert.equal((await api(path, method, {}, false)).status, 401);
   }
 });
@@ -111,6 +111,20 @@ test("invalid keys, insecure endpoints and internal/arbitrary targets are reject
     assert.equal((await api("/subscriptions", "POST", invalid)).status, 400);
   }
   assert.equal(listPushSubscriptions().length, 0);
+});
+
+test("authenticated resolution finds the current browser without exposing its capability and status is safe", async () => {
+  const input = subscription(); savePushSubscription(input);
+  const response = await api("/subscriptions/resolve", "POST", input);
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  for (const secret of [input.endpoint, input.keys.auth, input.keys.p256dh]) assert.ok(!text.includes(secret));
+  assert.equal(await (await api("/subscriptions/resolve", "POST", { ...input, keys: { ...input.keys, auth: "wrong" } })).json(), null);
+  const status = await api("/status");
+  assert.equal(status.headers.get("cache-control"), "no-store");
+  const body = await status.text();
+  assert.equal(JSON.parse(body).pending, 0);
+  assert.ok(!body.includes(input.endpoint) && !body.includes(input.keys.auth));
 });
 
 test("push delivery works independently of email, and payloads contain no diagnostic secrets", async () => {

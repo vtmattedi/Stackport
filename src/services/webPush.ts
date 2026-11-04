@@ -1,4 +1,4 @@
-import { ECDH } from "crypto";
+import { createECDH, ECDH } from "crypto";
 import webpush from "web-push";
 import { getDatabase } from "../config/database";
 import { config } from "../config/env";
@@ -114,16 +114,20 @@ function validateKey(value: unknown, length: number): string {
   return value;
 }
 
+function allowedEndpoint(endpoint: string): boolean {
+  try {
+    const url = new URL(endpoint);
+    const known = ["fcm.googleapis.com", "updates.push.services.mozilla.com", "push.services.mozilla.com", "web.push.apple.com"].includes(url.hostname)
+      || /^[a-z0-9-]+\.notify\.windows\.com$/.test(url.hostname);
+    return endpoint.length <= 4096 && url.protocol === "https:" && !url.username && !url.password && !url.hash && (!url.port || url.port === "443") && known;
+  } catch { return false; }
+}
+
 export function savePushSubscription(input: unknown, userAgent?: string): object {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Invalid browser subscription");
   const { endpoint, keys, label } = input as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown }; label?: unknown };
   if (typeof endpoint !== "string" || endpoint.length > 4096) throw new Error("Invalid push endpoint");
-  let url: URL;
-  try { url = new URL(endpoint); } catch { throw new Error("Invalid push endpoint"); }
-  // Accept browser push providers, never arbitrary hosts supplied in a request.
-  const knownHost = ["fcm.googleapis.com", "updates.push.services.mozilla.com", "push.services.mozilla.com", "web.push.apple.com"].includes(url.hostname)
-    || /^[a-z0-9-]+\.notify\.windows\.com$/.test(url.hostname);
-  if (url.protocol !== "https:" || url.username || url.password || url.hash || (url.port && url.port !== "443") || !knownHost) {
+  if (!allowedEndpoint(endpoint)) {
     throw new Error("Use an HTTPS subscription from a supported browser push service");
   }
   if (!keys || typeof keys !== "object") throw new Error("Missing browser subscription keys");
@@ -165,7 +169,6 @@ export function getPushIdentityError(): string | null {
     const row = identity();
     const privateKey = decryptSecret(row.vapid_private_key_enc);
     // Derive the public point without changing the persisted identity.
-    const { createECDH } = require("crypto") as typeof import("crypto");
     const ec = createECDH("prime256v1");
     ec.setPrivateKey(Buffer.from(privateKey, "base64url"));
     if (ec.getPublicKey().toString("base64url") !== row.vapid_public_key) throw new Error("identity mismatch");
@@ -207,6 +210,7 @@ export async function sendOnePush(subscriptionId: number, payload: string, ttlSe
   options: { send?: PushSender; nowMs?: number } = {}): Promise<PushAttemptResult> {
   const subscription = getDatabase().prepare("SELECT * FROM push_subscriptions WHERE id = ?").get(subscriptionId) as SubscriptionRow | undefined;
   if (!subscription) return { kind: "expired", code: "browser_removed" };
+  if (!allowedEndpoint(subscription.endpoint)) return { kind: "permanent_failure", code: "push_endpoint_rejected" };
   if (getPushIdentityError()) return { kind: "permanent_failure", code: "push_identity_unavailable" };
   const row = identity();
   try {

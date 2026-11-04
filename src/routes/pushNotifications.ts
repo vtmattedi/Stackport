@@ -1,17 +1,24 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
-import { deletePushSubscription, getPushConfig, listPushSubscriptions, savePushSubscription, sendWebPushNotification, updatePushConfig } from "../services/webPush";
+import { deletePushSubscription, getPushConfig, listPushSubscriptions, resolvePushSubscription, savePushSubscription, sendWebPushNotification, updatePushConfig } from "../services/webPush";
+import { getPushQueueStatus } from "../services/pushOutbox";
+import { getDatabase } from "../config/database";
 
 const router = Router();
 router.use(requireAuth);
 router.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
 router.get("/config", (_req, res) => { res.json(getPushConfig()); });
+router.get("/status", (_req, res) => {
+  const config = getPushConfig();
+  res.json({ enabled: config.enabled, identityError: config.identityError, ...getPushQueueStatus(getDatabase()) });
+});
 router.put("/config", (req, res) => {
   try { res.json(updatePushConfig(req.body)); }
   catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : "Invalid push settings" }); }
 });
 router.get("/subscriptions", (_req, res) => { res.json(listPushSubscriptions()); });
+router.post("/subscriptions/resolve", (req, res) => { res.json(resolvePushSubscription(req.body)); });
 router.post("/subscriptions", (req, res) => {
   try { res.status(201).json(savePushSubscription(req.body, req.get("user-agent"))); }
   catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : "Invalid browser subscription" }); }

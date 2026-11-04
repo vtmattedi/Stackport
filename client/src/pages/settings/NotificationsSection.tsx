@@ -202,7 +202,7 @@ export default function NotificationsSection() {
                     <td title={log.subject}>{log.eventType === "test" ? "Test" : log.eventType.replace(/_/g, " ")}</td>
                     <td style={{ color: log.result === "ok" ? "var(--success)" : "var(--danger)" }}>
                       {log.result === "ok" ? <Check size={12} style={{ display: "inline", marginRight: 4 }} /> : <AlertCircle size={12} style={{ display: "inline", marginRight: 4 }} />}
-                      {log.result}
+                      {log.channel === "web_push" && log.result === "ok" ? "Accepted by push service" : log.result}
                       {log.errorMessage && <span className="hint">{log.errorMessage}</span>}
                     </td>
                     <td>{log.projectName ?? "—"}</td>

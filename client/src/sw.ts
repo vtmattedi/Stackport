@@ -33,7 +33,9 @@ self.addEventListener("push", (event) => {
     typeof payload["title"] === "string" ? payload["title"].slice(0, 160) : "Stackport alert",
     { body: typeof payload["body"] === "string" ? payload["body"].slice(0, 500) : "Open Stackport for details.",
       icon: "/pwa-192x192.png", badge: "/pwa-192x192.png",
-      tag: typeof payload["tag"] === "string" ? payload["tag"] : undefined,
+      tag: payload["version"] === 1 && typeof payload["eventKey"] === "string"
+        ? payload["eventKey"].slice(0, 220)
+        : typeof payload["tag"] === "string" ? payload["tag"].slice(0, 220) : undefined,
       data: { url: internalUrl(payload["url"]) } },
   ));
 });

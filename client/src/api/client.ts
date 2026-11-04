@@ -35,6 +35,7 @@ import type {
   NotificationConfig,
   NotificationLogEntry,
   PushConfig,
+  PushStatus,
   PushBrowser,
   PushTestResult,
   GitHubPollerConfig,
@@ -494,6 +495,8 @@ export const api = {
   testNotification: () => request<{ ok: boolean }>("/notifications/test", { method: "POST" }),
   getNotificationLogs: () => request<NotificationLogEntry[]>("/notifications/logs"),
   getPushConfig: () => request<PushConfig>("/notifications/push/config"),
+  getPushStatus: () => request<PushStatus>("/notifications/push/status"),
+  resolvePushBrowser: (data: PushSubscriptionJSON) => request<PushBrowser | null>("/notifications/push/subscriptions/resolve", { method: "POST", body: JSON.stringify(data) }),
   updatePushConfig: (data: Pick<PushConfig, "enabled" | "subject" | "events">) =>
     request<PushConfig>("/notifications/push/config", { method: "PUT", body: JSON.stringify(data) }),
   listPushBrowsers: () => request<PushBrowser[]>("/notifications/push/subscriptions"),

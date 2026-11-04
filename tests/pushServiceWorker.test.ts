@@ -10,7 +10,7 @@ const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.Modu
 
 function worker() {
   const handlers: Record<string, (event: unknown) => void> = {};
-  const shown: { title: string; options: { body: string; data: { url: string } } }[] = [];
+  const shown: { title: string; options: { body: string; tag?: string; data: { url: string } } }[] = [];
   const opened: string[] = [];
   const navigation: string[] = [];
   const lifecycle: string[] = [];
@@ -61,6 +61,15 @@ test("malformed and empty pushes still display a safe generic notification", asy
   await sw.fire("push", {});
   assert.equal(sw.shown.length, 2);
   assert.equal(sw.shown[0].title, "Stackport alert");
+});
+
+test("versioned incident tags collapse retries while preserving separate incidents", async () => {
+  const sw = worker();
+  for (const eventKey of ["health_check:7:first", "health_check:7:first", "health_check:7:second"]) {
+    await sw.fire("push", { data: { json: () => ({ version: 1, eventKey, title: "Unhealthy", body: "Open Stackport", url: "/projects/7" }) } });
+  }
+  assert.equal(sw.shown[0].options.tag, sw.shown[1].options.tag);
+  assert.notEqual(sw.shown[0].options.tag, sw.shown[2].options.tag);
 });
 
 test("a click closes the notification, navigates and focuses an existing Stackport window", async () => {

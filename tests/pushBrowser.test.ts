@@ -14,8 +14,11 @@ function browser(permission = "default", supported = true) {
   const notification = { permission, requestPermission: async () => { calls.push("permission"); notification.permission = "granted"; return "granted"; } };
   let subscription: object | null = null;
   let failSave = false;
+  let failRemove = false;
+  let failUnsubscribe = false;
+  let serverKnown = false;
   const candidate = { options: {}, toJSON: () => ({ endpoint: "opaque-endpoint", keys: { auth: "auth", p256dh: "public" } }),
-    unsubscribe: async () => { calls.push("unsubscribe"); subscription = null; return true; } };
+    unsubscribe: async () => { calls.push("unsubscribe"); if (failUnsubscribe) throw new Error("browser unavailable"); subscription = null; return true; } };
   const registration = { pushManager: { getSubscription: async () => subscription,
     subscribe: async (options: { userVisibleOnly: boolean }) => {
       assert.equal(options.userVisibleOnly, true);
@@ -24,15 +27,20 @@ function browser(permission = "default", supported = true) {
   const api = { savePushBrowser: async (data: { label: string }) => {
     calls.push("save"); assert.equal(data.label, "Laptop");
     if (failSave) throw new Error("server unavailable");
+    serverKnown = true;
     return { id: 7, label: data.label };
-  }, removePushBrowser: async (id: number) => { calls.push(`remove:${id}`); } };
+  }, removePushBrowser: async (id: number) => { calls.push(`remove:${id}`); if (failRemove) throw new Error("server unavailable"); serverKnown = false; },
+    resolvePushBrowser: async () => serverKnown ? { id: 7, label: "Laptop" } : null };
   const exported: Record<string, (...args: unknown[]) => unknown> = {};
   const window = supported ? { isSecureContext: true, PushManager: {}, Notification: notification } : { isSecureContext: false };
   const navigator = supported ? { serviceWorker: { ready: Promise.resolve(registration), getRegistration: async () => registration } } : {};
   vm.runInNewContext(compiled, { exports: exported, require: () => ({ api }), window, navigator, Notification: notification,
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
     Uint8Array, setTimeout, clearTimeout, atob: (value: string) => Buffer.from(value, "base64").toString("binary") });
-  return { calls, api: exported, failSave: () => { failSave = true; } };
+  return { calls, api: exported, storage,
+    failSave: () => { failSave = true; }, failRemove: () => { failRemove = true; },
+    failUnsubscribe: (value = true) => { failUnsubscribe = value; }, loseServer: () => { serverKnown = false; },
+    mismatch: () => { (candidate.options as { applicationServerKey?: ArrayBuffer }).applicationServerKey = Uint8Array.from([9, 9, 9]).buffer; } };
 }
 
 test("unsupported/default/denied states never request permission on load", () => {
@@ -57,7 +65,52 @@ test("enabling prompts only on explicit action, posts the subscription and track
   assert.deepEqual(client.calls, ["permission", "subscribe", "save"]);
   assert.equal(client.api["currentPushBrowserId"](), 7);
   await client.api["disableBrowserPush"](7);
-  assert.deepEqual(client.calls.slice(-2), ["unsubscribe", "remove:7"]);
+  assert.deepEqual(client.calls.slice(-2), ["remove:7", "unsubscribe"]);
+  assert.equal(client.api["currentPushBrowserId"](), null);
+});
+
+test("losing localStorage reconciles through the real subscription without a permission prompt", async () => {
+  const client = browser("granted"); await client.api["enableBrowserPush"]("AQID", "Laptop");
+  client.storage.clear();
+  const state = await client.api["reconcileBrowserPush"]("AQID") as { registered: boolean; id: number };
+  assert.equal(state.registered, true); assert.equal(state.id, 7);
+  assert.equal(client.api["currentPushBrowserId"](), 7);
+  assert.ok(!client.calls.includes("permission"));
+});
+
+test("a missing restored DB registration is detected and repaired only by explicit registration", async () => {
+  const client = browser("granted"); await client.api["enableBrowserPush"]("AQID", "Laptop");
+  client.loseServer();
+  const state = await client.api["reconcileBrowserPush"]("AQID") as { registered: boolean; local: boolean };
+  assert.equal(state.registered, false); assert.equal(state.local, true);
+  await client.api["enableBrowserPush"]("AQID", "Laptop");
+  assert.equal(client.calls.filter((call) => call === "subscribe").length, 1, "reuses local capability");
+  assert.equal(client.calls.filter((call) => call === "save").length, 2);
+});
+
+test("VAPID mismatch is visible on refresh and replaces the subscription only on explicit action", async () => {
+  const client = browser("granted"); await client.api["enableBrowserPush"]("AQID", "Laptop");
+  client.mismatch();
+  const state = await client.api["reconcileBrowserPush"]("AQID") as { keyMismatch: boolean; registered: boolean };
+  assert.equal(state.keyMismatch, true); assert.equal(state.registered, false);
+  assert.ok(!client.calls.includes("unsubscribe"));
+  await client.api["enableBrowserPush"]("AQID", "Laptop");
+  assert.deepEqual(client.calls.slice(-4), ["remove:7", "unsubscribe", "subscribe", "save"]);
+});
+
+test("server removal failure retains local subscription so disabling can be retried", async () => {
+  const client = browser("granted"); await client.api["enableBrowserPush"]("AQID", "Laptop"); client.failRemove();
+  await assert.rejects(client.api["disableBrowserPush"](7) as Promise<unknown>, /server unavailable/);
+  assert.ok(!client.calls.includes("unsubscribe"));
+  assert.equal(client.api["currentPushBrowserId"](), 7);
+});
+
+test("local removal failure follows server cancellation and exposes a recoverable retry state", async () => {
+  const client = browser("granted"); await client.api["enableBrowserPush"]("AQID", "Laptop"); client.failUnsubscribe();
+  await assert.rejects(client.api["disableBrowserPush"](7) as Promise<unknown>, /Server alerts are disabled/);
+  const state = await client.api["reconcileBrowserPush"]("AQID") as { removalPending: boolean; registered: boolean };
+  assert.equal(state.removalPending, true); assert.equal(state.registered, false);
+  client.failUnsubscribe(false); await client.api["disableBrowserPush"](7);
   assert.equal(client.api["currentPushBrowserId"](), null);
 });
 

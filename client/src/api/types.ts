@@ -593,11 +593,25 @@ export interface NotificationConfig {
 
 export type PushEventType = "health_check" | "deploy_blocked" | "deploy_unhealthy" | "rollback_failed" | "system_update_failed";
 export interface PushConfig {
+  identityError?: string | null;
   supported: boolean;
   enabled: boolean;
   subject: string;
   events: Record<PushEventType, boolean>;
   vapidPublicKey: string;
+}
+export interface PushStatus {
+  enabled: boolean;
+  identityError: string | null;
+  pending: number;
+  retrying: number;
+  leased: number;
+  accepted24h: number;
+  permanentFailures24h: number;
+  oldestPendingAgeSeconds: number | null;
+  lastWorkerPollAt: string | null;
+  lastSuccessfulAcceptanceAt: string | null;
+  queueWarning: string | null;
 }
 export interface PushBrowser {
   id: number;
