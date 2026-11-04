@@ -58,8 +58,9 @@ again every 30 seconds without consuming provider attempts. Repair resumes live
 events automatically; expired or cancelled events stay closed. Configuration checks
 do not generate repeated delivery failure logs.
 
-Blocked-deployment email starts only after the attempt and eligible push work
-commit successfully. An unhealthy deployment keeps its original incident payload;
+Blocked-deployment and unhealthy-deployment email start only after their
+classification and eligible push work commit successfully. An unhealthy deployment
+keeps its original incident payload;
 successful automatic rollback can produce a separate recovery event when enabled
 in Settings → Notifications. Recovery never rewrites the original alert.
 

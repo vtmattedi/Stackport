@@ -1576,16 +1576,11 @@ export async function gateOnHealth(
   const operationId = actionRegistry.get(projectRepoKey(project.id))?.id ?? randomUUID();
   let deploymentId: string | number = operationId;
   const db = getDatabase();
-  try {
-    db.transaction(() => {
-      deploymentId = markActiveDeploymentUnhealthy(project.id) ?? operationId;
-      enqueueNotificationTx(db, deployUnhealthyEvent(project.name, commitSha, result.url, "none", project.id, deploymentId));
-      if (rollbackFailureOperationId) enqueueNotificationTx(db, rollbackFailedEvent(project.name, project.id, rollbackFailureOperationId));
-    })();
-  } catch (error) {
-    void sendNotificationEmail(deployUnhealthyEvent(project.name, commitSha, result.url, "none", project.id, deploymentId));
-    throw error;
-  }
+  db.transaction(() => {
+    deploymentId = markActiveDeploymentUnhealthy(project.id) ?? operationId;
+    enqueueNotificationTx(db, deployUnhealthyEvent(project.name, commitSha, result.url, "none", project.id, deploymentId));
+    if (rollbackFailureOperationId) enqueueNotificationTx(db, rollbackFailedEvent(project.name, project.id, rollbackFailureOperationId));
+  })();
   const lines = [`Deployed, but the health check did not pass: ${result.url}\n`];
   let rollback: DeployRollbackOutcome = "none";
   if (allowAutoRollback && project.autoRollbackUnhealthy) {

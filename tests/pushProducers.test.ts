@@ -166,6 +166,41 @@ test("blocked deployment email is sent only after the attempt transaction commit
   db.exec("DELETE FROM notification_config");
 });
 
+test("unhealthy deployment email is sent only after classification and enqueue commit", async () => {
+  const id = project(); const db = getDatabase(); const source = getProjectById(id)!;
+  const input = { commitSha: "c".repeat(40), branch: "main", composeFileName: "compose.yml", triggeredBy: "auto" };
+  recordSuccessfulDeployment(id, { ...input, sourceCompose: "services: {}", effectiveCompose: "services: {}" });
+  const credential = db.prepare("INSERT INTO credentials (type,alias,secret_enc) VALUES ('api_key','unhealthy-email',?)").run(encryptSecret("test-api-key"));
+  db.prepare(`INSERT OR REPLACE INTO notification_config
+    (id,enabled,provider,credential_id,from_address,to_address) VALUES (1,1,'mw',?,'from@example.com','to@example.com')`).run(credential.lastInsertRowid);
+  const classification = () => (db.prepare("SELECT health_failed_at FROM project_deployments WHERE project_id=? AND status='active'").get(id) as { health_failed_at: string | null }).health_failed_at;
+  let emails = 0; let clock = 0;
+  const deps = { probe: async () => ({ status: "down" as const, responseMs: 1 }), now: () => clock, sleep: async (ms: number) => { clock += ms; } };
+  mock.method(globalThis, "fetch", async () => {
+    emails++;
+    assert.equal(db.inTransaction, false);
+    assert.ok(classification());
+    assert.equal(events().length, 1);
+    return new Response("{}", { status: 200 });
+  });
+  db.exec("CREATE TEMP TRIGGER unhealthy_email_fail BEFORE INSERT ON push_deliveries BEGIN SELECT RAISE(ABORT,'enqueue failed'); END");
+  try {
+    await assert.rejects(gateOnHealth(source, "deploy", input.commitSha, false, deps), /enqueue failed/);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(emails, 0);
+    assert.equal(classification(), null);
+    assert.equal(events().length, 0);
+    assert.equal(db.prepare("SELECT id FROM push_deliveries").get(), undefined);
+  } finally { db.exec("DROP TRIGGER unhealthy_email_fail"); }
+  await gateOnHealth(source, "deploy", input.commitSha, false, deps);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(emails, 1);
+  assert.ok(classification());
+  assert.equal(events().length, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM push_deliveries").get() as { count: number }).count, 1);
+  db.exec("DELETE FROM notification_config");
+});
+
 test("automatic rollback recovery is opt-in and preserves the initial immutable incident", async () => {
   assert.equal(getPushConfig().events.rollback_recovered, false);
   for (const enabled of [false, true]) {
