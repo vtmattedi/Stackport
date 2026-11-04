@@ -15,9 +15,15 @@ import { certbotRenewalMonitor } from "./services/certbotRenewalMonitor";
 import { ensureBootstrapCredential } from "./services/installation";
 import { ensureAppIngress } from "./services/appIngress";
 import { reconcileAllTcpExposures } from "./services/tcpExposures";
+import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./services/selfUpdate";
+import { getPushConfig } from "./services/webPush";
+import { pushDeliveryWorker } from "./services/pushDeliveryWorker";
+import { logger } from "./utils/logger";
 
 try {
   initializeDatabase();
+  try { getPushConfig(); } catch { logger.error("push.identity.bootstrap-failed"); }
+  pushDeliveryWorker.start();
   markInterruptedActions();
   ensureBootstrapCredential();
   void ensureAppIngress();
@@ -29,6 +35,7 @@ try {
   projectResourceSampler.start();
   dockerStorageMonitor.start();
   certbotRenewalMonitor.start();
+  startSelfUpdateNotifications();
 
   const httpServer = createServer(app);
 
@@ -51,13 +58,15 @@ try {
     projectResourceSampler.stop();
     dockerStorageMonitor.stop();
     certbotRenewalMonitor.stop();
-    httpServer.close(() => {
+    stopSelfUpdateNotifications();
+    const pushDrained = pushDeliveryWorker.stop();
+    httpServer.close(() => { void pushDrained.then(() => {
       healthChecker.stop();
       closeDatabase();
       // eslint-disable-next-line no-console
       console.log("[server] clean exit");
       process.exit(0);
-    });
+    }); });
     setTimeout(() => {
       console.error("[server] shutdown timeout - forcing exit");
       process.exit(1);

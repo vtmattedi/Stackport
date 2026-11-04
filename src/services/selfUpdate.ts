@@ -1,6 +1,12 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { config } from "../config/env";
+import { getDatabase } from "../config/database";
+import { notifySystemUpdateFailed } from "./notificationService";
+import { enqueueNotificationTx } from "./notificationService";
+import { systemUpdateFailedEvent } from "./notificationEvents";
+import { randomUUID } from "crypto";
+import { logger } from "../utils/logger";
 
 const exec = promisify(execFile);
 const NAME = "stackport-updater";
@@ -76,15 +82,63 @@ let launching = false;
 export async function startSelfUpdate(): Promise<SelfUpdateStatus> {
   if (launching) throw new SelfUpdateBusyError("A Stackport update is already starting.");
   launching = true;
+  const launchId = `launch-${randomUUID()}`;
   try {
     const previous = await inspectUpdater();
     if (previous && active(previous)) throw new SelfUpdateBusyError("A Stackport update is already running.");
     if (previous) await docker(["rm", NAME]);
     const started = await docker(updaterRunArgs(await currentImage(), NAME, ["/usr/local/bin/stackport", "update"], {detach: true}));
     return {id: started.stdout.trim(), status: "running", output: "Stackport update started."};
+  } catch (error) {
+    if (!(error instanceof SelfUpdateBusyError)) {
+      try { await notifySystemUpdateFailed(launchId); }
+      catch { logger.error("notification.update-enqueue-failed"); }
+    }
+    throw error;
   } finally {
     launching = false;
   }
+}
+
+let notificationTimer: NodeJS.Timeout | null = null;
+let checkingNotification = false;
+
+/** A detached updater survives replacement of the app. Poll from the new app too,
+ *  and persist deduplication so the same failure is not sent after each restart. */
+export async function checkSelfUpdateNotification(): Promise<void> {
+  if (checkingNotification) return;
+  checkingNotification = true;
+  try {
+    await notifySelfUpdateOutcome(await getSelfUpdateStatus());
+  } finally {
+    checkingNotification = false;
+  }
+}
+
+export async function notifySelfUpdateOutcome(status: SelfUpdateStatus | null): Promise<void> {
+  if (!status || (status.status !== "failed" && status.status !== "rolled-back")) return;
+  const db = getDatabase();
+  db.transaction(() => {
+    const outcome = `${status.id}:${status.status}`;
+    const previous = db.prepare("SELECT value FROM app_meta WHERE key = 'enqueued_self_update_outcome'").get() as { value: string } | undefined;
+    if (previous?.value === outcome) return;
+    enqueueNotificationTx(db, systemUpdateFailedEvent(status.id, status.status as "failed" | "rolled-back"));
+    db.prepare(`INSERT INTO app_meta (key, value, updated_at) VALUES ('enqueued_self_update_outcome', ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`).run(outcome);
+  }).immediate();
+}
+
+export function startSelfUpdateNotifications(): void {
+  if (notificationTimer) return;
+  const check = (): void => { void checkSelfUpdateNotification().catch(() => logger.error("notification.update-monitor-failed")); };
+  check();
+  notificationTimer = setInterval(check, 15_000);
+  notificationTimer.unref();
+}
+
+export function stopSelfUpdateNotifications(): void {
+  if (notificationTimer) clearInterval(notificationTimer);
+  notificationTimer = null;
 }
 
 /** Launches an updater exactly as the Update button does, but has it only prove it

@@ -591,6 +591,41 @@ export interface NotificationConfig {
   updatedAt: string | null;
 }
 
+export type PushEventType = "health_check" | "deploy_blocked" | "deploy_unhealthy" | "rollback_failed" | "rollback_recovered" | "system_update_failed";
+export interface PushConfig {
+  identityError?: string | null;
+  supported: boolean;
+  enabled: boolean;
+  subject: string;
+  events: Record<PushEventType, boolean>;
+  vapidPublicKey: string;
+}
+export interface PushStatus {
+  enabled: boolean;
+  identityError: string | null;
+  pending: number;
+  retrying: number;
+  leased: number;
+  accepted24h: number;
+  permanentFailures24h: number;
+  oldestPendingAgeSeconds: number | null;
+  lastWorkerPollAt: string | null;
+  lastSuccessfulAcceptanceAt: string | null;
+  queueWarning: string | null;
+}
+export interface PushBrowser {
+  id: number;
+  label: string;
+  createdAt: string;
+  updatedAt: string;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+}
+export interface PushTestResult {
+  ok: boolean;
+  results: { id: number; label: string; ok: boolean; expired?: boolean; error?: string }[];
+}
+
 export interface NginxApplyResult {
   ok: boolean;
   mode: "real";
@@ -668,6 +703,7 @@ export interface NginxDocument {
 
 export interface NotificationLogEntry {
   id: number;
+  channel: "email" | "web_push";
   eventType: string;
   recipient: string;
   subject: string;

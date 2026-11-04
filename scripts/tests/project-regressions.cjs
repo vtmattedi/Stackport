@@ -134,7 +134,7 @@ async function main() {
   }}), [{service: 'api', containerPort: 4000}, ...[443, 3000, 3001, 3002].map(containerPort => ({service: 'web', containerPort}))]);
   const policy = require(`${root}/services/composePolicy`).validateComposePolicy({services: {mqtt: {ports: ['8883:8883']}}});
   assert.equal(policy.ok, false);
-  assert.match(policy.violations[0], /host port publication is not allowed/);
+  assert.match(policy.violations[0].problem, /host port publication is not allowed/);
   console.log('PASS: port ranges, TCP/UDP, duplicates, environment ports and private values');
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});
