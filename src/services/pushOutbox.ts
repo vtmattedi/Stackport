@@ -26,7 +26,8 @@ function pushEnabled(db: Database.Database, type: NotificationEventType): boolea
 
 /** DB-only; callers include this in the transaction that classifies the incident. */
 export function enqueuePushEventTx(db: Database.Database, event: DurablePushEvent, nowMs = Date.now()): { eventId: number | null; inserted: boolean } {
-  if (!/^[a-z_]+:[A-Za-z0-9:_-]{1,200}$/.test(event.eventKey) || !PUSH_EVENT_TYPES.includes(event.type)) throw new Error("Invalid push event identity");
+  if (event.eventKey.length > 220 || !/^[a-z_]+:[A-Za-z0-9:_-]{1,200}$/.test(event.eventKey)
+    || !PUSH_EVENT_TYPES.includes(event.type) || !event.eventKey.startsWith(`${event.type}:`)) throw new Error("Invalid push event identity");
   if (!["info", "warning", "error"].includes(event.severity)) throw new Error("Invalid push severity");
   if (!/^\/(?:projects(?:\/[1-9]\d*(?:\/[a-z-]+)?)?|settings\/(?:general|notifications))$/.test(event.url)) throw new Error("Invalid push navigation path");
   if (event.projectId !== undefined && (!Number.isSafeInteger(event.projectId) || event.projectId <= 0)) throw new Error("Invalid push project ID");
@@ -171,11 +172,13 @@ export function getPushQueueStatus(db: Database.Database, now = Date.now()): {
   const oldest = db.prepare(`SELECT MIN(e.created_at_ms) AS started FROM push_events e JOIN push_deliveries d ON d.event_id = e.id
     WHERE d.status IN (${LIVE_PUSH_STATES})`).get() as { started: number | null };
   const heartbeat = db.prepare("SELECT value FROM app_meta WHERE key = 'push_worker_poll_at'").get() as { value: string } | undefined;
+  const subscriptionAcceptance = db.prepare("SELECT MAX(last_success_at) AS accepted FROM push_subscriptions").get() as { accepted: string | null };
+  const lastAcceptance = Math.max(counts["last_accepted"] ?? 0, Date.parse(subscriptionAcceptance.accepted ?? "") || 0);
   const live = (counts["pending"] ?? 0) + (counts["retrying"] ?? 0) + (counts["leased"] ?? 0);
   return { pending: counts["pending"] ?? 0, retrying: counts["retrying"] ?? 0, leased: counts["leased"] ?? 0,
     permanentFailures24h: counts["failures"] ?? 0, accepted24h: counts["accepted"] ?? 0,
     oldestPendingAgeSeconds: oldest.started === null ? null : Math.max(0, Math.floor((now - oldest.started) / 1000)),
     lastWorkerPollAt: heartbeat?.value ?? null,
-    lastSuccessfulAcceptanceAt: counts["last_accepted"] ? new Date(counts["last_accepted"]).toISOString() : null,
+    lastSuccessfulAcceptanceAt: lastAcceptance ? new Date(lastAcceptance).toISOString() : null,
     queueWarning: live > 5000 ? "More than 5,000 push deliveries are waiting. Check worker and provider health." : null };
 }

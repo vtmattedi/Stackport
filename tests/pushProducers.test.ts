@@ -81,6 +81,16 @@ test("paused/deleted/reconfigured projects drop in-flight probe results", async 
   }
 });
 
+test("an older cross-process probe cannot overwrite a newer healthy result", async () => {
+  const id = project(); let finishOld!: () => void;
+  const old = new HealthChecker(async () => { await new Promise<void>((resolve) => { finishOld = resolve; }); return { status: "down", responseMs: 3 }; });
+  const checking = old.check(id);
+  await new HealthChecker(async () => ({ status: "up", responseMs: 1 })).check(id);
+  finishOld(); await checking;
+  assert.equal((getDatabase().prepare("SELECT last_status FROM projects WHERE id=?").get(id) as { last_status: string }).last_status, "up");
+  assert.equal(events().length, 0);
+});
+
 test("health incidents observed while disabled are not replayed when enabled", async () => {
   const id = project(); const checker = new HealthChecker(async () => ({ status: "down", responseMs: 1 }));
   updatePushConfig({ enabled: false }); await checker.check(id);

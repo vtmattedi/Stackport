@@ -22,7 +22,7 @@ export class PushDeliveryWorker {
   private running: Promise<void> | null = null;
   private stopping = false;
   private abandonCompletions = false;
-  private lastCleanup = 0;
+  private nextCleanupAt = 0;
   private readonly deps: WorkerDeps;
 
   constructor(deps: Partial<WorkerDeps> = {}) {
@@ -52,11 +52,14 @@ export class PushDeliveryWorker {
     const timestamp = now();
     db.prepare(`INSERT INTO app_meta (key,value,updated_at) VALUES ('push_worker_poll_at',?,CURRENT_TIMESTAMP)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP`).run(new Date(timestamp).toISOString());
-    if (!this.lastCleanup || timestamp - this.lastCleanup >= 86_400_000) {
-      cleanupOldEvents(db, timestamp);
+    if (timestamp >= this.nextCleanupAt) {
+      const deleted = cleanupOldEvents(db, timestamp);
+      const logsDeleted = db.prepare(`DELETE FROM notification_logs WHERE id IN (SELECT id FROM notification_logs
+        WHERE channel='web_push' AND datetime(sent_at) < datetime(?) ORDER BY id LIMIT 200)`)
+        .run(new Date(timestamp - 30 * 86_400_000).toISOString()).changes;
       const warning = getPushQueueStatus(db, timestamp).queueWarning;
       if (warning) logger.warn("push.worker.queue-backlog");
-      this.lastCleanup = timestamp;
+      this.nextCleanupAt = timestamp + (deleted === 200 || logsDeleted === 200 ? 60_000 : 86_400_000);
     }
     const leases = claimDueDeliveries(db, timestamp);
     let index = 0;

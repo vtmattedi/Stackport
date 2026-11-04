@@ -100,13 +100,22 @@ export class HealthChecker {
     const url = row ? healthCheckUrl(row) : null;
     if (!row || !url) return;
 
-    const started = Date.now();
+    // A monotonic DB ticket orders overlapping probes even if two processes start
+    // in the same millisecond. No transaction is held during the HTTP probe.
+    const started = db.transaction(() => {
+      const current = db.prepare("SELECT health_probe_started_at_ms FROM projects WHERE id=?").get(id) as { health_probe_started_at_ms: number } | undefined;
+      if (!current) return null;
+      const ticket = Math.max(Date.now(), current.health_probe_started_at_ms + 1);
+      db.prepare("UPDATE projects SET health_probe_started_at_ms=? WHERE id=?").run(ticket, id);
+      return ticket;
+    }).immediate();
+    if (started === null) return;
     const { status, responseMs } = await this.probe(url);
 
     const now = new Date().toISOString();
     const transition = db.transaction((): { event?: StackportNotification; name: string } | null => {
       const current = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as (ProjectRow & { health_incident_key: string | null; health_probe_started_at_ms: number }) | undefined;
-      if (!current || healthCheckUrl(current) !== url || current.health_probe_started_at_ms > started) return null;
+      if (!current || healthCheckUrl(current) !== url || current.health_probe_started_at_ms !== started) return null;
       let incident = current.health_incident_key;
       let event: StackportNotification | undefined;
       if (status === "down" && current.last_status !== "down") {

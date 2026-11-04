@@ -7,6 +7,30 @@ import Database from "better-sqlite3";
 import { closeDatabase, getDatabase, initializeDatabase } from "../src/config/database";
 import { MIGRATIONS, runMigrations, schemaVersion, type Migration } from "../src/migrations";
 
+test("migration 007 preserves an existing 006 identity/preferences/subscriptions and older code can still use its tables", () => {
+  initializeDatabase();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "stackport-migration006-"));
+  const fixture = path.join(scratch, "legacy.sqlite");
+  fs.writeFileSync(fixture, getDatabase().serialize());
+  const legacy = new Database(fixture);
+  try {
+    legacy.exec("DROP TABLE push_deliveries; DROP TABLE push_events; ALTER TABLE projects DROP COLUMN health_incident_key; ALTER TABLE projects DROP COLUMN health_probe_started_at_ms;");
+    legacy.pragma("user_version = 6");
+    legacy.prepare("INSERT INTO push_config (id,enabled,subject,events_json,vapid_public_key,vapid_private_key_enc) VALUES (1,1,?,?,?,?)")
+      .run("mailto:operator@example.com", '{"health_check":false}', "preserved-public", "preserved-encrypted-private");
+    legacy.prepare("INSERT INTO push_subscriptions (endpoint,p256dh,auth,label) VALUES ('https://fcm.googleapis.com/migration','p256','auth','Laptop')").run();
+    const before = legacy.prepare("SELECT * FROM push_config").get();
+    runMigrations(legacy); runMigrations(legacy);
+    assert.equal(schemaVersion(legacy), 7);
+    assert.deepEqual(legacy.prepare("SELECT * FROM push_config").get(), before);
+    assert.equal((legacy.prepare("SELECT COUNT(*) AS n FROM push_subscriptions").get() as { n: number }).n, 1);
+    runMigrations(legacy, MIGRATIONS.filter((migration) => migration.id <= 6));
+    legacy.prepare("INSERT INTO notification_logs (subject,result) VALUES ('older-code-email','ok')").run();
+    assert.equal((legacy.prepare("SELECT channel FROM notification_logs WHERE subject='older-code-email'").get() as { channel: string }).channel, "email");
+    assert.ok(legacy.prepare("SELECT name FROM sqlite_master WHERE name='idx_push_deliveries_due'").get());
+  } finally { legacy.close(); closeDatabase(); fs.rmSync(scratch, { recursive: true, force: true }); }
+});
+
 function schema(): string[] {
   return (getDatabase()
     .prepare("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name")

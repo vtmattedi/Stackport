@@ -1566,6 +1566,7 @@ export async function gateOnHealth(
   commitSha: string | null,
   allowAutoRollback: boolean,
   healthDeps?: HealthGateDeps,
+  rollbackFailureOperationId?: string,
 ): Promise<{ ok: boolean; output: string }> {
   const result = await verifyDeployHealth(project.id, action, healthDeps);
   if (!result) return { ok: true, output: "" };
@@ -1578,6 +1579,7 @@ export async function gateOnHealth(
     db.transaction(() => {
       deploymentId = markActiveDeploymentUnhealthy(project.id) ?? operationId;
       enqueueNotificationTx(db, deployUnhealthyEvent(project.name, commitSha, result.url, "none", project.id, deploymentId));
+      if (rollbackFailureOperationId) enqueueNotificationTx(db, rollbackFailedEvent(project.name, project.id, rollbackFailureOperationId));
     })();
   } catch (error) {
     void sendNotificationEmail(deployUnhealthyEvent(project.name, commitSha, result.url, "none", project.id, deploymentId));
@@ -1588,16 +1590,16 @@ export async function gateOnHealth(
   if (allowAutoRollback && project.autoRollbackUnhealthy) {
     emit(project.id, action, "status", "Rolling back automatically (project setting)\n");
     try {
-      const restored = await rollbackProject(project.id, undefined, { nested: true });
+      const restored = await rollbackProject(project.id, undefined, { nested: true, operationId });
       lines.push(restored.output);
       rollback = restored.ok ? "done" : "failed";
     } catch {
       rollback = "failed";
       lines.push("Automatic rollback could not complete. Check the action log.");
     }
-    if (rollback === "failed") db.transaction(() => enqueueNotificationTx(db, rollbackFailedEvent(project.name, project.id, operationId)))();
   }
   void sendNotificationEmail(deployUnhealthyEvent(project.name, commitSha, result.url, rollback, project.id, deploymentId));
+  if (rollback === "failed") db.transaction(() => enqueueNotificationTx(db, rollbackFailedEvent(project.name, project.id, operationId)))();
   return { ok: false, output: lines.join("\n") };
 }
 
@@ -1607,7 +1609,7 @@ export async function gateOnHealth(
  *  actually running", not "reconstruct an old state from current configuration"
  *  (stackport_yml.md §17). Restores `deploymentId`, or by default the revision
  *  resolveRollbackTarget picks; the revision it replaces is marked rolled back from. */
-export async function rollbackProject(projectId: number, deploymentId?: number, opts: { nested?: boolean } = {}): Promise<DeployResult> {
+export async function rollbackProject(projectId: number, deploymentId?: number, opts: { nested?: boolean; operationId?: string } = {}): Promise<DeployResult> {
   // Nested inside another action (an automatic rollback after a failed health check):
   // that action sends the single final "done" event, so the client doesn't end early.
   const done = (ok: boolean): Partial<ProjectDeployEvent> => (opts.nested ? {} : { ok, done: true });
@@ -1673,15 +1675,17 @@ export async function rollbackProject(projectId: number, deploymentId?: number, 
       triggeredBy: "manual",
     }, { rollback: true });
   } else {
-    recordFailedDeployment(
-      projectId,
-      { commitSha: previous.commitSha, branch: previous.branch, composeFileName: previous.composeFileName, triggeredBy: "manual" },
-      "rollback: docker compose up failed"
-    );
+    const db = getDatabase();
+    db.transaction(() => {
+      const attempt = recordFailedDeployment(projectId,
+        { commitSha: previous.commitSha, branch: previous.branch, composeFileName: previous.composeFileName, triggeredBy: "manual" },
+        "rollback: docker compose up failed");
+      if (opts.nested) enqueueNotificationTx(db, rollbackFailedEvent(project.name, project.id, opts.operationId ?? String(attempt)));
+    })();
   }
   let ok = compose.ok;
   if (compose.ok) {
-    const health = await gateOnHealth(project, action, previous.commitSha, false);
+    const health = await gateOnHealth(project, action, previous.commitSha, false, undefined, opts.nested ? opts.operationId : undefined);
     output.push(health.output);
     ok = health.ok;
   }
