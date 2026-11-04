@@ -1,5 +1,7 @@
 # Web Push Notifications — Implementation Plan
 
+Durability hardening is specified in [the reliability contract](web-push-reliability.md).
+
 **Branch:** `feat/web-push-notifications`  
 **Status:** Implemented; delivery to a real device requires browser permission and a reachable push provider.
 **Goal:** Add true browser push notifications to StackPort so important events can reach the operator even when the StackPort tab is closed.
