@@ -88,7 +88,18 @@ if (config.nodeEnv === "production") {
   app.get("/version.json", (_req, res) => {
     res.set("Cache-Control", "no-store").json({version: runningSha() ?? "unknown"});
   });
-  app.use(express.static(clientDist));
+  // Worker scripts and navigation HTML must revalidate on every request.
+  // Fingerprinted Vite assets are immutable and safe to cache for a year.
+  app.use(express.static(clientDist, {
+    setHeaders(res, filePath) {
+      const name = path.basename(filePath);
+      if (name === "index.html" || name === "sw.js" || name === "registerSW.js" || name === "manifest.webmanifest") {
+        res.setHeader("Cache-Control", "no-cache, must-revalidate");
+      } else if (filePath.includes(`${path.sep}assets${path.sep}`) && /-[a-zA-Z0-9_-]{8,}\./.test(name)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      }
+    },
+  }));
   app.use((_req, res, next) => {
     res.sendFile(path.join(clientDist, "index.html"), (err?: Error) => {
       if (err) next(err);
