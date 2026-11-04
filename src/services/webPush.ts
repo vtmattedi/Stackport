@@ -5,6 +5,7 @@ import { config } from "../config/env";
 import { decryptSecret, encryptSecret } from "../utils/crypto";
 import { logger } from "../utils/logger";
 import { PUSH_EVENT_TYPES, type NotificationEventType, type StackportNotification } from "./notificationTypes";
+import { cancelDisabledDeliveries, cancelSubscriptionDeliveries } from "./pushOutbox";
 
 interface PushConfigRow {
   enabled: number;
@@ -28,6 +29,7 @@ interface SubscriptionRow {
 }
 
 export interface PushConfig {
+  identityError: string | null;
   supported: boolean;
   enabled: boolean;
   subject: string;
@@ -54,6 +56,7 @@ export function getPushConfig(): PushConfig {
   const row = identity();
   const saved = JSON.parse(row.events_json) as Partial<Record<NotificationEventType, boolean>>;
   return {
+    identityError: getPushIdentityError(),
     supported: true,
     enabled: !!row.enabled,
     subject: row.subject,
@@ -86,8 +89,12 @@ export function updatePushConfig(input: unknown): PushConfig {
       events[key as NotificationEventType] = value;
     }
   }
-  getDatabase().prepare("UPDATE push_config SET enabled = ?, subject = ?, events_json = ?, updated_at = ? WHERE id = 1")
-    .run(enabled ? 1 : 0, subject, JSON.stringify(events), new Date().toISOString());
+  const db = getDatabase();
+  db.transaction(() => {
+    db.prepare("UPDATE push_config SET enabled = ?, subject = ?, events_json = ?, updated_at = ? WHERE id = 1")
+      .run(enabled ? 1 : 0, subject, JSON.stringify(events), new Date().toISOString());
+    cancelDisabledDeliveries(db);
+  })();
   return getPushConfig();
 }
 
@@ -137,11 +144,81 @@ export function savePushSubscription(input: unknown, userAgent?: string): object
 }
 
 export function deletePushSubscription(id: number): boolean {
-  return getDatabase().prepare("DELETE FROM push_subscriptions WHERE id = ?").run(id).changes > 0;
+  const db = getDatabase();
+  return db.transaction(() => {
+    cancelSubscriptionDeliveries(db, id);
+    return db.prepare("DELETE FROM push_subscriptions WHERE id = ?").run(id).changes > 0;
+  })();
 }
 
-export interface PushDeliveryResult { id: number; label: string; ok: boolean; expired?: boolean; error?: string }
+export function resolvePushSubscription(input: unknown): object | null {
+  if (!input || typeof input !== "object") return null;
+  const data = input as { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
+  if (typeof data.endpoint !== "string" || typeof data.keys?.p256dh !== "string" || typeof data.keys.auth !== "string") return null;
+  const row = getDatabase().prepare("SELECT * FROM push_subscriptions WHERE endpoint = ? AND p256dh = ? AND auth = ?")
+    .get(data.endpoint, data.keys.p256dh, data.keys.auth) as SubscriptionRow | undefined;
+  return row ? safeSubscription(row) : null;
+}
+
+export function getPushIdentityError(): string | null {
+  try {
+    const row = identity();
+    const privateKey = decryptSecret(row.vapid_private_key_enc);
+    // Derive the public point without changing the persisted identity.
+    const { createECDH } = require("crypto") as typeof import("crypto");
+    const ec = createECDH("prime256v1");
+    ec.setPrivateKey(Buffer.from(privateKey, "base64url"));
+    if (ec.getPublicKey().toString("base64url") !== row.vapid_public_key) throw new Error("identity mismatch");
+    return null;
+  } catch {
+    return "Push signing identity cannot be decrypted or verified. Restore the matching database and host secrets. Existing keys have been preserved.";
+  }
+}
+
+export interface PushDeliveryResult { id: number; label: string; ok: boolean; accepted?: boolean; expired?: boolean; error?: string }
 export type PushSender = typeof webpush.sendNotification;
+
+export interface PushAttemptResult {
+  kind: "accepted" | "retry" | "expired" | "permanent_failure";
+  code?: string;
+  httpStatus?: number;
+  retryAfterAt?: number;
+}
+
+export function classifyPushFailure(error: unknown, now = Date.now()): PushAttemptResult {
+  const detail = error && typeof error === "object" ? error as { statusCode?: unknown; headers?: Record<string, unknown> } : {};
+  const httpStatus = Number(detail.statusCode) || undefined;
+  if (httpStatus === 404 || httpStatus === 410) return { kind: "expired", code: "subscription_expired", httpStatus };
+  if (httpStatus === 401 || httpStatus === 403) return { kind: "permanent_failure", code: "push_authentication_failed", httpStatus };
+  if (httpStatus && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408 && httpStatus !== 429) {
+    return { kind: "permanent_failure", code: httpStatus === 413 ? "payload_too_large" : "push_request_rejected", httpStatus };
+  }
+  const retryAfter = detail.headers?.["retry-after"];
+  let retryAfterAt: number | undefined;
+  if ((httpStatus === 429 || httpStatus === 503) && typeof retryAfter === "string") {
+    const candidate = /^\d+$/.test(retryAfter) ? now + Number(retryAfter) * 1000 : Date.parse(retryAfter);
+    if (Number.isFinite(candidate) && candidate > now) retryAfterAt = Math.min(candidate, now + 2 * 3_600_000);
+  }
+  return { kind: "retry", code: httpStatus ? "push_service_unavailable" : "push_network_error", httpStatus, retryAfterAt };
+}
+
+/** One network attempt only. Queue ownership and persistence belong to the worker. */
+export async function sendOnePush(subscriptionId: number, payload: string, ttlSeconds: number,
+  options: { send?: PushSender; nowMs?: number } = {}): Promise<PushAttemptResult> {
+  const subscription = getDatabase().prepare("SELECT * FROM push_subscriptions WHERE id = ?").get(subscriptionId) as SubscriptionRow | undefined;
+  if (!subscription) return { kind: "expired", code: "browser_removed" };
+  if (getPushIdentityError()) return { kind: "permanent_failure", code: "push_identity_unavailable" };
+  const row = identity();
+  try {
+    const response = await (options.send ?? webpush.sendNotification)(
+      { endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, payload,
+      { vapidDetails: { subject: row.subject, publicKey: row.vapid_public_key, privateKey: decryptSecret(row.vapid_private_key_enc) },
+        timeout: 10_000, TTL: ttlSeconds, urgency: "high" });
+    return response.statusCode >= 200 && response.statusCode < 300
+      ? { kind: "accepted", httpStatus: response.statusCode }
+      : classifyPushFailure(response, options.nowMs);
+  } catch (error) { return classifyPushFailure(error, options.nowMs); }
+}
 
 export async function sendWebPushNotification(
   event: StackportNotification,
@@ -149,33 +226,26 @@ export async function sendWebPushNotification(
 ): Promise<PushDeliveryResult[]> {
   const settings = getPushConfig();
   if (!settings.enabled || (event.type !== "test" && !settings.events[event.type])) return [];
-  const row = identity();
   const db = getDatabase();
   const subscriptions = (options.subscriptionId === undefined
     ? db.prepare("SELECT * FROM push_subscriptions").all()
     : db.prepare("SELECT * FROM push_subscriptions WHERE id = ?").all(options.subscriptionId)) as SubscriptionRow[];
   // Only concise metadata constructed by the server goes to browser push services.
-  const payload = JSON.stringify({ title: event.title, body: event.body, url: event.url,
-    tag: `${event.type}:${event.projectId ?? "system"}`, createdAt: event.createdAt });
+  const payload = JSON.stringify({ version: 1, title: event.title, body: event.body, url: event.url,
+    tag: `test:${event.createdAt}`, createdAt: event.createdAt });
   const results: PushDeliveryResult[] = [];
   for (let offset = 0; offset < subscriptions.length; offset += 4) {
     results.push(...await Promise.all(subscriptions.slice(offset, offset + 4).map(async (subscription): Promise<PushDeliveryResult> => {
-      let result: PushDeliveryResult = { id: subscription.id, label: subscription.label, ok: true };
-      try {
-        await (options.send ?? webpush.sendNotification)(
-          { endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, payload,
-          { vapidDetails: { subject: row.subject, publicKey: row.vapid_public_key, privateKey: decryptSecret(row.vapid_private_key_enc) },
-            timeout: 10_000, TTL: 300, urgency: event.severity === "info" ? "normal" : "high" },
-        );
+      const attempt = await sendOnePush(subscription.id, payload, 300, options);
+      const result: PushDeliveryResult = { id: subscription.id, label: subscription.label, ok: attempt.kind === "accepted", accepted: attempt.kind === "accepted" };
+      if (result.ok) {
         db.prepare("UPDATE push_subscriptions SET last_success_at = ? WHERE id = ?").run(new Date().toISOString(), subscription.id);
-      } catch (error) {
-        const status = error && typeof error === "object" && "statusCode" in error ? Number(error.statusCode) : null;
-        const expired = status === 404 || status === 410;
-        const message = expired ? "Subscription expired; enable this browser again" : status ? `Push service returned HTTP ${status}` : "Push delivery failed; retry later";
-        if (expired) deletePushSubscription(subscription.id);
+      } else {
+        result.expired = attempt.kind === "expired";
+        result.error = attempt.code;
+        if (result.expired) deletePushSubscription(subscription.id);
         else db.prepare("UPDATE push_subscriptions SET last_failure_at = ? WHERE id = ?").run(new Date().toISOString(), subscription.id);
-        result = { ...result, ok: false, expired, error: message };
-        logger.warn({ subscriptionId: subscription.id, status }, "notification.web-push.failed");
+        logger.warn({ subscriptionId: subscription.id, code: attempt.code }, "notification.web-push.failed");
       }
       db.prepare(`INSERT INTO notification_logs (event_type, channel, recipient, subject, result, error_message, project_name)
         VALUES (?, 'web_push', ?, ?, ?, ?, ?)`)
