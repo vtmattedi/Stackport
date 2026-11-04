@@ -53,6 +53,21 @@ test("every push API requires an admin session", async () => {
   }
 });
 
+test("delivery log orders mixed SQLite and ISO timestamps chronologically with stable ties", async () => {
+  const insert = getDatabase().prepare(`INSERT INTO notification_logs
+    (event_type,channel,recipient,subject,result,sent_at) VALUES ('test',?,'Browser','test','ok',?)`);
+  const olderPush = insert.run("web_push", "2026-11-04T11:00:00.000Z").lastInsertRowid;
+  const newerEmail = insert.run("email", "2026-11-04 11:30:00").lastInsertRowid;
+  const fractionPush = insert.run("web_push", "2026-11-04T11:30:00.123Z").lastInsertRowid;
+  const tiedPush = insert.run("web_push", "2026-11-04T11:30:00.000Z").lastInsertRowid;
+  const nextDay = insert.run("email", "2026-11-05 00:00:00").lastInsertRowid;
+  const response = await fetch(`${base.slice(0, -5)}/logs`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  const logs = await response.json() as { id: number; sentAt: string }[];
+  assert.deepEqual(logs.map((log) => log.id), [nextDay, fractionPush, tiedPush, newerEmail, olderPush].map(Number));
+  assert.ok(logs.every((log) => Number.isFinite(Date.parse(log.sentAt))));
+});
+
 test("identity is generated once, encrypted, preserved across restart and never returned by the API", async () => {
   const first = getPushConfig();
   const row = getDatabase().prepare("SELECT vapid_private_key_enc FROM push_config").get() as { vapid_private_key_enc: string };

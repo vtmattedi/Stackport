@@ -147,7 +147,7 @@ router.post("/test", async (_req, res) => {
 
 router.get("/logs", (_req, res) => {
   const rows = getDatabase()
-    .prepare("SELECT * FROM notification_logs ORDER BY sent_at DESC LIMIT 50")
+    .prepare("SELECT * FROM notification_logs ORDER BY julianday(sent_at) DESC, id DESC LIMIT 50")
     .all() as { id: number; event_type: string; channel: string; recipient: string; subject: string;
       result: string; error_message: string | null; project_name: string | null; sent_at: string }[];
   res.json(rows.map((row) => ({ id: row.id, eventType: row.event_type, channel: row.channel,
