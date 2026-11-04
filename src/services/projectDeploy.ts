@@ -998,7 +998,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       emit(projectId, action, "stderr", message, { ok: false, done: true });
       output.push(message);
       if (triggeredBy === "auto" && sync.blockedReason) {
-        void notifyDeployBlocked(project.name, sync.blockedReason);
+        void notifyDeployBlocked(project.name, sync.blockedReason, project.id);
       }
       recordFailedDeployment(
         projectId,
@@ -1131,7 +1131,7 @@ export async function pullProject(projectId: number, branch?: string | null, tri
     output.push(message);
     emit(projectId, "pull", "stderr", message, { ok: false, done: true });
     if (triggeredBy === "auto" && sync.blockedReason) {
-      void notifyDeployBlocked(project.name, sync.blockedReason);
+      void notifyDeployBlocked(project.name, sync.blockedReason, project.id);
     }
     return { ok: false, projectId, repoPath, output: output.join("\n\n"), action: "pull" };
   }
@@ -1566,7 +1566,7 @@ async function gateOnHealth(
     lines.push(restored.output);
     rollback = restored.ok ? "done" : "failed";
   }
-  void notifyDeployUnhealthy(project.name, commitSha, result.url, rollback);
+  void notifyDeployUnhealthy(project.name, commitSha, result.url, rollback, project.id);
   return { ok: false, output: lines.join("\n") };
 }
 

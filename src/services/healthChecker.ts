@@ -99,7 +99,7 @@ class HealthChecker {
     });
 
     if (status === "down" && row.last_status !== "down") {
-      void notifyHealthCheckFailure(row.name, url, responseMs);
+      void notifyHealthCheckFailure(row.name, url, responseMs, row.id);
     }
   }
 

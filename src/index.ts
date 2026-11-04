@@ -15,9 +15,12 @@ import { certbotRenewalMonitor } from "./services/certbotRenewalMonitor";
 import { ensureBootstrapCredential } from "./services/installation";
 import { ensureAppIngress } from "./services/appIngress";
 import { reconcileAllTcpExposures } from "./services/tcpExposures";
+import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./services/selfUpdate";
+import { getPushConfig } from "./services/webPush";
 
 try {
   initializeDatabase();
+  getPushConfig();
   markInterruptedActions();
   ensureBootstrapCredential();
   void ensureAppIngress();
@@ -29,6 +32,7 @@ try {
   projectResourceSampler.start();
   dockerStorageMonitor.start();
   certbotRenewalMonitor.start();
+  startSelfUpdateNotifications();
 
   const httpServer = createServer(app);
 
@@ -51,6 +55,7 @@ try {
     projectResourceSampler.stop();
     dockerStorageMonitor.stop();
     certbotRenewalMonitor.stop();
+    stopSelfUpdateNotifications();
     httpServer.close(() => {
       healthChecker.stop();
       closeDatabase();

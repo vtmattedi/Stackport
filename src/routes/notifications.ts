@@ -4,9 +4,11 @@ import { decryptSecret } from "../utils/crypto";
 import { requireAuth } from "../middleware/auth";
 import { createEmailProvider } from "../services/email";
 import { renderTestNotificationEmail } from "../services/emailTemplates";
+import pushNotificationsRouter from "./pushNotifications";
 
 const router = Router();
 router.use(requireAuth);
+router.use("/push", pushNotificationsRouter);
 
 interface NotificationConfigRow {
   id: number;
@@ -146,8 +148,11 @@ router.post("/test", async (_req, res) => {
 router.get("/logs", (_req, res) => {
   const rows = getDatabase()
     .prepare("SELECT * FROM notification_logs ORDER BY sent_at DESC LIMIT 50")
-    .all();
-  res.json(rows);
+    .all() as { id: number; event_type: string; channel: string; recipient: string; subject: string;
+      result: string; error_message: string | null; project_name: string | null; sent_at: string }[];
+  res.json(rows.map((row) => ({ id: row.id, eventType: row.event_type, channel: row.channel,
+    recipient: row.recipient, subject: row.subject, result: row.result, errorMessage: row.error_message,
+    projectName: row.project_name, sentAt: row.sent_at.includes("T") ? row.sent_at : `${row.sent_at.replace(" ", "T")}Z` })));
 });
 
 export default router;

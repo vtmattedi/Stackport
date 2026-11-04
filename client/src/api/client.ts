@@ -34,6 +34,9 @@ import type {
   AppVersionInfo,
   NotificationConfig,
   NotificationLogEntry,
+  PushConfig,
+  PushBrowser,
+  PushTestResult,
   GitHubPollerConfig,
   ProjectBranchesResult,
   ComposeFileContent,
@@ -490,6 +493,16 @@ export const api = {
   }) => request<NotificationConfig>("/notifications", { method: "PUT", body: JSON.stringify(data) }),
   testNotification: () => request<{ ok: boolean }>("/notifications/test", { method: "POST" }),
   getNotificationLogs: () => request<NotificationLogEntry[]>("/notifications/logs"),
+  getPushConfig: () => request<PushConfig>("/notifications/push/config"),
+  updatePushConfig: (data: Pick<PushConfig, "enabled" | "subject" | "events">) =>
+    request<PushConfig>("/notifications/push/config", { method: "PUT", body: JSON.stringify(data) }),
+  listPushBrowsers: () => request<PushBrowser[]>("/notifications/push/subscriptions"),
+  savePushBrowser: (data: PushSubscriptionJSON & { label: string }) =>
+    request<PushBrowser>("/notifications/push/subscriptions", { method: "POST", body: JSON.stringify(data) }),
+  removePushBrowser: (id: number) => request<{ ok: boolean }>(`/notifications/push/subscriptions/${id}`, { method: "DELETE" }),
+  testPush: (subscriptionId?: number) => request<PushTestResult>("/notifications/push/test", {
+    method: "POST", body: JSON.stringify({ subscriptionId }),
+  }),
 
   // Metrics
   getMetrics: (days?: number, projectIds?: number[]) => request<MetricsData>(`/metrics${buildQuery({ days: days ?? "", projects: projectIds?.join(",") ?? "" })}`),

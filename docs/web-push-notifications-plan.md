@@ -1,8 +1,17 @@
 # Web Push Notifications — Implementation Plan
 
 **Branch:** `feat/web-push-notifications`  
-**Status:** Planned  
+**Status:** Implemented; delivery to a real device requires browser permission and a reachable push provider.
 **Goal:** Add true browser push notifications to StackPort so important events can reach the operator even when the StackPort tab is closed.
+
+Implementation decisions that supersede the suggested storage/setup below:
+
+- All operator settings live in **Settings → Notifications**: enable/disable push, contact email or HTTPS URL, individual event preferences, browser registration/removal and test delivery.
+- VAPID keys are generated automatically on first startup. The private key is encrypted with the existing host secret and stored in `push_config` in the persistent SQLite database. No environment variables or shell setup are needed. Back up the database together with `/etc/stackport/secrets.env`, which contains the encryption secret.
+- Subscriptions, preferences and identity survive update, repair, restart and rollback. Migration 006 only adds tables and a defaulted log column.
+- Push payloads contain concise server-created metadata and internal links, never deployment errors, environment values or updater output.
+- Self-update failures are detected by a background monitor and deduplicated across application restarts.
+- Automated coverage includes subscription APIs, independent email/push delivery, expired subscriptions, event preferences, browser permissions, service-worker display/click behavior and lifecycle identity preservation.
 
 ---
 

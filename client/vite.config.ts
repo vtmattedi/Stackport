@@ -14,6 +14,9 @@ export default defineConfig({
     tailwindcss(),
     react(),
     VitePWA({
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       registerType: "autoUpdate",
       injectRegister: false,
       includeAssets: ["assets/stackport_logo.svg"],
@@ -31,14 +34,9 @@ export default defineConfig({
           { src: "maskable-icon-512x512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
       },
-      workbox: {
-        cacheId: `stackport-client-${pkg.version}`,
-        cleanupOutdatedCaches: true,
-        skipWaiting: true,
-        clientsClaim: true,
-      },
     }),
   ],
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   css: {
     modules: {
       localsConvention: "camelCaseOnly",

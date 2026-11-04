@@ -244,6 +244,18 @@ A project's health check is a path on one of its domains, fetched over HTTPS or 
 
 ---
 
+## Browser push and email alerts
+
+Configure both channels in **Settings → Notifications**. Browser push has its own enable switch, contact email or HTTPS URL, and per-event preferences for health failures, blocked automatic deployments, unhealthy deployments, failed automatic rollbacks and failed Stackport updates. Email remains independently configurable through its existing provider and credential settings. Routine successful operations keep their existing in-app toasts.
+
+After saving push settings, click **Enable on this browser** and accept the browser's permission prompt. Each browser is registered separately; Settings lists registered devices and lets you name the current browser, remove devices and send tests to one or all browsers. Permission is requested only after a click. A blocked permission must be changed in browser site settings. Push requires a secure context and a compatible browser; iPhone/iPad users must install the PWA on the Home Screen.
+
+Signing keys are generated automatically at startup and preserved in `push_config` in the persistent SQLite database. The private key uses the same encryption as stored credentials and is never returned to clients. There are no push environment variables to configure. Back up the database **and** the host secrets containing `JWT_SECRET`; repair, updates, rollback and reinstall without purge preserve the identity and subscriptions.
+
+Push messages contain only concise operational metadata. Clicking a notification focuses or opens Stackport at the relevant project or Settings page. Browser push runs in the service worker even when the tab is closed; delivery depends on browser permission and the browser's push service. Expired subscriptions are removed automatically, temporary failures remain registered, and delivery failures cannot fail a deploy or health check. The shared delivery log records email and browser push separately without exposing subscription endpoints or keys.
+
+The custom Workbox worker retains asset precaching, old-cache cleanup, automatic activation and client claiming. Existing release polling and Socket.IO feedback continue unchanged. Detached self-update failures, including verification failures followed by rollback, are checked in the background and notified once per updater run; launch failures are also reported. Host-only CLI operations do not create a detached updater and are not monitored by this channel.
+
 ## 7. Security model summary
 
 1. Single admin identity; bootstrap and recovery are the only ways to (re)set it, and both use short-lived, single-purpose sessions enforced server-side, never a frontend-only redirect (§3).
