@@ -17,7 +17,7 @@ export default defineConfig({
       strategies: "injectManifest",
       srcDir: "src",
       filename: "sw.ts",
-      registerType: "autoUpdate",
+      registerType: "prompt",
       injectRegister: false,
       includeAssets: ["assets/stackport_logo.svg"],
       manifest: {
@@ -36,7 +36,7 @@ export default defineConfig({
       },
     }),
   ],
-  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+  define: { __APP_VERSION__: JSON.stringify(pkg.version), __DEPLOY_COMMIT__: JSON.stringify(process.env.STACKPORT_COMMIT || pkg.version) },
   css: {
     modules: {
       localsConvention: "camelCaseOnly",
