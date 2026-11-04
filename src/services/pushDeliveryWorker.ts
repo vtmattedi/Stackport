@@ -7,7 +7,7 @@ import { deletePushSubscription, sendOnePush, type PushAttemptResult } from "./w
 export function nextPushAttemptAt(attempts: number, now: number, expires: number, random = Math.random(), retryAfterAt = 0): number {
   const seconds = [15, 60, 300, 900, 3600, 7200][Math.min(Math.max(0, attempts - 1), 5)];
   const backoff = seconds * 1000 * (0.8 + Math.max(0, Math.min(1, random)) * 0.4);
-  return Math.min(expires, Math.max(now + backoff, Math.min(retryAfterAt, now + 7_200_000)));
+  return Math.min(expires, Math.ceil(Math.max(now + backoff, Math.min(retryAfterAt, now + 7_200_000))));
 }
 
 interface WorkerDeps {

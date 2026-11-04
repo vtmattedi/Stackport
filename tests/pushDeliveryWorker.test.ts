@@ -133,3 +133,15 @@ test("unreadable VAPID identity is diagnosed without rotation or network calls",
   assert.equal(send.mock.calls.length, 0);
   assert.equal(getPushConfig().vapidPublicKey, publicKey);
 });
+
+test("retry budget is bounded and schedules use integer UTC milliseconds", async () => {
+  browser(); enqueue();
+  getDatabase().prepare("UPDATE push_deliveries SET attempts=11").run();
+  let calls = 0;
+  const worker = new PushDeliveryWorker({ now: () => now, send: async () => { calls++; return { kind: "retry", code: "push_network_error" }; } });
+  await worker.poll(); now += 100_000; await worker.poll();
+  assert.equal(calls, 1);
+  assert.equal(rows()[0].status, "permanent_failure");
+  assert.equal(rows()[0].last_error_code, "retry_limit");
+  assert.ok(Number.isInteger(nextPushAttemptAt(1, initial, initial + 3_600_000, 0.123456789)));
+});

@@ -67,3 +67,15 @@ Run CI and upgrade workflows on the feature PR; do not merge or promote it here.
 
 Real HTTPS push with the tab closed must be checked on Chrome and Firefox before
 promotion. Simulated browser/provider checks do not satisfy that release gate.
+
+Implementation checkpoints are committed separately: schema/outbox, worker,
+transactional producers, browser recovery/status, and race/regression hardening.
+Automated checks include native SQLite connections, forced write failures,
+deterministic transport outcomes, service worker VM checks and lifecycle fixtures.
+The lifecycle fixture holds a synthetic lease with push disabled; it proves volume
+persistence without contacting a real push provider. Retention catches up in
+200-record batches once per minute when a backlog remains, otherwise daily.
+
+Manual release validation remains mandatory: real HTTPS provider submission and
+actual notifications with the tab closed in Chrome and Firefox. Keep the PR draft
+and do not promote merely because mocked provider or CI checks pass.
