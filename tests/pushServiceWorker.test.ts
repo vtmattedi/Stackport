@@ -39,7 +39,7 @@ function worker() {
     assert.ok(completion, "event keeps the service worker alive until work completes");
     await completion;
   }
-  return { shown, opened, navigation, lifecycle, fire, get focused() { return focused; },
+  return { shown, opened, navigation, lifecycle, fire, sendMessage: (data: unknown) => handlers["message"]({ data }), get focused() { return focused; },
     useWindow(url = "https://stackport.example.com/projects") {
       const client = { url, navigate: async (target: string) => { navigation.push(target); return client; }, focus: async () => { focused++; } };
       windows = [client];
@@ -91,6 +91,11 @@ test("a click opens Stackport when no window exists and ignores external destina
   }
 });
 
-test("custom worker retains precaching, old-cache cleanup and automatic activation/client claiming", () => {
-  assert.deepEqual(worker().lifecycle, ["precache", "cleanup", "skipWaiting", "clientsClaim"]);
+test("custom worker precaches and claims clients, but activates only when requested", () => {
+  const sw = worker();
+  assert.deepEqual(sw.lifecycle, ["precache", "cleanup", "clientsClaim"]);
+  sw.sendMessage({ type: "IGNORED" });
+  assert.deepEqual(sw.lifecycle, ["precache", "cleanup", "clientsClaim"]);
+  sw.sendMessage({ type: "SKIP_WAITING" });
+  assert.deepEqual(sw.lifecycle, ["precache", "cleanup", "clientsClaim", "skipWaiting"]);
 });

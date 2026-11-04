@@ -12,7 +12,9 @@ cleanupOutdatedCaches();
 registerRoute(new NavigationRoute(createHandlerBoundToURL("/index.html"), {
   denylist: [/^\/api(?:\/|$)/, /^\/mcp(?:\/|$)/, /^\/health(?:\/|$)/],
 }));
-void self.skipWaiting();
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") void self.skipWaiting();
+});
 clientsClaim();
 
 function internalUrl(value: unknown): string {
