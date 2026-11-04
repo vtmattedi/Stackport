@@ -39,7 +39,7 @@ function worker() {
     assert.ok(completion, "event keeps the service worker alive until work completes");
     await completion;
   }
-  return { shown, opened, navigation, lifecycle, fire, get focused() { return focused; },
+  return { shown, opened, navigation, lifecycle, fire, sendMessage: (data: unknown) => handlers["message"]({ data }), get focused() { return focused; },
     useWindow(url = "https://stackport.example.com/projects") {
       const client = { url, navigate: async (target: string) => { navigation.push(target); return client; }, focus: async () => { focused++; } };
       windows = [client];
