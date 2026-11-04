@@ -91,6 +91,53 @@ test("expired events make no provider request; old leases resume after a process
   assert.equal(calls, 0); assert.equal(rows()[0].status, "expired");
 });
 
+test("a finalization failure cannot release the poll lock while other sends remain active", async () => {
+  for (let index = 0; index < 12; index++) browser(String(index));
+  enqueue();
+  const db = getDatabase();
+  db.exec("CREATE TEMP TRIGGER finalize_fail BEFORE UPDATE OF status ON push_deliveries WHEN NEW.status='accepted' BEGIN SELECT RAISE(ABORT,'write failed'); END");
+  const releases: (() => void)[] = [];
+  let calls = 0; let active = 0; let peak = 0;
+  const worker = new PushDeliveryWorker({ now: () => now, send: async () => {
+    calls++; active++; peak = Math.max(peak, active);
+    await new Promise<void>((resolve) => releases.push(resolve));
+    active--; return { kind: "accepted" };
+  } });
+  try {
+    const first = worker.poll(); let settled = false;
+    void first.then(() => { settled = true; });
+    await settle(); assert.equal(calls, 4);
+    releases.shift()!(); await settle();
+    assert.equal(settled, false);
+    assert.equal(worker.poll(), first, "a second poll shares the active batch even after a write failure");
+    assert.equal(calls, 4);
+    db.exec("DROP TRIGGER finalize_fail");
+    for (let wave = 0; wave < 3; wave++) { releases.splice(0).forEach((resolve) => resolve()); await settle(); }
+    await first;
+    assert.equal(peak, 4);
+    assert.equal(rows().filter((row) => row.status === "accepted").length, 11);
+    assert.equal(rows().filter((row) => row.status === "leased").length, 1, "failed finalization recovers through its existing lease");
+  } finally { db.exec("DROP TRIGGER IF EXISTS finalize_fail"); }
+});
+
+test("shutdown leaves unstarted deliveries pending for immediate restart without consuming attempts", async () => {
+  for (let index = 0; index < 16; index++) browser(String(index));
+  enqueue();
+  const releases: (() => void)[] = [];
+  const worker = new PushDeliveryWorker({ now: () => now, send: async () => {
+    await new Promise<void>((resolve) => releases.push(resolve)); return { kind: "accepted" };
+  } });
+  const running = worker.poll(); await settle();
+  await worker.stop(1);
+  assert.equal(rows().filter((row) => row.status === "leased").length, 4);
+  assert.equal(rows().filter((row) => row.status === "pending" && row.attempts === 0).length, 12);
+  releases.splice(0).forEach((resolve) => resolve()); await running;
+  closeDatabase(); initializeDatabase();
+  await new PushDeliveryWorker({ now: () => now, send: async () => ({ kind: "accepted" }) }).poll();
+  assert.equal(rows().filter((row) => row.status === "accepted").length, 12);
+  assert.equal(rows().filter((row) => row.status === "leased").length, 4, "only in-flight sends retain lease protection");
+});
+
 test("disable during an HTTP request cannot resurrect the cancelled lease", async () => {
   browser(); enqueue();
   let finish!: () => void;

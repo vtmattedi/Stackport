@@ -61,11 +61,16 @@ export class PushDeliveryWorker {
       if (warning) logger.warn("push.worker.queue-backlog");
       this.nextCleanupAt = timestamp + (deleted === 200 || logsDeleted === 200 ? 60_000 : 86_400_000);
     }
-    const leases = claimDueDeliveries(db, timestamp);
-    let index = 0;
-    await Promise.all(Array.from({ length: Math.min(4, leases.length) }, async () => {
-      while (!this.stopping && index < leases.length) await this.attempt(leases[index++]);
-    }));
+    for (let claimed = 0; !this.stopping && claimed < 16;) {
+      // Claim only work that can start now; shutdown leaves the rest pending.
+      const leases = claimDueDeliveries(db, now(), 4);
+      if (!leases.length) break;
+      claimed += leases.length;
+      const outcomes = await Promise.allSettled(leases.map((lease) => this.attempt(lease)));
+      for (const outcome of outcomes) {
+        if (outcome.status === "rejected") logger.error("push.worker.delivery-failed");
+      }
+    }
   }
 
   private async attempt(lease: PushLease): Promise<void> {
