@@ -3,6 +3,7 @@ import type { PushBrowser } from "../api/types";
 
 const BROWSER_ID_KEY = "stackport_push_browser_id";
 const REMOVE_PENDING_KEY = "stackport_push_remove_pending";
+const BROWSER_ENABLED_KEY = "stackport_push_browser_enabled";
 
 export interface BrowserPushState {
   id: number | null;
@@ -75,6 +76,21 @@ export async function reconcileBrowserPush(publicKey: string): Promise<BrowserPu
     registered: !!server && !keyMismatch && !removalPending, keyMismatch, removalPending };
 }
 
+/** Passive check for browsers that opted in; never prompts or repairs automatically. */
+export async function browserPushRecoveryNeeded(): Promise<boolean> {
+  if (!supportsBrowserPush()) return false;
+  const expected = currentPushBrowserId() !== null || localStorage.getItem(BROWSER_ENABLED_KEY) === "1";
+  if (!expected && !await hasLocalPushSubscription()) return false;
+  const config = await api.getPushConfig();
+  if (!config.enabled) return false;
+  // Keep intent even if reconciliation clears a stale numeric ID after expiry.
+  if (expected) localStorage.setItem(BROWSER_ENABLED_KEY, "1");
+  const state = await reconcileBrowserPush(config.vapidPublicKey);
+  if (state.removalPending) return false;
+  if (state.local) localStorage.setItem(BROWSER_ENABLED_KEY, "1");
+  return (expected || state.local) && (!state.registered || browserPushPermission() !== "granted");
+}
+
 /** Called directly from a click: the permission prompt precedes any async fetch. */
 export async function enableBrowserPush(publicKey: string, label: string): Promise<PushBrowser> {
   if (!supportsBrowserPush()) throw new Error("Browser push is not supported here. Use HTTPS and a browser with Web Push support.");
@@ -97,6 +113,7 @@ export async function enableBrowserPush(publicKey: string, label: string): Promi
   try {
     const browser = await api.savePushBrowser({ ...subscription.toJSON(), label: label.trim() || "Browser" });
     localStorage.setItem(BROWSER_ID_KEY, String(browser.id));
+    localStorage.setItem(BROWSER_ENABLED_KEY, "1");
     return browser;
   } catch (error) {
     if (created) await subscription.unsubscribe().catch(() => undefined);
@@ -119,6 +136,7 @@ export async function disableBrowserPush(id: number): Promise<void> {
     // Another device or expired-subscription cleanup may already have removed it.
     if (!(error instanceof Error && error.message === "Browser not found")) throw error;
   }
+  if (local || id === currentPushBrowserId()) localStorage.removeItem(BROWSER_ENABLED_KEY);
   if (local) {
     localStorage.setItem(BROWSER_ID_KEY, String(id));
     localStorage.setItem(REMOVE_PENDING_KEY, "1");

@@ -17,6 +17,8 @@ function browser(permission = "default", supported = true) {
   let failRemove = false;
   let failUnsubscribe = false;
   let serverKnown = false;
+  let pushEnabled = true;
+  let failLookup = false;
   const candidate = { options: {}, toJSON: () => ({ endpoint: "opaque-endpoint", keys: { auth: "auth", p256dh: "public" } }),
     unsubscribe: async () => { calls.push("unsubscribe"); if (failUnsubscribe) throw new Error("browser unavailable"); subscription = null; return true; } };
   const registration = { pushManager: { getSubscription: async () => subscription,
@@ -30,6 +32,7 @@ function browser(permission = "default", supported = true) {
     serverKnown = true;
     return { id: 7, label: data.label };
   }, removePushBrowser: async (id: number) => { calls.push(`remove:${id}`); if (failRemove) throw new Error("server unavailable"); serverKnown = false; },
+    getPushConfig: async () => { if (failLookup) throw new Error("offline"); return { enabled: pushEnabled, vapidPublicKey: "AQID" }; },
     resolvePushBrowser: async () => serverKnown ? { id: 7, label: "Laptop" } : null };
   const exported: Record<string, (...args: unknown[]) => unknown> = {};
   const window = supported ? { isSecureContext: true, PushManager: {}, Notification: notification } : { isSecureContext: false };
@@ -40,6 +43,8 @@ function browser(permission = "default", supported = true) {
   return { calls, api: exported, storage,
     failSave: () => { failSave = true; }, failRemove: () => { failRemove = true; },
     failUnsubscribe: (value = true) => { failUnsubscribe = value; }, loseServer: () => { serverKnown = false; },
+    loseLocal: () => { subscription = null; }, disablePush: () => { pushEnabled = false; }, failLookup: () => { failLookup = true; },
+    denyPermission: () => { notification.permission = "denied"; },
     mismatch: () => { (candidate.options as { applicationServerKey?: ArrayBuffer }).applicationServerKey = Uint8Array.from([9, 9, 9]).buffer; } };
 }
 
@@ -119,4 +124,57 @@ test("server registration failure undoes a newly created browser subscription", 
   await assert.rejects(client.api["enableBrowserPush"]("AQID", "Laptop") as Promise<unknown>, /server unavailable/);
   assert.deepEqual(client.calls, ["subscribe", "save", "unsubscribe"]);
   assert.equal(client.api["currentPushBrowserId"](), null);
+});
+
+test("startup recovery checks do not prompt or warn browsers that never opted in", async () => {
+  for (const permission of ["default", "denied", "granted"]) {
+    const client = browser(permission);
+    assert.equal(await client.api["browserPushRecoveryNeeded"](), false);
+    assert.deepEqual(client.calls, []);
+  }
+  const unsupported = browser("default", false);
+  assert.equal(await unsupported.api["browserPushRecoveryNeeded"](), false);
+});
+
+test("startup detects server expiry and key drift without changing subscriptions or prompting", async () => {
+  for (const drift of ["server", "key", "permission"] as const) {
+    const client = browser("granted"); await client.api["enableBrowserPush"]("AQID", "Laptop");
+    if (drift === "server") { client.storage.clear(); client.loseServer(); }
+    if (drift === "key") client.mismatch();
+    if (drift === "permission") client.denyPermission();
+    assert.equal(await client.api["browserPushRecoveryNeeded"](), true);
+    assert.equal(await client.api["browserPushRecoveryNeeded"](), true);
+    assert.deepEqual(client.calls, ["subscribe", "save"]);
+  }
+});
+
+test("lost local subscription remains visible across checks and clears after explicit repair", async () => {
+  const client = browser("granted"); await client.api["enableBrowserPush"]("AQID", "Laptop");
+  client.loseLocal();
+  assert.equal(await client.api["browserPushRecoveryNeeded"](), true);
+  assert.equal(client.api["currentPushBrowserId"](), null);
+  assert.equal(await client.api["browserPushRecoveryNeeded"](), true, "lost numeric hint must not erase previous opt-in intent");
+  await client.api["enableBrowserPush"]("AQID", "Laptop");
+  assert.equal(await client.api["browserPushRecoveryNeeded"](), false);
+  await client.api["disableBrowserPush"](7);
+  assert.equal(await client.api["browserPushRecoveryNeeded"](), false);
+  assert.ok(!client.calls.includes("permission"));
+});
+
+test("global disable and intentional partial browser removal do not show a repair warning", async () => {
+  const disabled = browser("granted"); await disabled.api["enableBrowserPush"]("AQID", "Laptop");
+  disabled.loseServer(); disabled.disablePush();
+  assert.equal(await disabled.api["browserPushRecoveryNeeded"](), false);
+  const removing = browser("granted"); await removing.api["enableBrowserPush"]("AQID", "Laptop");
+  removing.failUnsubscribe();
+  await assert.rejects(removing.api["disableBrowserPush"](7) as Promise<unknown>);
+  assert.equal(await removing.api["browserPushRecoveryNeeded"](), false);
+});
+
+test("an unavailable server does not classify an intact browser registration as broken", async () => {
+  const client = browser("granted"); await client.api["enableBrowserPush"]("AQID", "Laptop");
+  client.failLookup();
+  await assert.rejects(client.api["browserPushRecoveryNeeded"]() as Promise<unknown>, /offline/);
+  assert.equal(client.api["currentPushBrowserId"](), 7);
+  assert.deepEqual(client.calls, ["subscribe", "save"]);
 });

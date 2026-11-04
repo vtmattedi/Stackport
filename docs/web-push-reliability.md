@@ -35,8 +35,11 @@ matching health episode. Other failures remain relevant until expiry.
 | Failed Stackport update | 24 hours |
 | Explicit test | 5 minutes; immediate, outside the outbox |
 
-The worker polls every 5 seconds, claims at most 16 records with 60-second UUID
-leases, and sends at most 4 requests concurrently with a 10-second timeout.
+The worker polls every 5 seconds and handles at most 16 records per poll, claiming
+only 4 at a time with 60-second UUID leases and a 10-second send timeout.
+Each group settles completely even if finalization fails, preserving the
+four-request concurrency limit. Shutdown leaves unstarted work pending for the
+next worker; only sends already started retain their leases.
 Transient failures retry after approximately 15 seconds, 1 minute, 5 minutes,
 15 minutes, 1 hour and then at most 2 hours, with 20% jitter and a maximum of
 12 attempts. Retry-After is honored within expiry. Every completion checks the
@@ -63,6 +66,15 @@ classification and eligible push work commit successfully. An unhealthy deployme
 keeps its original incident payload;
 successful automatic rollback can produce a separate recovery event when enabled
 in Settings → Notifications. Recovery never rewrites the original alert.
+The shared delivery log sorts normalized timestamps, including legacy SQLite
+email timestamps and ISO push timestamps, with delivery ID as a stable tie-breaker.
+
+The signed-in app checks registration on startup, focus, reconnect and once per
+minute while visible. Browsers that previously opted in see a quiet notice linking
+to Notifications settings when registration or permission needs repair. Never-used
+or intentionally disabled browsers are not prompted; passive checks never request
+permission, subscribe or send tests. A failed lookup alone does not classify a
+registration as broken.
 
 ## Rollout and release gates
 
