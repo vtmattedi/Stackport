@@ -112,19 +112,21 @@ export function recordFailedDeployment(
   projectId: number,
   input: Pick<RecordDeploymentInput, "commitSha" | "branch" | "composeFileName" | "triggeredBy">,
   blockedReason: string
-): void {
-  getDatabase().prepare(`
+): number {
+  const result = getDatabase().prepare(`
     INSERT INTO project_deployments (project_id, commit_sha, branch, compose_file_name, status, triggered_by, blocked_reason)
     VALUES (?, ?, ?, ?, 'failed', ?, ?)
   `).run(projectId, input.commitSha, input.branch, input.composeFileName, input.triggeredBy, blockedReason);
   pruneOldDeployments(projectId);
+  return Number(result.lastInsertRowid);
 }
 
 /** Marks the running revision as having failed its post-deploy health check. */
-export function markActiveDeploymentUnhealthy(projectId: number): void {
-  getDatabase()
-    .prepare("UPDATE project_deployments SET health_failed_at = ? WHERE project_id = ? AND status = 'active'")
-    .run(new Date().toISOString(), projectId);
+export function markActiveDeploymentUnhealthy(projectId: number): number | null {
+  const row = getDatabase()
+    .prepare("UPDATE project_deployments SET health_failed_at = ? WHERE project_id = ? AND status = 'active' RETURNING id")
+    .get(new Date().toISOString(), projectId) as { id: number } | undefined;
+  return row?.id ?? null;
 }
 
 /** Summaries only (no source/effective compose bodies, which can be sizeable text

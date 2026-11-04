@@ -1,10 +1,12 @@
 import { getDatabase } from "../config/database";
 import { decryptSecret } from "../utils/crypto";
 import { createEmailProvider } from "./email";
-import { renderDeployBlockedEmail, renderDeployUnhealthyEmail, renderHealthCheckFailureEmail } from "./emailTemplates";
 import { logger } from "../utils/logger";
-import { sendWebPushNotification } from "./webPush";
-import type { StackportNotification } from "./notificationTypes";
+import type Database from "better-sqlite3";
+import type { DurablePushEvent, StackportNotification } from "./notificationTypes";
+import { enqueuePushEvent, enqueuePushEventTx } from "./pushOutbox";
+import { healthFailureEvent, deployBlockedEvent, deployUnhealthyEvent, rollbackFailedEvent, systemUpdateFailedEvent, type DeployRollbackOutcome } from "./notificationEvents";
+export type { DeployRollbackOutcome } from "./notificationEvents";
 
 interface NotificationConfigRow {
   enabled: number;
@@ -49,68 +51,48 @@ async function sendEmailNotification(event: StackportNotification): Promise<void
   }
 }
 
-/** Channels are independent and delivery never rejects a deploy/health operation. */
-export async function dispatchNotification(event: StackportNotification, channels = {
-  email: sendEmailNotification,
-  push: async (notification: StackportNotification): Promise<void> => { await sendWebPushNotification(notification); },
-}): Promise<void> {
-  await Promise.all(Object.entries(channels).map(async ([channel, send]) => {
-    try { await send(event); }
-    catch { logger.warn({ channel, eventType: event.type }, "notification.delivery-failed"); }
-  }));
+function durable(event: StackportNotification): DurablePushEvent {
+  if (!event.eventKey || event.type === "test") throw new Error("Automatic notifications require a stable incident identity");
+  return { eventKey: event.eventKey, type: event.type, severity: event.severity, title: event.title,
+    body: event.body, url: event.url, projectId: event.projectId, createdAt: event.createdAt };
 }
 
-export async function notifyHealthCheckFailure(
-  projectName: string,
-  url: string,
-  responseMs: number | null,
-  projectId?: number,
-): Promise<void> {
-  await dispatchNotification({
-    type: "health_check", severity: "error", title: `${projectName} is unhealthy`,
-    body: "The project health check failed. Open Stackport for details.", projectName, projectId,
-    url: projectId ? `/projects/${projectId}` : "/projects", createdAt: new Date().toISOString(),
-    email: { subject: `[Alert] ${projectName} health check failed`,
-      html: renderHealthCheckFailureEmail({ projectName, url, responseMs, occurredAt: new Date() }) },
-  });
+export function enqueueNotificationTx(db: Database.Database, event: StackportNotification): void {
+  enqueuePushEventTx(db, durable(event));
 }
 
-export async function notifyDeployBlocked(projectName: string, reason: string, projectId?: number): Promise<void> {
-  await dispatchNotification({
-    type: "deploy_blocked", severity: "warning", title: `${projectName} deployment blocked`,
-    body: "An automatic deployment needs your attention. Open Stackport for details.", projectName, projectId,
-    url: projectId ? `/projects/${projectId}` : "/projects", createdAt: new Date().toISOString(),
-    email: { subject: `[Alert] ${projectName} automatic deploy blocked`,
-      html: renderDeployBlockedEmail({ projectName, reason, occurredAt: new Date() }) },
-  });
+export async function sendNotificationEmail(event: StackportNotification): Promise<void> {
+  try { await sendEmailNotification(event); }
+  catch { logger.warn({ eventType: event.type }, "notification.email.failed"); }
 }
 
-/** Whether a failed deploy was rolled back automatically: not attempted, succeeded, or
- *  attempted and failed (including a rolled-back revision failing its own check). */
-export type DeployRollbackOutcome = "none" | "done" | "failed";
-
-/** A deploy finished but its health check didn't pass within the grace period. */
-export async function notifyDeployUnhealthy(projectName: string, commitSha: string | null, url: string, rollback: DeployRollbackOutcome, projectId?: number): Promise<void> {
-  await dispatchNotification({
-    type: "deploy_unhealthy", severity: "error", title: `${projectName} deployment is unhealthy`,
-    body: rollback === "done" ? "The new deployment failed its health check. The previous version was restored."
-      : "The deployment failed its health check. Open Stackport for details.", projectName, projectId,
-    url: projectId ? `/projects/${projectId}` : "/projects", createdAt: new Date().toISOString(),
-    email: { subject: `[Alert] ${projectName} deploy failed its health check`,
-      html: renderDeployUnhealthyEmail({ projectName, commitSha, url, rollback, occurredAt: new Date() }) },
-  });
-  if (rollback === "failed") {
-    await dispatchNotification({
-      type: "rollback_failed", severity: "error", title: `${projectName} rollback failed`,
-      body: "Automatic rollback could not restore a healthy deployment. Open Stackport for details.", projectName, projectId,
-      url: projectId ? `/projects/${projectId}` : "/projects", createdAt: new Date().toISOString(),
-    });
+/** Synchronous persistence precedes external effects; SQLite failures remain visible.
+ *  Domain producers use enqueueNotificationTx inside their own state transaction. */
+export async function dispatchNotification(event: StackportNotification,
+  channels?: { email: (event: StackportNotification) => Promise<void>; push: (event: StackportNotification) => Promise<void> }): Promise<void> {
+  if (channels) {
+    await Promise.all(Object.values(channels).map(async (send) => { try { await send(event); } catch { /* independent best-effort channels */ } }));
+    return;
   }
+  try { enqueuePushEvent(getDatabase(), durable(event)); }
+  catch (error) { void sendNotificationEmail(event); logger.error({ eventType: event.type }, "notification.enqueue-failed"); throw error; }
+  await sendNotificationEmail(event);
 }
 
-export async function notifySystemUpdateFailed(rolledBack = false): Promise<void> {
-  await dispatchNotification({ type: "system_update_failed", severity: "error", title: "Stackport update failed",
-    body: rolledBack ? "The new version failed verification and was rolled back. Open Settings for details."
-      : "The update could not complete. Open Settings for details.",
-    url: "/settings/general", createdAt: new Date().toISOString() });
+export function notifyHealthCheckFailure(name: string, url: string, responseMs: number | null, projectId: number, incidentKey: string): Promise<void> {
+  return dispatchNotification(healthFailureEvent(name, url, responseMs, projectId, incidentKey));
+}
+
+export function notifyDeployBlocked(name: string, reason: string, projectId: number, attemptId: string | number): Promise<void> {
+  return dispatchNotification(deployBlockedEvent(name, reason, projectId, attemptId));
+}
+
+export async function notifyDeployUnhealthy(name: string, commit: string | null, url: string, rollback: DeployRollbackOutcome,
+  projectId: number, operationId: string): Promise<void> {
+  await dispatchNotification(deployUnhealthyEvent(name, commit, url, rollback, projectId, operationId));
+  if (rollback === "failed") await dispatchNotification(rollbackFailedEvent(name, projectId, operationId));
+}
+
+export function notifySystemUpdateFailed(operationId: string, outcome: "failed" | "rolled-back" = "failed"): Promise<void> {
+  return dispatchNotification(systemUpdateFailedEvent(operationId, outcome));
 }

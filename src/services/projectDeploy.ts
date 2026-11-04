@@ -1,4 +1,5 @@
 import { execFile, spawn } from "child_process";
+import { randomUUID } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { config } from "../config/env";
@@ -15,7 +16,8 @@ import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
 import { markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./projectDeployments";
 import { healthCheckUrl, probeHealth, type HealthProbe } from "./healthChecker";
-import { notifyDeployBlocked, notifyDeployUnhealthy, type DeployRollbackOutcome } from "./notificationService";
+import { enqueueNotificationTx, sendNotificationEmail, type DeployRollbackOutcome } from "./notificationService";
+import { deployBlockedEvent, deployUnhealthyEvent, rollbackFailedEvent } from "./notificationEvents";
 import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
 import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./composeVariables";
@@ -997,14 +999,10 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
       const message = `${sync.blockedReason ?? "Deploy blocked."}\n`;
       emit(projectId, action, "stderr", message, { ok: false, done: true });
       output.push(message);
-      if (triggeredBy === "auto" && sync.blockedReason) {
-        void notifyDeployBlocked(project.name, sync.blockedReason, project.id);
-      }
-      recordFailedDeployment(
-        projectId,
-        { commitSha: await currentCommitSha(projectId, action, repoPath), branch: deployedBranch, composeFileName: null, triggeredBy },
-        sync.blockedReason ?? "Deploy blocked."
-      );
+      const blockedCommit = await currentCommitSha(projectId, action, repoPath);
+      recordBlockedDeployAttempt(project,
+        { commitSha: blockedCommit, branch: deployedBranch, composeFileName: null, triggeredBy },
+        sync.blockedReason ?? "Deploy blocked.", triggeredBy === "auto" && !!sync.blockedReason);
       return { ok: false, projectId, repoPath, output: output.join("\n\n"), action };
     }
     composeFile = sync.composeFile;
@@ -1130,9 +1128,10 @@ export async function pullProject(projectId: number, branch?: string | null, tri
     const message = `${sync.blockedReason ?? "Deploy blocked."}\n`;
     output.push(message);
     emit(projectId, "pull", "stderr", message, { ok: false, done: true });
-    if (triggeredBy === "auto" && sync.blockedReason) {
-      void notifyDeployBlocked(project.name, sync.blockedReason, project.id);
-    }
+    const blockedCommit = await currentCommitSha(projectId, "pull", repoPath);
+    recordBlockedDeployAttempt(project,
+      { commitSha: blockedCommit, branch: branch ?? project.autoDeployBranch, composeFileName: null, triggeredBy },
+      sync.blockedReason ?? "Deploy blocked.", triggeredBy === "auto" && !!sync.blockedReason);
     return { ok: false, projectId, repoPath, output: output.join("\n\n"), action: "pull" };
   }
 
@@ -1544,29 +1543,61 @@ export async function verifyDeployHealth(
   return { healthy: false, url };
 }
 
-/** After a successful `up`: verifies health, and on failure marks the running revision
- *  unhealthy, notifies, and, when the project opted in and `allowAutoRollback`, rolls
- *  back. Rollbacks pass false, so a failing rollback never triggers another one. */
-async function gateOnHealth(
+/** Persist the blocked attempt and its alert together; email stays best effort. */
+export function recordBlockedDeployAttempt(project: Project, input: Parameters<typeof recordFailedDeployment>[1], reason: string, notify: boolean): number {
+  const db = getDatabase();
+  let email: ReturnType<typeof deployBlockedEvent> | undefined;
+  try {
+    return db.transaction(() => {
+      const id = recordFailedDeployment(project.id, input, reason);
+      if (notify) {
+        email = deployBlockedEvent(project.name, reason, project.id, id);
+        enqueueNotificationTx(db, email);
+      }
+      return id;
+    })();
+  } finally { if (email) void sendNotificationEmail(email); }
+}
+
+/** Commit the unhealthy classification before attempting optional recovery. */
+export async function gateOnHealth(
   project: Project,
   action: ProjectDeployEvent["action"],
   commitSha: string | null,
   allowAutoRollback: boolean,
+  healthDeps?: HealthGateDeps,
 ): Promise<{ ok: boolean; output: string }> {
-  const result = await verifyDeployHealth(project.id, action);
+  const result = await verifyDeployHealth(project.id, action, healthDeps);
   if (!result) return { ok: true, output: "" };
   if (result.healthy) return { ok: true, output: `Health check passed: ${result.url}\n` };
 
-  markActiveDeploymentUnhealthy(project.id);
+  const operationId = actionRegistry.get(projectRepoKey(project.id))?.id ?? randomUUID();
+  let deploymentId: string | number = operationId;
+  const db = getDatabase();
+  try {
+    db.transaction(() => {
+      deploymentId = markActiveDeploymentUnhealthy(project.id) ?? operationId;
+      enqueueNotificationTx(db, deployUnhealthyEvent(project.name, commitSha, result.url, "none", project.id, deploymentId));
+    })();
+  } catch (error) {
+    void sendNotificationEmail(deployUnhealthyEvent(project.name, commitSha, result.url, "none", project.id, deploymentId));
+    throw error;
+  }
   const lines = [`Deployed, but the health check did not pass: ${result.url}\n`];
   let rollback: DeployRollbackOutcome = "none";
   if (allowAutoRollback && project.autoRollbackUnhealthy) {
     emit(project.id, action, "status", "Rolling back automatically (project setting)\n");
-    const restored = await rollbackProject(project.id, undefined, { nested: true });
-    lines.push(restored.output);
-    rollback = restored.ok ? "done" : "failed";
+    try {
+      const restored = await rollbackProject(project.id, undefined, { nested: true });
+      lines.push(restored.output);
+      rollback = restored.ok ? "done" : "failed";
+    } catch {
+      rollback = "failed";
+      lines.push("Automatic rollback could not complete. Check the action log.");
+    }
+    if (rollback === "failed") db.transaction(() => enqueueNotificationTx(db, rollbackFailedEvent(project.name, project.id, operationId)))();
   }
-  void notifyDeployUnhealthy(project.name, commitSha, result.url, rollback, project.id);
+  void sendNotificationEmail(deployUnhealthyEvent(project.name, commitSha, result.url, rollback, project.id, deploymentId));
   return { ok: false, output: lines.join("\n") };
 }
 

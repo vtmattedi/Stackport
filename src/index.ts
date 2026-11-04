@@ -17,10 +17,13 @@ import { ensureAppIngress } from "./services/appIngress";
 import { reconcileAllTcpExposures } from "./services/tcpExposures";
 import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./services/selfUpdate";
 import { getPushConfig } from "./services/webPush";
+import { pushDeliveryWorker } from "./services/pushDeliveryWorker";
+import { logger } from "./utils/logger";
 
 try {
   initializeDatabase();
-  getPushConfig();
+  try { getPushConfig(); } catch { logger.error("push.identity.bootstrap-failed"); }
+  pushDeliveryWorker.start();
   markInterruptedActions();
   ensureBootstrapCredential();
   void ensureAppIngress();
@@ -56,13 +59,14 @@ try {
     dockerStorageMonitor.stop();
     certbotRenewalMonitor.stop();
     stopSelfUpdateNotifications();
-    httpServer.close(() => {
+    const pushDrained = pushDeliveryWorker.stop();
+    httpServer.close(() => { void pushDrained.then(() => {
       healthChecker.stop();
       closeDatabase();
       // eslint-disable-next-line no-console
       console.log("[server] clean exit");
       process.exit(0);
-    });
+    }); });
     setTimeout(() => {
       console.error("[server] shutdown timeout - forcing exit");
       process.exit(1);

@@ -12,6 +12,7 @@ import { deletePushSubscription, getPushConfig, listPushSubscriptions, savePushS
 import { dispatchNotification, notifyDeployBlocked, notifyDeployUnhealthy, notifyHealthCheckFailure } from "../src/services/notificationService";
 import { notifySelfUpdateOutcome } from "../src/services/selfUpdate";
 import type { StackportNotification } from "../src/services/notificationTypes";
+import { PushDeliveryWorker } from "../src/services/pushDeliveryWorker";
 
 let server: Server;
 let base: string;
@@ -26,7 +27,7 @@ before(async () => {
 after(() => { server.close(); });
 beforeEach(() => {
   initializeDatabase();
-  getDatabase().exec("DELETE FROM push_subscriptions; DELETE FROM push_config; DELETE FROM notification_logs; DELETE FROM notification_config; DELETE FROM app_meta WHERE key = 'notified_self_update_id'");
+  getDatabase().exec("DELETE FROM push_deliveries; DELETE FROM push_events; DELETE FROM push_subscriptions; DELETE FROM push_config; DELETE FROM notification_logs; DELETE FROM notification_config; DELETE FROM app_meta WHERE key IN ('notified_self_update_id', 'enqueued_self_update_outcome')");
 });
 afterEach(() => { mock.restoreAll(); });
 
@@ -115,24 +116,28 @@ test("invalid keys, insecure endpoints and internal/arbitrary targets are reject
 test("push delivery works independently of email, and payloads contain no diagnostic secrets", async () => {
   enablePush(); savePushSubscription(subscription());
   const transport = sent();
-  await notifyDeployBlocked("my-app", "SECRET_ENV_VALUE", 7);
-  await notifyHealthCheckFailure("my-app", "https://user:SECRET_PASSWORD@example.com/health", 12, 7);
-  assert.equal(transport.mock.calls.length, 2);
-  for (const call of transport.mock.calls) {
-    const payload = JSON.parse(String(call.arguments[1])) as { url: string };
+  await notifyDeployBlocked("my-app", "SECRET_ENV_VALUE", 7, "attempt-one");
+  await notifyHealthCheckFailure("my-app", "https://user:SECRET_PASSWORD@example.com/health", 12, 7, "health_check:7:episode");
+  assert.equal(transport.mock.calls.length, 0, "producers enqueue synchronously without HTTP");
+  const events = getDatabase().prepare("SELECT payload_json FROM push_events").all() as { payload_json: string }[];
+  assert.equal(events.length, 2);
+  for (const { payload_json } of events) {
+    const payload = JSON.parse(payload_json) as { url: string };
     assert.equal(payload.url, "/projects/7");
-    assert.ok(!String(call.arguments[1]).includes("SECRET"));
+    assert.ok(!payload_json.includes("SECRET"));
   }
+  await new PushDeliveryWorker().poll();
   const logs = getDatabase().prepare("SELECT channel, result FROM notification_logs").all();
-  assert.deepEqual(logs, [{ channel: "web_push", result: "ok" }, { channel: "web_push", result: "ok" }]);
+  assert.deepEqual(logs, [{ channel: "web_push", result: "ok" }]);
 });
 
 test("global and event preferences suppress delivery, while an explicit test bypasses event preferences", async () => {
   savePushSubscription(subscription());
   const transport = sent();
-  assert.deepEqual(await sendWebPushNotification(event()), []);
+  await dispatchNotification({ ...event(), eventKey: "health_check:7:disabled" });
   enablePush(); updatePushConfig({ events: { health_check: false } });
-  assert.deepEqual(await sendWebPushNotification(event()), []);
+  await dispatchNotification({ ...event(), eventKey: "health_check:7:disabled-event" });
+  assert.equal(getDatabase().prepare("SELECT id FROM push_events").get(), undefined);
   await sendWebPushNotification({ ...event(), type: "test" });
   assert.equal(transport.mock.calls.length, 1);
 });
@@ -143,7 +148,7 @@ test("404 and 410 remove dead subscriptions and never expose provider errors", a
     const input = subscription(String(statusCode));
     savePushSubscription(input);
     mock.method(webpush, "sendNotification", async () => { throw Object.assign(new Error(`${input.endpoint} ${input.keys.auth}`), { statusCode }); });
-    const result = await sendWebPushNotification(event());
+    const result = await sendWebPushNotification({ ...event(), type: "test" });
     assert.equal(result[0].expired, true);
     assert.equal(listPushSubscriptions().length, 0);
     assert.ok(!JSON.stringify(result).includes(input.endpoint));
@@ -160,7 +165,7 @@ test("temporary failures retain subscriptions, record failure time and allow oth
     if (subscription.endpoint === one.endpoint) throw Object.assign(new Error("PRIVATE_ERROR"), { statusCode: 503 });
     return { statusCode: 201, headers: {}, body: "" };
   });
-  const results = await sendWebPushNotification(event());
+  const results = await sendWebPushNotification({ ...event(), type: "test" });
   assert.equal(results.filter((r) => r.ok).length, 1);
   assert.equal(listPushSubscriptions().length, 2);
   assert.ok(getDatabase().prepare("SELECT last_failure_at FROM push_subscriptions WHERE endpoint = ?").get(one.endpoint));
@@ -178,7 +183,8 @@ test("email keeps its existing delivery and log even when push fails", async () 
   mock.method(globalThis, "fetch", async () => { emails++; return new Response("{}", { status: 200 }); });
   enablePush(); savePushSubscription(subscription());
   mock.method(webpush, "sendNotification", async () => { throw new Error("offline"); });
-  await assert.doesNotReject(notifyHealthCheckFailure("app", "https://example.com/health", 15, 7));
+  await assert.doesNotReject(notifyDeployBlocked("app", "reason", 7, "email-attempt"));
+  await new PushDeliveryWorker().poll();
   assert.equal(emails, 1);
   assert.deepEqual(getDatabase().prepare("SELECT channel, result FROM notification_logs ORDER BY channel").all(),
     [{ channel: "email", result: "ok" }, { channel: "web_push", result: "error" }]);
@@ -198,7 +204,8 @@ test("dispatcher isolates failures in either channel", async () => {
 test("failed automatic rollback emits its own configurable event", async () => {
   enablePush(); savePushSubscription(subscription());
   const transport = sent();
-  await notifyDeployUnhealthy("app", "abc123", "https://example.com/health", "failed", 7);
+  await notifyDeployUnhealthy("app", "abc123", "https://example.com/health", "failed", 7, "operation-one");
+  await new PushDeliveryWorker().poll();
   assert.equal(transport.mock.calls.length, 2);
   assert.match(String(transport.mock.calls[1].arguments[1]), /rollback failed/);
 });
@@ -211,8 +218,10 @@ test("update failure delivery is deduplicated across polling and restarts and ex
   closeDatabase(); initializeDatabase();
   await notifySelfUpdateOutcome(status);
   await notifySelfUpdateOutcome({ ...status, id: "updater-two", status: "success" });
+  await new PushDeliveryWorker().poll();
   assert.equal(transport.mock.calls.length, 1);
   assert.ok(!String(transport.mock.calls[0].arguments[1]).includes("SECRET"));
   await notifySelfUpdateOutcome({ ...status, id: "updater-two", status: "rolled-back" });
+  await new PushDeliveryWorker().poll();
   assert.equal(transport.mock.calls.length, 2);
 });

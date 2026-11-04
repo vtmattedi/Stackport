@@ -224,6 +224,7 @@ export async function sendWebPushNotification(
   event: StackportNotification,
   options: { subscriptionId?: number; send?: PushSender } = {},
 ): Promise<PushDeliveryResult[]> {
+  if (event.type !== "test") throw new Error("Automatic push alerts must use the durable outbox");
   const settings = getPushConfig();
   if (!settings.enabled || (event.type !== "test" && !settings.events[event.type])) return [];
   const db = getDatabase();

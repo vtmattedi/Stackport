@@ -3,6 +3,10 @@ import { promisify } from "util";
 import { config } from "../config/env";
 import { getDatabase } from "../config/database";
 import { notifySystemUpdateFailed } from "./notificationService";
+import { enqueueNotificationTx } from "./notificationService";
+import { systemUpdateFailedEvent } from "./notificationEvents";
+import { randomUUID } from "crypto";
+import { logger } from "../utils/logger";
 
 const exec = promisify(execFile);
 const NAME = "stackport-updater";
@@ -78,6 +82,7 @@ let launching = false;
 export async function startSelfUpdate(): Promise<SelfUpdateStatus> {
   if (launching) throw new SelfUpdateBusyError("A Stackport update is already starting.");
   launching = true;
+  const launchId = `launch-${randomUUID()}`;
   try {
     const previous = await inspectUpdater();
     if (previous && active(previous)) throw new SelfUpdateBusyError("A Stackport update is already running.");
@@ -85,7 +90,10 @@ export async function startSelfUpdate(): Promise<SelfUpdateStatus> {
     const started = await docker(updaterRunArgs(await currentImage(), NAME, ["/usr/local/bin/stackport", "update"], {detach: true}));
     return {id: started.stdout.trim(), status: "running", output: "Stackport update started."};
   } catch (error) {
-    if (!(error instanceof SelfUpdateBusyError)) void notifySystemUpdateFailed();
+    if (!(error instanceof SelfUpdateBusyError)) {
+      try { await notifySystemUpdateFailed(launchId); }
+      catch { logger.error("notification.update-enqueue-failed"); }
+    }
     throw error;
   } finally {
     launching = false;
@@ -110,16 +118,19 @@ export async function checkSelfUpdateNotification(): Promise<void> {
 export async function notifySelfUpdateOutcome(status: SelfUpdateStatus | null): Promise<void> {
   if (!status || (status.status !== "failed" && status.status !== "rolled-back")) return;
   const db = getDatabase();
-  const previous = db.prepare("SELECT value FROM app_meta WHERE key = 'notified_self_update_id'").get() as { value: string } | undefined;
-  if (previous?.value === status.id) return;
-  db.prepare(`INSERT INTO app_meta (key, value, updated_at) VALUES ('notified_self_update_id', ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`).run(status.id);
-  await notifySystemUpdateFailed(status.status === "rolled-back");
+  db.transaction(() => {
+    const outcome = `${status.id}:${status.status}`;
+    const previous = db.prepare("SELECT value FROM app_meta WHERE key = 'enqueued_self_update_outcome'").get() as { value: string } | undefined;
+    if (previous?.value === outcome) return;
+    enqueueNotificationTx(db, systemUpdateFailedEvent(status.id, status.status as "failed" | "rolled-back"));
+    db.prepare(`INSERT INTO app_meta (key, value, updated_at) VALUES ('enqueued_self_update_outcome', ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`).run(outcome);
+  }).immediate();
 }
 
 export function startSelfUpdateNotifications(): void {
   if (notificationTimer) return;
-  const check = (): void => { void checkSelfUpdateNotification().catch(() => undefined); };
+  const check = (): void => { void checkSelfUpdateNotification().catch(() => logger.error("notification.update-monitor-failed")); };
   check();
   notificationTimer = setInterval(check, 15_000);
   notificationTimer.unref();

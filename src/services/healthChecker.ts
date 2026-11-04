@@ -1,7 +1,11 @@
 import { getDatabase } from "../config/database";
-import { auditLog } from "../utils/logger";
+import { auditLog, logger } from "../utils/logger";
+import { randomUUID } from "crypto";
 import { rowToProject, type ProjectRow } from "../entities/Project";
-import { notifyHealthCheckFailure } from "./notificationService";
+import { enqueueNotificationTx, sendNotificationEmail } from "./notificationService";
+import { healthFailureEvent } from "./notificationEvents";
+import { cancelEvent } from "./pushOutbox";
+import type { StackportNotification } from "./notificationTypes";
 import { getProjectHealthCheckDomain } from "./projectDomains";
 
 const MIN_INTERVAL_S = 30;
@@ -47,8 +51,11 @@ export async function probeHealth(url: string): Promise<HealthProbe> {
   }
 }
 
-class HealthChecker {
+export class HealthChecker {
   private timers = new Map<number, NodeJS.Timeout>();
+  private inFlight = new Set<number>();
+
+  constructor(private readonly probe = probeHealth) {}
 
   start(): void {
     const rows = getDatabase()
@@ -71,7 +78,7 @@ class HealthChecker {
     const domain = getProjectHealthCheckDomain(project.id, project.healthCheckDomainId);
     if (!domain || !project.healthCheckEndpoint || project.healthCheckIntervalS < MIN_INTERVAL_S) return;
     const ms = project.healthCheckIntervalS * 1000;
-    const timer = setInterval(() => void this.check(project.id), ms);
+    const timer = setInterval(() => void this.check(project.id).catch(() => logger.error({ projectId: project.id }, "health-check.commit-failed")), ms);
     this.timers.set(project.id, timer);
   }
 
@@ -81,26 +88,47 @@ class HealthChecker {
   }
 
   async check(id: number): Promise<void> {
+    if (this.inFlight.has(id)) return;
+    this.inFlight.add(id);
+    try { await this.checkOnce(id); }
+    finally { this.inFlight.delete(id); }
+  }
+
+  private async checkOnce(id: number): Promise<void> {
     const db = getDatabase();
     const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
     const url = row ? healthCheckUrl(row) : null;
     if (!row || !url) return;
 
-    const { status, responseMs } = await probeHealth(url);
+    const started = Date.now();
+    const { status, responseMs } = await this.probe(url);
 
     const now = new Date().toISOString();
-    db.prepare(
-      "UPDATE projects SET last_status = ?, last_response_ms = ?, last_checked_at = ?, updated_at = ? WHERE id = ?"
-    ).run(status, responseMs, now, now, id);
+    const transition = db.transaction((): { event?: StackportNotification; name: string } | null => {
+      const current = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as (ProjectRow & { health_incident_key: string | null; health_probe_started_at_ms: number }) | undefined;
+      if (!current || healthCheckUrl(current) !== url || current.health_probe_started_at_ms > started) return null;
+      let incident = current.health_incident_key;
+      let event: StackportNotification | undefined;
+      if (status === "down" && current.last_status !== "down") {
+        incident = `health_check:${id}:${randomUUID()}`;
+        event = healthFailureEvent(current.name, url, responseMs, id, incident, now);
+        enqueueNotificationTx(db, event);
+      } else if (status === "up" && incident) {
+        cancelEvent(db, incident, "health_incident_resolved");
+        incident = null;
+      }
+      db.prepare(`UPDATE projects SET last_status=?, last_response_ms=?, last_checked_at=?, updated_at=?,
+        health_incident_key=?, health_probe_started_at_ms=? WHERE id=?`).run(status, responseMs, now, now, incident, started, id);
+      return { event, name: current.name };
+    }).immediate();
+    if (!transition) return;
 
-    auditLog("system", "project.health-check", row.name, status === "up" ? "ok" : "fail", {
+    auditLog("system", "project.health-check", transition.name, status === "up" ? "ok" : "fail", {
       responseMs,
       url,
     });
 
-    if (status === "down" && row.last_status !== "down") {
-      void notifyHealthCheckFailure(row.name, url, responseMs, row.id);
-    }
+    if (transition.event) void sendNotificationEmail(transition.event);
   }
 
   stop(): void {
