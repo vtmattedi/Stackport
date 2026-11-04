@@ -591,7 +591,7 @@ export interface NotificationConfig {
   updatedAt: string | null;
 }
 
-export type PushEventType = "health_check" | "deploy_blocked" | "deploy_unhealthy" | "rollback_failed" | "system_update_failed";
+export type PushEventType = "health_check" | "deploy_blocked" | "deploy_unhealthy" | "rollback_failed" | "rollback_recovered" | "system_update_failed";
 export interface PushConfig {
   identityError?: string | null;
   supported: boolean;

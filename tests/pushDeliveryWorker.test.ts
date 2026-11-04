@@ -126,12 +126,56 @@ test("expired browser is pruned and its other unsent work is cancelled while aud
 
 test("unreadable VAPID identity is diagnosed without rotation or network calls", async () => {
   const id = browser(); const publicKey = getPushConfig().vapidPublicKey;
+  const saved = (getDatabase().prepare("SELECT vapid_private_key_enc FROM push_config").get() as { vapid_private_key_enc: string }).vapid_private_key_enc;
+  enqueue();
+  getDatabase().prepare("UPDATE push_deliveries SET attempts=11").run();
   getDatabase().prepare("UPDATE push_config SET vapid_private_key_enc='wrong-secret'").run();
   const send = mock.method(webpush, "sendNotification", async () => ({ statusCode: 201, headers: {}, body: "" }));
   assert.match(getPushConfig().identityError ?? "", /matching database and host secrets/);
   assert.equal((await sendOnePush(id, "{}", 60)).code, "push_identity_unavailable");
+  const worker = new PushDeliveryWorker({ now: () => now });
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await worker.poll();
+    assert.equal(rows()[0].status, "retry");
+    assert.equal(rows()[0].attempts, 11, "configuration checks never consume the remaining provider attempt");
+    now = rows()[0].next_attempt_at_ms;
+  }
   assert.equal(send.mock.calls.length, 0);
+  closeDatabase(); initializeDatabase();
+  getDatabase().prepare("UPDATE push_config SET vapid_private_key_enc=?").run(saved);
+  await new PushDeliveryWorker({ now: () => now }).poll();
+  assert.equal(rows()[0].status, "accepted");
+  assert.equal(rows()[0].attempts, 12);
+  assert.equal(send.mock.calls.length, 1);
   assert.equal(getPushConfig().vapidPublicKey, publicKey);
+});
+
+test("configuration-blocked deliveries expire without sending after identity repair", async () => {
+  browser(); enqueue();
+  let blocked = true; let calls = 0;
+  const worker = new PushDeliveryWorker({ now: () => now, send: async () => {
+    calls++; return blocked ? { kind: "configuration_blocked", code: "push_identity_unavailable" } : { kind: "accepted" };
+  } });
+  await worker.poll();
+  assert.equal(rows()[0].attempts, 0);
+  closeDatabase(); initializeDatabase();
+  now += 13 * 3_600_000; blocked = false;
+  await worker.poll();
+  assert.equal(rows()[0].status, "expired");
+  assert.equal(calls, 1);
+});
+
+test("cancellation during an identity check cannot resurrect or refund a cancelled delivery", async () => {
+  browser(); enqueue();
+  let release!: () => void;
+  const worker = new PushDeliveryWorker({ now: () => now, send: async () => {
+    await new Promise<void>((resolve) => { release = resolve; });
+    return { kind: "configuration_blocked", code: "push_identity_unavailable" };
+  } });
+  const running = worker.poll(); await settle();
+  updatePushConfig({ enabled: false }); release(); await running;
+  assert.equal(rows()[0].status, "cancelled");
+  assert.equal(rows()[0].attempts, 1);
 });
 
 test("retry budget is bounded and schedules use integer UTC milliseconds", async () => {

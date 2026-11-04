@@ -32,6 +32,12 @@ export function rollbackFailedEvent(name: string, projectId: number, operationId
     url: `/projects/${projectId}`, createdAt: new Date().toISOString() };
 }
 
+export function rollbackRecoveredEvent(name: string, projectId: number, operationId: string): StackportNotification {
+  return { eventKey: `rollback_recovered:${projectId}:${operationId}`, type: "rollback_recovered", severity: "info", title: `${name} service restored`,
+    body: "Automatic rollback restored the previous version and its health check passed.", projectName: name, projectId,
+    url: `/projects/${projectId}`, createdAt: new Date().toISOString() };
+}
+
 export function systemUpdateFailedEvent(operationId: string, outcome: "failed" | "rolled-back"): StackportNotification {
   return { eventKey: `system_update_failed:${operationId}:${outcome}`, type: "system_update_failed", severity: "error", title: "Stackport update failed",
     body: outcome === "rolled-back" ? "The new version failed verification and was rolled back. Open Settings for details." : "The update could not complete. Open Settings for details.",

@@ -60,7 +60,7 @@ export function getPushConfig(): PushConfig {
     supported: true,
     enabled: !!row.enabled,
     subject: row.subject,
-    events: Object.fromEntries(PUSH_EVENT_TYPES.map((type) => [type, saved[type] !== false])) as Record<NotificationEventType, boolean>,
+    events: Object.fromEntries(PUSH_EVENT_TYPES.map((type) => [type, saved[type] ?? type !== "rollback_recovered"])) as Record<NotificationEventType, boolean>,
     vapidPublicKey: row.vapid_public_key,
   };
 }
@@ -182,7 +182,7 @@ export interface PushDeliveryResult { id: number; label: string; ok: boolean; ac
 export type PushSender = typeof webpush.sendNotification;
 
 export interface PushAttemptResult {
-  kind: "accepted" | "retry" | "expired" | "permanent_failure";
+  kind: "accepted" | "retry" | "expired" | "permanent_failure" | "configuration_blocked";
   code?: string;
   httpStatus?: number;
   retryAfterAt?: number;
@@ -211,7 +211,7 @@ export async function sendOnePush(subscriptionId: number, payload: string, ttlSe
   const subscription = getDatabase().prepare("SELECT * FROM push_subscriptions WHERE id = ?").get(subscriptionId) as SubscriptionRow | undefined;
   if (!subscription) return { kind: "expired", code: "browser_removed" };
   if (!allowedEndpoint(subscription.endpoint)) return { kind: "permanent_failure", code: "push_endpoint_rejected" };
-  if (getPushIdentityError()) return { kind: "permanent_failure", code: "push_identity_unavailable" };
+  if (getPushIdentityError()) return { kind: "configuration_blocked", code: "push_identity_unavailable" };
   const row = identity();
   try {
     const response = await (options.send ?? webpush.sendNotification)(

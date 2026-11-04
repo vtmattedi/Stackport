@@ -17,7 +17,7 @@ import { ensureBuildCapacity } from "./dockerStorage";
 import { markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./projectDeployments";
 import { healthCheckUrl, probeHealth, type HealthProbe } from "./healthChecker";
 import { enqueueNotificationTx, sendNotificationEmail, type DeployRollbackOutcome } from "./notificationService";
-import { deployBlockedEvent, deployUnhealthyEvent, rollbackFailedEvent } from "./notificationEvents";
+import { deployBlockedEvent, deployUnhealthyEvent, rollbackFailedEvent, rollbackRecoveredEvent } from "./notificationEvents";
 import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
 import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./composeVariables";
@@ -1547,16 +1547,16 @@ export async function verifyDeployHealth(
 export function recordBlockedDeployAttempt(project: Project, input: Parameters<typeof recordFailedDeployment>[1], reason: string, notify: boolean): number {
   const db = getDatabase();
   let email: ReturnType<typeof deployBlockedEvent> | undefined;
-  try {
-    return db.transaction(() => {
-      const id = recordFailedDeployment(project.id, input, reason);
-      if (notify) {
-        email = deployBlockedEvent(project.name, reason, project.id, id);
-        enqueueNotificationTx(db, email);
-      }
-      return id;
-    })();
-  } finally { if (email) void sendNotificationEmail(email); }
+  const attemptId = db.transaction(() => {
+    const id = recordFailedDeployment(project.id, input, reason);
+    if (notify) {
+      email = deployBlockedEvent(project.name, reason, project.id, id);
+      enqueueNotificationTx(db, email);
+    }
+    return id;
+  })();
+  if (email) void sendNotificationEmail(email);
+  return attemptId;
 }
 
 /** Commit the unhealthy classification before attempting optional recovery. */
@@ -1567,6 +1567,7 @@ export async function gateOnHealth(
   allowAutoRollback: boolean,
   healthDeps?: HealthGateDeps,
   rollbackFailureOperationId?: string,
+  restore: typeof rollbackProject = rollbackProject,
 ): Promise<{ ok: boolean; output: string }> {
   const result = await verifyDeployHealth(project.id, action, healthDeps);
   if (!result) return { ok: true, output: "" };
@@ -1590,7 +1591,7 @@ export async function gateOnHealth(
   if (allowAutoRollback && project.autoRollbackUnhealthy) {
     emit(project.id, action, "status", "Rolling back automatically (project setting)\n");
     try {
-      const restored = await rollbackProject(project.id, undefined, { nested: true, operationId });
+      const restored = await restore(project.id, undefined, { nested: true, operationId });
       lines.push(restored.output);
       rollback = restored.ok ? "done" : "failed";
     } catch {
@@ -1600,6 +1601,7 @@ export async function gateOnHealth(
   }
   void sendNotificationEmail(deployUnhealthyEvent(project.name, commitSha, result.url, rollback, project.id, deploymentId));
   if (rollback === "failed") db.transaction(() => enqueueNotificationTx(db, rollbackFailedEvent(project.name, project.id, operationId)))();
+  if (rollback === "done") db.transaction(() => enqueueNotificationTx(db, rollbackRecoveredEvent(project.name, project.id, operationId)))();
   return { ok: false, output: lines.join("\n") };
 }
 

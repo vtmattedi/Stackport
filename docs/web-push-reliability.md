@@ -31,6 +31,7 @@ matching health episode. Other failures remain relevant until expiry.
 | Blocked automatic deployment | 6 hours; keep the historical explanation |
 | Unhealthy deployment | 12 hours |
 | Failed automatic rollback | 24 hours |
+| Successful automatic rollback | 1 hour; optional UI preference, off by default |
 | Failed Stackport update | 24 hours |
 | Explicit test | 5 minutes; immediate, outside the outbox |
 
@@ -52,6 +53,15 @@ Payloads contain bounded server-created metadata and internal paths only.
 Endpoints and subscription keys stay in the subscription table. Errors use
 normalized codes, never provider bodies. Restore requires the matching database
 and host encryption secret; identity failure never rotates keys silently.
+An unavailable signing identity suspends delivery in the retry queue and checks
+again every 30 seconds without consuming provider attempts. Repair resumes live
+events automatically; expired or cancelled events stay closed. Configuration checks
+do not generate repeated delivery failure logs.
+
+Blocked-deployment email starts only after the attempt and eligible push work
+commit successfully. An unhealthy deployment keeps its original incident payload;
+successful automatic rollback can produce a separate recovery event when enabled
+in Settings → Notifications. Recovery never rewrites the original alert.
 
 ## Rollout and release gates
 

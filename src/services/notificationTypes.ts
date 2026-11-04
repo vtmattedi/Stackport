@@ -1,4 +1,4 @@
-export const PUSH_EVENT_TYPES = ["health_check", "deploy_blocked", "deploy_unhealthy", "rollback_failed", "system_update_failed"] as const;
+export const PUSH_EVENT_TYPES = ["health_check", "deploy_blocked", "deploy_unhealthy", "rollback_failed", "rollback_recovered", "system_update_failed"] as const;
 export type NotificationEventType = typeof PUSH_EVENT_TYPES[number];
 
 export interface StackportNotification {
@@ -31,5 +31,6 @@ export const PUSH_LIFETIME_MS: Record<NotificationEventType, number> = {
   deploy_blocked: 6 * 3_600_000,
   deploy_unhealthy: 12 * 3_600_000,
   rollback_failed: 24 * 3_600_000,
+  rollback_recovered: 3_600_000,
   system_update_failed: 24 * 3_600_000,
 };

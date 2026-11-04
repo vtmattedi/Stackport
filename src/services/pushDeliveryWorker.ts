@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { getDatabase } from "../config/database";
 import { logger } from "../utils/logger";
-import { claimDueDeliveries, cleanupOldEvents, finishDelivery, getPushQueueStatus, leaseIsEligible, MAX_PUSH_ATTEMPTS, type PushLease } from "./pushOutbox";
+import { claimDueDeliveries, cleanupOldEvents, finishDelivery, getPushQueueStatus, leaseIsEligible, MAX_PUSH_ATTEMPTS, suspendDelivery, type PushLease } from "./pushOutbox";
 import { deletePushSubscription, sendOnePush, type PushAttemptResult } from "./webPush";
 
 export function nextPushAttemptAt(attempts: number, now: number, expires: number, random = Math.random(), retryAfterAt = 0): number {
@@ -81,6 +81,10 @@ export class PushDeliveryWorker {
     if (this.abandonCompletions) return; // The DB may already be closed after bounded shutdown.
     const timestamp = now();
     db.transaction(() => {
+      if (result.kind === "configuration_blocked") {
+        if (leaseIsEligible(db, lease, timestamp)) suspendDelivery(db, lease, timestamp);
+        return;
+      }
       const kind = result.kind === "retry" && lease.attempts >= MAX_PUSH_ATTEMPTS ? "permanent_failure" : result.kind;
       const changed = finishDelivery(db, lease, kind, {
         code: kind === "permanent_failure" && result.kind === "retry" ? "retry_limit" : result.code,

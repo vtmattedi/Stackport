@@ -15,6 +15,7 @@ const EVENTS: { type: PushEventType; label: string }[] = [
   { type: "deploy_blocked", label: "Automatic deployment blocked" },
   { type: "deploy_unhealthy", label: "Deployment failed its health check" },
   { type: "rollback_failed", label: "Automatic rollback failed" },
+  { type: "rollback_recovered", label: "Automatic rollback restored service" },
   { type: "system_update_failed", label: "Stackport update failed" },
 ];
 

@@ -21,7 +21,8 @@ export interface PushLease {
 
 function pushEnabled(db: Database.Database, type: NotificationEventType): boolean {
   const row = db.prepare("SELECT enabled, events_json FROM push_config WHERE id = 1").get() as { enabled: number; events_json: string } | undefined;
-  return !!row?.enabled && (JSON.parse(row.events_json) as Record<string, unknown>)[type] !== false;
+  const preference = row && (JSON.parse(row.events_json) as Record<string, unknown>)[type];
+  return !!row?.enabled && (typeof preference === "boolean" ? preference : type !== "rollback_recovered");
 }
 
 /** DB-only; callers include this in the transaction that classifies the incident. */
@@ -148,6 +149,15 @@ export function finishDelivery(
     }
     return true;
   })();
+}
+
+/** No provider attempt occurred. Keep the delivery live without spending its retry budget. */
+export function suspendDelivery(db: Database.Database, lease: PushLease, now = Date.now()): void {
+  db.prepare(`UPDATE push_deliveries SET status = 'retry', attempts = MAX(0, attempts - 1),
+    next_attempt_at_ms = ?, lease_token = NULL, lease_until_ms = NULL,
+    last_error_code = 'push_identity_unavailable', updated_at_ms = ?
+    WHERE id = ? AND status = 'leased' AND lease_token = ?`)
+    .run(Math.min(lease.expires_at_ms, now + 30_000), now, lease.id, lease.lease_token);
 }
 
 export function cleanupOldEvents(db: Database.Database, now = Date.now(), batch = 200): number {
