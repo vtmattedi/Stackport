@@ -2,6 +2,7 @@ export const PUSH_EVENT_TYPES = ["health_check", "deploy_blocked", "deploy_unhea
 export type NotificationEventType = typeof PUSH_EVENT_TYPES[number];
 
 export interface StackportNotification {
+  eventKey?: string;
   type: NotificationEventType | "test";
   severity: "info" | "warning" | "error";
   title: string;
@@ -12,3 +13,23 @@ export interface StackportNotification {
   projectName?: string;
   email?: { subject: string; html: string };
 }
+
+export interface DurablePushEvent {
+  eventKey: string;
+  type: NotificationEventType;
+  severity: "info" | "warning" | "error";
+  title: string;
+  body: string;
+  url: string;
+  projectId?: number;
+  createdAt: string;
+  expiresAt?: string;
+}
+
+export const PUSH_LIFETIME_MS: Record<NotificationEventType, number> = {
+  health_check: 3_600_000,
+  deploy_blocked: 6 * 3_600_000,
+  deploy_unhealthy: 12 * 3_600_000,
+  rollback_failed: 24 * 3_600_000,
+  system_update_failed: 24 * 3_600_000,
+};
