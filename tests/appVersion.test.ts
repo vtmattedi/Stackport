@@ -4,7 +4,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { execFileSync } from "child_process";
-import { checkForUpdates, getAppVersion } from "../src/services/appVersion";
+import { checkForUpdates, getAppVersion } from "../src/modules/maintenance/version";
 
 const origin = fs.mkdtempSync(path.join(os.tmpdir(), "stackport-origin-"));
 process.on("exit", () => fs.rmSync(origin, { recursive: true, force: true }));

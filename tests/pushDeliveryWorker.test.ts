@@ -1,11 +1,11 @@
 import { beforeEach, afterEach, test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { closeDatabase, getDatabase, initializeDatabase } from "../src/config/database";
-import { enqueuePushEvent, PUSH_LEASE_MS } from "../src/services/pushOutbox";
-import { PushDeliveryWorker, nextPushAttemptAt } from "../src/services/pushDeliveryWorker";
-import { classifyPushFailure, getPushConfig, sendOnePush, updatePushConfig } from "../src/services/webPush";
+import { enqueuePushEvent, PUSH_LEASE_MS } from "../src/modules/notifications/push/outbox";
+import { PushDeliveryWorker, nextPushAttemptAt } from "../src/modules/notifications/push/worker";
+import { classifyPushFailure, getPushConfig, sendOnePush, updatePushConfig } from "../src/modules/notifications/push/transport";
 import webpush from "web-push";
-import type { DurablePushEvent } from "../src/services/notificationTypes";
+import type { DurablePushEvent } from "../src/modules/notifications/types";
 import Database from "better-sqlite3";
 import { config } from "../src/config/env";
 

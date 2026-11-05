@@ -1,1 +1,1 @@
-export * from "../services/projectResources";
+export * from "../modules/observability/queries/projectResources";

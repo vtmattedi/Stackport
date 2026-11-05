@@ -4,8 +4,8 @@
 // the "local root" authorization boundary stackport_host_lifecycle.md §6.1 requires,
 // so no separate unauthenticated endpoint exists to trigger this (invariant #4/§6.1).
 import { initializeDatabase } from "../config/database";
-import { createRecoveryCredential, RECOVERY_CREDENTIAL_TTL_MS } from "../services/installation";
-import { getNginxAppConfig } from "../services/nginx/configWriter";
+import { createRecoveryCredential, RECOVERY_CREDENTIAL_TTL_MS } from "../modules/identity/installation";
+import { getNginxAppConfig } from "../modules/ingress/nginx/configWriter";
 
 function main(): void {
   initializeDatabase();

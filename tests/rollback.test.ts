@@ -1,8 +1,8 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDatabase, initializeDatabase } from "../src/config/database";
-import { createProject } from "../src/services/projectAdmin";
-import { recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "../src/services/projectDeployments";
+import { createProject } from "../src/modules/projects/operations";
+import { recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "../src/modules/deployments/history";
 
 before(() => { initializeDatabase(); });
 

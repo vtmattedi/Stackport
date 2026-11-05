@@ -1,11 +1,11 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeDatabase } from "../src/config/database";
-import { createProject } from "../src/services/projectAdmin";
-import { getProjectById } from "../src/services/projectDeploy";
-import { recordSuccessfulDeployment } from "../src/services/projectDeployments";
-import { previewDeploy, previewRollback, type PreviewDeps } from "../src/services/deployPreview";
-import { diffLines } from "../src/services/textDiff";
+import { createProject } from "../src/modules/projects/operations";
+import { getProjectById } from "../src/modules/deployments/operations";
+import { recordSuccessfulDeployment } from "../src/modules/deployments/history";
+import { previewDeploy, previewRollback, type PreviewDeps } from "../src/modules/deployments/preview";
+import { diffLines } from "../src/shared/textDiff";
 
 before(() => { initializeDatabase(); });
 

@@ -4,9 +4,9 @@ import type { AddressInfo } from "net";
 import type { Server } from "http";
 import app from "../src/app";
 import { initializeDatabase, getDatabase } from "../src/config/database";
-import { createProject, getProjectOrThrow, updateProject } from "../src/services/projectAdmin";
-import { issueAuthToken } from "../src/services/authTokens";
-import { encryptSecret } from "../src/utils/crypto";
+import { createProject, getProjectOrThrow, updateProject } from "../src/modules/projects/operations";
+import { issueAuthToken } from "../src/modules/identity/sessions";
+import { encryptSecret } from "../src/shared/crypto";
 
 let server: Server; let base: string; let token: string;
 before(async () => {

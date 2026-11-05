@@ -1,11 +1,11 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDatabase, initializeDatabase } from "../src/config/database";
-import { createProject, updateProject } from "../src/services/projectAdmin";
-import { addProjectDomain } from "../src/services/projectDomains";
-import { healthCheckUrl } from "../src/services/healthChecker";
-import { verifyDeployHealth, type HealthGateDeps } from "../src/services/projectDeploy";
-import { listProjectDeployments, markActiveDeploymentUnhealthy, recordSuccessfulDeployment } from "../src/services/projectDeployments";
+import { createProject, updateProject } from "../src/modules/projects/operations";
+import { addProjectDomain } from "../src/modules/ingress/domains";
+import { healthCheckUrl } from "../src/modules/deployments/health";
+import { verifyDeployHealth, type HealthGateDeps } from "../src/modules/deployments/operations";
+import { listProjectDeployments, markActiveDeploymentUnhealthy, recordSuccessfulDeployment } from "../src/modules/deployments/history";
 
 before(() => { initializeDatabase(); });
 

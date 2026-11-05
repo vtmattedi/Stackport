@@ -2,8 +2,8 @@ import { beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeDatabase, getDatabase } from "../src/config/database";
 import { config } from "../src/config/env";
-import { getNginxAppConfig, setNginxAppConfig } from "../src/services/nginx/appConfig";
-import { createProject } from "../src/services/projectAdmin";
+import { getNginxAppConfig, setNginxAppConfig } from "../src/modules/ingress/nginx/appConfig";
+import { createProject } from "../src/modules/projects/operations";
 
 beforeEach(() => {
   initializeDatabase();

@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { closeDatabase, getDatabase, initializeDatabase } from "../src/config/database";
 import { config } from "../src/config/env";
-import { createProject } from "../src/services/projectAdmin";
-import { getPushConfig, updatePushConfig } from "../src/services/webPush";
+import { createProject } from "../src/modules/projects/operations";
+import { getPushConfig, updatePushConfig } from "../src/modules/notifications/push/transport";
 import { cancelDisabledDeliveries, cancelEvent, cancelSubscriptionDeliveries, claimDueDeliveries, cleanupOldEvents,
-  enqueuePushEvent, enqueuePushEventTx, finishDelivery, getPushQueueStatus, leaseIsEligible, PUSH_LEASE_MS } from "../src/services/pushOutbox";
-import type { DurablePushEvent } from "../src/services/notificationTypes";
+  enqueuePushEvent, enqueuePushEventTx, finishDelivery, getPushQueueStatus, leaseIsEligible, PUSH_LEASE_MS } from "../src/modules/notifications/push/outbox";
+import type { DurablePushEvent } from "../src/modules/notifications/types";
 
 const now = Date.parse("2026-11-03T20:00:00Z");
 const event = (key = "deploy_unhealthy:1:one"): DurablePushEvent => ({ eventKey: key, type: "deploy_unhealthy", severity: "error",

@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { logger } from "../utils/logger";
+import { logger } from "../shared/logger";
 import m001 from "./001_deployment_rolled_back_at";
 import m002 from "./002_deploy_health_gate";
 import m003 from "./003_api_tokens";

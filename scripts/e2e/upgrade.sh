@@ -41,8 +41,10 @@ assert_accepted() {
   local expect="$1" label="$2"
   [[ "$(running_sha)" == "$expect" ]] || fail "$label: checkout is $(running_sha), expected $expect"
   curl -fsS "http://localhost:$PORT/health" >/dev/null || fail "$label: /health"
-  # Versions from before the readiness check don't have /health/ready.
-  if git -C "$APP_DIR" cat-file -e HEAD:src/services/readiness.ts 2>/dev/null; then
+  # Versions from before the readiness check don't have /health/ready; later
+  # releases place its implementation in either the old or the module layout.
+  if git -C "$APP_DIR" cat-file -e HEAD:src/modules/maintenance/readiness.ts 2>/dev/null ||
+     git -C "$APP_DIR" cat-file -e HEAD:src/services/readiness.ts 2>/dev/null; then
     curl -fsS -o /dev/null "http://localhost:$PORT/health/ready" || fail "$label: /health/ready"
   fi
   local asset
@@ -102,8 +104,9 @@ assert_accepted "$HEAD" "back on head"
 
 step "2. head -> next, launched from the app the way the Update button does"
 NEXT="$(publish "$HEAD" "e2e: next release" 'marker next')"
+# The same driver can target HEAD from before or after the module migration.
 docker exec -u node stackport node -e \
-  "require('./dist/services/selfUpdate').startSelfUpdate().then(r => console.log('updater', r.id.slice(0, 12)))"
+  "const fs = require('fs'); const entry = fs.existsSync('./dist/modules/maintenance/selfUpdate.js') ? './dist/modules/maintenance/selfUpdate' : './dist/services/selfUpdate'; require(entry).startSelfUpdate().then(r => console.log('updater', r.id.slice(0, 12)))"
 for _ in $(seq 1 450); do
   [[ "$(docker inspect --format '{{.State.Running}}' stackport-updater)" == false ]] && break
   sleep 2

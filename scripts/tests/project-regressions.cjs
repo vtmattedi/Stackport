@@ -6,28 +6,28 @@ const database = require(`${root}/config/database`);
 database.initializeDatabase();
 
 async function main() {
-  const project = require(`${root}/services/projectAdmin`).createProject({name: 'Regression', sourceType: 'upload'});
+  const project = require(`${root}/modules/projects/operations`).createProject({name: 'Regression', sourceType: 'upload'});
   assert.equal(project.internalPort, null);
   // Simulate upgrading a database whose existing projects predate groups.
   database.getDatabase().exec('ALTER TABLE projects DROP COLUMN group_name');
   database.closeDatabase();
   database.initializeDatabase();
-  const restored = require(`${root}/services/projectDeploy`).getProjectById(project.id);
+  const restored = require(`${root}/modules/deployments/operations`).getProjectById(project.id);
   assert.equal(restored.name, 'Regression');
   assert.equal(restored.groupName, null);
   database.getDatabase().prepare('UPDATE projects SET compose_file=? WHERE id=?').run('compose.yml', project.id);
-  const domains = require(`${root}/services/projectDomains`);
+  const domains = require(`${root}/modules/ingress/domains`);
   domains.addProjectDomain(project.id, 'site.install.test', false, 'web', 80);
   domains.addProjectDomain(project.id, 'www.site.install.test', false, 'web', 80);
-  await require(`${root}/services/projectDeploy`).ensureProjectProxyNetwork(project.id);
-  const nginx = require(`${root}/services/nginx/configWriter`);
+  await require(`${root}/modules/deployments/operations`).ensureProjectProxyNetwork(project.id);
+  const nginx = require(`${root}/modules/ingress/nginx/configWriter`);
   let applied = await nginx.writeNginxConfig();
   assert(applied.ok, applied.output);
   const generated = await fs.readFile('/etc/nginx/sites-available/default', 'utf8');
   assert.equal((generated.match(/server_name www.site.install.test;/g) || []).length, 1);
 
   // Exercise the real HTTP endpoint, including the legacy-port regression.
-  const token = require(`${root}/services/authTokens`).issueAuthToken('regression');
+  const token = require(`${root}/modules/identity/sessions`).issueAuthToken('regression');
   const headers = {Authorization: `Bearer ${token}`};
   const jsonHeaders = {...headers, 'Content-Type': 'application/json'};
   let response = await fetch('http://localhost:3000/api/projects', {method: 'POST', headers: jsonHeaders,
@@ -51,7 +51,7 @@ async function main() {
   response = await fetch(`http://localhost:3000/api/projects/${project.id}/tcp-exposures`, {method: 'POST', headers: jsonHeaders,
     body: JSON.stringify({publicPort: 18883, service: 'web', containerPort: 9000})});
   assert.equal(response.status, 400);
-  const tcp = require(`${root}/services/tcpExposures`);
+  const tcp = require(`${root}/modules/ingress/tcp`);
   const exposure = tcp.insertTcpExposure(project.id, 18883, 'mqtt', 8883);
   assert.deepEqual(tcp.listTcpExposures(project.id).map(row => [row.publicPort, row.service, row.containerPort]), [[18883, 'mqtt', 8883]]);
   assert.deepEqual(domains.listRoutedServiceNames(project.id), ['mqtt', 'web']);
@@ -113,8 +113,8 @@ async function main() {
   console.log('PASS: post-deploy ingress attachment, explicit www, SSL API without a host port');
 
   // Network augmentation must keep private networks and service aliases intact.
-  const networking = require(`${root}/services/composeNetworking`);
-  const yaml = require(`${root}/services/composeYaml`);
+  const networking = require(`${root}/modules/deployments/compose/networking`);
+  const yaml = require(`${root}/modules/deployments/compose/yaml`);
   const dir = '/app/data/network-regression';
   await fs.mkdir(dir, {recursive: true});
   for (const networks of [['private'], {private: {aliases: ['db-client']}}]) {
@@ -127,12 +127,12 @@ async function main() {
     else assert.deepEqual(output.services.web.networks.private, networks.private);
   }
   console.log('PASS: proxy augmentation preserves custom networks and aliases');
-  const extract = require(`${root}/services/composeIngress`).extractComposeIngressTargets;
+  const extract = require(`${root}/modules/deployments/compose/ingress`).extractComposeIngressTargets;
   assert.deepEqual(extract({services: {
     web: {expose: [3000, '3000/tcp', '3001-3002/tcp', '53/udp'], ports: [{target: 443, published: '8192'}, {target: 53, protocol: 'udp'}]},
     api: {environment: {PORT: '4000'}}, db: {environment: {PASSWORD: 'private'}}, invalid: {expose: ['${PORT}', 0, 65536]},
   }}), [{service: 'api', containerPort: 4000}, ...[443, 3000, 3001, 3002].map(containerPort => ({service: 'web', containerPort}))]);
-  const policy = require(`${root}/services/composePolicy`).validateComposePolicy({services: {mqtt: {ports: ['8883:8883']}}});
+  const policy = require(`${root}/modules/deployments/compose/policy`).validateComposePolicy({services: {mqtt: {ports: ['8883:8883']}}});
   assert.equal(policy.ok, false);
   assert.match(policy.violations[0].problem, /host port publication is not allowed/);
   console.log('PASS: port ranges, TCP/UDP, duplicates, environment ports and private values');

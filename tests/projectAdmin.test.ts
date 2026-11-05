@@ -1,7 +1,7 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeDatabase, getDatabase } from "../src/config/database";
-import { createProject } from "../src/services/projectAdmin";
+import { createProject } from "../src/modules/projects/operations";
 
 before(() => { initializeDatabase(); });
 
