@@ -4,8 +4,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { closeDatabase, initializeDatabase } from "../src/config/database";
-import { getReadiness } from "../src/services/readiness";
-import { updaterRunArgs } from "../src/services/selfUpdate";
+import { getReadiness } from "../src/modules/maintenance/readiness";
+import { updaterRunArgs } from "../src/modules/maintenance/selfUpdate";
 
 const IMAGE = "sha256:" + "f".repeat(64);
 

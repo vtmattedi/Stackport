@@ -1,9 +1,9 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDatabase, initializeDatabase } from "../src/config/database";
-import { createProject } from "../src/services/projectAdmin";
-import { actionRegistry, projectRepoKey } from "../src/services/actionRegistry";
-import { clearPendingAutoDeploy, requestAutoDeploy, resetPendingAutoDeploys } from "../src/services/autoDeploy";
+import { createProject } from "../src/modules/projects/operations";
+import { actionRegistry, projectRepoKey } from "../src/modules/actions/registry";
+import { clearPendingAutoDeploy, requestAutoDeploy, resetPendingAutoDeploys } from "../src/modules/automation/autoDeploy";
 
 const commit = (sha: string) => ({ sha, commitMessage: `commit ${sha}`, commitAuthor: "dev", commitAt: null });
 

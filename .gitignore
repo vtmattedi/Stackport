@@ -47,3 +47,6 @@ coverage/
 .idea/
 
 .claude
+
+# Local review notes and working artifacts
+.local/

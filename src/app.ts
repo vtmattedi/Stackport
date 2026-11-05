@@ -3,13 +3,13 @@ import helmet from "helmet";
 import cors from "cors";
 import path from "path";
 import { config } from "./config/env";
-import { globalLimiter } from "./middleware/rateLimiter";
-import { errorHandler } from "./middleware/errorHandler";
-import router from "./routes";
-import githubHooksRouter from "./routes/githubHooks";
-import mcpRouter from "./mcp/httpServer";
-import { getReadiness } from "./services/readiness";
-import { runningSha } from "./services/appVersion";
+import { globalLimiter } from "./application/http/rateLimiter";
+import { errorHandler } from "./application/http/errorHandler";
+import router from "./application/http/routes";
+import githubHooksRouter from "./modules/automation/routes/githubHooks";
+import mcpRouter from "./transports/mcp/http";
+import { getReadiness } from "./modules/maintenance/readiness";
+import { runningSha } from "./modules/maintenance/version";
 
 const app = express();
 

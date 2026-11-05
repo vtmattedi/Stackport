@@ -71,7 +71,7 @@ curl -fsS --resolve sp.install.test:443:127.0.0.1 https://sp.install.test/health
 echo 'PASS: failed HTTPS blocks install; rerun retries setup without changing secrets'
 
 push_identity() {
-  docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); console.log(require("./dist/services/webPush").getPushConfig().vapidPublicKey)'
+  docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); console.log(require("./dist/modules/notifications/push/transport").getPushConfig().vapidPublicKey)'
 }
 push_identity_before=$(push_identity)
 [[ ${#push_identity_before} == 87 ]]
@@ -83,7 +83,7 @@ docker exec --user node -w /app stackport node -e '
     db.prepare("UPDATE push_config SET enabled=1 WHERE id=1").run();
     db.prepare("INSERT INTO push_subscriptions (endpoint,p256dh,auth,label) VALUES (?,?,?,?)").run("https://fcm.googleapis.com/lifecycle-test","fixture","fixture","Lifecycle fixture");
     const now=Date.now();
-    require("./dist/services/pushOutbox").enqueuePushEventTx(db,{eventKey:"system_update_failed:lifecycle:failed",type:"system_update_failed",severity:"error",title:"Lifecycle fixture",body:"Open Stackport for details.",url:"/settings/general",createdAt:new Date(now).toISOString()},now);
+    require("./dist/modules/notifications/push/outbox").enqueuePushEventTx(db,{eventKey:"system_update_failed:lifecycle:failed",type:"system_update_failed",severity:"error",title:"Lifecycle fixture",body:"Open Stackport for details.",url:"/settings/general",createdAt:new Date(now).toISOString()},now);
     db.prepare("UPDATE push_deliveries SET status=?, attempts=1, lease_token=?, lease_until_ms=? WHERE event_id=(SELECT id FROM push_events WHERE event_key=?)").run("leased","held-lifecycle-lease",now+3600000,"system_update_failed:lifecycle:failed");
     db.prepare("UPDATE push_config SET enabled=0 WHERE id=1").run();
   })();'
@@ -95,7 +95,7 @@ stackport repair > /repair.log 2>&1
 [[ "$(push_identity)" == "$push_identity_before" ]]
 assert_push_queue
 echo 'PASS: fresh install generates a persistent push identity and repair preserves it'
-docker exec --user node -w /app stackport node -e 'const assert=require("assert"); require("./dist/config/database").initializeDatabase(); const n=require("./dist/services/nginx/configWriter"); assert.equal(n.getNginxRuntime(),"container"); assert.equal(n.getNginxAppConfig().useSsl,true); require("./dist/services/certbot").getCertbotStatus().then(s=>{assert(s.available);assert(s.emailConfigured);assert(s.entries.find(e=>e.domain==="sp.install.test").hasCertificate);console.log("PASS: container status and certificate detection work as node")}).catch(e=>{console.error(e);process.exit(1)});'
+docker exec --user node -w /app stackport node -e 'const assert=require("assert"); require("./dist/config/database").initializeDatabase(); const n=require("./dist/modules/ingress/nginx/configWriter"); assert.equal(n.getNginxRuntime(),"container"); assert.equal(n.getNginxAppConfig().useSsl,true); require("./dist/modules/ingress/certificates/operations").getCertbotStatus().then(s=>{assert(s.available);assert(s.emailConfigured);assert(s.entries.find(e=>e.domain==="sp.install.test").hasCertificate);console.log("PASS: container status and certificate detection work as node")}).catch(e=>{console.error(e);process.exit(1)});'
 mkdir -p /var/lib/stackport/data/repos/1-regression
 cat > /var/lib/stackport/data/repos/1-regression/compose.yml <<'EOF'
 services:
@@ -111,7 +111,7 @@ docker compose -p 1-regression -f /var/lib/stackport/data/repos/1-regression/com
 docker exec 1-regression-web-1 cp /usr/share/nginx/html/index.html /usr/share/nginx/html/traffic-regression
 chown -R 1000:1000 /var/lib/stackport/data/repos
 docker exec --user node -w /app stackport node /app/scripts/tests/project-regressions.cjs
-tcp_token=$(docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); console.log(require("./dist/services/authTokens").issueAuthToken("tcp-regression"));')
+tcp_token=$(docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); console.log(require("./dist/modules/identity/sessions").issueAuthToken("tcp-regression"));')
 tcp_payload='{"publicPort":18883,"service":"mqtt","containerPort":8883}'
 curl -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
 curl -fsS -H "Authorization: Bearer $tcp_token" -H 'Content-Type: application/json' -d "$tcp_payload" http://localhost:3000/api/projects/1/tcp-exposures > /tcp-exposure.json
@@ -131,7 +131,7 @@ curl -fsS -H "Authorization: Bearer $tcp_token" -X DELETE "http://localhost:3000
 if docker inspect "stackport-tcp-$tcp_exposure_id" >/dev/null 2>&1; then echo 'FAIL: deleted TCP proxy still exists'; exit 1; fi
 if printf 'removed\n' | nc -w 1 127.0.0.1 18883 >/dev/null 2>&1; then echo 'FAIL: deleted TCP port is still reachable'; exit 1; fi
 echo 'PASS: MQTT-shaped TCP exposure, conflict isolation, restart reconciliation, portal continuity, and deletion'
-docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); const assert=require("assert"); const n=require("./dist/services/nginx/configWriter"); (async()=>{const before=(await n.getNginxLayerStatus()).lastOperation.restartCount; await require("./dist/services/certbotRenewalMonitor").certbotRenewalMonitor.check(); const after=(await n.getNginxLayerStatus()).lastOperation.restartCount; assert(after>before,"successful renewal must reload nginx"); console.log("PASS: automatic renewal reloads nginx even with a legacy host setting")})().catch(e=>{console.error(e);process.exit(1)});'
+docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); const assert=require("assert"); const n=require("./dist/modules/ingress/nginx/configWriter"); (async()=>{const before=(await n.getNginxLayerStatus()).lastOperation.restartCount; await require("./dist/modules/ingress/certificates/renewal").certbotRenewalMonitor.check(); const after=(await n.getNginxLayerStatus()).lastOperation.restartCount; assert(after>before,"successful renewal must reload nginx"); console.log("PASS: automatic renewal reloads nginx even with a legacy host setting")})().catch(e=>{console.error(e);process.exit(1)});'
 curl --retry 10 --retry-all-errors --retry-delay 1 -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
 curl -fsS -H 'Host: site.install.test' http://127.0.0.1/.well-known/acme-challenge/regression | grep -q verified
 curl -fsS -H 'Host: www.site.install.test' http://127.0.0.1/.well-known/acme-challenge/regression | grep -q verified
@@ -147,7 +147,7 @@ sed -i '/container_name: stackport-nginx/a\    environment:\n      - STACKPORT_T
 sed -i '/container_name: stackport$/a\    environment:\n      - STACKPORT_TEST_APP_MARKER=updated' /fixture/docker-compose.system.yml
 git -C /fixture add docker-compose.system.yml
 git -C /fixture commit -qm 'system nginx change'
-update_token=$(docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); console.log(require("./dist/services/authTokens").issueAuthToken("regression"));')
+update_token=$(docker exec --user node -w /app stackport node -e 'require("./dist/config/database").initializeDatabase(); console.log(require("./dist/modules/identity/sessions").issueAuthToken("regression"));')
 app_container=$(docker inspect stackport --format '{{.Id}}')
 project_container=$(docker inspect 1-regression-web-1 --format '{{.Id}}')
 start_ui_update() {

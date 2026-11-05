@@ -883,7 +883,7 @@ export interface ProjectFolderSizeHistoryPoint {
   sizeBytes: number;
 }
 
-/** Mirrors src/services/realtime.ts's ProjectResourceSampleEvent — pushed live
+/** Mirrors src/application/realtime.ts's ProjectResourceSampleEvent — pushed live
  *  on the `project:${id}` room the instant the sampler writes a new sample. */
 export interface ProjectResourceSampleEvent {
   projectId: number;
@@ -941,7 +941,7 @@ export interface ApiToken {
   revokedAt: string | null;
 }
 
-/** GET /projects/:id/deploy-preview and /rollback-preview (server: services/deployPreview.ts). */
+/** GET /projects/:id/deploy-preview and /rollback-preview (server: modules/deployments/preview.ts). */
 export interface PreviewCommit {
   sha: string;
   message: string;
@@ -988,7 +988,7 @@ export interface RevisionPreview {
   targetId?: number;
 }
 
-/** GET /projects/:id/compose-policy (server: services/composePolicy.ts). */
+/** GET /projects/:id/compose-policy (server: modules/deployments/compose/policy.ts). */
 export interface PolicyViolation {
   service: string;
   key: string;

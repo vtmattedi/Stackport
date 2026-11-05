@@ -1,11 +1,13 @@
 import { beforeEach, afterEach, test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { closeDatabase, getDatabase, initializeDatabase } from "../src/config/database";
-import { enqueuePushEvent, PUSH_LEASE_MS } from "../src/services/pushOutbox";
-import { PushDeliveryWorker, nextPushAttemptAt } from "../src/services/pushDeliveryWorker";
-import { classifyPushFailure, getPushConfig, sendOnePush, updatePushConfig } from "../src/services/webPush";
+import { enqueuePushEvent, PUSH_LEASE_MS } from "../src/modules/notifications/push/outbox";
+import { PushDeliveryWorker, nextPushAttemptAt } from "../src/modules/notifications/push/worker";
+import { classifyPushFailure, getPushConfig, sendOnePush, updatePushConfig } from "../src/modules/notifications/push/transport";
 import webpush from "web-push";
-import type { DurablePushEvent } from "../src/services/notificationTypes";
+import type { DurablePushEvent } from "../src/modules/notifications/types";
+import Database from "better-sqlite3";
+import { config } from "../src/config/env";
 
 const initial = Date.parse("2026-11-03T20:00:00Z");
 let now = initial;
@@ -169,6 +171,21 @@ test("expired browser is pruned and its other unsent work is cancelled while aud
   assert.equal(getDatabase().prepare("SELECT id FROM push_subscriptions").get(), undefined);
   assert.ok(rows().some((row) => row.status === "expired"));
   assert.ok(rows().every((row) => ["expired", "cancelled"].includes(row.status)));
+});
+
+test("expired browser cleanup stays in the worker's injected database", async () => {
+  const id = browser(); enqueue();
+  const filename = `${config.sqlitePath}.worker`;
+  await getDatabase().backup(filename);
+  const isolated = new Database(filename);
+  isolated.pragma("foreign_keys = ON");
+  try {
+    await new PushDeliveryWorker({ db: () => isolated, now: () => now, send: async () => ({ kind: "expired", httpStatus: 410 }) }).poll();
+    assert.equal(isolated.prepare("SELECT id FROM push_subscriptions WHERE id=?").get(id), undefined);
+    assert.ok(getDatabase().prepare("SELECT id FROM push_subscriptions WHERE id=?").get(id));
+    assert.equal(rows()[0].status, "pending", "the global database is untouched by the isolated worker");
+    assert.equal((isolated.prepare("SELECT status FROM push_deliveries").get() as { status: string }).status, "expired");
+  } finally { isolated.close(); }
 });
 
 test("unreadable VAPID identity is diagnosed without rotation or network calls", async () => {

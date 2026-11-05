@@ -17,7 +17,7 @@ export const config = {
   jwtExpiry: process.env["JWT_EXPIRY"] ?? "7d",
   // Legacy override only (Phase 1.9) — installs no longer set these. The source of
   // truth is app_meta (admin_username/admin_password_hash), generated through the
-  // one-time bootstrap flow (services/installation.ts). Kept optional so an install
+  // one-time bootstrap flow (modules/identity/installation.ts). Kept optional so an install
   // that predates the bootstrap flow (this dev host included) keeps working — see
   // installation.ts's isInitialized(), which treats "both set via env" as already
   // initialized rather than forcing a new bootstrap.
@@ -29,7 +29,7 @@ export const config = {
   scriptsDir: process.env["SCRIPTS_DIR"] ?? "./data/scripts",
   // Phase 1.9 bootstrap — StackPort's own public domain/ACME email, set once by
   // stackport.sh into stackport.env. Blank domain means a raw-IP install; see
-  // services/appIngress.ts for how that's resolved into a self-signed cert instead
+  // modules/ingress/bootstrap.ts for how that's resolved into a self-signed cert instead
   // of a Let's Encrypt one.
   stackportDomain: process.env["STACKPORT_DOMAIN"] ?? "",
   certbotEmail: process.env["CERTBOT_EMAIL"] ?? "",

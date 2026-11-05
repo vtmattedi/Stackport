@@ -8,6 +8,7 @@ Durability hardening is specified in [the reliability contract](web-push-reliabi
 
 Implementation decisions that supersede the suggested storage/setup below:
 
+- Backend code now lives under `src/modules/notifications`; the `src/services` paths below are historical design references. See the [backend module map](backend-modules.md).
 - All operator settings live in **Settings → Notifications**: enable/disable push, contact email or HTTPS URL, individual event preferences, browser registration/removal and test delivery.
 - VAPID keys are generated automatically on first startup. The private key is encrypted with the existing host secret and stored in `push_config` in the persistent SQLite database. No environment variables or shell setup are needed. Back up the database together with `/etc/stackport/secrets.env`, which contains the encryption secret.
 - Subscriptions, preferences and identity survive update, repair, restart and rollback. Migration 006 only adds tables and a defaulted log column.

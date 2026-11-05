@@ -25,6 +25,9 @@ retain responsibility for their own configuration, data, and security.
 
 ## Architecture and design decisions
 
+Backend source is grouped by capability; see the [backend module map](docs/backend-modules.md)
+for ownership, import rules, and compatibility paths.
+
 **Separate management and workload stacks.** Stackport and its nginx proxy run
 in a dedicated Compose project; each managed application runs in its own Compose
 project. This keeps management lifecycle operations separate from application

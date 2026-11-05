@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadYamlDoc } from "../src/services/composeYaml";
-import { dotenvKeys, extractComposeVariables } from "../src/services/composeVariables";
+import { loadYamlDoc } from "../src/modules/deployments/compose/yaml";
+import { dotenvKeys, extractComposeVariables } from "../src/modules/deployments/compose/variables";
 
 const COMPOSE = `
 # \${IN_A_COMMENT} is ignored

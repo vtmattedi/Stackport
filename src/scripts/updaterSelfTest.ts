@@ -3,8 +3,8 @@
 // Exits non-zero, and the update rolls back, unless the new version is ready and can
 // launch the self-updater the same way the UI's Update button does.
 import { initializeDatabase } from "../config/database";
-import { getReadiness } from "../services/readiness";
-import { runUpdaterSelfTest } from "../services/selfUpdate";
+import { getReadiness } from "../modules/maintenance/readiness";
+import { runUpdaterSelfTest } from "../modules/maintenance/selfUpdate";
 
 async function main(): Promise<void> {
   initializeDatabase();

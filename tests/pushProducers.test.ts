@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeDatabase, getDatabase, closeDatabase } from "../src/config/database";
-import { HealthChecker, type HealthProbe } from "../src/services/healthChecker";
-import { createProject } from "../src/services/projectAdmin";
-import { addProjectDomain } from "../src/services/projectDomains";
-import { updatePushConfig } from "../src/services/webPush";
-import { notifySelfUpdateOutcome } from "../src/services/selfUpdate";
-import { PushDeliveryWorker } from "../src/services/pushDeliveryWorker";
-import { gateOnHealth, getProjectById, recordBlockedDeployAttempt } from "../src/services/projectDeploy";
-import { recordSuccessfulDeployment } from "../src/services/projectDeployments";
-import { encryptSecret } from "../src/utils/crypto";
-import { getPushConfig } from "../src/services/webPush";
+import { HealthChecker, type HealthProbe } from "../src/modules/deployments/health";
+import { createProject } from "../src/modules/projects/operations";
+import { addProjectDomain } from "../src/modules/ingress/domains";
+import { updatePushConfig } from "../src/modules/notifications/push/transport";
+import { notifySelfUpdateOutcome } from "../src/modules/maintenance/selfUpdate";
+import { PushDeliveryWorker } from "../src/modules/notifications/push/worker";
+import { gateOnHealth, getProjectById, recordBlockedDeployAttempt } from "../src/modules/deployments/operations";
+import { recordSuccessfulDeployment } from "../src/modules/deployments/history";
+import { encryptSecret } from "../src/shared/crypto";
+import { getPushConfig } from "../src/modules/notifications/push/transport";
 
 beforeEach(() => {
   initializeDatabase();
