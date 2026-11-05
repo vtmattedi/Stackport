@@ -2,7 +2,8 @@ import type Database from "better-sqlite3";
 import { getDatabase } from "../config/database";
 import { logger } from "../utils/logger";
 import { claimDueDeliveries, cleanupOldEvents, finishDelivery, getPushQueueStatus, leaseIsEligible, MAX_PUSH_ATTEMPTS, suspendDelivery, type PushLease } from "./pushOutbox";
-import { deletePushSubscription, sendOnePush, type PushAttemptResult } from "./webPush";
+import { sendOnePush, type PushAttemptResult } from "./webPush";
+import { deletePushSubscriptionTx } from "./pushSubscriptions";
 
 export function nextPushAttemptAt(attempts: number, now: number, expires: number, random = Math.random(), retryAfterAt = 0): number {
   const seconds = [15, 60, 300, 900, 3600, 7200][Math.min(Math.max(0, attempts - 1), 5)];
@@ -96,7 +97,7 @@ export class PushDeliveryWorker {
         httpStatus: result.httpStatus,
         nextAttemptAt: kind === "retry" ? nextPushAttemptAt(lease.attempts, timestamp, lease.expires_at_ms, random(), result.retryAfterAt) : undefined,
       }, timestamp);
-      if (changed && result.kind === "expired" && lease.subscription_id) deletePushSubscription(lease.subscription_id);
+      if (changed && result.kind === "expired" && lease.subscription_id) deletePushSubscriptionTx(db, lease.subscription_id);
     })();
   }
 

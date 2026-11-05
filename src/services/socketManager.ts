@@ -1,8 +1,8 @@
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { getDatabase } from "../config/database";
 import { rowToProject, type ProjectRow } from "../entities/Project";
-import { getSystemSnapshot } from "../routes/system";
-import { getHardwareSnapshot } from "../routes/hardware";
+import { getSystemSnapshot } from "./systemSnapshot";
+import { getHardwareSnapshot } from "./hardwareSnapshot";
 import { setRealtimeServer } from "./realtime";
 import { verifyStoredAuthToken } from "./authTokens";
 import { actionRegistry, dockerPruneKey, nginxKey, projectRepoKey, projectSslKeyPrefix } from "./actionRegistry";

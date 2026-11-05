@@ -1,7 +1,7 @@
 import { getDatabase } from "../config/database";
 import { rowToCredential, type Credential, type CredentialRow } from "../entities/Credential";
 import { rowToProject, type Project, type ProjectRow } from "../entities/Project";
-import { getNginxAppConfig } from "./nginx/configWriter";
+import { getNginxAppConfig } from "./nginx/appConfig";
 import { addProjectDomain, getProjectDomain } from "./projectDomains";
 import { resetGithubTrackingIfChanged } from "./githubPoller";
 import { moveWebhookIfRepoChanged } from "./githubWebhooks";
@@ -101,33 +101,34 @@ export function createProject(input: CreateProjectInput): Project {
   const autoDeployBranch = parseOptionalBranch(input.autoDeployBranch, null);
 
   const db = getDatabase();
-  ensureCredentialExists(credentialId);
-  ensureGithubCredentialExists(githubCredentialId);
-  ensurePortAvailable(internalPort);
-
-  const now = new Date().toISOString();
-  const result = db
-    .prepare(
-      `INSERT INTO projects
+  return db.transaction(() => {
+    ensureCredentialExists(credentialId);
+    ensureGithubCredentialExists(githubCredentialId);
+    ensurePortAvailable(internalPort);
+    const now = new Date().toISOString();
+    const result = db
+      .prepare(
+        `INSERT INTO projects
         (name, group_name, internal_port, health_check_endpoint, health_check_interval_s, github_repo,
          credential_id, github_credential_id, auto_deploy_branch, source_type, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(name, groupName, internalPort, healthCheckEndpoint, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, sourceType, now, now);
+      )
+      .run(name, groupName, internalPort, healthCheckEndpoint, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, sourceType, now, now);
 
-  const projectId = Number(result.lastInsertRowid);
-  // Convenience: the wizard collects one domain at creation time. Additional domains
-  // are added afterward via addProjectDomain/the /projects/:id/domains routes.
-  if (input.domain !== undefined && input.domain !== null && input.domain !== "") {
-    addProjectDomain(projectId, input.domain);
-  }
-  return getProjectOrThrow(projectId);
+    const projectId = Number(result.lastInsertRowid);
+    // The initial domain and its project must either both persist or both roll back.
+    if (input.domain !== undefined && input.domain !== null && input.domain !== "") {
+      addProjectDomain(projectId, input.domain);
+    }
+    return getProjectOrThrow(projectId);
+  }).immediate();
 }
 
-export function updateProject(projectId: number, input: UpdateProjectInput): UpdateProjectResult {
+export function updateProject(projectId: number, input: UpdateProjectInput, options: { compatibility?: "http" } = {}): UpdateProjectResult {
   const db = getDatabase();
   const existing = db.prepare("SELECT * FROM projects WHERE id = ?").get(projectId) as ProjectRow | undefined;
   if (!existing) throw new ProjectAdminError(404, "Project not found");
+  if (options.compatibility === "http") input = normalizeHttpProjectUpdate(input);
 
   const name = input.name !== undefined ? parseProjectName(input.name) : existing.name;
   const groupName = input.groupName !== undefined ? parseProjectGroupName(input.groupName) : existing.group_name;
@@ -158,9 +159,12 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
   const githubCredentialId = input.githubCredentialId !== undefined
     ? parseNullableCredentialId(input.githubCredentialId, "githubCredentialId")
     : existing.github_credential_id;
-  const autoDeployBranch = input.autoDeployBranch !== undefined
-    ? parseOptionalBranch(input.autoDeployBranch, null)
-    : existing.auto_deploy_branch ?? null;
+  const legacyEmptyBranch = options.compatibility === "http" && typeof input.autoDeployBranch === "string" && input.autoDeployBranch.length > 0 && !input.autoDeployBranch.trim();
+  const autoDeployBranch = legacyEmptyBranch
+    ? ""
+    : input.autoDeployBranch !== undefined
+      ? parseOptionalBranch(input.autoDeployBranch, null)
+      : existing.auto_deploy_branch ?? null;
   const nginxExtraConfig = input.nginxExtraConfig !== undefined
     ? parseNginxExtraConfig(input.nginxExtraConfig)
     : existing.nginx_extra_config ?? null;
@@ -194,6 +198,36 @@ export function updateProject(projectId: number, input: UpdateProjectInput): Upd
       (routed && (existing.nginx_extra_config ?? null) !== nginxExtraConfig) ||
       (routed && (existing.nginx_extra_blocks ?? null) !== nginxExtraBlocks),
   };
+}
+
+/** Preserve admitted HTTP inputs while both transports share validation and writes. */
+function normalizeHttpProjectUpdate(input: UpdateProjectInput): UpdateProjectInput {
+  const normalized = { ...input };
+  if (typeof input.name !== "string" || !input.name.trim()) delete normalized.name;
+  if (typeof input.healthCheckIntervalS !== "number") delete normalized.healthCheckIntervalS;
+  if (input.autoDeployBranch !== null && typeof input.autoDeployBranch !== "string") delete normalized.autoDeployBranch;
+  for (const field of ["credentialId", "githubCredentialId"] as const) {
+    const value = input[field];
+    if (value === undefined || value === null) continue;
+    const id = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+    if (!Number.isInteger(id) || id <= 0) throw new ProjectAdminError(400, `${field} must be a positive integer or null to clear`);
+    normalized[field] = id;
+  }
+  for (const [field, limit] of [["nginxExtraConfig", 4000], ["nginxExtraBlocks", 8000]] as const) {
+    const value = input[field];
+    if (value === undefined || value === null || value === "") continue;
+    if (typeof value !== "string" || !value.trim() || value.replace(/\r\n/g, "\n").trim().length > limit) {
+      throw new ProjectAdminError(400, `${field} must be a string of at most ${limit} characters`);
+    }
+  }
+  if (input.internalPort !== undefined && input.internalPort !== null && input.internalPort !== "" &&
+    ((typeof input.internalPort !== "number" && typeof input.internalPort !== "string") || parsePort(input.internalPort) === null)) {
+    throw new ProjectAdminError(400, "internalPort must be a TCP port from 1 to 65535");
+  }
+  if (input.healthCheckEndpoint !== undefined && input.healthCheckEndpoint !== null && input.healthCheckEndpoint !== "" && parseHealthCheckEndpoint(input.healthCheckEndpoint) === null) {
+    throw new ProjectAdminError(400, "healthCheckEndpoint must be a relative path like /health");
+  }
+  return normalized;
 }
 
 export function setProjectPaused(projectId: number, paused: boolean): Project {

@@ -1,3 +1,4 @@
+import { createProjectEnvFile, deleteProjectEnvFile, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../services/projectEnvFiles";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult, ListResourcesResult } from "@modelcontextprotocol/sdk/types.js";
@@ -6,22 +7,16 @@ import * as path from "path";
 import { z } from "zod";
 import { config } from "../config/env";
 import { closeDatabase, initializeDatabase } from "../config/database";
-import type { ProjectEnvFile } from "../services/projectDeploy";
+import type { ProjectEnvFile } from "../services/projectEnvFiles";
 import {
   getProjectIngressTargets,
   ensureProjectProxyNetwork,
   buildProject,
   composeProject,
-  createProjectEnvFile,
-  deleteProjectEnvFile,
   deployProject,
-  listProjectEnvFiles,
-  normalizeEnvRelativePath,
-  parseEnvVariables,
   pullProject,
   scanProjectRepoFolders,
   stopProject,
-  updateProjectEnvFile,
 } from "../services/projectDeploy";
 import {
   createProject,

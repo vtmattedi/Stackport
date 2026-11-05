@@ -1,5 +1,6 @@
 import { getDatabase } from "../config/database";
-import { DOMAIN_RE, getNginxAppConfig } from "./nginx/configWriter";
+import { DOMAIN_RE } from "./domainName";
+import { getNginxAppConfig } from "./nginx/appConfig";
 
 export interface ProjectDomain {
   id: number;

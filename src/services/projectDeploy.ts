@@ -1,8 +1,11 @@
+import { listProjectEnvFiles, normalizeEnvRelativePath, type ProjectEnvFile } from "./projectEnvFiles";
+export { listProjectEnvFiles, createProjectEnvFile, updateProjectEnvFile, deleteProjectEnvFile, normalizeEnvRelativePath, parseEnvVariables, type EnvVariable, type ProjectEnvFile, type ProjectEnvFileRow } from "./projectEnvFiles";
+import { deployRoot, projectRepoDir, slugify, expectedComposeProjectName } from "./projectWorkspace";
+export { deployRoot, projectRepoDir, slugify, expectedComposeProjectName } from "./projectWorkspace";
 import { execFile, spawn } from "child_process";
 import { randomUUID } from "crypto";
 import * as fs from "fs/promises";
 import * as path from "path";
-import { config } from "../config/env";
 import { getDatabase } from "../config/database";
 import { rowToProject, type Project, type ProjectRow } from "../entities/Project";
 import { decryptSecret } from "../utils/crypto";
@@ -23,30 +26,7 @@ import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComp
 import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./composeVariables";
 
 //temp fix for honest >15m builds 
-const MAX_BUILD_TIME_MS = 60 * 60 * 1000; // 1 hour
-
-export interface EnvVariable {
-  key: string;
-  value: string;
-}
-
-export interface ProjectEnvFile {
-  id: number;
-  projectId: number;
-  relativePath: string;
-  variables: EnvVariable[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ProjectEnvFileRow {
-  id: number;
-  project_id: number;
-  relative_path: string;
-  variables_json: string;
-  created_at: string;
-  updated_at: string;
-}
+const MAX_BUILD_TIME_MS = 60 * 60 * 1000;
 
 export interface DeployResult {
   ok: boolean;
@@ -93,16 +73,6 @@ interface RunResult {
 interface ComposeCommand {
   cmd: string;
   argsPrefix: string[];
-}
-
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-export function deployRoot(): string {
-  return path.resolve(config.deployRoot);
-}
-
-export function projectRepoDir(project: Pick<Project, "id" | "name">): string {
-  return path.join(deployRoot(), expectedComposeProjectName(project));
 }
 
 export async function ensureProjectProxyNetwork(projectId: number): Promise<void> {
@@ -203,15 +173,6 @@ function dockerConfigDir(): string {
 
 function dockerEnv(): NodeJS.ProcessEnv {
   return { ...process.env, DOCKER_CONFIG: process.env["DOCKER_CONFIG"] ?? dockerConfigDir() };
-}
-
-export function slugify(value: string): string {
-  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return slug || "project";
-}
-
-export function expectedComposeProjectName(project: Pick<Project, "id" | "name">): string {
-  return `${project.id}-${slugify(project.name)}`;
 }
 
 function githubCloneUrl(repo: string): string {
@@ -406,12 +367,6 @@ async function runCompose(
   return result;
 }
 
-export function normalizeEnvRelativePath(input: string): string | null {
-  const normalized = normalizeRelativePath(input);
-  if (!normalized || !normalized.endsWith(".env")) return null;
-  return normalized;
-}
-
 const COMPOSE_FILE_EXT_RE = /\.(ya?ml)$/i;
 const DEFAULT_COMPOSE_PRIORITY = ["docker-compose.stackport.yml", "docker-compose.yml"];
 
@@ -485,48 +440,6 @@ async function resolveDeployedComposeFile(repoPath: string, project: Project): P
   const snapshotPath = path.join(repoPath, DEPLOYED_COMPOSE_SNAPSHOT);
   const hasSnapshot = await fs.access(snapshotPath).then(() => true).catch(() => false);
   return hasSnapshot ? DEPLOYED_COMPOSE_SNAPSHOT : requireProjectComposeFile(project);
-}
-
-export function parseEnvVariables(input: unknown): EnvVariable[] | null {
-  if (!Array.isArray(input)) return null;
-  const variables: EnvVariable[] = [];
-
-  for (const item of input) {
-    if (!item || typeof item !== "object") return null;
-    const data = item as Record<string, unknown>;
-    if (typeof data["key"] !== "string" || typeof data["value"] !== "string") return null;
-    const key = data["key"].trim();
-    if (data["value"].includes("\n") || data["value"].includes("\r")) return null;
-    if (!ENV_KEY_RE.test(key)) return null;
-    variables.push({ key, value: data["value"] });
-  }
-
-  const keys = new Set<string>();
-  for (const variable of variables) {
-    if (keys.has(variable.key)) return null;
-    keys.add(variable.key);
-  }
-
-  return variables;
-}
-
-function rowToEnvFile(row: ProjectEnvFileRow): ProjectEnvFile {
-  let variables: EnvVariable[] = [];
-  try {
-    const parsed = JSON.parse(row.variables_json) as unknown;
-    variables = parseEnvVariables(parsed) ?? [];
-  } catch {
-    variables = [];
-  }
-
-  return {
-    id: row.id,
-    projectId: row.project_id,
-    relativePath: row.relative_path,
-    variables,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
 }
 
 export function getProjectById(id: number): Project | null {
@@ -698,45 +611,6 @@ export async function cleanOrphanFolder(folderPath: string): Promise<{ ok: boole
   await fs.rm(folderPath, { recursive: true, force: true });
   log.push(`\nDeleted ${folderPath}\n`);
   return { ok: true, log: log.join("") };
-}
-
-export function listProjectEnvFiles(projectId: number): ProjectEnvFile[] {
-  const rows = getDatabase()
-    .prepare("SELECT * FROM project_env_files WHERE project_id = ? ORDER BY relative_path ASC")
-    .all(projectId) as ProjectEnvFileRow[];
-  return rows.map(rowToEnvFile);
-}
-
-export function createProjectEnvFile(projectId: number, relativePath: string, variables: EnvVariable[]): ProjectEnvFile {
-  const now = new Date().toISOString();
-  const result = getDatabase()
-    .prepare(
-      "INSERT INTO project_env_files (project_id, relative_path, variables_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
-    )
-    .run(projectId, relativePath, JSON.stringify(variables), now, now);
-  const row = getDatabase()
-    .prepare("SELECT * FROM project_env_files WHERE id = ?")
-    .get(result.lastInsertRowid) as ProjectEnvFileRow;
-  return rowToEnvFile(row);
-}
-
-export function updateProjectEnvFile(id: number, projectId: number, relativePath: string, variables: EnvVariable[]): ProjectEnvFile | null {
-  const now = new Date().toISOString();
-  const result = getDatabase()
-    .prepare("UPDATE project_env_files SET relative_path = ?, variables_json = ?, updated_at = ? WHERE id = ? AND project_id = ?")
-    .run(relativePath, JSON.stringify(variables), now, id, projectId);
-  if (result.changes === 0) return null;
-  const row = getDatabase()
-    .prepare("SELECT * FROM project_env_files WHERE id = ? AND project_id = ?")
-    .get(id, projectId) as ProjectEnvFileRow;
-  return rowToEnvFile(row);
-}
-
-export function deleteProjectEnvFile(id: number, projectId: number): boolean {
-  const result = getDatabase()
-    .prepare("DELETE FROM project_env_files WHERE id = ? AND project_id = ?")
-    .run(id, projectId);
-  return result.changes > 0;
 }
 
 const BRANCH_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;

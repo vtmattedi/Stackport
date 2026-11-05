@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
-import { CONTAINER_REF_RE } from "../routes/system";
+import { CONTAINER_REF_RE } from "./containerRef";
 import { auditLog } from "../utils/logger";
 import { isSystemContainer } from "./systemResources";
 
@@ -77,9 +77,7 @@ export async function startSession(args: ShellStartArgs): Promise<ShellStartResu
 
   const { cols, rows } = sanitizeDims(args.cols, args.rows);
 
-  // Unprivileged, like every other docker call in system.ts: the app's
-  // system user is a member of the `docker` group (see init.sh), which
-  // grants direct socket access — no sudo involved.
+  // The entrypoint grants the app user access to the mounted Docker socket.
   // -e/--return propagates the wrapped command's exit code as script's own
   // (without it, script always exits 0 regardless of the child's status).
   const child = spawn("script", ["-qec", buildScriptCommand(args.containerId, cols, rows), "/dev/null"], {

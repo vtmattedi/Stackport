@@ -70,17 +70,15 @@ function rowToDetail(row: DeploymentRow): ProjectDeploymentDetail {
 }
 
 function pruneOldDeployments(projectId: number): void {
-  // Keeps the most recent RETENTION_LIMIT rows regardless of status — the active row
-  // (always recent, since it's the last insert) and the previous successful
-  // (superseded) row are naturally within that window in normal operation; this is a
-  // simple recency cap, not a semantic "protect active/previous" rule, matching the
-  // project_resource_samples retention pattern already used elsewhere.
+  // Failed attempts must not evict the running artifact or its default rollback
+  // target. These protected rows are additional to the recent-history budget.
+  const rollback = resolveRollbackTarget(projectId);
   getDatabase().prepare(`
     DELETE FROM project_deployments
-    WHERE project_id = ? AND id NOT IN (
+    WHERE project_id = ? AND status <> 'active' AND id <> ? AND id NOT IN (
       SELECT id FROM project_deployments WHERE project_id = ? ORDER BY id DESC LIMIT ?
     )
-  `).run(projectId, projectId, RETENTION_LIMIT);
+  `).run(projectId, rollback.ok ? rollback.target.id : 0, projectId, RETENTION_LIMIT);
 }
 
 export interface RecordDeploymentInput {

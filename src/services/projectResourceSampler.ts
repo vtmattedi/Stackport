@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { getDatabase } from "../config/database";
-import { expectedComposeProjectName, projectRepoDir } from "./projectDeploy";
+import { expectedComposeProjectName, projectRepoDir } from "./projectWorkspace";
 import { getContainerListCached, getContainerStatsCached } from "./dockerStatusCache";
 import { emitProjectResourceSample } from "./realtime";
 

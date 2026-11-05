@@ -1,3 +1,5 @@
+import { projectRepoDir } from "../services/projectWorkspace";
+import { createProjectEnvFile, deleteProjectEnvFile, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../services/projectEnvFiles";
 import { previewDeploy, previewRollback } from "../services/deployPreview";
 import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../config/database";
@@ -5,16 +7,14 @@ import { requireAuth } from "../middleware/auth";
 import { auditLog } from "../utils/logger";
 import { rowToProject, DEPLOY_TRIGGERS, type DeployTrigger, type ProjectRow } from "../entities/Project";
 import { clearPendingAutoDeploy } from "../services/autoDeploy";
-import { disableWebhook, enableWebhook, getWebhookDetails, moveWebhookIfRepoChanged, pingWebhook, reinstallWebhook, webhookBaseUrl } from "../services/githubWebhooks";
+import { disableWebhook, enableWebhook, getWebhookDetails, pingWebhook, reinstallWebhook, webhookBaseUrl } from "../services/githubWebhooks";
 import { healthChecker } from "../services/healthChecker";
-import { getNginxAppConfig, writeNginxConfig } from "../services/nginx/configWriter";
+import { writeNginxConfig } from "../services/nginx/configWriter";
 import { emitGlobalEvent, emitProjectDataUpdate } from "../services/realtime";
 import {
   buildProject,
   cleanOrphanFolder,
   composeProject,
-  createProjectEnvFile,
-  deleteProjectEnvFile,
   deployProject,
   ensureProjectProxyNetwork,
   getProjectById,
@@ -25,11 +25,7 @@ import {
   getProjectComposeFileContent,
   getProjectLogs,
   isValidBranchName,
-  listProjectEnvFiles,
-  normalizeEnvRelativePath,
-  parseEnvVariables,
   forceRebuildProject,
-  projectRepoDir,
   pullProject,
   recreateProject,
   renameProjectRepoFolder,
@@ -41,15 +37,14 @@ import {
   serviceExistsInCompose,
   stopProject,
   stopAndPurgeProject,
-  updateProjectEnvFile,
   validateComposeFileChoice,
 } from "../services/projectDeploy";
-import { getProjectBranches, resetGithubTrackingIfChanged } from "../services/githubPoller";
+import { getProjectBranches } from "../services/githubPoller";
 import { runCertbotAction } from "../services/certbot";
 import { actionRegistry, DEPLOY_KINDS_SQL, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../services/actionRegistry";
 import { deleteProjectActionLogs } from "../services/actionLog";
-import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "./projectResources";
-import { createProject as adminCreateProject, parseBoolean, parseDeployHealthGrace, parseProjectGroupName, ProjectAdminError } from "../services/projectAdmin";
+import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "../services/projectResources";
+import { createProject as adminCreateProject, updateProject, setProjectPaused as pauseProject, ProjectAdminError } from "../services/projectAdmin";
 import {
   addProjectDomain,
   attachDomains,
@@ -77,9 +72,6 @@ import {
 import multer from "multer";
 
 const router = Router();
-
-// Validate "owner/repo" format
-const GITHUB_REPO_RE = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
 function nginxFlowId(source: string, projectId?: number): string {
   return `${source}:${projectId ?? "all"}:${Date.now()}`;
@@ -142,15 +134,6 @@ async function runProjectNginxFlow(source: string, project: { id: number; name: 
       output: err instanceof Error ? err.message : String(err),
     });
   }
-}
-
-// Covers only fields that live on the projects row itself — domain add/remove/ssl
-// toggles go through the /:id/domains routes, which trigger their own nginx apply.
-function nginxFieldsChanged(existing: ProjectRow, next: { internalPort: number | null; nginxExtraConfig: string | null; nginxExtraBlocks: string | null }): boolean {
-  const routed = next.internalPort != null;
-  return existing.internal_port !== next.internalPort ||
-    (routed && (existing.nginx_extra_config ?? null) !== next.nginxExtraConfig) ||
-    (routed && (existing.nginx_extra_blocks ?? null) !== next.nginxExtraBlocks);
 }
 
 router.get("/", requireAuth, (_req: Request, res: Response): void => {
@@ -1223,197 +1206,17 @@ router.delete("/:id/action-logs", requireAuth, (req: Request<{ id: string }>, re
 router.patch("/:id", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
-
-  const db = getDatabase();
-  const existing = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
-  if (!existing) { res.status(404).json({ error: "Project not found" }); return; }
-
-  const { name, internalPort, healthCheckEndpoint, healthCheckDomainId, healthCheckIntervalS, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks } =
-    req.body as Record<string, unknown>;
-
-  const newName = typeof name === "string" && name.trim() ? name.trim().slice(0, 100) : existing.name;
-  let newGroupName = existing.group_name;
-  if (req.body.groupName !== undefined) {
-    try { newGroupName = parseProjectGroupName(req.body.groupName); }
-    catch (err) { res.status(400).json({ error: (err as Error).message }); return; }
+  let result;
+  try { result = updateProject(id, req.body as Record<string, unknown>, { compatibility: "http" }); }
+  catch (error) {
+    if (error instanceof ProjectAdminError) { res.status(error.statusCode).json({ error: error.message }); return; }
+    throw error;
   }
-  let newInternalPort = existing.internal_port;
-  if (internalPort !== undefined) {
-    if (internalPort === null || internalPort === "") {
-      newInternalPort = null;
-    } else {
-      const parsed = parseInternalPort(internalPort);
-      if (parsed === null) {
-        res.status(400).json({ error: "internalPort must be a TCP port from 1 to 65535" });
-        return;
-      }
-      newInternalPort = parsed;
-    }
-  }
-
-  let newHcEndpoint = existing.health_check_endpoint;
-  if (healthCheckEndpoint !== undefined) {
-    if (healthCheckEndpoint === null || healthCheckEndpoint === "") {
-      newHcEndpoint = null;
-    } else {
-      const parsed = parseHealthCheckEndpoint(healthCheckEndpoint);
-      if (parsed === null) {
-        res.status(400).json({ error: "healthCheckEndpoint must be a relative path like /health" });
-        return;
-      }
-      newHcEndpoint = parsed;
-    }
-  }
-  const newIntervalS = typeof healthCheckIntervalS === "number"
-    ? Math.max(0, Math.floor(healthCheckIntervalS))
-    : existing.health_check_interval_s;
-
-  let newHealthCheckDomainId = existing.health_check_domain_id;
-  if (healthCheckDomainId !== undefined) {
-    if (healthCheckDomainId === null || healthCheckDomainId === "") {
-      newHealthCheckDomainId = null;
-    } else {
-      const parsed = typeof healthCheckDomainId === "number" ? healthCheckDomainId : Number(healthCheckDomainId);
-      if (!Number.isInteger(parsed) || parsed < 1) {
-        res.status(400).json({ error: "healthCheckDomainId must be a positive integer or null" });
-        return;
-      }
-      if (!getProjectDomain(id, parsed)) {
-        res.status(400).json({ error: "Health check domain must belong to this project" });
-        return;
-      }
-      newHealthCheckDomainId = parsed;
-    }
-  }
-
-  let newGhRepo = existing.github_repo;
-  if (githubRepo !== undefined) {
-    const parsed = parseGithubRepo(githubRepo);
-    if (parsed === null && githubRepo !== null && githubRepo !== "") {
-      res.status(400).json({ error: "githubRepo must be in 'owner/repo' format or empty to clear" });
-      return;
-    }
-    newGhRepo = parsed;
-  }
-
-  let newCredId = existing.credential_id;
-  if (credentialId !== undefined) {
-    if (credentialId === null) {
-      newCredId = null;
-    } else {
-      const parsed = parseCredentialId(credentialId);
-      if (parsed === null) {
-        res.status(400).json({ error: "credentialId must be a positive integer or null to clear" });
-        return;
-      }
-      if (!db.prepare("SELECT id FROM credentials WHERE id = ?").get(parsed)) {
-        res.status(400).json({ error: "Credential not found" });
-        return;
-      }
-      newCredId = parsed;
-    }
-  }
-
-  let newGithubCredId = existing.github_credential_id;
-  if (githubCredentialId !== undefined) {
-    if (githubCredentialId === null) {
-      newGithubCredId = null;
-    } else {
-      const parsed = parseCredentialId(githubCredentialId);
-      if (parsed === null) {
-        res.status(400).json({ error: "githubCredentialId must be a positive integer or null to clear" });
-        return;
-      }
-      if (!db.prepare("SELECT id FROM credentials WHERE id = ? AND type = 'github'").get(parsed)) {
-        res.status(400).json({ error: "GitHub credential not found" });
-        return;
-      }
-      newGithubCredId = parsed;
-    }
-  }
-
-  let newAutoDeployBranch = existing.auto_deploy_branch ?? null;
-  if (autoDeployBranch !== undefined) {
-    newAutoDeployBranch = autoDeployBranch === null || autoDeployBranch === ""
-      ? null
-      : typeof autoDeployBranch === "string" ? autoDeployBranch.trim().slice(0, 255) : existing.auto_deploy_branch ?? null;
-  }
-
-  let newNginxExtraConfig = existing.nginx_extra_config ?? null;
-  if (nginxExtraConfig !== undefined) {
-    if (nginxExtraConfig === null || nginxExtraConfig === "") {
-      newNginxExtraConfig = null;
-    } else {
-      const parsed = parseNginxExtraConfig(nginxExtraConfig);
-      if (parsed === null) {
-        res.status(400).json({ error: `nginxExtraConfig must be a string of at most ${NGINX_EXTRA_CONFIG_MAX_LENGTH} characters` });
-        return;
-      }
-      newNginxExtraConfig = parsed;
-    }
-  }
-
-  let newNginxExtraBlocks = existing.nginx_extra_blocks ?? null;
-  if (nginxExtraBlocks !== undefined) {
-    if (nginxExtraBlocks === null || nginxExtraBlocks === "") {
-      newNginxExtraBlocks = null;
-    } else {
-      const parsed = parseNginxExtraBlocks(nginxExtraBlocks);
-      if (parsed === null) {
-        res.status(400).json({ error: `nginxExtraBlocks must be a string of at most ${NGINX_EXTRA_BLOCKS_MAX_LENGTH} characters` });
-        return;
-      }
-      newNginxExtraBlocks = parsed;
-    }
-  }
-
-  let newDeployHealthGraceS = existing.deploy_health_grace_s ?? 60;
-  let newAutoRollbackUnhealthy = !!existing.auto_rollback_unhealthy;
-  try {
-    if (req.body.deployHealthGraceS !== undefined) newDeployHealthGraceS = parseDeployHealthGrace(req.body.deployHealthGraceS);
-    if (req.body.autoRollbackUnhealthy !== undefined) newAutoRollbackUnhealthy = parseBoolean(req.body.autoRollbackUnhealthy, "autoRollbackUnhealthy");
-  } catch (err) {
-    res.status(400).json({ error: (err as Error).message });
-    return;
-  }
-
-  const appNginx = getNginxAppConfig();
-
-  if (newInternalPort !== null && db.prepare("SELECT id FROM projects WHERE internal_port = ? AND id <> ?").get(newInternalPort, id)) {
-    res.status(409).json({ error: "internalPort is already used by another project" });
-    return;
-  }
-  if (appNginx.enabled && newInternalPort === appNginx.port) {
-    res.status(409).json({ error: `internalPort ${appNginx.port} is reserved for StackPort while app Nginx publishing is enabled` });
-    return;
-  }
-
-  const now = new Date().toISOString();
-  db.prepare(
-    `UPDATE projects
-     SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_domain_id = ?, health_check_interval_s = ?,
-         deploy_health_grace_s = ?, auto_rollback_unhealthy = ?,
-         github_repo = ?, credential_id = ?, github_credential_id = ?,
-         auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
-     WHERE id = ?`
-  ).run(newName, newGroupName, newInternalPort, newHcEndpoint, newHealthCheckDomainId, newIntervalS, newDeployHealthGraceS, newAutoRollbackUnhealthy ? 1 : 0, newGhRepo, newCredId, newGithubCredId, newAutoDeployBranch, newNginxExtraConfig, newNginxExtraBlocks, now, id);
-  resetGithubTrackingIfChanged(db, id, existing, newGhRepo, newAutoDeployBranch);
-  moveWebhookIfRepoChanged(id, existing.github_repo, newGhRepo);
-
-  const updated = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow;
-  const project = rowToProject(updated);
+  const { project, nginxFieldsChanged } = result;
   healthChecker.schedule(project);
-  const shouldRebuildNginx = nginxFieldsChanged(existing, {
-    internalPort: newInternalPort,
-    nginxExtraConfig: newNginxExtraConfig,
-    nginxExtraBlocks: newNginxExtraBlocks,
-  });
-
   auditLog(req.user ?? "unknown", "project.update", project.name, "ok");
   res.json(project);
-  if (shouldRebuildNginx) {
-    void runProjectNginxFlow("project.update", project);
-  }
+  if (nginxFieldsChanged) void runProjectNginxFlow("project.update", project);
 });
 
 router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
@@ -1493,83 +1296,22 @@ router.post("/:id/check", requireAuth, async (req: Request<{ id: string }>, res:
 function setProjectPaused(req: Request<{ id: string }>, res: Response, paused: boolean): void {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
-
-  const db = getDatabase();
-  const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
-  if (!row) { res.status(404).json({ error: "Project not found" }); return; }
-  const now = new Date().toISOString();
-  db.prepare("UPDATE projects SET paused = ?, last_status = ?, updated_at = ? WHERE id = ?")
-    .run(paused ? 1 : 0, paused ? "unknown" : row.last_status, now, id);
+  let project;
+  try { project = pauseProject(id, paused); }
+  catch (error) {
+    if (error instanceof ProjectAdminError) { res.status(error.statusCode).json({ error: error.message }); return; }
+    throw error;
+  }
   if (paused) {
     healthChecker.unschedule(id);
     clearPendingAutoDeploy(id);
   } else {
-    const resumed = rowToProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow);
-    healthChecker.schedule(resumed);
+    healthChecker.schedule(project);
     healthChecker.check(id).catch(console.error);
   }
-  const updated = rowToProject(db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow);
-  auditLog(req.user ?? "unknown", paused ? "project.pause" : "project.resume", row.name, "ok");
-  res.json(updated);
-  void runProjectNginxFlow(paused ? "project.pause" : "project.resume", updated);
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function parseGithubRepo(v: unknown): string | null {
-  if (v === null || v === undefined || v === "") return null;
-  if (typeof v !== "string") return null;
-  const trimmed = v.trim();
-  if (trimmed === "") return null;
-  const normalized = trimmed
-    .replace(/^git@github\.com:/i, "")
-    .replace(/^https?:\/\/github\.com\//i, "")
-    .replace(/\.git$/i, "")
-    .replace(/\/+$/g, "");
-  return GITHUB_REPO_RE.test(normalized) ? normalized : null;
-}
-
-function parseCredentialId(v: unknown): number | null {
-  if (v === null || v === undefined) return null;
-  const n = typeof v === "number" ? v : parseInt(String(v), 10);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-function parseInternalPort(v: unknown): number | null {
-  const n = typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v.trim()) : NaN;
-  return Number.isInteger(n) && n > 0 && n <= 65535 ? n : null;
-}
-
-function parseHealthCheckEndpoint(v: unknown): string | null {
-  if (v === null || v === undefined || v === "") return null;
-  if (typeof v !== "string") return null;
-  const trimmed = v.trim();
-  if (trimmed === "") return null;
-  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return null;
-  try {
-    const parsed = new URL(`https://example.test${trimmed}`);
-    return `${parsed.pathname}${parsed.search}`;
-  } catch {
-    return null;
-  }
-}
-
-const NGINX_EXTRA_CONFIG_MAX_LENGTH = 4000;
-
-function parseNginxExtraConfig(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const normalized = v.replace(/\r\n/g, "\n").trim();
-  if (normalized === "" || normalized.length > NGINX_EXTRA_CONFIG_MAX_LENGTH) return null;
-  return normalized;
-}
-
-const NGINX_EXTRA_BLOCKS_MAX_LENGTH = 8000;
-
-function parseNginxExtraBlocks(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const normalized = v.replace(/\r\n/g, "\n").trim();
-  if (normalized === "" || normalized.length > NGINX_EXTRA_BLOCKS_MAX_LENGTH) return null;
-  return normalized;
+  auditLog(req.user ?? "unknown", paused ? "project.pause" : "project.resume", project.name, "ok");
+  res.json(project);
+  void runProjectNginxFlow(paused ? "project.pause" : "project.resume", project);
 }
 
 export default router;

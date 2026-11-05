@@ -5,14 +5,14 @@ import { getAppVersion } from "../services/appVersion";
 import { getContainerListCached } from "../services/dockerStatusCache";
 import { listProjectDeployments } from "../services/projectDeployments";
 import { listProjectDomains } from "../services/projectDomains";
-import { expectedComposeProjectName } from "../services/projectDeploy";
+import { expectedComposeProjectName } from "../services/projectWorkspace";
 
 /**
  * What the read-only MCP tools return. Every field is picked by name here, never by
  * spreading a database row or entity, so a column added later can't leak by accident.
  * Never included: anything stored encrypted, credential ids, env files (names or
  * values), nginx extra config, webhook slugs or secrets, build and action logs.
- * tests/mcpReadModel.test.ts checks the exact key sets.
+ * tests/mcpHttp.test.ts checks the exact key sets.
  */
 
 export interface ProjectSummaryView {

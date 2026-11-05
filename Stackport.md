@@ -62,6 +62,8 @@ Every successful `up` records a `project_deployments` row: the resolved git comm
 
 Without a `deploymentId`, the target is the newest earlier revision that differs from the running one and that no rollback has moved away from: a rollback marks the revision it replaces (`rolled_back_at`), so rolling back twice keeps going back instead of returning to the broken revision. A revision marked this way can still be restored explicitly. Revisions are ordered by id, since `created_at` has one-second resolution.
 
+Deployment history keeps the 20 newest attempts plus the active revision and default rollback target when those fall outside the recent window. Repeated blocked or failed attempts cannot evict these recovery artifacts. Project creation and its optional initial domain commit together; a rejected initial domain leaves no partially created project.
+
 Auto-deploys (poller and webhook) deploy the commit that triggered them, not whatever the branch tip is by the time the deploy starts. If that commit is no longer on the branch (for example after a force-push), the deploy fails with that reason; the new tip arrives as its own deploy.
 
 ### 1.7 Docker storage management

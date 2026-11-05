@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessByStdio } from "child_process";
 import type { Readable } from "stream";
-import { CONTAINER_REF_RE } from "../routes/system";
+import { CONTAINER_REF_RE } from "./containerRef";
 import { auditLog } from "../utils/logger";
 
 const MAX_TOTAL_SESSIONS = 20;
@@ -43,9 +43,8 @@ export function startStream(args: LogsStartArgs): LogsStartResult {
     return { ok: false, error: "Too many active log streams for your user" };
   }
 
-  // Unprivileged, like every other docker call in system.ts — the app's
-  // system user is in the `docker` group (see init.sh). No TTY needed for
-  // log streaming, so no `script` wrapper required here (unlike dockerShell.ts).
+  // The entrypoint grants the app user access to the mounted Docker socket.
+  // Log streaming needs no TTY, unlike dockerShell.ts.
   const child = spawn(
     "docker",
     ["logs", "-f", "--timestamps", "--tail", String(TAIL_LINES), args.containerId],

@@ -9,7 +9,8 @@ import { closeDatabase, getDatabase, initializeDatabase } from "../src/config/da
 import { decryptSecret, encryptSecret } from "../src/utils/crypto";
 import { issueAuthToken } from "../src/services/authTokens";
 import { deletePushSubscription, getPushConfig, listPushSubscriptions, savePushSubscription, sendWebPushNotification, updatePushConfig } from "../src/services/webPush";
-import { dispatchNotification, notifyDeployBlocked, notifyDeployUnhealthy, notifyHealthCheckFailure } from "../src/services/notificationService";
+import { dispatchNotification } from "../src/services/notificationService";
+import { deployBlockedEvent, healthFailureEvent } from "../src/services/notificationEvents";
 import { notifySelfUpdateOutcome } from "../src/services/selfUpdate";
 import type { StackportNotification } from "../src/services/notificationTypes";
 import { PushDeliveryWorker } from "../src/services/pushDeliveryWorker";
@@ -40,6 +41,11 @@ function subscription(suffix = "one") {
 const event = (): StackportNotification => ({ type: "health_check", severity: "error", title: "App is unhealthy",
   body: "Open Stackport for details.", projectId: 7, url: "/projects/7", createdAt: new Date().toISOString() });
 function enablePush(): void { updatePushConfig({ enabled: true, subject: "operator@example.com" }); }
+function enableEmail(): void {
+  const existing = getDatabase().prepare("SELECT id FROM credentials WHERE type='api_key' AND alias='notifications'").get() as { id: number } | undefined;
+  const credentialId = existing?.id ?? Number(getDatabase().prepare("INSERT INTO credentials (type, alias, secret_enc) VALUES ('api_key', 'notifications', ?)").run(encryptSecret("api-key")).lastInsertRowid);
+  getDatabase().prepare("INSERT INTO notification_config (id, enabled, provider, credential_id, from_address, to_address) VALUES (1, 1, 'mw', ?, 'from@example.com', 'to@example.com')").run(credentialId);
+}
 const sent = () => mock.method(webpush, "sendNotification", async () => ({ statusCode: 201, body: "", headers: {} }));
 async function api(route: string, method = "GET", body?: unknown, authenticated = true): Promise<Response> {
   return fetch(`${base}${route}`, { method, headers: { "content-type": "application/json", ...(authenticated ? { authorization: `Bearer ${token}` } : {}) },
@@ -145,8 +151,8 @@ test("authenticated resolution finds the current browser without exposing its ca
 test("push delivery works independently of email, and payloads contain no diagnostic secrets", async () => {
   enablePush(); savePushSubscription(subscription());
   const transport = sent();
-  await notifyDeployBlocked("my-app", "SECRET_ENV_VALUE", 7, "attempt-one");
-  await notifyHealthCheckFailure("my-app", "https://user:SECRET_PASSWORD@example.com/health", 12, 7, "health_check:7:episode");
+  await dispatchNotification(deployBlockedEvent("my-app", "SECRET_ENV_VALUE", 7, "attempt-one"));
+  await dispatchNotification(healthFailureEvent("my-app", "https://user:SECRET_PASSWORD@example.com/health", 12, 7, "health_check:7:episode"));
   assert.equal(transport.mock.calls.length, 0, "producers enqueue synchronously without HTTP");
   const events = getDatabase().prepare("SELECT payload_json FROM push_events").all() as { payload_json: string }[];
   assert.equal(events.length, 2);
@@ -206,37 +212,39 @@ test("temporary failures retain subscriptions, record failure time and allow oth
 });
 
 test("email keeps its existing delivery and log even when push fails", async () => {
-  const credential = getDatabase().prepare("INSERT INTO credentials (type, alias, secret_enc) VALUES ('api_key', 'notifications', ?)").run(encryptSecret("api-key"));
-  getDatabase().prepare("INSERT INTO notification_config (id, enabled, provider, credential_id, from_address, to_address) VALUES (1, 1, 'mw', ?, 'from@example.com', 'to@example.com')").run(credential.lastInsertRowid);
+  enableEmail();
   let emails = 0;
   mock.method(globalThis, "fetch", async () => { emails++; return new Response("{}", { status: 200 }); });
   enablePush(); savePushSubscription(subscription());
   mock.method(webpush, "sendNotification", async () => { throw new Error("offline"); });
-  await assert.doesNotReject(notifyDeployBlocked("app", "reason", 7, "email-attempt"));
+  await assert.doesNotReject(dispatchNotification(deployBlockedEvent("app", "reason", 7, "email-attempt")));
   await new PushDeliveryWorker().poll();
   assert.equal(emails, 1);
   assert.deepEqual(getDatabase().prepare("SELECT channel, result FROM notification_logs ORDER BY channel").all(),
     [{ channel: "email", result: "ok" }, { channel: "web_push", result: "error" }]);
 });
 
-test("dispatcher isolates failures in either channel", async () => {
-  const delivered: string[] = [];
-  await assert.doesNotReject(dispatchNotification(event(), {
-    email: async () => { throw new Error("email down"); }, push: async () => { delivered.push("push"); },
-  }));
-  await assert.doesNotReject(dispatchNotification(event(), {
-    email: async () => { delivered.push("email"); }, push: async () => { throw new Error("push down"); },
-  }));
-  assert.deepEqual(delivered, ["push", "email"]);
+test("email failure cannot discard committed push work", async () => {
+  enableEmail(); enablePush(); savePushSubscription(subscription()); sent();
+  mock.method(globalThis, "fetch", async () => { throw new Error("email unavailable"); });
+  await assert.doesNotReject(dispatchNotification(deployBlockedEvent("app", "reason", 7, "email-down")));
+  await new PushDeliveryWorker().poll();
+  assert.deepEqual(getDatabase().prepare("SELECT channel,result FROM notification_logs ORDER BY channel").all(),
+    [{ channel: "email", result: "error" }, { channel: "web_push", result: "ok" }]);
 });
 
-test("failed automatic rollback emits its own configurable event", async () => {
-  enablePush(); savePushSubscription(subscription());
-  const transport = sent();
-  await notifyDeployUnhealthy("app", "abc123", "https://example.com/health", "failed", 7, "operation-one");
-  await new PushDeliveryWorker().poll();
-  assert.equal(transport.mock.calls.length, 2);
-  assert.match(String(transport.mock.calls[1].arguments[1]), /rollback failed/);
+test("failed standalone enqueue sends no fallback email", async () => {
+  enableEmail(); enablePush(); savePushSubscription(subscription());
+  let emails = 0;
+  mock.method(globalThis, "fetch", async () => { emails++; return new Response("{}"); });
+  const db = getDatabase();
+  db.exec("CREATE TEMP TRIGGER dispatch_fail BEFORE INSERT ON push_deliveries BEGIN SELECT RAISE(ABORT,'enqueue failed'); END");
+  try {
+    await assert.rejects(dispatchNotification(deployBlockedEvent("app", "reason", 7, "enqueue-failed")), /enqueue failed/);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(emails, 0);
+    assert.equal(db.prepare("SELECT id FROM push_events").get(), undefined);
+  } finally { db.exec("DROP TRIGGER dispatch_fail"); }
 });
 
 test("update failure delivery is deduplicated across polling and restarts and excludes updater logs", async () => {

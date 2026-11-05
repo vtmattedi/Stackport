@@ -5,7 +5,7 @@ import { logger } from "../utils/logger";
 import type Database from "better-sqlite3";
 import type { DurablePushEvent, StackportNotification } from "./notificationTypes";
 import { enqueuePushEvent, enqueuePushEventTx } from "./pushOutbox";
-import { healthFailureEvent, deployBlockedEvent, deployUnhealthyEvent, rollbackFailedEvent, systemUpdateFailedEvent, type DeployRollbackOutcome } from "./notificationEvents";
+import { systemUpdateFailedEvent } from "./notificationEvents";
 export type { DeployRollbackOutcome } from "./notificationEvents";
 
 interface NotificationConfigRow {
@@ -16,8 +16,7 @@ interface NotificationConfigRow {
   to_address: string;
 }
 
-/** Sends one alert email when notifications are enabled and configured, and records
- *  the outcome in notification_logs. Never throws: a failed send is logged. */
+/** Sends one configured email and records the outcome; the public wrapper contains failures. */
 async function sendEmailNotification(event: StackportNotification): Promise<void> {
   if (!event.email) return;
   const { type: eventType, projectName, email: { subject, html } } = event;
@@ -68,29 +67,9 @@ export async function sendNotificationEmail(event: StackportNotification): Promi
 
 /** Synchronous persistence precedes external effects; SQLite failures remain visible.
  *  Domain producers use enqueueNotificationTx inside their own state transaction. */
-export async function dispatchNotification(event: StackportNotification,
-  channels?: { email: (event: StackportNotification) => Promise<void>; push: (event: StackportNotification) => Promise<void> }): Promise<void> {
-  if (channels) {
-    await Promise.all(Object.values(channels).map(async (send) => { try { await send(event); } catch { /* independent best-effort channels */ } }));
-    return;
-  }
-  try { enqueuePushEvent(getDatabase(), durable(event)); }
-  catch (error) { void sendNotificationEmail(event); logger.error({ eventType: event.type }, "notification.enqueue-failed"); throw error; }
+export async function dispatchNotification(event: StackportNotification): Promise<void> {
+  enqueuePushEvent(getDatabase(), durable(event));
   await sendNotificationEmail(event);
-}
-
-export function notifyHealthCheckFailure(name: string, url: string, responseMs: number | null, projectId: number, incidentKey: string): Promise<void> {
-  return dispatchNotification(healthFailureEvent(name, url, responseMs, projectId, incidentKey));
-}
-
-export function notifyDeployBlocked(name: string, reason: string, projectId: number, attemptId: string | number): Promise<void> {
-  return dispatchNotification(deployBlockedEvent(name, reason, projectId, attemptId));
-}
-
-export async function notifyDeployUnhealthy(name: string, commit: string | null, url: string, rollback: DeployRollbackOutcome,
-  projectId: number, operationId: string): Promise<void> {
-  await dispatchNotification(deployUnhealthyEvent(name, commit, url, rollback, projectId, operationId));
-  if (rollback === "failed") await dispatchNotification(rollbackFailedEvent(name, projectId, operationId));
 }
 
 export function notifySystemUpdateFailed(operationId: string, outcome: "failed" | "rolled-back" = "failed"): Promise<void> {
