@@ -449,7 +449,7 @@ revision picker itself shipped in PR 1.
 
 **Shipped notes:**
 - `GET /api/projects/:id/deploy-preview?branch=` and `/rollback-preview?deploymentId=`
-  (`services/deployPreview.ts`). Read-only: nothing touches the checkout, so a preview
+  (`modules/deployments/preview.ts`). Read-only: nothing touches the checkout, so a preview
   works while another action holds the project.
 - Commits come from GitHub's compare API with the project's token: added and removed
   commits (the newest 50 of each, with totals), and whether the two have diverged.
@@ -461,7 +461,7 @@ revision picker itself shipped in PR 1.
   dialog; the deploy or rollback can still be confirmed.
 - Redeploy now asks for confirmation, with the preview. Roll back and Restore show it
   in their existing confirmation. `ConfirmDialog` gained a `body` slot.
-- Line diff in `services/textDiff.ts` (LCS after trimming the common start and end;
+- Line diff in `shared/textDiff.ts` (LCS after trimming the common start and end;
   reports "too large" past 4M cells instead of running long).
 
 ### PR 19 — Clear policy-violation display (U4, part) ✅
@@ -535,7 +535,7 @@ automatic cleanup never act (regression); network was never collected.
 - No host agent: nothing here changes the host. (`docs/deprecated/` is dropped.)
 
 **Shipped notes:**
-- `services/hostInfo.ts`: hostname, network totals (interfaces with a `device` link;
+- `modules/observability/hostInfo.ts`: hostname, network totals (interfaces with a `device` link;
   by name if none has one), disk space. Paths from `HOST_SYS_PATH`,
   `HOST_DOCKER_ROOT_PATH`, `HOST_HOSTNAME_PATH` (defaults `/host/...`).
 - The free-space check tries the mount first and no longer needs `docker info` to

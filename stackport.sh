@@ -249,7 +249,7 @@ ensure_directories() {
   mkdir -p "$ETC_DIR"
   mkdir -p "$VAR_DIR/data" "$VAR_DIR/logs" "$VAR_DIR/nginx" "$VAR_DIR/backups" "$VAR_DIR/update"
   # Matches the exact path CERTBOT_WEBROOT_PATH is hardcoded to in
-  # src/services/nginx/configWriter.ts — must stay in sync with that constant.
+  # src/modules/ingress/nginx/configWriter.ts — must stay in sync with that constant.
   mkdir -p "$VAR_DIR/certbot-webroot"
   # Standard system certbot/Let's Encrypt path (not under $VAR_DIR) — chosen in
   # Phase 1.6 so certs stay interoperable with any host-native certbot tooling,
@@ -317,7 +317,7 @@ load_secrets() {
 # token even for a first, non-interactive clone — see pull_stackport. Uses an
 # extra header rather than embedding the token in the URL so it never shows up in
 # `git remote -v` or a `ps aux` listing of the running git command, matching the
-# Basic-auth-over-header pattern src/services/projectDeploy.ts's gitAuthHeader()
+# Basic-auth-over-header pattern src/modules/deployments/operations.ts's gitAuthHeader()
 # already uses for managed projects' own private-repo credentials.
 git_auth_args() {
   GIT_AUTH_ARGS=()
@@ -336,14 +336,14 @@ ensure_secrets() {
   generate_secret_if_missing "WEBHOOK_SECRET"
 
   # Bootstrap password: generated once, here, by bash — the app only ever consumes
-  # it (services/installation.ts's ensureBootstrapCredential), it never invents or
+  # it (modules/identity/installation.ts's ensureBootstrapCredential), it never invents or
   # reveals one itself. Matches stackport_host_lifecycle.md §5.1's own example
   # almost exactly (openssl rand | base32, ~80 bits). Skipped if already present
   # (idempotent — never regenerate a live bootstrap credential on rerun).
   if ! grep -q '^ADMIN_BOOTSTRAP_PASSWORD=' "$SECRETS_ENV_FILE" 2>/dev/null; then
     local bootstrap_password
     # Dash-grouped in 5-char blocks to match the format
-    # services/installation.ts's generateSetupPassword() uses for recovery
+    # modules/identity/installation.ts's generateSetupPassword() uses for recovery
     # credentials (cli/adminRecovery.ts) — same entropy, consistent look either way.
     bootstrap_password="$(openssl rand 10 | base32 | tr -d '=' | sed -E 's/.{5}/&-/g; s/-$//')"
     {
@@ -1003,7 +1003,7 @@ uninstall_stackport() {
   if [[ "$purge" == "--purge" ]]; then
     log "removing $ETC_DIR and $VAR_DIR"
     rm -rf "$ETC_DIR" "$VAR_DIR"
-    # The self-signed bootstrap cert (src/services/nginx/selfSignedCert.ts) lives
+    # The self-signed bootstrap cert (src/modules/ingress/nginx/selfSignedCert.ts) lives
     # under /etc/letsencrypt rather than $VAR_DIR, so the line above misses it. Only
     # this StackPort-owned subdirectory goes — /etc/letsencrypt itself is left alone,
     # since real Let's Encrypt certs there stay usable by any host-native certbot.

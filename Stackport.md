@@ -8,9 +8,12 @@ StackPort itself runs entirely in Docker. There is no host-installed nginx, Cert
 
 ## 1. Architecture
 
+The backend uses [capability-owned modules](docs/backend-modules.md). Implementations
+live at their canonical module paths; the former `src/services` directory has been removed.
+
 ### 1.1 System plane vs. workload plane
 
-Everything StackPort itself needs to run — its own container, its own nginx, its own network — lives in one pinned Docker Compose project named `stackport` (`docker-compose.system.yml`). Every project an operator deploys through StackPort is a **separate** Compose project, isolated from the system plane and from each other. `src/services/systemResources.ts` draws this line by checking a container's `com.docker.compose.project` label — "system" is exactly the containers belonging to the `stackport` project, everything else is a managed workload.
+Everything StackPort itself needs to run — its own container, its own nginx, its own network — lives in one pinned Docker Compose project named `stackport` (`docker-compose.system.yml`). Every project an operator deploys through StackPort is a **separate** Compose project, isolated from the system plane and from each other. `src/integrations/docker/systemResources.ts` draws this line by checking a container's `com.docker.compose.project` label — "system" is exactly the containers belonging to the `stackport` project, everything else is a managed workload.
 
 ```
 Host OS
@@ -29,13 +32,13 @@ Host OS
 
 ### 1.2 Networking — no host ports for managed apps
 
-Managed projects never publish a host port. `docker-compose.system.yml` declares a shared bridge network, `stackport-proxy`; the `stackport` app and `stackport-nginx` both join it, and every project's compose file gets an **ephemeral, never-committed** rewrite (`src/services/composeNetworking.ts`) adding `networks: [default, stackport-proxy]` to whichever service(s) a domain is routed to. Nginx reaches a project by Docker DNS service name over that network (`http://<service>:<containerPort>`), not `127.0.0.1:<port>`.
+Managed projects never publish a host port. `docker-compose.system.yml` declares a shared bridge network, `stackport-proxy`; the `stackport` app and `stackport-nginx` both join it, and every project's compose file gets an **ephemeral, never-committed** rewrite (`src/modules/deployments/compose/networking.ts`) adding `networks: [default, stackport-proxy]` to whichever service(s) a domain is routed to. Nginx reaches a project by Docker DNS service name over that network (`http://<service>:<containerPort>`), not `127.0.0.1:<port>`.
 
-`docker-compose.system.yml`'s `nginx` service publishes the public HTTP/HTTPS ports (the app port is bound only to host loopback) — `80:80` and `443:443`. A managed project's compose file that includes a `ports:` entry (any form) or `network_mode: host` is **rejected outright** by `src/services/composePolicy.ts` at deploy time, with an actionable error pointing at `expose:` instead. This is a hard, fail-closed invariant, not a default that can be silently bypassed: StackPort decides what the host exposes publicly, not the application being deployed.
+`docker-compose.system.yml`'s `nginx` service publishes the public HTTP/HTTPS ports (the app port is bound only to host loopback) — `80:80` and `443:443`. A managed project's compose file that includes a `ports:` entry (any form) or `network_mode: host` is **rejected outright** by `src/modules/deployments/compose/policy.ts` at deploy time, with an actionable error pointing at `expose:` instead. This is a hard, fail-closed invariant, not a default that can be silently bypassed: StackPort decides what the host exposes publicly, not the application being deployed.
 
 ### 1.3 Domain routing model
 
-A domain doesn't route to "a project" — it routes to a specific `(service, container_port)` pair within that project's compose file (`project_domains.service` / `project_domains.container_port`). One project can have several domains, each pointing at a different service if it needs to (e.g. a public web frontend on one domain, an admin API on another). `src/services/nginx/configWriter.ts`'s `generateNginxConfig()` builds one nginx server block per routed domain, proxying to `http://<service>:<containerPort>` — see `docs/deprecated/stackport_yml.md` for the original design rationale.
+A domain doesn't route to "a project" — it routes to a specific `(service, container_port)` pair within that project's compose file (`project_domains.service` / `project_domains.container_port`). One project can have several domains, each pointing at a different service if it needs to (e.g. a public web frontend on one domain, an admin API on another). `src/modules/ingress/nginx/configWriter.ts`'s `generateNginxConfig()` builds one nginx server block per routed domain, proxying to `http://<service>:<containerPort>` — see `docs/deprecated/stackport_yml.md` for the original design rationale.
 
 ### 1.4 Compose security policy
 
@@ -68,7 +71,7 @@ Auto-deploys (poller and webhook) deploy the commit that triggered them, not wha
 
 ### 1.7 Docker storage management
 
-Unbounded image/build-cache growth on a long-running host is a real failure mode, so StackPort manages it actively (`src/services/dockerStorage.ts`, `dockerStorageMonitor.ts`):
+Unbounded image/build-cache growth on a long-running host is a real failure mode, so StackPort manages it actively (`src/modules/maintenance/storage/operations.ts`, `src/modules/maintenance/storage/monitor.ts`):
 
 - A background monitor (`certbotRenewalMonitor.ts`) sweeps temporary Certbot containers daily and reloads nginx after successful renewal.
 - A pre-build disk-pressure guard runs before every build — if free space is critically low, the build is blocked with a clear message rather than being allowed to run the host out of disk mid-build.
@@ -186,7 +189,7 @@ StackPort owns one generated file, `<NGINX_PATH>/sites-available/default`, rebui
 
 ### 5.3 HTTPS with no domain — self-signed bootstrap
 
-A raw-IP install (§2 step 3, blank domain) still needs HTTPS for the very first login. `src/services/appIngress.ts`'s `ensureAppIngress()` runs once at boot: if no app domain is configured and no domain was supplied, it generates a long-lived self-signed certificate (`src/services/nginx/selfSignedCert.ts`, via an ephemeral `docker run` since the app's own `/etc/letsencrypt` mount is deliberately read-only) and nginx serves it as the HTTPS `default_server` — reachable at `https://<server-ip>/` with a browser trust warning, but encrypted. The moment a real app domain is configured (via System → Nginx, or `STACKPORT_DOMAIN` at install time), StackPort automatically runs the same three-stage HTTP→issue→HTTPS flow used for projects (below) and the self-signed fallback is superseded — no manual cleanup needed.
+A raw-IP install (§2 step 3, blank domain) still needs HTTPS for the very first login. `src/modules/ingress/bootstrap.ts`'s `ensureAppIngress()` runs once at boot: if no app domain is configured and no domain was supplied, it generates a long-lived self-signed certificate (`src/modules/ingress/nginx/selfSignedCert.ts`, via an ephemeral `docker run` since the app's own `/etc/letsencrypt` mount is deliberately read-only) and nginx serves it as the HTTPS `default_server` — reachable at `https://<server-ip>/` with a browser trust warning, but encrypted. The moment a real app domain is configured (via System → Nginx, or `STACKPORT_DOMAIN` at install time), StackPort automatically runs the same three-stage HTTP→issue→HTTPS flow used for projects (below) and the self-signed fallback is superseded — no manual cleanup needed.
 
 ### 5.4 Per-project SSL issuance
 
@@ -316,7 +319,7 @@ The application checkout (`/var/lib/stackport/app`) is disposable and rebuildabl
 
 ## 10. Actions and their logs
 
-Every action (deploys, pulls, rollbacks, stops, SSL issuance, nginx applies, certbot runs, Docker prunes) goes through one runner, `src/services/actionRegistry.ts`, which allows one action per slot (a project's build/deploy slot, each domain's SSL slot, nginx, ...).
+Every action (deploys, pulls, rollbacks, stops, SSL issuance, nginx applies, certbot runs, Docker prunes) goes through one runner, `src/modules/actions/registry.ts`, which allows one action per slot (a project's build/deploy slot, each domain's SSL slot, nginx, ...).
 
 - **History:** each run is a row in the `actions` table: kind, project, status (`running`, `success`, `failed`, `cancelled`, `interrupted`), who or what triggered it, the commit and branch for deploy-type actions, and start and end times. Rows still `running` when Stackport starts are marked `interrupted`: their processes died with the previous Stackport process. This table is also the deploy log behind Insights and "Recent deploys", replacing `project_deploys` (whose rows were copied in once; the table is kept, unwritten, for `stackport rollback`).
 - **Output:** numbered chunks, sent every 100 ms to clients that attach over the socket (`action:attach {id, fromSeq}` replays and then streams), and appended to `<LOG_DIR>/actions/<id>.log`. Actions that don't stream (nginx, certbot, SSL, prune) store their final output. `GET /api/actions/:id/log` returns a stored log; `GET /api/actions/running` lists running actions.

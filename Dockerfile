@@ -28,7 +28,7 @@ ENV NODE_ENV=production
 # StackPort shells out to `docker`/`docker compose` (to run managed projects against
 # the host daemon via the mounted socket), `git` (repo clone/fetch/pull), and (Phase
 # 1.6) `openssl` directly for certificate expiry/issuer reads against the bind-mounted
-# /etc/letsencrypt — see docs/dockerization/BASELINE.md §6, src/services/certbot.ts.
+# /etc/letsencrypt — see docs/dockerization/BASELINE.md §6, src/modules/ingress/certificates/operations.ts.
 # `gosu` is used by docker-entrypoint.sh to drop from root (needed once at startup to
 # align with the mounted docker.sock's GID) back to the unprivileged `node` user
 # before the app actually runs.

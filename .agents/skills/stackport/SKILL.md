@@ -26,7 +26,7 @@ Stackport deploys one GitHub repository (or a manually uploaded Compose file plu
 
 ## Compose Requirements
 
-Current GitHub project discovery scans only top-level `.yml`/`.yaml` files in the repository checkout (`scanComposeFiles` in `src/services/projectDeploy.ts`). It does not recursively discover a Compose file in a subdirectory. This is a current implementation constraint, not a requirement that the application source code or Dockerfile live at the repository root. If your existing Compose file is nested, use a minimal root-level Stackport Compose file with correct build contexts, or explicitly discuss the limitation with the operator; do not silently move project files. Example:
+Current GitHub project discovery scans only top-level `.yml`/`.yaml` files in the repository checkout (`scanComposeFiles` in `src/modules/deployments/operations.ts`). It does not recursively discover a Compose file in a subdirectory. This is a current implementation constraint, not a requirement that the application source code or Dockerfile live at the repository root. If your existing Compose file is nested, use a minimal root-level Stackport Compose file with correct build contexts, or explicitly discuss the limitation with the operator; do not silently move project files. Example:
 
 ```yaml
 services:
@@ -39,7 +39,7 @@ services:
       - "3000"
 ```
 
-GitHub projects may select any top-level `.yml`/`.yaml` file; current default selection priority is `docker-compose.stackport.yml`, then `docker-compose.yml`, then the alphabetically first top-level YAML file. This behavior is verified in `src/services/projectDeploy.ts` and may change; inspect the deployed version if file selection is critical. Manual upload requires `docker-compose.yml` or `docker-compose.yaml` and accepts up to 30 small support files (5 MiB maximum per file), preserving their safe relative paths.
+GitHub projects may select any top-level `.yml`/`.yaml` file; current default selection priority is `docker-compose.stackport.yml`, then `docker-compose.yml`, then the alphabetically first top-level YAML file. This behavior is verified in `src/modules/deployments/operations.ts` and may change; inspect the deployed version if file selection is critical. Manual upload requires `docker-compose.yml` or `docker-compose.yaml` and accepts up to 30 small support files (5 MiB maximum per file), preserving their safe relative paths.
 
 Web entrypoints normally serve plain HTTP on their exposed container port. Stackport's nginx handles public HTTPS and certificate renewal, and reaches the selected service over Stackport's internal Docker network — not by any host-published port.
 
