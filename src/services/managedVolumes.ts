@@ -1,0 +1,138 @@
+import * as path from "path";
+import { dumpYamlDoc } from "./composeYaml";
+import { relativeInside, rebasePath } from "../utils/hostPath";
+
+/**
+ * Stackport-owned mount directories (S2).
+ *
+ * Stackport runs `docker compose` inside its own container, so a relative bind such as
+ * `./data` resolves to a path in that container, which the host's Docker daemon then
+ * reads as a host path. Instead, every bind mount that points into the project's
+ * checkout is planned here from the resolved Compose config and re-written, through a
+ * generated override file, to a host path Stackport knows:
+ *
+ *  - a writable directory becomes a managed directory, `<data>/volumes/<project>/<name>`,
+ *    that Stackport creates and owns;
+ *  - a read-only mount (config files from the repository) keeps pointing into the
+ *    checkout, with its path translated to the host's;
+ *  - what cannot move (a file, or the whole checkout mounted writable) also keeps its
+ *    place, translated, and is reported so an admin can look at it.
+ */
+
+export interface VolumeRoots {
+  /** Stackport's data directory as this process sees it (`/app/data` in the container). */
+  containerDataRoot: string;
+  /** The same directory on the host, which is what the Docker daemon needs. */
+  hostDataRoot: string;
+}
+
+export type MountAction = "managed" | "repository" | "keep";
+
+export interface MountPlanEntry {
+  service: string;
+  target: string;
+  /** The bind source exactly as `docker compose config` resolved it. */
+  source: string;
+  readOnly: boolean;
+  action: MountAction;
+  /** The source on the host, which is what the override will use for a non-managed mount. */
+  hostSource: string;
+  /** Managed mounts: the directory's name and where it lives (as Stackport and as the host see it). */
+  name?: string;
+  managedContainerPath?: string;
+  managedHostPath?: string;
+  /** Why a mount could not be moved. */
+  reason?: string;
+}
+
+export interface PlanOptions {
+  projectId: number;
+  /** The project's checkout as this process sees it. */
+  projectDir: string;
+  roots: VolumeRoots;
+  /** Whether `source` is a file; a file cannot be replaced by a directory. */
+  isFile: (source: string) => boolean;
+}
+
+/** Where managed directories live, as Stackport sees it. */
+export function managedVolumesRoot(roots: VolumeRoots, projectId: number): { container: string; host: string } {
+  return {
+    container: path.posix.join(toPosix(roots.containerDataRoot), "volumes", String(projectId)),
+    host: path.posix.join(toPosix(roots.hostDataRoot), "volumes", String(projectId)),
+  };
+}
+
+function toPosix(value: string): string {
+  return /^[A-Za-z]:[\\/]/.test(value) ? value.replace(/\\/g, "/") : value;
+}
+
+/** A directory name for a mount source, from its path inside the checkout. */
+function managedName(relative: string): string {
+  return relative.split(/[\\/]/).filter(Boolean).join("-").replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+/** Reads the bind mounts of a resolved config that point into the project checkout and
+ *  decides what to do with each. Mounts outside the checkout are the compose policy's
+ *  business and are not planned here. */
+export function planManagedVolumes(resolved: unknown, options: PlanOptions): MountPlanEntry[] {
+  const services = (resolved as { services?: Record<string, { volumes?: unknown }> } | null)?.services ?? {};
+  const roots = managedVolumesRoot(options.roots, options.projectId);
+  const nameBySource = new Map<string, string>();
+  const takenNames = new Set<string>();
+  const plan: MountPlanEntry[] = [];
+
+  for (const [service, definition] of Object.entries(services)) {
+    if (!Array.isArray(definition?.volumes)) continue;
+    for (const entry of definition.volumes) {
+      const mount = entry as { type?: string; source?: string; target?: string; read_only?: boolean };
+      if (mount?.type !== "bind" || typeof mount.source !== "string" || typeof mount.target !== "string") continue;
+      const relative = relativeInside(mount.source, options.projectDir);
+      if (relative === null) continue;
+
+      const base = {
+        service, target: mount.target, source: mount.source, readOnly: mount.read_only === true,
+        hostSource: rebasePath(mount.source, options.roots.containerDataRoot, options.roots.hostDataRoot),
+      };
+      if (base.readOnly) { plan.push({ ...base, action: "repository" }); continue; }
+      if (relative === "") {
+        plan.push({ ...base, action: "keep", reason: "mounts the whole checkout writable" });
+        continue;
+      }
+      if (options.isFile(mount.source)) {
+        plan.push({ ...base, action: "keep", reason: "is a file, which cannot be replaced by a directory" });
+        continue;
+      }
+
+      let name = nameBySource.get(mount.source);
+      if (!name) {
+        const wanted = managedName(relative) || "data";
+        name = wanted;
+        for (let n = 2; takenNames.has(name); n += 1) name = `${wanted}-${n}`;
+        nameBySource.set(mount.source, name);
+        takenNames.add(name);
+      }
+      plan.push({
+        ...base, action: "managed", name,
+        managedContainerPath: path.posix.join(roots.container, name),
+        managedHostPath: path.posix.join(roots.host, name),
+      });
+    }
+  }
+  return plan;
+}
+
+/** The Compose override that points each planned mount at its host path. Compose merges
+ *  an override's `volumes` with the base file by container path, so only the sources
+ *  change. Returns null when there is nothing to override. */
+export function buildVolumesOverride(plan: MountPlanEntry[]): string | null {
+  const services: Record<string, { volumes: unknown[] }> = {};
+  for (const entry of plan) {
+    (services[entry.service] ??= { volumes: [] }).volumes.push({
+      type: "bind",
+      source: entry.action === "managed" ? entry.managedHostPath : entry.hostSource,
+      target: entry.target,
+      ...(entry.readOnly ? { read_only: true } : {}),
+    });
+  }
+  return plan.length ? dumpYamlDoc({ services }) : null;
+}
