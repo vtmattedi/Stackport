@@ -120,3 +120,24 @@ test("e: security_opt that switches confinement off is refused", () => {
 test("e: sharing the host's user, UTS or cgroup namespace is refused", () => {
   assert.deepEqual(keys(resolvedWith({ userns_mode: "host", uts: "host", cgroup: "host" })), ["web.userns_mode", "web.uts", "web.cgroup"]);
 });
+
+test("f: a build context outside the project folder is refused", () => {
+  assert.deepEqual(keys(resolvedWith({ build: { context: "/", dockerfile: "Dockerfile" } })), ["web.build"]);
+  assert.deepEqual(keys(resolvedWith({ build: { context: "/srv/stackport", dockerfile: "Dockerfile" } })), ["web.build"]);
+});
+
+test("f: contexts inside the project, and remote contexts, pass", () => {
+  assert.deepEqual(keys(resolvedWith({ build: { context: "/srv/stackport/7-app/api", dockerfile: "Dockerfile" } })), []);
+  assert.deepEqual(keys(resolvedWith({ build: { context: "https://github.com/acme/app.git#main" } })), []);
+});
+
+test("f: an additional build context is held to the same rule", () => {
+  const doc = resolvedWith({ build: { context: "/srv/stackport/7-app", additional_contexts: { secrets: "/etc", base: "docker-image://alpine", lib: "service:other" } } });
+  const [v] = validateResolvedComposePolicy(doc, POSIX).violations;
+  assert.match(v.problem, /additional_contexts\.secrets "\/etc"/);
+  assert.equal(validateResolvedComposePolicy(doc, POSIX).violations.length, 1);
+});
+
+test("f: a Windows host path is recognised as a local build context", () => {
+  assert.deepEqual(keys(resolvedWith({ build: { context: "C:\\Windows" } })), ["web.build"]);
+});

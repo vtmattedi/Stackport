@@ -165,6 +165,29 @@ function checkResolvedVolumes(name: string, service: Record<string, unknown>, co
   }
 }
 
+/** A path on the host, as opposed to a URL, `service:name` or `docker-image://` reference. */
+function isLocalPath(value: string): boolean {
+  return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+/** The build context, and any additional contexts, must be inside the project folder:
+ *  a build can read every file in its context and copy it into the image (f, S1). A
+ *  remote (git or http) context is not a host path and is left alone. */
+function checkResolvedBuild(name: string, service: Record<string, unknown>, context: ResolvedPolicyContext, add: Add): void {
+  const build = asRecord(service["build"]);
+  if (!build) return;
+  const contexts: [string, string][] = [];
+  if (typeof build["context"] === "string") contexts.push(["build.context", build["context"]]);
+  for (const [alias, value] of Object.entries(asRecord(build["additional_contexts"]) ?? {})) {
+    if (typeof value === "string") contexts.push([`build.additional_contexts.${alias}`, value]);
+  }
+  for (const [label, value] of contexts) {
+    if (isLocalPath(value) && !isInsideDir(value, context.projectDir)) {
+      add(name, "build", `${label} "${value}" is outside the project folder.`, "Use a context inside the project folder, such as \".\".");
+    }
+  }
+}
+
 /** Capabilities a service may add. These are the ones ordinary servers need; each of
  *  the rest (SYS_PTRACE, SYS_MODULE, SYS_RAWIO, DAC_READ_SEARCH, BPF, ...) lets a
  *  container read or change what belongs to the host (e, S1). */
@@ -247,6 +270,7 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
     if (!service) continue;
     checkResolvedVolumes(name, service, context, add);
     checkResolvedHardening(name, service, add);
+    checkResolvedBuild(name, service, context, add);
   }
   checkTopLevelVolumes(asRecord(asRecord(resolved)?.["volumes"]), add);
   // The denylist already flags dangerous host paths; keep one violation per mount.
