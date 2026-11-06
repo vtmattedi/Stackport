@@ -2,6 +2,12 @@ import dotenv from "dotenv";
 
 dotenv.config({ quiet: true });
 
+/** A positive number from the environment, or the fallback when unset or invalid. */
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function require_env(key: string): string {
   const value = process.env[key];
   if (!value) {
@@ -14,7 +20,9 @@ export const config = {
   port: parseInt(process.env["PORT"] ?? "3000", 10),
   nodeEnv: process.env["NODE_ENV"] ?? "development",
   jwtSecret: require_env("JWT_SECRET"),
-  jwtExpiry: process.env["JWT_EXPIRY"] ?? "7d",
+  // A session ends after this long without use, and in any case this long after login (S6).
+  sessionIdleHours: positiveNumber(process.env["SESSION_IDLE_HOURS"], 24),
+  sessionMaxHours: positiveNumber(process.env["SESSION_MAX_HOURS"], 12),
   // Legacy override only (Phase 1.9) — installs no longer set these. The source of
   // truth is app_meta (admin_username/admin_password_hash), generated through the
   // one-time bootstrap flow (services/installation.ts). Kept optional so an install

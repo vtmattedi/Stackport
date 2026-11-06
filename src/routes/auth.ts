@@ -32,7 +32,7 @@ router.post("/login", authLimiter, async (req: Request, res: Response): Promise<
   const token = issueAuthToken(username);
 
   auditLog(username, "login", "admin", "ok", { ip: req.ip });
-  res.json({ token, expiresIn: config.jwtExpiry });
+  res.json({ token, expiresInHours: config.sessionIdleHours, maxHours: config.sessionMaxHours });
 });
 
 router.post("/logout", requireAuth, (req: Request, res: Response): void => {
