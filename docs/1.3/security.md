@@ -132,12 +132,17 @@ joins, so any project can call Stackport's API directly instead of through nginx
 Give nginx and Stackport their own network for the admin route and keep only nginx on
 `stackport-proxy`.
 
+**Status: done.** The app is on the stack's `default` network only; nginx is on both.
+
 ### S4 — Narrow `trust proxy` · 🟠 · S
 
 `app.set("trust proxy", ["loopback", "uniquelocal"])` trusts every private address,
 which includes every project container. A project can send `X-Forwarded-For` with any
 value and get past the login rate limit. Trust only the nginx container's address (or
 fix S3 first, after which only nginx can reach the app).
+
+**Status: done.** Loopback and the nginx container's address (looked up by name, every
+15 s; `TRUSTED_PROXY_HOST` overrides the name) are trusted; nothing else is.
 
 ### S9 — Per-project ingress networks · 🟡 · M · needs S3
 
