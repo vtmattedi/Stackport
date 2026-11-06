@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/services/composePolicy";
 
 test("violations name the service, key and a fix", () => {
@@ -176,4 +177,22 @@ test("h: a service name that is not in the project is refused", () => {
 
 test("h: network_mode host is reported once, by the denylist", () => {
   assert.deepEqual(keys(resolvedWith({ network_mode: "host" })), ["web.network_mode"]);
+});
+
+test("S12: a mount inside the project that is a symlink to outside it is refused", async (t) => {
+  const fsMod = await import("node:fs");
+  const os = await import("node:os");
+  const base = fsMod.mkdtempSync(path.join(os.tmpdir(), "sp-policy-link-"));
+  const project = path.join(base, "project");
+  fsMod.mkdirSync(project);
+  fsMod.mkdirSync(path.join(base, "outside"));
+  fsMod.symlinkSync(path.join(base, "outside"), path.join(project, "data"), "junction");
+  try {
+    const link = keys(resolvedWith({ volumes: [{ type: "bind", source: path.join(project, "data"), target: "/d", read_only: true }] }), { projectDir: project });
+    assert.deepEqual(link, ["web.volumes"], "looks inside the project, but the link leaves it");
+    assert.deepEqual(keys(resolvedWith({ volumes: [{ type: "bind", source: path.join(project, "real"), target: "/d" }] }), { projectDir: project }), []);
+  } finally {
+    fsMod.rmSync(base, { recursive: true, force: true });
+    t.diagnostic("temp directories removed");
+  }
 });

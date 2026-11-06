@@ -1,6 +1,8 @@
+import * as fs from "fs";
 import * as path from "path";
 import { splitPortSpec } from "./composeYaml";
-import { isInsideDir } from "../utils/hostPath";
+import { relativeInside } from "../utils/hostPath";
+import { resolveContainedPath } from "../utils/safePath";
 
 /** StackPort's security/exposure boundary for managed-project compose files: the
  *  Phase 1.3 directives that let a container escape into host/StackPort authority
@@ -129,6 +131,16 @@ export interface ResolvedPolicyContext {
   projectDir: string;
 }
 
+/** Whether `target` is inside the project folder, following symlinks when the folder is on
+ *  this machine (S12): a link committed to the repository can point outside it, and the
+ *  resolved path then looks inside while the host path is not. */
+function isInsideProject(target: string, projectDir: string): boolean {
+  const relative = relativeInside(target, projectDir);
+  if (relative === null) return false;
+  if (path.isAbsolute(projectDir) && fs.existsSync(projectDir)) return resolveContainedPath(projectDir, relative) !== null;
+  return true;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
@@ -148,7 +160,7 @@ function checkResolvedVolumes(name: string, service: Record<string, unknown>, co
     const source = typeof mount["source"] === "string" ? mount["source"] : "";
     if (type !== "bind") {
       add(name, "volumes", `mount type "${String(type)}" is not allowed for managed projects.`, "Use a named volume or a path inside the project folder.");
-    } else if (!isInsideDir(source, context.projectDir) && !isDangerousHostPath(source)) { // the denylist already reports those
+    } else if (!isInsideProject(source, context.projectDir) && !isDangerousHostPath(source)) { // the denylist already reports those
       add(name, "volumes", `mounting host path "${source}" is not allowed for managed projects: it is outside the project folder.`, "Use a named volume or a path inside the project folder.");
     }
   }
@@ -200,7 +212,7 @@ function checkResolvedBuild(name: string, service: Record<string, unknown>, cont
     if (typeof value === "string") contexts.push([`build.additional_contexts.${alias}`, value]);
   }
   for (const [label, value] of contexts) {
-    if (isLocalPath(value) && !isInsideDir(value, context.projectDir)) {
+    if (isLocalPath(value) && !isInsideProject(value, context.projectDir)) {
       add(name, "build", `${label} "${value}" is outside the project folder.`, "Use a context inside the project folder, such as \".\".");
     }
   }
@@ -212,7 +224,7 @@ function checkResolvedBuild(name: string, service: Record<string, unknown>, cont
 function checkTopLevelFiles(section: "secrets" | "configs", entries: Record<string, unknown> | null, context: ResolvedPolicyContext, add: Add): void {
   for (const [name, value] of Object.entries(entries ?? {})) {
     const file = asRecord(value)?.["file"];
-    if (typeof file === "string" && !isInsideDir(file, context.projectDir)) {
+    if (typeof file === "string" && !isInsideProject(file, context.projectDir)) {
       add(name, "file", `${section.slice(0, -1)} file "${file}" is outside the project folder.`, "Keep the file inside the project folder, or use environment: or content: instead.", section);
     }
   }
