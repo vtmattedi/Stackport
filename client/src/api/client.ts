@@ -51,22 +51,31 @@ import type {
   ComposeVariableStatus,
 } from "./types";
 
-const TOKEN_KEY = "stackport_token";
+// The session itself is an httpOnly cookie the browser holds and scripts cannot read
+// (S6). This flag only remembers that we signed in, so the app knows whether to show
+// the login page; the server decides whether the session is still valid.
+const SIGNED_IN_KEY = "stackport_signed_in";
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+// Earlier versions kept the session token itself here, readable by any script on the
+// page and valid for days. Drop a leftover one.
+try { localStorage.removeItem("stackport_token"); } catch { /* storage unavailable */ }
+
+export function markSignedIn(): void {
+  try { localStorage.setItem(SIGNED_IN_KEY, "1"); } catch { /* storage unavailable */ }
 }
 
-export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token);
-}
-
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY);
+export function markSignedOut(): void {
+  try { localStorage.removeItem(SIGNED_IN_KEY); } catch { /* storage unavailable */ }
 }
 
 export function isAuthenticated(): boolean {
-  return !!getToken();
+  try { return localStorage.getItem(SIGNED_IN_KEY) === "1"; } catch { return false; }
+}
+
+/** Sent on every API call: the server requires it, with the cookie, on requests that
+ *  change state. A page on another site cannot add it without a CORS preflight. */
+export function sessionHeaders(): Record<string, string> {
+  return { "X-Requested-With": "stackport" };
 }
 
 // Deliberately separate from the main token above — a setup-flow session
@@ -103,12 +112,11 @@ async function request<T>(
   init: RequestInit = {},
   opts: { skipAuthRedirect?: boolean } = {}
 ): Promise<T> {
-  const token = getToken();
   const res = await fetch(`/api${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...sessionHeaders(),
       ...(init.headers ?? {}),
     },
   });
@@ -117,19 +125,14 @@ async function request<T>(
   // Skip this for the login endpoint itself — a 401 there means wrong credentials,
   // not an expired session, so we want to show the error in-page.
   if (res.status === 401 && !opts.skipAuthRedirect) {
-    clearToken();
+    markSignedOut();
     window.location.href = "/";
     throw new ApiError(401, "Unauthorized");
   }
 
   if (res.headers.get("X-Auth-Revoked") === "1") {
-    clearToken();
+    markSignedOut();
     window.location.href = "/";
-  } else {
-    const refreshedToken = res.headers.get("X-Auth-Token");
-    if (refreshedToken) {
-      setToken(refreshedToken);
-    }
   }
 
   if (!res.ok) {
@@ -176,28 +179,24 @@ async function requestActionStart(
   path: string,
   init: RequestInit = { method: "POST" }
 ): Promise<ActionStartResponse> {
-  const token = getToken();
   const res = await fetch(`/api${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...sessionHeaders(),
       ...(init.headers ?? {}),
     },
   });
 
   if (res.status === 401) {
-    clearToken();
+    markSignedOut();
     window.location.href = "/";
     throw new ApiError(401, "Unauthorized");
   }
 
   if (res.headers.get("X-Auth-Revoked") === "1") {
-    clearToken();
+    markSignedOut();
     window.location.href = "/";
-  } else {
-    const refreshedToken = res.headers.get("X-Auth-Token");
-    if (refreshedToken) setToken(refreshedToken);
   }
 
   const body = (await res.json().catch(() => null)) as ActionStartResponse | { error?: string } | null;
@@ -212,27 +211,21 @@ async function requestActionStart(
  * parameter and break parsing server-side).
  */
 async function requestActionStartMultipart(path: string, formData: FormData): Promise<ActionStartResponse> {
-  const token = getToken();
   const res = await fetch(`/api${path}`, {
     method: "POST",
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: sessionHeaders(),
     body: formData,
   });
 
   if (res.status === 401) {
-    clearToken();
+    markSignedOut();
     window.location.href = "/";
     throw new ApiError(401, "Unauthorized");
   }
 
   if (res.headers.get("X-Auth-Revoked") === "1") {
-    clearToken();
+    markSignedOut();
     window.location.href = "/";
-  } else {
-    const refreshedToken = res.headers.get("X-Auth-Token");
-    if (refreshedToken) setToken(refreshedToken);
   }
 
   const body = (await res.json().catch(() => null)) as ActionStartResponse | { error?: string } | null;
@@ -253,7 +246,7 @@ function buildQuery(params: object): string {
 
 export const api = {
   login: (username: string, password: string) =>
-    request<{ token: string; expiresIn: string }>(
+    request<{ expiresInHours: number; maxHours: number }>(
       "/auth/login",
       { method: "POST", body: JSON.stringify({ username, password }) },
       { skipAuthRedirect: true }
@@ -379,10 +372,7 @@ export const api = {
   listRunningActions: () => request<ActionSummary[]>("/actions/running"),
   getAction: (id: string) => request<ActionSummary>(`/actions/${encodeURIComponent(id)}`),
   getActionLog: async (id: string): Promise<string> => {
-    const token = getToken();
-    const res = await fetch(`/api/actions/${encodeURIComponent(id)}/log`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
+    const res = await fetch(`/api/actions/${encodeURIComponent(id)}/log`, { headers: sessionHeaders() });
     return res.ok ? res.text() : "";
   },
   clearProjectActionLogs: (projectId: number) =>

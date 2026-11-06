@@ -1,7 +1,7 @@
 import { useState, useEffect, type FC } from "react";
 import { useNavigate } from "react-router-dom";
 import { GitCommitHorizontal, Globe2, KeyRound, Lock, Rocket, Server, User } from "lucide-react";
-import { api, setToken, isAuthenticated, setSetupToken, clearSetupToken } from "../api/client";
+import { api, markSignedIn, isAuthenticated, setSetupToken, clearSetupToken } from "../api/client";
 import { ApiError } from "../api/client";
 import { StackPortBrand, StackPortWordmark } from "../logo/StackPortBrand";
 import styles from "./Login.module.scss";
@@ -45,8 +45,8 @@ const Login: FC = () => {
     setError("");
     setLoading(true);
     try {
-      const { token } = await api.login(username, password);
-      setToken(token);
+      await api.login(username, password);
+      markSignedIn();
       navigate("/projects", { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Login failed");

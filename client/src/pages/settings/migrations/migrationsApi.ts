@@ -3,7 +3,7 @@
  * API calls so nothing else in the client depends on it. To remove it, see
  * src/legacyMigrations/types.ts on the server.
  */
-import { ApiError, getToken } from "../../../api/client";
+import { ApiError, sessionHeaders } from "../../../api/client";
 
 export type ReportStatus = "ok" | "warn" | "error" | "info";
 export interface ReportItem { status: ReportStatus; label: string; detail?: string }
@@ -22,10 +22,9 @@ export interface MigrationJob {
 export interface MigrationInfo { id: string; title: string; description: string; executeWarning: string; destructive: boolean; job: MigrationJob }
 
 async function call<T>(path: string, method: "GET" | "POST"): Promise<T> {
-  const token = getToken();
   const res = await fetch(`/api/legacy-migrations${path}`, {
     method,
-    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    headers: { "Content-Type": "application/json", ...sessionHeaders() },
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({ error: "Request failed" }))) as { error?: string };
