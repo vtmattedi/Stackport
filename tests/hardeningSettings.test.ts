@@ -35,3 +35,11 @@ test("a new project starts with every 1.3 protection on, an existing one with th
   assert.equal(isVolumesManaged(created), false);
   assert.equal(isComposePolicyEnforced(created), false);
 });
+
+test("the project exposes the hardened-defaults flag to the client", async () => {
+  const { getProjectById } = await import("../src/services/projectDeploy");
+  const id = createProject({ name: "hardening-entity", sourceType: "github", githubRepo: "o/r" }).id;
+  assert.equal(getProjectById(id)?.hardenedDefaults, true);
+  getDatabase().prepare("UPDATE projects SET hardened_defaults = 0 WHERE id = ?").run(id);
+  assert.equal(getProjectById(id)?.hardenedDefaults, false);
+});

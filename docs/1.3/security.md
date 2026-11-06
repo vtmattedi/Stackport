@@ -71,6 +71,28 @@ service, key and fix (the 1.2 violations table already renders that).
 **Deployed installs.** Run in warn-only mode for one release: log and show what would
 be rejected, deploy anyway. Then enforce.
 
+**Status: done (a–h), with one change to the rollout.** Projects created after this
+change are enforced; projects that already existed (migration 006,
+`projects.compose_policy_enforced = 0`) deploy and log what a new project would be
+rejected for. There is no setting to enforce an existing project yet: add one before
+the next release.
+
+What the resolved config is held to (`validateResolvedComposePolicy`):
+
+| Case | Rule |
+|---|---|
+| a | Bind sources inside the project folder; named volumes and tmpfs only otherwise |
+| b | Resolved `privileged` (the denylist, now on resolved values) |
+| c | Top-level volumes: `local` driver, no bind/rbind options |
+| d | `include:` is merged before checking (proved with real `docker compose config`) |
+| e | `cap_add` allowlist (`NET_ADMIN` is allowed), `security_opt` only `no-new-privileges`, no `userns_mode`, `uts`/`cgroup: host` |
+| f | `build.context` and `additional_contexts` host paths inside the project folder |
+| g | `secrets`/`configs` `file:` inside the project folder |
+| h | `volumes_from`, `network_mode`, `pid`, `ipc` may only name a service of the same project |
+
+Not covered: external volumes and networks (they refer to something that already
+exists on the host), and the UI's policy panel still shows only the raw-file check.
+
 ### S2 — Volume model: Stackport-owned mount directories · 🔴 · L · needs S1
 
 **Problem.** Bind mounts point wherever the Compose file says; relative paths resolve
