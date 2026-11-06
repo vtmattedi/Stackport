@@ -84,6 +84,29 @@ when the directory is created and when it is resolved (see S12).
 the new directory on the first deploy after the change, with a dry run first. This is
 the largest risk in the whole list, because it touches project data.
 
+**Status: built, not yet run on a real host.** What shipped differs from the text above
+in two ways, both from finding that Stackport runs `docker compose` inside its own
+container: a relative `./data` resolves to a container path that the host's Docker
+daemon reads as a host path.
+
+- Mounts are not forbidden. For a project with `volumes_managed = 1`, a deploy resolves
+  the Compose file, creates `<data>/volumes/<project>/<name>`, and passes a generated
+  override that re-points each bind mount into the checkout: a writable directory goes
+  to its managed directory, a read-only mount (repository config files) keeps its place
+  with the path translated to the host, and what cannot move (a file, or the whole
+  checkout writable) is kept the same way and reported. `managedVolumes.ts` plans it.
+- New projects are managed from the start. Existing ones (migration 007) keep their
+  current mounts until **Settings > Migrations** copies their data (a helper container
+  runs `cp -a`, so ownership survives), leaves the originals in place, and switches
+  them over. It has a dry run, blocks a project on a failed copy or on data found in two
+  places, and warns when containers are running. A second entry removes the original
+  directories afterwards, once the managed copy holds files and no running container
+  still mounts the original. The page is temporary: delete `src/legacyMigrations`,
+  `client/src/pages/settings/migrations` and the lines marked TEMPORARY once installs
+  have migrated.
+
+Still to do: symlink refusal (S12).
+
 ### S8 — Hardened container defaults · 🟠 · M · needs S1
 
 Apply `no-new-privileges`, `cap_drop: [ALL]` plus the allowlisted additions, and a
