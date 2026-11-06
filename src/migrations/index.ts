@@ -5,6 +5,7 @@ import m002 from "./002_deploy_health_gate";
 import m003 from "./003_api_tokens";
 import m004 from "./004_actions";
 import m005 from "./005_host_metrics";
+import m006 from "./006_compose_policy_enforced";
 
 /** A schema change that runs once, in order, recorded in `PRAGMA user_version`.
  *  `stackport rollback` runs the previous release's code on the migrated database,
@@ -17,7 +18,7 @@ export interface Migration {
 }
 
 /** Ordered by id. Append only: never edit or reorder a migration that has shipped. */
-export const MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005];
+export const MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005, m006];
 
 export function schemaVersion(db: Database.Database): number {
   return db.pragma("user_version", { simple: true }) as number;

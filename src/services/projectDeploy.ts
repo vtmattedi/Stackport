@@ -9,7 +9,7 @@ import { normalizeRelativePath, resolveContainedPath } from "../utils/safePath";
 import { emitProjectDeploy, type ProjectDeployEvent } from "./realtime";
 import { actionRegistry, projectRepoKey } from "./actionRegistry";
 import { loadYamlDoc } from "./composeYaml";
-import { formatPolicyViolation, validateComposePolicy, type PolicyViolation } from "./composePolicy";
+import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy, type PolicyViolation } from "./composePolicy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./composeNetworking";
 import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
@@ -359,13 +359,17 @@ async function composeCommand(): Promise<ComposeCommand> {
   return { cmd: "docker", argsPrefix: ["compose"] };
 }
 
+function policyRejection(violations: PolicyViolation[]): string {
+  return `Deployment rejected — compose policy violation:\n\n${violations.map(formatPolicyViolation).join("\n")}\n`;
+}
+
 /** Phase 1.3 policy gate — only for commands that actually create/start containers
  *  (`up`) or dry-run what would (`config`, the upload path's pre-flight validation).
  *  `build`/`down`/`ps`/`rm` don't act on these directives at all, so re-checking there
  *  would be redundant. Reads the resolved file fresh (post Phase 1.7 network
  *  augmentation), matching the existing pattern in this file where each pass over a
  *  compose file re-reads independently rather than sharing one parsed doc. */
-async function checkComposePolicy(repoPath: string, composeFile: string): Promise<{ ok: boolean; message: string }> {
+async function checkComposePolicy(projectId: number, repoPath: string, composeFile: string): Promise<{ ok: boolean; message: string; warning?: string }> {
   let raw: string;
   try {
     raw = await fs.readFile(path.join(repoPath, composeFile), "utf8");
@@ -379,11 +383,44 @@ async function checkComposePolicy(repoPath: string, composeFile: string): Promis
     return { ok: true, message: "" }; // malformed YAML is a separate failure mode — let `docker compose` report it
   }
   const result = validateComposePolicy(doc);
-  if (result.ok) return { ok: true, message: "" };
+  if (!result.ok) return { ok: false, message: policyRejection(result.violations) };
+
+  // The raw file passed; now check what Compose will actually run (S1). If it can't be
+  // resolved, `docker compose` reports why when it runs.
+  const resolved = await resolveComposeConfig(repoPath, composeFile);
+  if (resolved === null) return { ok: true, message: "" };
+  const resolvedResult = validateResolvedComposePolicy(resolved, { projectDir: repoPath });
+  if (resolvedResult.ok) return { ok: true, message: "" };
+  if (isComposePolicyEnforced(projectId)) return { ok: false, message: policyRejection(resolvedResult.violations) };
   return {
-    ok: false,
-    message: `Deployment rejected — compose policy violation:\n\n${result.violations.map(formatPolicyViolation).join("\n")}\n`,
+    ok: true,
+    message: "",
+    warning: policyRejection(resolvedResult.violations).replace(
+      "Deployment rejected — compose policy violation:",
+      "Warning — this project predates the compose policy, so the deploy continues, but a new project would be rejected for:",
+    ),
   };
+}
+
+/** The Compose file as `docker compose config` resolves it, or null when it can't be
+ *  (a missing env file, bad YAML): the caller then leaves the error to `up`. Runs with
+ *  the same minimal environment as every other Compose call. Never logged: the resolved
+ *  config can contain secrets. */
+async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
+  const compose = await composeCommand();
+  const raw = await new Promise<string | null>((resolve) => {
+    execFile(compose.cmd, [...compose.argsPrefix, "-f", composeFile, "config", "--format", "json"],
+      { cwd: repoPath, env: dockerEnv(), timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout) => resolve(err ? null : stdout));
+  });
+  if (raw === null) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+/** New projects reject resolved-config violations; ones that existed before S1 only warn. */
+function isComposePolicyEnforced(projectId: number): boolean {
+  const row = getDatabase().prepare("SELECT compose_policy_enforced AS enforced FROM projects WHERE id = ?").get(projectId) as { enforced: number } | undefined;
+  return row?.enforced !== 0;
 }
 
 async function runCompose(
@@ -413,11 +450,12 @@ async function runCompose(
     }
 
     if (args[0] === "up" || args[0] === "config") {
-      const policy = await checkComposePolicy(repoPath, composeFile);
+      const policy = await checkComposePolicy(projectId, repoPath, composeFile);
       if (!policy.ok) {
         emit(projectId, action, "stderr", policy.message);
         return { ok: false, output: policy.message, stdout: "", command: "compose policy check" };
       }
+      if (policy.warning) emit(projectId, action, "stderr", policy.warning);
     }
     if (args[0] === "up") await warnUnresolvedStackportVariables(projectId, action, composeFile);
   }

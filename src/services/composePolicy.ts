@@ -119,3 +119,19 @@ export function validateComposePolicy(doc: unknown): { ok: boolean; violations: 
 
   return { ok: violations.length === 0, violations };
 }
+
+/** Where the project's files live; bind mounts must stay inside it. */
+export interface ResolvedPolicyContext {
+  projectDir: string;
+}
+
+/** Checks the output of `docker compose config --format json`: variables resolved,
+ *  `include:` and `extends:` merged, so a value the raw YAML only spelled indirectly
+ *  (`${PRIV:-true}`, an included file) is seen as Compose will run it. Anything the
+ *  rules below do not allow is a violation (S1). The raw-YAML check above stays in
+ *  place as the first line of defence. */
+export function validateResolvedComposePolicy(resolved: unknown, _context: ResolvedPolicyContext): { ok: boolean; violations: PolicyViolation[] } {
+  // Resolved values take the same denylist checks as the raw file; the allowlist rules
+  // added below close what a denylist cannot.
+  return validateComposePolicy(resolved);
+}

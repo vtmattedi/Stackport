@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatPolicyViolation, validateComposePolicy } from "../src/services/composePolicy";
+import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/services/composePolicy";
 
 test("violations name the service, key and a fix", () => {
   const result = validateComposePolicy({
@@ -24,4 +24,11 @@ test("the log line keeps the old services.<name>.<key> form", () => {
 
 test("a clean file passes", () => {
   assert.deepEqual(validateComposePolicy({ services: { web: { image: "nginx", expose: ["80"], volumes: ["./data:/data"] } } }), { ok: true, violations: [] });
+});
+
+test("the resolved config is checked too, so a value only spelled indirectly in the file is caught", () => {
+  // `privileged: ${PRIV:-true}` reaches the check as the boolean Compose will run.
+  const result = validateResolvedComposePolicy({ services: { web: { image: "nginx", privileged: true } } }, { projectDir: "/srv/p" });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.violations.map((v) => `${v.service}.${v.key}`), ["web.privileged"]);
 });
