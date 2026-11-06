@@ -42,6 +42,9 @@ export const config = {
   appServiceName: process.env["APP_SERVICE_NAME"] ?? "stackport",
   // Real host checkout path used by Docker Compose to resolve system mounts.
   hostProjectRoot: process.env["HOST_PROJECT_ROOT"] ?? process.cwd(),
+  // The data directory as the host sees it (written by stackport.sh). Managed mount
+  // directories are created below it, and Docker needs their host path.
+  hostDataDir: process.env["STACKPORT_DATA_DIR"] ?? "",
   // Read-only host mounts (docker-compose.system.yml) for host metrics. Each reader
   // falls back to what the container itself sees when its mount is missing.
   hostSysPath: process.env["HOST_SYS_PATH"] ?? "/host/sys",

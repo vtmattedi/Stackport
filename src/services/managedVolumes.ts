@@ -1,5 +1,6 @@
 import * as path from "path";
 import { dumpYamlDoc } from "./composeYaml";
+import { config } from "../config/env";
 import { relativeInside, rebasePath } from "../utils/hostPath";
 
 /**
@@ -52,6 +53,13 @@ export interface PlanOptions {
   roots: VolumeRoots;
   /** Whether `source` is a file; a file cannot be replaced by a directory. */
   isFile: (source: string) => boolean;
+}
+
+/** The data directory is the parent of the deploy root (`/app/data` in the container).
+ *  Outside the container, with no host data directory configured, both are the same. */
+export function currentVolumeRoots(): VolumeRoots {
+  const containerDataRoot = path.dirname(path.resolve(config.deployRoot));
+  return { containerDataRoot, hostDataRoot: config.hostDataDir ? path.resolve(config.hostDataDir) : containerDataRoot };
 }
 
 /** Where managed directories live, as Stackport sees it. */

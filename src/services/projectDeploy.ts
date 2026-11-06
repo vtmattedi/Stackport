@@ -1,4 +1,5 @@
 import { execFile, spawn } from "child_process";
+import { statSync } from "fs";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { config } from "../config/env";
@@ -11,6 +12,7 @@ import { actionRegistry, projectRepoKey } from "./actionRegistry";
 import { loadYamlDoc } from "./composeYaml";
 import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy, type PolicyViolation } from "./composePolicy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./composeNetworking";
+import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./managedVolumes";
 import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
 import { markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./projectDeployments";
@@ -417,6 +419,33 @@ async function resolveComposeConfig(repoPath: string, composeFile: string): Prom
   try { return JSON.parse(raw); } catch { return null; }
 }
 
+/** Projects that existed before S2 keep their current mounts until they are migrated. */
+export function isVolumesManaged(projectId: number): boolean {
+  const row = getDatabase().prepare("SELECT volumes_managed AS managed FROM projects WHERE id = ?").get(projectId) as { managed: number } | undefined;
+  return row?.managed !== 0;
+}
+
+/** Creates the project's managed mount directories and writes the Compose override that
+ *  points its bind mounts at them (S2). Returns the override's path, or null when there
+ *  is nothing to override or the file can't be resolved (`up` then reports why). */
+async function prepareManagedVolumes(projectId: number, repoPath: string, composeFile: string): Promise<string | null> {
+  const resolved = await resolveComposeConfig(repoPath, composeFile);
+  if (resolved === null) return null;
+  const plan = planManagedVolumes(resolved, {
+    projectId, projectDir: repoPath, roots: currentVolumeRoots(),
+    isFile: (source) => statSync(source, { throwIfNoEntry: false })?.isFile() ?? false,
+  });
+  const override = buildVolumesOverride(plan);
+  if (override === null) return null;
+  for (const entry of plan) {
+    if (entry.action === "managed" && entry.managedContainerPath) await fs.mkdir(entry.managedContainerPath, { recursive: true });
+  }
+  const overridePath = path.join(deployRoot(), ".stackport", String(projectId), "volumes.override.yml");
+  await fs.mkdir(path.dirname(overridePath), { recursive: true });
+  await fs.writeFile(overridePath, override, "utf8");
+  return overridePath;
+}
+
 /** New projects reject resolved-config violations; ones that existed before S1 only warn. */
 function isComposePolicyEnforced(projectId: number): boolean {
   const row = getDatabase().prepare("SELECT compose_policy_enforced AS enforced FROM projects WHERE id = ?").get(projectId) as { enforced: number } | undefined;
@@ -461,6 +490,10 @@ async function runCompose(
   }
   const compose = await composeCommand();
   const fileArgs = composeFile ? ["-f", composeFile] : [];
+  if (composeFile && (args[0] === "up" || args[0] === "config") && isVolumesManaged(projectId)) {
+    const override = await prepareManagedVolumes(projectId, repoPath, composeFile);
+    if (override) fileArgs.push("-f", override);
+  }
   const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, ...fileArgs, ...args], {
     cwd: repoPath,
     timeoutMs,

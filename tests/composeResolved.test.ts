@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/services/composePolicy";
-import { loadYamlDoc } from "../src/services/composeYaml";
+import { dumpYamlDoc, loadYamlDoc } from "../src/services/composeYaml";
 
 /** These run real `docker compose config`, the same command a deploy resolves the file
  *  with, so they prove the policy sees what Compose will run. Skipped without Docker. */
@@ -42,5 +42,21 @@ test("a: ${HOSTROOT:-/} resolves to the host root and is refused", { skip }, () 
   try {
     assert.equal(validateComposePolicy(raw).ok, true, "the raw string is not a recognisable host path");
     assert.equal(validateResolvedComposePolicy(resolved, { projectDir: dir }).ok, false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("S2: an override replaces a bind source and keeps the mount's other settings (merged by container path)", { skip }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sp-override-"));
+  const managed = path.join(dir, "managed-data");
+  fs.mkdirSync(managed);
+  fs.writeFileSync(path.join(dir, "compose.yml"), "services:\n  web:\n    image: alpine\n    volumes:\n      - ./data:/data\n      - ./conf:/conf:ro\n");
+  fs.writeFileSync(path.join(dir, "override.yml"), dumpYamlDoc({ services: { web: { volumes: [{ type: "bind", source: managed, target: "/data" }] } } }));
+  try {
+    const out = execFileSync("docker", ["compose", "-f", "compose.yml", "-f", "override.yml", "config", "--format", "json"], { cwd: dir, encoding: "utf8" });
+    const volumes = (JSON.parse(out) as { services: { web: { volumes: { source: string; target: string; read_only?: boolean }[] } } }).services.web.volumes;
+    assert.equal(volumes.length, 2, "merged by target, not appended");
+    const data = volumes.find((v) => v.target === "/data");
+    assert.equal(path.normalize(data?.source ?? ""), path.normalize(managed));
+    assert.equal(volumes.find((v) => v.target === "/conf")?.read_only, true);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
