@@ -18,7 +18,7 @@ import { healthCheckUrl, probeHealth, type HealthProbe } from "./healthChecker";
 import { notifyDeployBlocked, notifyDeployUnhealthy, type DeployRollbackOutcome } from "./notificationService";
 import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
-import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./composeVariables";
+import { dotenvKeys, extractComposeVariables, findUnresolvedStackportVariables, type ComposeVariableRef } from "./composeVariables";
 
 export interface EnvVariable {
   key: string;
@@ -220,6 +220,27 @@ function dockerEnv(): NodeJS.ProcessEnv {
   return buildDockerEnv(process.env, dockerConfigDir());
 }
 
+/** Warns when the Compose file references a variable that only Stackport's environment
+ *  used to provide, so a deploy that now gets an empty value is visible in the log. */
+async function warnUnresolvedStackportVariables(projectId: number, action: ProjectDeployEvent["action"], composeFile: string): Promise<void> {
+  try {
+    const refs = await getProjectComposeVariables(projectId, composeFile);
+    const passed = buildDockerEnv(process.env, "");
+    const missing = findUnresolvedStackportVariables(
+      refs,
+      new Set(refs.filter((ref) => ref.definedIn !== null).map((ref) => ref.name)),
+      process.env,
+      (name) => passed[name] !== undefined,
+    );
+    if (missing.length) {
+      emit(projectId, action, "stderr",
+        `Warning: ${missing.join(", ")} used to come from Stackport's own environment and is no longer passed to docker compose. Define ${missing.length === 1 ? "it" : "them"} in the project's .env.\n`);
+    }
+  } catch {
+    // Advisory only: never block a deploy because the scan failed.
+  }
+}
+
 export function slugify(value: string): string {
   const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return slug || "project";
@@ -398,6 +419,7 @@ async function runCompose(
         return { ok: false, output: policy.message, stdout: "", command: "compose policy check" };
       }
     }
+    if (args[0] === "up") await warnUnresolvedStackportVariables(projectId, action, composeFile);
   }
   const compose = await composeCommand();
   const fileArgs = composeFile ? ["-f", composeFile] : [];

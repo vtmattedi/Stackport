@@ -62,6 +62,24 @@ export function extractComposeVariables(doc: unknown): ComposeVariableRef[] {
   return [...refs.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Variables a Compose file references that Stackport's own environment used to fill in
+ * before `docker compose` got a minimal environment (S14): not defined by the project,
+ * but set in `stackportEnv`. After the change they resolve to their default or empty,
+ * so a deploy that relied on one needs the value added to the project's `.env`.
+ * Only names are returned, never values.
+ */
+export function findUnresolvedStackportVariables(
+  refs: Pick<ComposeVariableRef, "name">[],
+  definedByProject: ReadonlySet<string>,
+  stackportEnv: NodeJS.ProcessEnv,
+  passedToCompose: (name: string) => boolean,
+): string[] {
+  return refs
+    .map((ref) => ref.name)
+    .filter((name) => !definedByProject.has(name) && !passedToCompose(name) && stackportEnv[name] !== undefined);
+}
+
 /** Keys defined in a dotenv-style text (KEY=value, `export KEY=value`, comments ignored). */
 export function dotenvKeys(text: string): Set<string> {
   const keys = new Set<string>();
