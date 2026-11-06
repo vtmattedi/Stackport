@@ -460,7 +460,7 @@ async function prepareHardening(projectId: number, repoPath: string, composeFile
 }
 
 /** New projects reject resolved-config violations; ones that existed before S1 only warn. */
-function isComposePolicyEnforced(projectId: number): boolean {
+export function isComposePolicyEnforced(projectId: number): boolean {
   const row = getDatabase().prepare("SELECT compose_policy_enforced AS enforced FROM projects WHERE id = ?").get(projectId) as { enforced: number } | undefined;
   return row?.enforced !== 0;
 }

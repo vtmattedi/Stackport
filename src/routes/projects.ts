@@ -677,6 +677,19 @@ router.get("/:id/compose-policy", requireAuth, async (req: Request<{ id: string 
   catch { res.json({ composeFile: null, violations: [] }); }
 });
 
+/** Turns the hardened container defaults (S8) on or off for one project; they take
+ *  effect on its next deploy. */
+router.put("/:id/hardening", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  const enabled: unknown = req.body?.enabled;
+  if (typeof enabled !== "boolean") { res.status(400).json({ error: "enabled must be true or false" }); return; }
+  getDatabase().prepare("UPDATE projects SET hardened_defaults = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(enabled ? 1 : 0, id);
+  auditLog(req.user ?? "unknown", "project.hardening", String(id), "ok", { enabled });
+  res.json({ hardenedDefaults: enabled });
+});
+
 router.get("/:id/domains", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
