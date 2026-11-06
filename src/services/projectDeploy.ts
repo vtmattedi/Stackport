@@ -196,8 +196,28 @@ function dockerConfigDir(): string {
   return path.join(deployRoot(), ".docker");
 }
 
+/** What the docker CLI needs to find and reach the daemon. Nothing else from Stackport's
+ *  own environment may reach `docker compose`: Compose interpolates `${VAR}` from it, so
+ *  a project's Compose file could read JWT_SECRET and the other secrets (S14). The
+ *  Windows entries are needed for the CLI to start there. */
+const DOCKER_ENV_ALLOWLIST = new Set([
+  "PATH", "HOME", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT",
+  "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+  "USERPROFILE", "SYSTEMROOT", "COMSPEC", "PATHEXT", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA",
+]);
+
+export function buildDockerEnv(source: NodeJS.ProcessEnv, defaultConfigDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    // Windows env names are case-insensitive ("Path"); keep the original spelling.
+    if (value !== undefined && DOCKER_ENV_ALLOWLIST.has(key.toUpperCase())) env[key] = value;
+  }
+  env["DOCKER_CONFIG"] ??= defaultConfigDir;
+  return env;
+}
+
 function dockerEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, DOCKER_CONFIG: process.env["DOCKER_CONFIG"] ?? dockerConfigDir() };
+  return buildDockerEnv(process.env, dockerConfigDir());
 }
 
 export function slugify(value: string): string {
