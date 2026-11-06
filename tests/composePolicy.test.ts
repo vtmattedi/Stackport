@@ -73,3 +73,9 @@ test("a: an ordinary host folder outside the project is refused with a message t
   const [v] = validateResolvedComposePolicy(resolvedWith({ volumes: [{ type: "bind", source: "/home/deploy", target: "/h" }] }), POSIX).violations;
   assert.match(v.problem, /\/home\/deploy.*outside the project folder/);
 });
+
+test("b: privileged chosen through a variable is caught once it is resolved", () => {
+  // privileged: ${PRIV:-true} is a string in the file and the boolean true in the resolved config.
+  assert.deepEqual(keys(resolvedWith({ privileged: true })), ["web.privileged"]);
+  assert.deepEqual(keys(resolvedWith({ privileged: false })), []);
+});
