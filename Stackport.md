@@ -134,7 +134,7 @@ Root + an interactive TTY are required. Generates a fresh recovery credential (i
 
 ### 3.3 Sessions
 
-A successful login stores a JWT client-side; every authenticated call rotates it to a fresh expiry window (`JWT_EXPIRY`, default 7 days) — an actively-used session effectively never expires. Tokens are additionally tracked server-side (`auth_tokens` table), making them properly revocable: logout, password change, and admin-recovery all delete the relevant rows rather than just waiting for expiry.
+A successful login sets the session in an httpOnly, `SameSite=Strict` cookie that scripts on the page cannot read. A session slides forward while in use (`SESSION_IDLE_HOURS`, default 24) but ends a fixed time after login (`SESSION_MAX_HOURS`, default 12). State-changing requests authenticated by the cookie must also send `X-Requested-With: stackport`; scripts can use the token from a login that sends no such header as `Authorization: Bearer`. Tokens are additionally tracked server-side (`auth_tokens` table), making them properly revocable: logout, password change, and admin-recovery all delete the relevant rows rather than just waiting for expiry.
 
 ---
 

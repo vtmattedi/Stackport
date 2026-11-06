@@ -197,6 +197,14 @@ expiry slides forward on every use, with no absolute limit. Move it to an httpOn
 `SameSite=Strict` cookie (the Socket.IO handshake and the API both need it), add CSRF
 protection for state-changing requests, and cap a session's total lifetime.
 
+**Status: done.** Login sets an httpOnly, `SameSite=Strict` cookie (`Secure` over HTTPS)
+that the web app never sees; a session ends 12 hours after login (`SESSION_MAX_HOURS`) or
+after 24 hours unused (`SESSION_IDLE_HOURS`), whichever is first. A cookie-authenticated
+request that changes state must send `X-Requested-With: stackport`, and the Socket.IO
+handshake must come from the same host. The bearer form still works for scripts, with no
+CSRF header, and login returns the token only to a caller that does not send that header.
+Everyone is signed out once by the update, and `JWT_EXPIRY` is gone.
+
 ### S7 — Separate encryption key, with versioning · 🟡 · M
 
 Stored credentials are encrypted with a key derived from `JWT_SECRET`, so rotating
