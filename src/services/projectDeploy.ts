@@ -408,7 +408,7 @@ async function checkComposePolicy(projectId: number, repoPath: string, composeFi
  *  (a missing env file, bad YAML): the caller then leaves the error to `up`. Runs with
  *  the same minimal environment as every other Compose call. Never logged: the resolved
  *  config can contain secrets. */
-async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
+export async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
   const compose = await composeCommand();
   const raw = await new Promise<string | null>((resolve) => {
     execFile(compose.cmd, [...compose.argsPrefix, "-f", composeFile, "config", "--format", "json"],

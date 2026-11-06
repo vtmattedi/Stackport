@@ -12,6 +12,7 @@ import metricsRouter from "./metrics";
 import hardwareRouter from "./hardware";
 import apiTokensRouter from "./apiTokens";
 import actionsRouter from "./actions";
+import legacyMigrationsRouter from "../legacyMigrations/routes"; // TEMPORARY, see legacyMigrations/types.ts
 
 const router = Router();
 
@@ -28,5 +29,6 @@ router.use("/metrics", metricsRouter);
 router.use("/hardware", hardwareRouter);
 router.use("/api-tokens", apiTokensRouter);
 router.use("/actions", actionsRouter);
+router.use("/legacy-migrations", legacyMigrationsRouter); // TEMPORARY
 
 export default router;
