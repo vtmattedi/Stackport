@@ -1,10 +1,10 @@
-import { execFile } from "child_process";
 import { statSync } from "fs";
 import * as fs from "fs/promises";
 import { getDatabase } from "../config/database";
 import { currentVolumeRoots, planManagedVolumes, type MountPlanEntry, type VolumeRoots } from "../services/managedVolumes";
 import { expectedComposeProjectName, projectRepoDir, resolveComposeConfig } from "../services/projectDeploy";
 import { rowToProject, type ProjectRow } from "../entities/Project";
+import { dockerRunner, type DockerResult, type DockerRunner } from "./docker";
 import type { LegacyMigration, MigrationMode, MigrationReport, ReportItem } from "./types";
 
 /** TEMPORARY (see types.ts). S2: copy each existing project's writable bind-mount data
@@ -12,8 +12,7 @@ import type { LegacyMigration, MigrationMode, MigrationReport, ReportItem } from
  *  over. The originals are never touched, so going back is a redeploy of the old
  *  release. */
 
-export interface DockerResult { code: number; stdout: string; stderr: string }
-export type DockerRunner = (args: string[]) => Promise<DockerResult>;
+export type { DockerResult, DockerRunner } from "./docker";
 
 export interface UnmigratedProject { id: number; name: string; composeFile: string; repoPath: string; composeProject: string }
 
@@ -141,14 +140,6 @@ export async function runVolumeMigration(mode: MigrationMode, deps: VolumeMigrat
   return { summary: `${switched} project${switched === 1 ? "" : "s"} ${verb}, ${blocked} blocked.`, items };
 }
 
-function dockerRunner(): DockerRunner {
-  return (args) => new Promise((resolve) => {
-    execFile("docker", args, { timeout: 3_600_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr });
-    });
-  });
-}
-
 function defaultDeps(): VolumeMigrationDeps {
   const docker = dockerRunner();
   return {
@@ -181,5 +172,8 @@ export const volumeMountsMigration: LegacyMigration = {
   description:
     "Copies each existing project's writable bind-mount data into a directory Stackport owns, then switches the project to it. " +
     "Originals are never touched. Run the dry run first, stop the projects you are migrating, then execute, then redeploy.",
+  executeWarning:
+    "Copies each project's data into its Stackport-owned directory and switches the project over. The originals are not touched. " +
+    "Stop the projects first so the copy is consistent, and redeploy them afterwards. Run the dry run first if you have not.",
   run: (mode) => runVolumeMigration(mode, defaultDeps()),
 };

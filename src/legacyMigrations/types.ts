@@ -29,6 +29,10 @@ export interface LegacyMigration {
   id: string;
   title: string;
   description: string;
+  /** Shown in the confirmation before an execute. */
+  executeWarning: string;
+  /** The execute deletes data: the confirmation says so. */
+  destructive?: boolean;
   /** One code path for both modes, so a dry run reports exactly what an execute would do.
    *  In "dry-run" it must change nothing. */
   run(mode: MigrationMode): Promise<MigrationReport>;

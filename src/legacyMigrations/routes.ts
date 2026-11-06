@@ -8,7 +8,7 @@ import type { MigrationMode } from "./types";
 const router = Router();
 
 router.get("/", requireAuth, (_req: Request, res: Response): void => {
-  res.json(LEGACY_MIGRATIONS.map(({ id, title, description }) => ({ id, title, description, job: getJob(id) })));
+  res.json(LEGACY_MIGRATIONS.map(({ id, title, description, executeWarning, destructive }) => ({ id, title, description, executeWarning, destructive: destructive === true, job: getJob(id) })));
 });
 
 for (const [path, mode] of [["dry-run", "dry-run"], ["execute", "execute"]] as [string, MigrationMode][]) {
