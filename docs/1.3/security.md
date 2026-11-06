@@ -136,6 +136,16 @@ default memory and PID limit to every managed service, unless the admin allows a
 exception per project. Needs S1 so the defaults can't be overridden from the Compose
 file.
 
+**Status: done, with decisions.** Every service of a project with hardened defaults on
+gets `no-new-privileges`, a memory limit (default 1024 MB) and a process limit (default
+512), through a generated Compose override. Both limits are editable in Settings >
+Container defaults (0 turns one off), and a service that declares its own limit keeps
+it. Capabilities stay at Docker's defaults: `cap_drop: [ALL]` was left out because it
+breaks images whose entrypoints need CHOWN, SETUID or SETGID, and S1 already refuses the
+dangerous additions. New projects start with the defaults on; existing ones start off
+(migration 009) until an admin switches them on from the project's settings, since a
+memory limit can stop a service that has run without one.
+
 ### S11 — Docker socket containment · 🟠 · XL
 
 Stackport mounts `/var/run/docker.sock`, which is root on the host. Options:
