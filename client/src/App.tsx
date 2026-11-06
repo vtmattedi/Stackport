@@ -23,6 +23,7 @@ const GeneralSection = lazy(() => import("./pages/settings/GeneralSection"));
 const DeployTriggersSection = lazy(() => import("./pages/settings/DeployTriggersSection"));
 const NotificationsSection = lazy(() => import("./pages/settings/NotificationsSection"));
 const StorageSection = lazy(() => import("./pages/settings/StorageSection"));
+const HardeningSection = lazy(() => import("./pages/settings/HardeningSection"));
 const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
 const MigrationsSection = lazy(() => import("./pages/settings/migrations/MigrationsSection")); // TEMPORARY
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
@@ -91,6 +92,7 @@ export default function App() {
               <Route path="credentials" element={<Credentials />} />
               <Route path="mcp" element={<McpSection />} />
               <Route path="storage" element={<StorageSection />} />
+              <Route path="hardening" element={<HardeningSection />} />
               <Route path="maintenance" element={<MaintenanceSection />} />
               <Route path="migrations" element={<MigrationsSection />} /> {/* TEMPORARY */}
               <Route path="*" element={<Navigate to="general" replace />} />

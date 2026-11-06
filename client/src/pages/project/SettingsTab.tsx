@@ -16,6 +16,7 @@ import { notify } from "../../lib/notify";
 import { cn } from "../../lib/utils";
 import styles from "../ProjectDetails.module.scss";
 import { DetailRow } from "./shared";
+import { HardeningCard } from "./HardeningCard";
 
 const INTERVALS = [
   { label: "Off", value: 0 },
@@ -383,6 +384,8 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
             </ConfigSection>
           </form>
         </ExpandableCard>
+
+        <HardeningCard project={project} setProject={setProject} />
 
         <ExpandableCard
           icon={<FolderDot size={13} />}

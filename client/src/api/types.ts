@@ -42,6 +42,8 @@ export interface Project {
   deployHealthGraceS: number;
   /** Roll back automatically when a deploy fails its health check. */
   autoRollbackUnhealthy: boolean;
+  /** Services get Stackport's hardened defaults: no-new-privileges and default limits. */
+  hardenedDefaults: boolean;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
   lastCheckedAt: string | null;
@@ -435,6 +437,20 @@ export interface DockerDiskUsageEntry {
   active: string;
   size: string;
   reclaimable: string;
+}
+
+export interface HardeningDefaults {
+  /** Process limit per service; 0 means no default. */
+  pidsLimit: number;
+  /** Memory limit per service in megabytes; 0 means no default. */
+  memoryMb: number;
+}
+
+export interface HardeningDefaults {
+  /** Process limit per service; 0 means no default. */
+  pidsLimit: number;
+  /** Memory limit per service in megabytes; 0 means no default. */
+  memoryMb: number;
 }
 
 export interface DockerStorageThresholds {

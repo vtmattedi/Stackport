@@ -31,6 +31,7 @@ import type {
   AppUpdateCheck,
   SystemUpdateConfig,
   DockerStorageThresholds,
+  HardeningDefaults,
   AppVersionInfo,
   NotificationConfig,
   NotificationLogEntry,
@@ -437,6 +438,11 @@ export const api = {
   getUpdateConfig: () => request<SystemUpdateConfig>("/system/update-config"),
   updateUpdateConfig: (credentialId: number | null) =>
     request<SystemUpdateConfig>("/system/update-config", { method: "PUT", body: JSON.stringify({ credentialId }) }),
+  getHardeningDefaults: () => request<HardeningDefaults>("/system/hardening-defaults"),
+  updateHardeningDefaults: (values: HardeningDefaults) =>
+    request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
+  setProjectHardening: (projectId: number, enabled: boolean) =>
+    request<{ hardenedDefaults: boolean }>(`/projects/${projectId}/hardening`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   getDockerStorageThresholds: () => request<DockerStorageThresholds>("/system/docker/storage-thresholds"),
   updateDockerStorageThresholds: (thresholds: DockerStorageThresholds) =>
     request<DockerStorageThresholds>("/system/docker/storage-thresholds", { method: "PUT", body: JSON.stringify(thresholds) }),

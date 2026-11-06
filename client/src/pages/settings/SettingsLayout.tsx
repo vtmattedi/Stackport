@@ -1,5 +1,5 @@
 import { Outlet, useLocation } from "react-router-dom";
-import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, Wrench, HardDrive, KeyRound, ShieldCheck, ArrowRightLeft } from "lucide-react";
+import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, Wrench, HardDrive, KeyRound, ShieldCheck, ArrowRightLeft, Shield } from "lucide-react";
 import SubShell, { SubShellSectionHeader } from "../../components/SubShell";
 
 export const SETTINGS_SECTIONS = [
@@ -9,6 +9,7 @@ export const SETTINGS_SECTIONS = [
   { path: "credentials", label: "Credentials", icon: ShieldCheck, description: "GitHub tokens, API keys and webhook secrets, stored encrypted." },
   { path: "mcp", label: "MCP", icon: KeyRound, description: "API tokens for the read-only MCP endpoint." },
   { path: "storage", label: "Storage", icon: HardDrive, description: "Docker disk usage, build-cache cleanup and the free-space thresholds that gate builds." },
+  { path: "hardening", label: "Container defaults", icon: Shield, description: "Memory and process limits that projects with hardened defaults give every service." },
   { path: "maintenance", label: "Maintenance", icon: Wrench, description: "Housekeeping checks for the deploy folder." },
   // TEMPORARY: remove with src/pages/settings/migrations (see src/legacyMigrations/types.ts on the server).
   { path: "migrations", label: "Migrations", icon: ArrowRightLeft, description: "One-off data migrations, each with a dry run and an execute." },
