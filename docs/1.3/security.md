@@ -222,3 +222,9 @@ can't mint tokens.
 `src/utils/safePath.ts` checks containment lexically. A symlink inside the root can
 point outside it. Resolve with `realpath` before the containment check. Unverified
 whether anything exploitable relies on it today; fixing it is cheap and S2 needs it.
+
+**Status: done.** `resolveContainedPath` resolves the deepest existing part of the path
+with `realpath` and refuses a dangling symlink. The compose policy uses the same check
+for mounts, build contexts and secret files, so a link out of the project no longer
+passes as "inside". Not covered: the managed-mount migration reads each source as the
+Docker daemon sees it and does not follow links itself.
