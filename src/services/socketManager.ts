@@ -5,6 +5,7 @@ import { getSystemSnapshot } from "../routes/system";
 import { getHardwareSnapshot } from "../routes/hardware";
 import { setRealtimeServer } from "./realtime";
 import { verifyStoredAuthToken } from "./authTokens";
+import { isSameOrigin, readCookie, SESSION_COOKIE } from "./sessionCookie";
 import { actionRegistry, dockerPruneKey, nginxKey, projectRepoKey, projectSslKeyPrefix } from "./actionRegistry";
 import { attachDomains } from "./projectDomains";
 import { bindDockerShellEvents } from "./dockerShellSocket";
@@ -58,7 +59,11 @@ export class SocketManager {
   private applyAuth(): void {
     this.io.use((socket: Socket, next) => {
       try {
-        const token = (socket.handshake.auth as { token?: string }).token;
+        const explicit = (socket.handshake.auth as { token?: string }).token;
+        const cookie = explicit ? null : readCookie(socket.handshake.headers.cookie, SESSION_COOKIE);
+        // A cookie is ambient, so a browser's handshake must come from this host (S6).
+        if (cookie && !isSameOrigin(socket.handshake.headers.origin, socket.handshake.headers.host)) throw new Error("Cross-origin");
+        const token = explicit ?? cookie;
         if (!token) throw new Error("No token");
         const verified = verifyStoredAuthToken(token);
         if (!verified) throw new Error("Invalid token");

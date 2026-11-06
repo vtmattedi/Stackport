@@ -39,7 +39,7 @@ app.use(
   cors({
     origin: config.allowedOrigins.length > 0 ? config.allowedOrigins : false,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
     exposedHeaders: ["X-Auth-Token"],
   })
 );

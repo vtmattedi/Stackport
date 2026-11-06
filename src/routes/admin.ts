@@ -6,6 +6,7 @@ import { getDatabase } from "../config/database";
 import { config } from "../config/env";
 import { auditLog } from "../utils/logger";
 import { invalidateAuthTokens } from "../services/authTokens";
+import { buildClearedSessionCookie } from "../services/sessionCookie";
 import { disconnectUserSockets } from "../services/realtime";
 
 const router = Router();
@@ -59,6 +60,7 @@ router.post("/change-password", requireAuth, async (req: Request, res: Response)
   invalidateAuthTokens(username);
   disconnectUserSockets(username, "password-change");
   res.setHeader("X-Auth-Revoked", "1");
+  res.append("Set-Cookie", buildClearedSessionCookie(req.secure));
 
   auditLog(username, "admin.change-password", "admin", "ok");
   res.json({ ok: true });

@@ -6,6 +6,7 @@ import { authLimiter } from "../middleware/rateLimiter";
 import { getActivePasswordHash } from "./admin";
 import { requireAuth } from "../middleware/auth";
 import { invalidateAuthToken, issueAuthToken } from "../services/authTokens";
+import { buildClearedSessionCookie, buildSessionCookie, CLIENT_HEADER, CLIENT_HEADER_VALUE } from "../services/sessionCookie";
 import { getActiveAdminUsername } from "../services/installation";
 
 const router = Router();
@@ -32,7 +33,11 @@ router.post("/login", authLimiter, async (req: Request, res: Response): Promise<
   const token = issueAuthToken(username);
 
   auditLog(username, "login", "admin", "ok", { ip: req.ip });
-  res.json({ token, expiresInHours: config.sessionIdleHours, maxHours: config.sessionMaxHours });
+  res.append("Set-Cookie", buildSessionCookie(token, { secure: req.secure, maxAgeSeconds: config.sessionIdleHours * 3600 }));
+  // The web app lives on the cookie and never sees the token; scripts that send no
+  // client header get it to use as a bearer token.
+  const fromWebApp = req.get(CLIENT_HEADER) === CLIENT_HEADER_VALUE;
+  res.json({ ...(fromWebApp ? {} : { token }), expiresInHours: config.sessionIdleHours, maxHours: config.sessionMaxHours });
 });
 
 router.post("/logout", requireAuth, (req: Request, res: Response): void => {
@@ -40,6 +45,7 @@ router.post("/logout", requireAuth, (req: Request, res: Response): void => {
     invalidateAuthToken(req.authTokenId);
   }
   auditLog(req.user ?? "unknown", "logout", "admin", "ok", { ip: req.ip });
+  res.append("Set-Cookie", buildClearedSessionCookie(req.secure));
   res.status(204).end();
 });
 
