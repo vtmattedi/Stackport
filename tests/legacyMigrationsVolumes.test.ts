@@ -6,13 +6,14 @@ const REPO = "/app/data/repos/7-shop";
 const project = { id: 7, name: "shop", composeFile: "compose.yml", repoPath: REPO, composeProject: "7-shop" };
 const resolved = { services: { web: { volumes: [{ type: "bind", source: `${REPO}/data`, target: "/data" }] } } };
 
-interface Harness { deps: VolumeMigrationDeps; calls: string[][]; made: string[]; marked: number[] }
+interface Harness { deps: VolumeMigrationDeps; calls: string[][]; made: string[]; marked: number[]; recorded: string[] }
 
 /** `present` maps a host path to what a probe of it finds ("kb entries"). */
 function harness(options: { present?: Record<string, string>; running?: boolean; resolved?: unknown | null; copyFails?: boolean; projects?: typeof project[] } = {}): Harness {
   const calls: string[][] = [];
   const made: string[] = [];
   const marked: number[] = [];
+  const recorded: string[] = [];
   const docker = async (args: string[]): Promise<DockerResult> => {
     calls.push(args);
     if (args[0] === "ps") return { code: 0, stdout: options.running ? "abc123\n" : "", stderr: "" };
@@ -31,8 +32,9 @@ function harness(options: { present?: Record<string, string>; running?: boolean;
     helperImage: async () => "stackport-stackport:latest",
     mkdir: async (p) => { made.push(p); },
     markManaged: (id) => { marked.push(id); },
+    recordCopied: (id, source, name) => { recorded.push(`${id}|${source}|${name}`); },
   };
-  return { deps, calls, made, marked };
+  return { deps, calls, made, marked, recorded };
 }
 
 const copies = (h: Harness) => h.calls.filter((c) => c.includes("cp -a /from/. /to/"));
@@ -63,6 +65,7 @@ test("execute copies into the managed directory, keeps the original, and switche
   assert.ok(copy.includes("type=bind,src=/var/lib/stackport/data/volumes/7/data,dst=/to"), "the target is the host path");
   assert.equal(copy[copy.length - 1], "cp -a /from/. /to/", "the script only copies; nothing is deleted");
   assert.deepEqual(h.marked, [7]);
+  assert.deepEqual(h.recorded, [`7|${REPO}/data|data`], "where the data came from is remembered for the cleanup");
 });
 
 test("data found in two places blocks the project instead of guessing", async () => {

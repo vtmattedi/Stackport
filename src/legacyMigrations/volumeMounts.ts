@@ -27,6 +27,8 @@ export interface VolumeMigrationDeps {
   helperImage(): Promise<string>;
   mkdir(path: string): Promise<void>;
   markManaged(projectId: number): void;
+  /** Remembers where a mount's data was copied from, for the cleanup migration. */
+  recordCopied(projectId: number, sourcePath: string, name: string): void;
 }
 
 interface Probe { exists: boolean; kb: number; entries: number }
@@ -109,6 +111,7 @@ export async function runVolumeMigration(mode: MigrationMode, deps: VolumeMigrat
         projectItems.push({ status: "error", label: `${entry.name}: copy failed`, detail: copy.stderr.trim().slice(0, 500) || `exit code ${copy.code}` });
         problem = true;
       } else {
+        deps.recordCopied(project.id, from, entry.name);
         projectItems.push({ status: "ok", label: `${entry.name}: copied ${formatKb(size.kb)}`, detail: `${from} to ${entry.managedHostPath}. The original was left in place.` });
       }
     }
@@ -166,6 +169,9 @@ function defaultDeps(): VolumeMigrationDeps {
     },
     mkdir: async (target) => { await fs.mkdir(target, { recursive: true }); },
     markManaged: (projectId) => { getDatabase().prepare("UPDATE projects SET volumes_managed = 1 WHERE id = ?").run(projectId); },
+    recordCopied: (projectId, sourcePath, name) => {
+      getDatabase().prepare("INSERT OR REPLACE INTO legacy_mount_sources (project_id, source_path, managed_name, removed_at) VALUES (?, ?, ?, NULL)").run(projectId, sourcePath, name);
+    },
   };
 }
 
