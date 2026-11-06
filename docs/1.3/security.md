@@ -39,6 +39,10 @@ in Stackport's environment would get an empty value. Before enforcing, log every
 `${VAR}` a deploy can no longer resolve (the Compose variables scan from PR 15 already
 lists them), so a breakage is visible.
 
+**Status: done.** `docker compose` now gets only the allowlisted variables
+(`buildDockerEnv`), and a deploy warns by name about each `${VAR}` that Stackport's
+environment used to supply.
+
 **Also do.** Rotate `JWT_SECRET` (and with it, re-encrypt credentials: see S7) on any
 install where an untrusted repository has been deployed.
 
