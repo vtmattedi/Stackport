@@ -19,7 +19,7 @@ export interface MigrationJob {
   error: string | null;
 }
 
-export interface MigrationInfo { id: string; title: string; description: string; job: MigrationJob }
+export interface MigrationInfo { id: string; title: string; description: string; executeWarning: string; destructive: boolean; job: MigrationJob }
 
 async function call<T>(path: string, method: "GET" | "POST"): Promise<T> {
   const token = getToken();

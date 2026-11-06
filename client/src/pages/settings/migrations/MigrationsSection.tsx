@@ -10,11 +10,6 @@ import styles from "./MigrationsSection.module.scss";
 
 const STATUS_ICON: Record<ReportStatus, typeof Info> = { ok: CheckCircle2, warn: AlertTriangle, error: AlertCircle, info: Info };
 
-const EXECUTE_WARNING =
-  "Copies each project's data into its Stackport-owned directory and switches the project over. " +
-  "The originals are not touched. Stop the projects first so the copy is consistent, and redeploy them afterwards. " +
-  "Run the dry run first if you have not.";
-
 /** TEMPORARY: one-off migrations with a dry run and an execute. Delete this folder when
  *  every install has run them (see src/legacyMigrations/types.ts on the server). */
 export default function MigrationsSection() {
@@ -42,7 +37,12 @@ export default function MigrationsSection() {
 
   async function start(migration: MigrationInfo, mode: MigrationMode) {
     if (mode === "execute") {
-      const ok = await confirmDialog({ title: `Execute "${migration.title}"?`, description: EXECUTE_WARNING, confirmLabel: "Execute" });
+      const ok = await confirmDialog({
+        title: `Execute "${migration.title}"?`,
+        description: migration.executeWarning,
+        confirmLabel: "Execute",
+        destructive: migration.destructive,
+      });
       if (!ok) return;
     }
     try {
