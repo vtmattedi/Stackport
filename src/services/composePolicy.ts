@@ -38,6 +38,9 @@ function longFormVolumeHostPath(entry: Record<string, unknown>): string | null {
 /** One rule a service breaks, with what to change. `key` is the Compose key under
  *  the service (`ports`, `volumes`, ...). */
 export interface PolicyViolation {
+  /** Top-level section the entry sits in; absent means `services`. */
+  section?: "volumes" | "secrets" | "configs" | "networks";
+  /** The service, or the entry name when `section` is set. */
   service: string;
   key: string;
   problem: string;
@@ -46,7 +49,7 @@ export interface PolicyViolation {
 
 /** The single-line form used in deploy logs. */
 export function formatPolicyViolation(v: PolicyViolation): string {
-  return `services.${v.service}.${v.key}: ${v.problem} ${v.fix}`;
+  return `${v.section ?? "services"}.${v.service}.${v.key}: ${v.problem} ${v.fix}`;
 }
 
 function checkService(name: string, service: Record<string, unknown>, violations: PolicyViolation[]): void {
@@ -141,7 +144,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
-type Add = (service: string, key: string, problem: string, fix: string) => void;
+type Add = (service: string, key: string, problem: string, fix: string, section?: PolicyViolation["section"]) => void;
 
 /** Bind mounts must stay inside the project folder (a, S1). Named volumes and tmpfs
  *  are fine; any other mount type is not on the allowlist. */
@@ -162,6 +165,29 @@ function checkResolvedVolumes(name: string, service: Record<string, unknown>, co
   }
 }
 
+/** A named volume is only a Docker-managed directory unless its driver says otherwise:
+ *  the `local` driver can bind any host path (`type: none, o: bind, device: /`) and a
+ *  plugin driver is code Stackport has not reviewed. Only plain `local` volumes, and
+ *  local ones backed by a network or tmpfs filesystem, are allowed (c, S1). */
+function checkTopLevelVolumes(volumes: Record<string, unknown> | null, add: Add): void {
+  for (const [name, value] of Object.entries(volumes ?? {})) {
+    const volume = asRecord(value);
+    if (!volume) continue;
+    const fix = "Remove driver and driver_opts, or use a plain named volume.";
+    const driver = volume["driver"];
+    if (typeof driver === "string" && driver !== "local") {
+      add(name, "driver", `volume driver "${driver}" is not allowed for managed projects.`, fix, "volumes");
+    }
+    const opts = asRecord(volume["driver_opts"]);
+    if (!opts) continue;
+    const type = String(opts["type"] ?? "").toLowerCase();
+    const options = String(opts["o"] ?? "").toLowerCase().split(",").map((o) => o.trim());
+    if (type === "none" || type === "bind" || options.includes("bind") || options.includes("rbind")) {
+      add(name, "driver_opts", "this volume bind-mounts a host path, which is not allowed for managed projects.", fix, "volumes");
+    }
+  }
+}
+
 /** Checks the output of `docker compose config --format json`: variables resolved,
  *  `include:` and `extends:` merged, so a value the raw YAML only spelled indirectly
  *  (`${PRIV:-true}`, an included file) is seen as Compose will run it. Anything the
@@ -171,13 +197,14 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
   // Resolved values take the same denylist checks as the raw file; the allowlist rules
   // below close what a denylist cannot.
   const violations = [...validateComposePolicy(resolved).violations];
-  const add: Add = (service, key, problem, fix) => { violations.push({ service, key, problem, fix }); };
+  const add: Add = (service, key, problem, fix, section) => { violations.push({ ...(section ? { section } : {}), service, key, problem, fix }); };
   const services = asRecord(asRecord(resolved)?.["services"]);
   for (const [name, value] of Object.entries(services ?? {})) {
     const service = asRecord(value);
     if (!service) continue;
     checkResolvedVolumes(name, service, context, add);
   }
+  checkTopLevelVolumes(asRecord(asRecord(resolved)?.["volumes"]), add);
   // The denylist already flags dangerous host paths; keep one violation per mount.
   const seen = new Set<string>();
   const unique = violations.filter((v) => {

@@ -79,3 +79,26 @@ test("b: privileged chosen through a variable is caught once it is resolved", ()
   assert.deepEqual(keys(resolvedWith({ privileged: true })), ["web.privileged"]);
   assert.deepEqual(keys(resolvedWith({ privileged: false })), []);
 });
+
+test("c: a named volume that bind-mounts the host through driver_opts is refused", () => {
+  const doc = { services: { web: { image: "nginx" } }, volumes: { root: { name: "p_root", driver_opts: { type: "none", o: "bind", device: "/" } } } };
+  const [v] = validateResolvedComposePolicy(doc, POSIX).violations;
+  assert.equal(formatPolicyViolation(v).split(":")[0], "volumes.root.driver_opts");
+  assert.equal(validateResolvedComposePolicy(doc, POSIX).violations.length, 1);
+});
+
+test("c: rbind, type bind and plugin drivers are refused too", () => {
+  const volumes = (opts: Record<string, unknown>) => ({ services: {}, volumes: { v: opts } });
+  assert.equal(validateResolvedComposePolicy(volumes({ driver_opts: { o: "rw,rbind", device: "/etc" } }), POSIX).ok, false);
+  assert.equal(validateResolvedComposePolicy(volumes({ driver_opts: { type: "bind", device: "/etc" } }), POSIX).ok, false);
+  assert.equal(validateResolvedComposePolicy(volumes({ driver: "rclone" }), POSIX).ok, false);
+});
+
+test("c: plain, local and network-backed volumes pass", () => {
+  const doc = { services: {}, volumes: {
+    plain: { name: "p_plain" },
+    local: { driver: "local" },
+    share: { driver: "local", driver_opts: { type: "nfs", o: "addr=10.0.0.5,rw", device: ":/exports/data" } },
+  } };
+  assert.equal(validateResolvedComposePolicy(doc, POSIX).ok, true);
+});
