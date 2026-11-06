@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
-    networks: [default, stackport-proxy]
+    networks: [default] # not stackport-proxy: managed projects share that network and must not reach the API directly (S3)
     volumes:
       # The app user receives Docker socket access through docker-entrypoint.sh.
       - /var/run/docker.sock:/var/run/docker.sock
