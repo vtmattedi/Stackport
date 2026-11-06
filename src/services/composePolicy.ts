@@ -165,6 +165,49 @@ function checkResolvedVolumes(name: string, service: Record<string, unknown>, co
   }
 }
 
+/** Capabilities a service may add. These are the ones ordinary servers need; each of
+ *  the rest (SYS_PTRACE, SYS_MODULE, SYS_RAWIO, DAC_READ_SEARCH, BPF, ...) lets a
+ *  container read or change what belongs to the host (e, S1). */
+const ALLOWED_CAPS = new Set([
+  "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "SETGID", "SETUID", "SETPCAP",
+  "NET_BIND_SERVICE", "NET_RAW", "NET_ADMIN", "SYS_CHROOT", "MKNOD", "AUDIT_WRITE", "SETFCAP",
+]);
+
+/** Only `no-new-privileges` may be set; seccomp, AppArmor and SELinux options can switch
+ *  the confinement off. */
+const ALLOWED_SECURITY_OPT = /^no-new-privileges([:=]true)?$/i;
+
+/** Capabilities, security options and namespace sharing (e, S1). */
+function checkResolvedHardening(name: string, service: Record<string, unknown>, add: Add): void {
+  const capAdd = service["cap_add"];
+  if (Array.isArray(capAdd)) {
+    for (const cap of capAdd) {
+      if (typeof cap !== "string") continue;
+      const normalized = cap.toUpperCase().replace(/^CAP_/, "");
+      // ALL and SYS_ADMIN are already reported by the denylist.
+      if (!ALLOWED_CAPS.has(normalized) && !DANGEROUS_CAPS.has(normalized)) {
+        add(name, "cap_add", `capability "${cap}" is not allowed for managed projects.`, `Remove "${cap}"; only ${[...ALLOWED_CAPS].join(", ")} can be added.`);
+      }
+    }
+  }
+  const securityOpt = service["security_opt"];
+  if (Array.isArray(securityOpt)) {
+    for (const option of securityOpt) {
+      if (typeof option === "string" && !ALLOWED_SECURITY_OPT.test(option)) {
+        add(name, "security_opt", `security option "${option}" is not allowed for managed projects.`, 'Remove it; only "no-new-privileges" can be set.');
+      }
+    }
+  }
+  if (typeof service["userns_mode"] === "string" && service["userns_mode"] !== "") {
+    add(name, "userns_mode", `"userns_mode: ${service["userns_mode"]}" is not allowed for managed projects.`, 'Remove "userns_mode".');
+  }
+  for (const field of ["uts", "cgroup"] as const) {
+    if (service[field] === "host") {
+      add(name, field, `"${field}: host" is not allowed for managed projects.`, `Remove "${field}: host".`);
+    }
+  }
+}
+
 /** A named volume is only a Docker-managed directory unless its driver says otherwise:
  *  the `local` driver can bind any host path (`type: none, o: bind, device: /`) and a
  *  plugin driver is code Stackport has not reviewed. Only plain `local` volumes, and
@@ -203,6 +246,7 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
     const service = asRecord(value);
     if (!service) continue;
     checkResolvedVolumes(name, service, context, add);
+    checkResolvedHardening(name, service, add);
   }
   checkTopLevelVolumes(asRecord(asRecord(resolved)?.["volumes"]), add);
   // The denylist already flags dangerous host paths; keep one violation per mount.

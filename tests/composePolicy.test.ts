@@ -102,3 +102,21 @@ test("c: plain, local and network-backed volumes pass", () => {
   } };
   assert.equal(validateResolvedComposePolicy(doc, POSIX).ok, true);
 });
+
+test("e: capabilities outside the allowlist are refused, ordinary ones pass", () => {
+  assert.deepEqual(keys(resolvedWith({ cap_add: ["SYS_PTRACE", "SYS_MODULE", "NET_BIND_SERVICE", "CAP_CHOWN"] })), ["web.cap_add", "web.cap_add"]);
+  assert.deepEqual(keys(resolvedWith({ cap_add: ["NET_BIND_SERVICE", "CHOWN", "net_admin"] })), []);
+});
+
+test("e: SYS_ADMIN is reported once, not by both the denylist and the allowlist", () => {
+  assert.deepEqual(keys(resolvedWith({ cap_add: ["SYS_ADMIN"] })), ["web.cap_add"]);
+});
+
+test("e: security_opt that switches confinement off is refused", () => {
+  assert.deepEqual(keys(resolvedWith({ security_opt: ["seccomp:unconfined", "apparmor:unconfined", "label:disable"] })), ["web.security_opt", "web.security_opt", "web.security_opt"]);
+  assert.deepEqual(keys(resolvedWith({ security_opt: ["no-new-privileges:true"] })), []);
+});
+
+test("e: sharing the host's user, UTS or cgroup namespace is refused", () => {
+  assert.deepEqual(keys(resolvedWith({ userns_mode: "host", uts: "host", cgroup: "host" })), ["web.userns_mode", "web.uts", "web.cgroup"]);
+});
