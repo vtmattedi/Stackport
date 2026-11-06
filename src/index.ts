@@ -1,7 +1,7 @@
 import { createServer } from "http";
 import { markInterruptedActions } from "./services/actionRegistry";
 import { Server as SocketIOServer } from "socket.io";
-import app from "./app";
+import app, { trustedProxy } from "./app";
 import { config } from "./config/env";
 import { closeDatabase, initializeDatabase } from "./config/database";
 import { healthChecker } from "./services/healthChecker";
@@ -64,6 +64,7 @@ try {
     }, 10_000).unref();
   }
 
+  trustedProxy.start();
   httpServer.listen(config.port, () => {
     // eslint-disable-next-line no-console
     console.log(`[server] running on port ${config.port} (${config.nodeEnv})`);

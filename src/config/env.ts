@@ -39,6 +39,8 @@ export const config = {
   sqlitePath: process.env["SQLITE_PATH"] ?? "./data/stackport.sqlite",
   deployRoot: process.env["DEPLOY_ROOT"] ?? "./data/repos",
   nginxPath: process.env["NGINX_PATH"] ?? "/etc/nginx",
+  // The reverse proxy that is allowed to set X-Forwarded-For (services/trustedProxy.ts).
+  trustedProxyHost: process.env["TRUSTED_PROXY_HOST"] ?? "stackport-nginx",
   appServiceName: process.env["APP_SERVICE_NAME"] ?? "stackport",
   // Real host checkout path used by Docker Compose to resolve system mounts.
   hostProjectRoot: process.env["HOST_PROJECT_ROOT"] ?? process.cwd(),
