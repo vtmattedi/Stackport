@@ -125,13 +125,64 @@ export interface ResolvedPolicyContext {
   projectDir: string;
 }
 
+/** True when `target` is `dir` or inside it. Compose resolves relative paths to
+ *  absolute ones in the resolved config, using the host's path style, so both POSIX and
+ *  Windows paths are handled and compared case-insensitively on Windows. */
+function isInsideDir(target: string, dir: string): boolean {
+  const win = /^[A-Za-z]:[\\/]/.test(dir);
+  const lib = win ? path.win32 : path.posix;
+  const norm = (value: string): string => (win ? lib.normalize(value).toLowerCase() : lib.normalize(value));
+  if (!lib.isAbsolute(target)) return false;
+  const relative = lib.relative(norm(dir), norm(target));
+  return relative === "" || (!relative.startsWith("..") && !lib.isAbsolute(relative));
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+type Add = (service: string, key: string, problem: string, fix: string) => void;
+
+/** Bind mounts must stay inside the project folder (a, S1). Named volumes and tmpfs
+ *  are fine; any other mount type is not on the allowlist. */
+function checkResolvedVolumes(name: string, service: Record<string, unknown>, context: ResolvedPolicyContext, add: Add): void {
+  const volumes = service["volumes"];
+  if (!Array.isArray(volumes)) return;
+  for (const entry of volumes) {
+    const mount = asRecord(entry);
+    if (!mount) continue;
+    const type = mount["type"];
+    if (type === "volume" || type === "tmpfs") continue;
+    const source = typeof mount["source"] === "string" ? mount["source"] : "";
+    if (type !== "bind") {
+      add(name, "volumes", `mount type "${String(type)}" is not allowed for managed projects.`, "Use a named volume or a path inside the project folder.");
+    } else if (!isInsideDir(source, context.projectDir) && !isDangerousHostPath(source)) { // the denylist already reports those
+      add(name, "volumes", `mounting host path "${source}" is not allowed for managed projects: it is outside the project folder.`, "Use a named volume or a path inside the project folder.");
+    }
+  }
+}
+
 /** Checks the output of `docker compose config --format json`: variables resolved,
  *  `include:` and `extends:` merged, so a value the raw YAML only spelled indirectly
  *  (`${PRIV:-true}`, an included file) is seen as Compose will run it. Anything the
  *  rules below do not allow is a violation (S1). The raw-YAML check above stays in
  *  place as the first line of defence. */
-export function validateResolvedComposePolicy(resolved: unknown, _context: ResolvedPolicyContext): { ok: boolean; violations: PolicyViolation[] } {
+export function validateResolvedComposePolicy(resolved: unknown, context: ResolvedPolicyContext): { ok: boolean; violations: PolicyViolation[] } {
   // Resolved values take the same denylist checks as the raw file; the allowlist rules
-  // added below close what a denylist cannot.
-  return validateComposePolicy(resolved);
+  // below close what a denylist cannot.
+  const violations = [...validateComposePolicy(resolved).violations];
+  const add: Add = (service, key, problem, fix) => { violations.push({ service, key, problem, fix }); };
+  const services = asRecord(asRecord(resolved)?.["services"]);
+  for (const [name, value] of Object.entries(services ?? {})) {
+    const service = asRecord(value);
+    if (!service) continue;
+    checkResolvedVolumes(name, service, context, add);
+  }
+  // The denylist already flags dangerous host paths; keep one violation per mount.
+  const seen = new Set<string>();
+  const unique = violations.filter((v) => {
+    const key = `${v.service}|${v.key}|${v.problem}`;
+    return seen.has(key) ? false : (seen.add(key), true);
+  });
+  return { ok: unique.length === 0, violations: unique };
 }
