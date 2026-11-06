@@ -141,3 +141,16 @@ test("f: an additional build context is held to the same rule", () => {
 test("f: a Windows host path is recognised as a local build context", () => {
   assert.deepEqual(keys(resolvedWith({ build: { context: "C:\\Windows" } })), ["web.build"]);
 });
+
+test("g: a secret or config that reads a file outside the project is refused", () => {
+  const doc = { services: { web: { image: "nginx" } },
+    secrets: { shadow: { name: "p_shadow", file: "/etc/shadow" }, ok: { file: "/srv/stackport/7-app/secrets/api" } },
+    configs: { hosts: { file: "/etc/hosts" } } };
+  const found = validateResolvedComposePolicy(doc, POSIX).violations.map(formatPolicyViolation).map((line) => line.split(":")[0]);
+  assert.deepEqual(found, ["secrets.shadow.file", "configs.hosts.file"]);
+});
+
+test("g: environment, content and external entries read nothing from the host", () => {
+  const doc = { services: {}, secrets: { token: { environment: "API_TOKEN" }, shared: { external: true } }, configs: { inline: { content: "x=1" } } };
+  assert.equal(validateResolvedComposePolicy(doc, POSIX).ok, true);
+});

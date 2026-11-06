@@ -188,6 +188,18 @@ function checkResolvedBuild(name: string, service: Record<string, unknown>, cont
   }
 }
 
+/** A secret or config backed by a file reads that file into the container, so the file
+ *  must be inside the project folder (g, S1). `environment:`, `content:` and external
+ *  entries do not read the host and are left alone. */
+function checkTopLevelFiles(section: "secrets" | "configs", entries: Record<string, unknown> | null, context: ResolvedPolicyContext, add: Add): void {
+  for (const [name, value] of Object.entries(entries ?? {})) {
+    const file = asRecord(value)?.["file"];
+    if (typeof file === "string" && !isInsideDir(file, context.projectDir)) {
+      add(name, "file", `${section.slice(0, -1)} file "${file}" is outside the project folder.`, "Keep the file inside the project folder, or use environment: or content: instead.", section);
+    }
+  }
+}
+
 /** Capabilities a service may add. These are the ones ordinary servers need; each of
  *  the rest (SYS_PTRACE, SYS_MODULE, SYS_RAWIO, DAC_READ_SEARCH, BPF, ...) lets a
  *  container read or change what belongs to the host (e, S1). */
@@ -273,6 +285,8 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
     checkResolvedBuild(name, service, context, add);
   }
   checkTopLevelVolumes(asRecord(asRecord(resolved)?.["volumes"]), add);
+  checkTopLevelFiles("secrets", asRecord(asRecord(resolved)?.["secrets"]), context, add);
+  checkTopLevelFiles("configs", asRecord(asRecord(resolved)?.["configs"]), context, add);
   // The denylist already flags dangerous host paths; keep one violation per mount.
   const seen = new Set<string>();
   const unique = violations.filter((v) => {
