@@ -1,5 +1,6 @@
 import * as path from "path";
 import { splitPortSpec } from "./composeYaml";
+import { isInsideDir } from "../utils/hostPath";
 
 /** StackPort's security/exposure boundary for managed-project compose files: the
  *  Phase 1.3 directives that let a container escape into host/StackPort authority
@@ -126,18 +127,6 @@ export function validateComposePolicy(doc: unknown): { ok: boolean; violations: 
 /** Where the project's files live; bind mounts must stay inside it. */
 export interface ResolvedPolicyContext {
   projectDir: string;
-}
-
-/** True when `target` is `dir` or inside it. Compose resolves relative paths to
- *  absolute ones in the resolved config, using the host's path style, so both POSIX and
- *  Windows paths are handled and compared case-insensitively on Windows. */
-function isInsideDir(target: string, dir: string): boolean {
-  const win = /^[A-Za-z]:[\\/]/.test(dir);
-  const lib = win ? path.win32 : path.posix;
-  const norm = (value: string): string => (win ? lib.normalize(value).toLowerCase() : lib.normalize(value));
-  if (!lib.isAbsolute(target)) return false;
-  const relative = lib.relative(norm(dir), norm(target));
-  return relative === "" || (!relative.startsWith("..") && !lib.isAbsolute(relative));
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
