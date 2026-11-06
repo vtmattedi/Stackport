@@ -12,6 +12,7 @@ import { actionRegistry, projectRepoKey } from "./actionRegistry";
 import { loadYamlDoc } from "./composeYaml";
 import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy, type PolicyViolation } from "./composePolicy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./composeNetworking";
+import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./containerHardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./managedVolumes";
 import { listRoutedServiceNames } from "./projectDomains";
 import { ensureBuildCapacity } from "./dockerStorage";
@@ -446,6 +447,18 @@ async function prepareManagedVolumes(projectId: number, repoPath: string, compos
   return overridePath;
 }
 
+/** Writes the hardened-defaults override (S8) and returns its path, or null when the file
+ *  can't be resolved (`up` then reports why). */
+async function prepareHardening(projectId: number, repoPath: string, composeFile: string): Promise<string | null> {
+  const resolved = await resolveComposeConfig(repoPath, composeFile);
+  const override = resolved === null ? null : buildHardeningOverride(resolved, getHardeningDefaults());
+  if (override === null) return null;
+  const overridePath = path.join(deployRoot(), ".stackport", String(projectId), "hardening.override.yml");
+  await fs.mkdir(path.dirname(overridePath), { recursive: true });
+  await fs.writeFile(overridePath, override, "utf8");
+  return overridePath;
+}
+
 /** New projects reject resolved-config violations; ones that existed before S1 only warn. */
 function isComposePolicyEnforced(projectId: number): boolean {
   const row = getDatabase().prepare("SELECT compose_policy_enforced AS enforced FROM projects WHERE id = ?").get(projectId) as { enforced: number } | undefined;
@@ -492,6 +505,10 @@ async function runCompose(
   const fileArgs = composeFile ? ["-f", composeFile] : [];
   if (composeFile && (args[0] === "up" || args[0] === "config") && isVolumesManaged(projectId)) {
     const override = await prepareManagedVolumes(projectId, repoPath, composeFile);
+    if (override) fileArgs.push("-f", override);
+  }
+  if (composeFile && (args[0] === "up" || args[0] === "config") && isHardeningEnabled(projectId)) {
+    const override = await prepareHardening(projectId, repoPath, composeFile);
     if (override) fileArgs.push("-f", override);
   }
   const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, ...fileArgs, ...args], {
