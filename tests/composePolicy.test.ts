@@ -154,3 +154,26 @@ test("g: environment, content and external entries read nothing from the host", 
   const doc = { services: {}, secrets: { token: { environment: "API_TOKEN" }, shared: { external: true } }, configs: { inline: { content: "x=1" } } };
   assert.equal(validateResolvedComposePolicy(doc, POSIX).ok, true);
 });
+
+test("h: joining Stackport's own container is refused in every form", () => {
+  const doc = { services: {
+    web: { image: "x", volumes_from: ["container:stackport"], network_mode: "container:stackport", pid: "container:stackport", ipc: "container:stackport" },
+  } };
+  assert.deepEqual(keys(doc), ["web.network_mode", "web.pid", "web.ipc", "web.volumes_from"]);
+});
+
+test("h: sharing another service of the same project passes", () => {
+  const doc = { services: {
+    db: { image: "postgres" },
+    web: { image: "x", volumes_from: ["db", "db:ro"], network_mode: "service:db", pid: "service:db" },
+  } };
+  assert.deepEqual(keys(doc), []);
+});
+
+test("h: a service name that is not in the project is refused", () => {
+  assert.deepEqual(keys({ services: { web: { image: "x", network_mode: "service:ghost", volumes_from: ["ghost"] } } }), ["web.network_mode", "web.volumes_from"]);
+});
+
+test("h: network_mode host is reported once, by the denylist", () => {
+  assert.deepEqual(keys(resolvedWith({ network_mode: "host" })), ["web.network_mode"]);
+});

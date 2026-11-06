@@ -165,6 +165,35 @@ function checkResolvedVolumes(name: string, service: Record<string, unknown>, co
   }
 }
 
+/** A service may share another service of the same project (`service:name`), never a
+ *  container outside it: `container:stackport` would join Stackport's own network,
+ *  PID or volumes, and with them the Docker socket and its secrets (h, S1). */
+function checkResolvedSharing(name: string, service: Record<string, unknown>, serviceNames: Set<string>, add: Add): void {
+  const sameProject = (value: string): boolean => value.startsWith("service:") && serviceNames.has(value.slice("service:".length));
+  const fields: [string, readonly string[]][] = [
+    ["network_mode", ["", "bridge", "default", "none", "host"]],
+    ["pid", ["", "host"]],
+    ["ipc", ["", "private", "shareable", "none", "host"]],
+  ];
+  for (const [field, plain] of fields) {
+    const value = service[field];
+    // "host" is already reported by the denylist.
+    if (typeof value === "string" && !plain.includes(value) && !sameProject(value)) {
+      add(name, field, `"${field}: ${value}" is not allowed for managed projects.`, `Use "service:<name>" for a service in this project, or remove "${field}".`);
+    }
+  }
+  const volumesFrom = service["volumes_from"];
+  if (Array.isArray(volumesFrom)) {
+    for (const entry of volumesFrom) {
+      if (typeof entry !== "string") continue;
+      const source = entry.split(":")[0];
+      if (source === "container" || !serviceNames.has(source)) {
+        add(name, "volumes_from", `"volumes_from: ${entry}" is not allowed for managed projects.`, "Name a service in this project, not a container.");
+      }
+    }
+  }
+}
+
 /** A path on the host, as opposed to a URL, `service:name` or `docker-image://` reference. */
 function isLocalPath(value: string): boolean {
   return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
@@ -277,12 +306,14 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
   const violations = [...validateComposePolicy(resolved).violations];
   const add: Add = (service, key, problem, fix, section) => { violations.push({ ...(section ? { section } : {}), service, key, problem, fix }); };
   const services = asRecord(asRecord(resolved)?.["services"]);
+  const serviceNames = new Set(Object.keys(services ?? {}));
   for (const [name, value] of Object.entries(services ?? {})) {
     const service = asRecord(value);
     if (!service) continue;
     checkResolvedVolumes(name, service, context, add);
     checkResolvedHardening(name, service, add);
     checkResolvedBuild(name, service, context, add);
+    checkResolvedSharing(name, service, serviceNames, add);
   }
   checkTopLevelVolumes(asRecord(asRecord(resolved)?.["volumes"]), add);
   checkTopLevelFiles("secrets", asRecord(asRecord(resolved)?.["secrets"]), context, add);
