@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/services/composePolicy";
 import { dumpYamlDoc, loadYamlDoc } from "../src/services/composeYaml";
+import { buildHardeningOverride, DEFAULT_HARDENING } from "../src/services/containerHardening";
 
 /** These run real `docker compose config`, the same command a deploy resolves the file
  *  with, so they prove the policy sees what Compose will run. Skipped without Docker. */
@@ -58,5 +59,20 @@ test("S2: an override replaces a bind source and keeps the mount's other setting
     const data = volumes.find((v) => v.target === "/data");
     assert.equal(path.normalize(data?.source ?? ""), path.normalize(managed));
     assert.equal(volumes.find((v) => v.target === "/conf")?.read_only, true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("S8: the hardening override adds no-new-privileges and limits without dropping the file's own settings", { skip }, () => {
+  const { dir, resolved } = resolve({
+    "compose.yml": "services:\n  web:\n    image: alpine\n    security_opt: [\"label:type:foo_t\"]\n    mem_limit: 2g\n  worker:\n    image: alpine\n",
+  });
+  try {
+    fs.writeFileSync(path.join(dir, "hardening.yml"), buildHardeningOverride(resolved, DEFAULT_HARDENING) ?? "");
+    const out = execFileSync("docker", ["compose", "-f", "compose.yml", "-f", "hardening.yml", "config", "--format", "json"], { cwd: dir, encoding: "utf8" });
+    const services = (JSON.parse(out) as { services: Record<string, { security_opt?: string[]; mem_limit?: string | number; pids_limit?: number }> }).services;
+    assert.deepEqual([...(services["web"].security_opt ?? [])].sort(), ["label:type:foo_t", "no-new-privileges:true"]);
+    assert.equal(Number(services["web"].mem_limit), 2 * 1024 * 1024 * 1024, "the file's own memory limit wins");
+    assert.equal(services["web"].pids_limit, 512);
+    assert.equal(Number(services["worker"].mem_limit), 1024 * 1024 * 1024);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
