@@ -10,12 +10,14 @@ function libFor(reference: string): { lib: typeof path.posix; win: boolean } {
 /** `target` relative to `dir` (case-insensitive for Windows paths), or null when
  *  `target` is not `dir` or inside it. An empty string means they are the same. */
 export function relativeInside(target: string, dir: string): string | null {
-  const { lib, win } = libFor(dir);
+  const { lib } = libFor(dir);
   if (!lib.isAbsolute(target)) return null;
-  const norm = (value: string): string => (win ? lib.normalize(value).toLowerCase() : lib.normalize(value));
-  const relative = lib.relative(norm(dir), norm(target));
+  // win32.relative compares case-insensitively but keeps the case of `target`, so the result can be re-rooted as it is.
+  const relative = lib.relative(lib.normalize(dir), lib.normalize(target));
   if (relative === "") return "";
-  return relative.startsWith("..") || lib.isAbsolute(relative) ? null : relative;
+  // Only ".." as a whole segment leaves the directory; a child called "..data" is inside it.
+  const leaves = relative === ".." || relative.startsWith(`..${lib.sep}`);
+  return leaves || lib.isAbsolute(relative) ? null : relative;
 }
 
 /** True when `target` is `dir` or inside it. */
