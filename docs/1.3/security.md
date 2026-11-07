@@ -96,8 +96,13 @@ config`, so a service behind `profiles:` is checked too), and the same result fe
 mount rewrite and the hardening. A project that enforces the policy is refused when the file
 cannot be resolved (error, timeout, output over 32 MB); older projects get a warning.
 
-Not covered: external volumes and networks (they refer to something that already
-exists on the host), and the UI's policy panel still shows only the raw-file check.
+Also refused, found in review: any file Compose reads from Stackport's own filesystem outside
+the project (`env_file`, `include`, `extends.file`, `build.dockerfile`, checked in the raw YAML
+and in every included file, for every project, because an absolute `env_file: /app/.env` copied
+the app's secrets into a service), external networks other than `stackport-proxy` and networks
+or volumes that do not carry the project's name (a service could join `stackport_default`, where
+the admin API listens, or attach to another project's volume), external volumes, and non-bridge
+network drivers. The project's policy panel shows the raw-file results too.
 
 ### S2 — Volume model: Stackport-owned mount directories · 🔴 · L · needs S1
 
@@ -126,8 +131,10 @@ daemon reads as a host path.
 - New projects are managed from the start. Existing ones (migration 009) keep their
   current mounts until **Settings > Migrations** copies their data (a helper container
   runs `cp -a`, so ownership survives), leaves the originals in place, and switches
-  them over. It has a dry run, blocks a project on a failed copy or on data found in two
-  places, and warns when containers are running. A second entry removes the original
+  them over. It has a dry run, and it skips a project whose containers are running or whose state
+  cannot be read (a copy of live data loses writes), blocks one on a failed copy, on data found in
+  two places, or on a copy that does not match the original (a read-only `diff -rq` after the copy).
+  Directory names come from the mount's path alone (`<path>-<hash>`), so they never change. A second entry removes the original
   directories afterwards, once the managed copy holds files and no running container
   still mounts the original. The page is temporary: delete `src/modules/maintenance/migrations`,
   `client/src/pages/settings/migrations` and the lines marked TEMPORARY once installs
