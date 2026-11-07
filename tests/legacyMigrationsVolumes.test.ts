@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { managedDirectoryName } from "../src/modules/deployments/compose/managedVolumes";
 import { runVolumeMigration, VERIFY_SCRIPT, type DockerResult, type VolumeMigrationDeps } from "../src/modules/maintenance/migrations/volumeMounts";
 
 const REPO = "/app/data/repos/7-shop";
+const DATA_DIR = managedDirectoryName("data");
 const project = { id: 7, name: "shop", composeFile: "compose.yml", repoPath: REPO, composeProject: "7-shop" };
 const resolved = { services: { web: { volumes: [{ type: "bind", source: `${REPO}/data`, target: "/data" }] } } };
 
@@ -51,7 +53,7 @@ test("a dry run reports what it would copy and changes nothing", async () => {
   const h = harness({ present: { [`${REPO}/data`]: "2048 12" } });
   const report = await runVolumeMigration("dry-run", h.deps);
   assert.match(report.summary, /1 project would be switched, 0 blocked/);
-  assert.match(report.items.map((i) => i.label).join("\n"), /data: would copy 2\.0 MB/);
+  assert.match(report.items.map((i) => i.label).join("\n"), /data-[0-9a-f]{8}: would copy 2\.0 MB/);
   assert.deepEqual(copies(h), []);
   assert.deepEqual(h.made, []);
   assert.deepEqual(h.marked, []);
@@ -61,14 +63,14 @@ test("execute copies into the managed directory, keeps the original, and switche
   const h = harness({ present: { [`${REPO}/data`]: "2048 12" } });
   const report = await runVolumeMigration("execute", h.deps);
   assert.match(report.summary, /1 project switched, 0 blocked/);
-  assert.deepEqual(h.made, ["/app/data/volumes/7/data"]);
+  assert.deepEqual(h.made, [`/app/data/volumes/7/${DATA_DIR}`]);
   assert.equal(copies(h).length, 1);
   const copy = copies(h)[0];
   assert.ok(copy.includes("type=bind,src=/app/data/repos/7-shop/data,dst=/from,readonly"), "the source is mounted read-only");
-  assert.ok(copy.includes("type=bind,src=/var/lib/stackport/data/volumes/7/data,dst=/to"), "the target is the host path");
+  assert.ok(copy.includes(`type=bind,src=/var/lib/stackport/data/volumes/7/${DATA_DIR},dst=/to`), "the target is the host path");
   assert.equal(copy[copy.length - 1], "cp -a /from/. /to/", "the script only copies; nothing is deleted");
   assert.deepEqual(h.marked, [7]);
-  assert.deepEqual(h.recorded, [`7|${REPO}/data|data`], "where the data came from is remembered for the cleanup");
+  assert.deepEqual(h.recorded, [`7|${REPO}/data|${DATA_DIR}`], "where the data came from is remembered for the cleanup");
 });
 
 test("data found in two places blocks the project instead of guessing", async () => {
@@ -97,7 +99,7 @@ test("a project that cannot be resolved is blocked, not switched", async () => {
 test("a mount with no data yet starts empty and the project still switches", async () => {
   const h = harness();
   const report = await runVolumeMigration("execute", h.deps);
-  assert.deepEqual(h.made, ["/app/data/volumes/7/data"]);
+  assert.deepEqual(h.made, [`/app/data/volumes/7/${DATA_DIR}`]);
   assert.deepEqual(copies(h), []);
   assert.deepEqual(h.marked, [7]);
   assert.equal(report.items.some((i) => /no existing data/.test(i.label)), true);
@@ -117,7 +119,7 @@ test("the copy is verified against the original, read-only, before the project i
   await runVolumeMigration("execute", h.deps);
   const verify = h.calls.find((c) => c[c.length - 1] === VERIFY_SCRIPT);
   assert.ok(verify, "a verification ran");
-  assert.ok(verify.includes("type=bind,src=/var/lib/stackport/data/volumes/7/data,dst=/to,readonly"), "both sides read-only");
+  assert.ok(verify.includes(`type=bind,src=/var/lib/stackport/data/volumes/7/${DATA_DIR},dst=/to,readonly`), "both sides read-only");
   assert.deepEqual(h.marked, [7]);
 });
 

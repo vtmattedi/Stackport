@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildVolumesOverride, managedVolumesRoot, planManagedVolumes, type PlanOptions } from "../src/modules/deployments/compose/managedVolumes";
+import { buildVolumesOverride, managedDirectoryName, managedVolumesRoot, planManagedVolumes, type PlanOptions } from "../src/modules/deployments/compose/managedVolumes";
 import { loadYamlDoc } from "../src/modules/deployments/compose/yaml";
 
 const options: PlanOptions = {
@@ -15,14 +15,15 @@ const doc = (volumes: unknown[], service = "web") => ({ services: { [service]: {
 test("a writable directory in the checkout becomes a managed directory on the host's data path", () => {
   const [entry] = planManagedVolumes(doc([bind("/app/data/repos/7-shop/data", "/data")]), options);
   assert.equal(entry.action, "managed");
-  assert.equal(entry.name, "data");
-  assert.equal(entry.managedContainerPath, "/app/data/volumes/7/data");
-  assert.equal(entry.managedHostPath, "/var/lib/stackport/data/volumes/7/data");
+  assert.match(String(entry.name), /^data-[0-9a-f]{8}$/);
+  assert.equal(entry.name, managedDirectoryName("data"));
+  assert.equal(entry.managedContainerPath, `/app/data/volumes/7/${managedDirectoryName("data")}`);
+  assert.equal(entry.managedHostPath, `/var/lib/stackport/data/volumes/7/${managedDirectoryName("data")}`);
 });
 
 test("a nested path gets a flat, safe name", () => {
   const [entry] = planManagedVolumes(doc([bind("/app/data/repos/7-shop/var/lib/my db", "/x")]), options);
-  assert.equal(entry.name, "var__lib__my_db");
+  assert.match(String(entry.name), /^var__lib__my_db-[0-9a-f]{8}$/);
 });
 
 test("two services mounting the same directory share one managed directory", () => {
@@ -31,12 +32,13 @@ test("two services mounting the same directory share one managed directory", () 
     worker: { volumes: [bind("/app/data/repos/7-shop/uploads", "/u")] },
   } };
   const plan = planManagedVolumes(resolved, options);
-  assert.deepEqual(plan.map((p) => p.name), ["uploads", "uploads"]);
+  assert.deepEqual(plan.map((p) => p.name), [managedDirectoryName("uploads"), managedDirectoryName("uploads")]);
 });
 
-test("paths that differ only by a separator get different names without any suffix", () => {
+test("paths that differ only by a separator get different names", () => {
   const plan = planManagedVolumes(doc([bind("/app/data/repos/7-shop/a-b", "/1"), bind("/app/data/repos/7-shop/a/b", "/2")]), options);
-  assert.deepEqual(plan.map((p) => p.name), ["a-b", "a__b"]);
+  assert.deepEqual(plan.map((p) => p.name), [managedDirectoryName("a-b"), managedDirectoryName("a/b")]);
+  assert.notEqual(managedDirectoryName("a-b"), managedDirectoryName("a/b"));
 });
 
 test("names that really collide each get a hash of their own path, whatever the order", () => {
@@ -75,7 +77,7 @@ test("the override points each mount at its host path and nothing else", () => {
   const plan = planManagedVolumes(doc([bind("/app/data/repos/7-shop/data", "/data"), bind("/app/data/repos/7-shop/nginx", "/n", true)]), options);
   const override = loadYamlDoc(buildVolumesOverride(plan) ?? "") as { services: { web: { volumes: unknown[] } } };
   assert.deepEqual(override.services.web.volumes, [
-    { type: "bind", source: "/var/lib/stackport/data/volumes/7/data", target: "/data" },
+    { type: "bind", source: `/var/lib/stackport/data/volumes/7/${managedDirectoryName("data")}`, target: "/data" },
     { type: "bind", source: "/var/lib/stackport/data/repos/7-shop/nginx", target: "/n", read_only: true },
   ]);
   assert.equal(buildVolumesOverride([]), null);

@@ -79,15 +79,15 @@ function segments(relative: string): string[] {
   return relative.split(/[\\/]/).filter(Boolean);
 }
 
-/** A directory name for a mount source, from its path inside the checkout. Segments are
- *  joined with "__" so `a/b` and `a-b` stay different names. */
-function managedName(relative: string): string {
-  return segments(relative).join("__").replace(/[^A-Za-z0-9._-]/g, "_") || "data";
-}
-
-/** Short and stable: the same path always gives the same suffix. */
-function pathHash(relative: string): string {
-  return createHash("sha256").update(segments(relative).join("/")).digest("hex").slice(0, 8);
+/** The managed directory's name for a mount source, from its path inside the checkout alone:
+ *  a readable form of the path plus a hash of the exact path. Nothing else goes into it (not
+ *  the other mounts, not the order they are met in), so a path keeps its directory however the
+ *  Compose file changes around it; the hash keeps paths that read alike (`my db`, `my_db`)
+ *  apart without ever renaming either of them later. */
+export function managedDirectoryName(relative: string): string {
+  const readable = segments(relative).join("__").replace(/[^A-Za-z0-9._-]/g, "_") || "data";
+  const hash = createHash("sha256").update(segments(relative).join("/")).digest("hex").slice(0, 8);
+  return `${readable}-${hash}`;
 }
 
 /** Reads the bind mounts of a resolved config that point into the project checkout and
@@ -126,19 +126,9 @@ export function planManagedVolumes(resolved: unknown, options: PlanOptions): Mou
     }
   }
 
-  // Names come from the paths alone, never from the order they were met in: a path keeps its
-  // directory when services or volumes are reordered. Only paths that would share a name
-  // (they differ in characters the name drops) get a hash of their own path added.
-  const sourcesByName = new Map<string, Set<string>>();
-  for (const [source, relative] of relativeBySource) {
-    const base = managedName(relative);
-    (sourcesByName.get(base) ?? sourcesByName.set(base, new Set()).get(base)!).add(source);
-  }
   for (const entry of plan) {
     if (entry.action !== "managed") continue;
-    const relative = relativeBySource.get(entry.source)!;
-    const base = managedName(relative);
-    const name = (sourcesByName.get(base)?.size ?? 0) > 1 ? `${base}-${pathHash(relative)}` : base;
+    const name = managedDirectoryName(relativeBySource.get(entry.source)!);
     entry.name = name;
     entry.managedContainerPath = path.posix.join(roots.container, name);
     entry.managedHostPath = path.posix.join(roots.host, name);
