@@ -22,7 +22,7 @@ test("a writable directory in the checkout becomes a managed directory on the ho
 
 test("a nested path gets a flat, safe name", () => {
   const [entry] = planManagedVolumes(doc([bind("/app/data/repos/7-shop/var/lib/my db", "/x")]), options);
-  assert.equal(entry.name, "var-lib-my_db");
+  assert.equal(entry.name, "var__lib__my_db");
 });
 
 test("two services mounting the same directory share one managed directory", () => {
@@ -34,9 +34,20 @@ test("two services mounting the same directory share one managed directory", () 
   assert.deepEqual(plan.map((p) => p.name), ["uploads", "uploads"]);
 });
 
-test("names that would collide get a suffix", () => {
+test("paths that differ only by a separator get different names without any suffix", () => {
   const plan = planManagedVolumes(doc([bind("/app/data/repos/7-shop/a-b", "/1"), bind("/app/data/repos/7-shop/a/b", "/2")]), options);
-  assert.deepEqual(plan.map((p) => p.name), ["a-b", "a-b-2"]);
+  assert.deepEqual(plan.map((p) => p.name), ["a-b", "a__b"]);
+});
+
+test("names that really collide each get a hash of their own path, whatever the order", () => {
+  const first = bind("/app/data/repos/7-shop/my db", "/1");
+  const second = bind("/app/data/repos/7-shop/my_db", "/2");
+  const forward = planManagedVolumes(doc([first, second]), options);
+  const reversed = planManagedVolumes(doc([second, first]), options);
+  const byTarget = (plan: ReturnType<typeof planManagedVolumes>) => Object.fromEntries(plan.map((p) => [p.target, p.name]));
+  assert.deepEqual(byTarget(forward), byTarget(reversed), "reordering does not swap their directories");
+  assert.match(String(byTarget(forward)["/1"]), /^my_db-[0-9a-f]{8}$/);
+  assert.notEqual(byTarget(forward)["/1"], byTarget(forward)["/2"]);
 });
 
 test("a read-only mount stays in the checkout with its path translated to the host", () => {

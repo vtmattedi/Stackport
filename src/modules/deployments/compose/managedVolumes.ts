@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import * as path from "path";
 import { dumpYamlDoc } from "./yaml";
 import { config } from "../../../config/env";
@@ -74,9 +75,19 @@ function toPosix(value: string): string {
   return /^[A-Za-z]:[\\/]/.test(value) ? value.replace(/\\/g, "/") : value;
 }
 
-/** A directory name for a mount source, from its path inside the checkout. */
+function segments(relative: string): string[] {
+  return relative.split(/[\\/]/).filter(Boolean);
+}
+
+/** A directory name for a mount source, from its path inside the checkout. Segments are
+ *  joined with "__" so `a/b` and `a-b` stay different names. */
 function managedName(relative: string): string {
-  return relative.split(/[\\/]/).filter(Boolean).join("-").replace(/[^A-Za-z0-9._-]/g, "_");
+  return segments(relative).join("__").replace(/[^A-Za-z0-9._-]/g, "_") || "data";
+}
+
+/** Short and stable: the same path always gives the same suffix. */
+function pathHash(relative: string): string {
+  return createHash("sha256").update(segments(relative).join("/")).digest("hex").slice(0, 8);
 }
 
 /** Reads the bind mounts of a resolved config that point into the project checkout and
@@ -85,8 +96,7 @@ function managedName(relative: string): string {
 export function planManagedVolumes(resolved: unknown, options: PlanOptions): MountPlanEntry[] {
   const services = (resolved as { services?: Record<string, { volumes?: unknown }> } | null)?.services ?? {};
   const roots = managedVolumesRoot(options.roots, options.projectId);
-  const nameBySource = new Map<string, string>();
-  const takenNames = new Set<string>();
+  const relativeBySource = new Map<string, string>();
   const plan: MountPlanEntry[] = [];
 
   for (const [service, definition] of Object.entries(services)) {
@@ -111,20 +121,27 @@ export function planManagedVolumes(resolved: unknown, options: PlanOptions): Mou
         continue;
       }
 
-      let name = nameBySource.get(mount.source);
-      if (!name) {
-        const wanted = managedName(relative) || "data";
-        name = wanted;
-        for (let n = 2; takenNames.has(name); n += 1) name = `${wanted}-${n}`;
-        nameBySource.set(mount.source, name);
-        takenNames.add(name);
-      }
-      plan.push({
-        ...base, action: "managed", name,
-        managedContainerPath: path.posix.join(roots.container, name),
-        managedHostPath: path.posix.join(roots.host, name),
-      });
+      relativeBySource.set(mount.source, relative);
+      plan.push({ ...base, action: "managed" });
     }
+  }
+
+  // Names come from the paths alone, never from the order they were met in: a path keeps its
+  // directory when services or volumes are reordered. Only paths that would share a name
+  // (they differ in characters the name drops) get a hash of their own path added.
+  const sourcesByName = new Map<string, Set<string>>();
+  for (const [source, relative] of relativeBySource) {
+    const base = managedName(relative);
+    (sourcesByName.get(base) ?? sourcesByName.set(base, new Set()).get(base)!).add(source);
+  }
+  for (const entry of plan) {
+    if (entry.action !== "managed") continue;
+    const relative = relativeBySource.get(entry.source)!;
+    const base = managedName(relative);
+    const name = (sourcesByName.get(base)?.size ?? 0) > 1 ? `${base}-${pathHash(relative)}` : base;
+    entry.name = name;
+    entry.managedContainerPath = path.posix.join(roots.container, name);
+    entry.managedHostPath = path.posix.join(roots.host, name);
   }
   return plan;
 }
