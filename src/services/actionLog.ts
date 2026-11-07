@@ -3,6 +3,7 @@ import path from "path";
 import { config } from "../config/env";
 import { getDatabase } from "../config/database";
 import { decryptSecret } from "../utils/crypto";
+import { readEnvVariables } from "./projectEnvValues";
 
 /**
  * Action output on disk: one file per action under <LOG_DIR>/actions, readable only by
@@ -62,13 +63,11 @@ export function collectSecrets(projectId?: number): string[] {
     try { secrets.add(decryptSecret(row.secret_enc)); } catch { /* unreadable: nothing to mask */ }
   }
   if (projectId !== undefined) {
-    const rows = db.prepare("SELECT variables_json FROM project_env_files WHERE project_id = ?").all(projectId) as { variables_json: string }[];
+    const rows = db.prepare("SELECT variables_json, variables_enc FROM project_env_files WHERE project_id = ?").all(projectId) as { variables_json: string; variables_enc: string | null }[];
     for (const row of rows) {
-      try {
-        for (const variable of JSON.parse(row.variables_json) as { value?: unknown }[]) {
-          if (typeof variable.value === "string") secrets.add(variable.value);
-        }
-      } catch { /* malformed row */ }
+      for (const variable of readEnvVariables(row)) {
+        if (typeof variable.value === "string") secrets.add(variable.value);
+      }
     }
   }
   return [...secrets].filter((s) => s.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length);

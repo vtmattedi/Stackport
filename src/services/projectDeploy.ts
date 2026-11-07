@@ -6,6 +6,10 @@ import { config } from "../config/env";
 import { getDatabase } from "../config/database";
 import { rowToProject, type Project, type ProjectRow } from "../entities/Project";
 import { decryptSecret } from "../utils/crypto";
+import { parseEnvVariables, readEnvVariables, sealEnvVariables, type EnvVariable } from "./projectEnvValues";
+
+export { parseEnvVariables };
+export type { EnvVariable };
 import { normalizeRelativePath, resolveContainedPath } from "../utils/safePath";
 import { emitProjectDeploy, type ProjectDeployEvent } from "./realtime";
 import { actionRegistry, projectRepoKey } from "./actionRegistry";
@@ -23,11 +27,6 @@ import { invalidateContainers } from "./dockerStatusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./composeIngress";
 import { dotenvKeys, extractComposeVariables, findUnresolvedStackportVariables, type ComposeVariableRef } from "./composeVariables";
 
-export interface EnvVariable {
-  key: string;
-  value: string;
-}
-
 export interface ProjectEnvFile {
   id: number;
   projectId: number;
@@ -41,7 +40,10 @@ export interface ProjectEnvFileRow {
   id: number;
   project_id: number;
   relative_path: string;
+  /** Plain values, from before they were encrypted. New rows hold '[]' here. */
   variables_json: string;
+  /** The values as an encrypted JSON array (S13). */
+  variables_enc?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -93,7 +95,6 @@ interface ComposeCommand {
   argsPrefix: string[];
 }
 
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export function deployRoot(): string {
   return path.resolve(config.deployRoot);
@@ -608,37 +609,8 @@ async function resolveDeployedComposeFile(repoPath: string, project: Project): P
   return hasSnapshot ? DEPLOYED_COMPOSE_SNAPSHOT : requireProjectComposeFile(project);
 }
 
-export function parseEnvVariables(input: unknown): EnvVariable[] | null {
-  if (!Array.isArray(input)) return null;
-  const variables: EnvVariable[] = [];
-
-  for (const item of input) {
-    if (!item || typeof item !== "object") return null;
-    const data = item as Record<string, unknown>;
-    if (typeof data["key"] !== "string" || typeof data["value"] !== "string") return null;
-    const key = data["key"].trim();
-    if (data["value"].includes("\n") || data["value"].includes("\r")) return null;
-    if (!ENV_KEY_RE.test(key)) return null;
-    variables.push({ key, value: data["value"] });
-  }
-
-  const keys = new Set<string>();
-  for (const variable of variables) {
-    if (keys.has(variable.key)) return null;
-    keys.add(variable.key);
-  }
-
-  return variables;
-}
-
 function rowToEnvFile(row: ProjectEnvFileRow): ProjectEnvFile {
-  let variables: EnvVariable[] = [];
-  try {
-    const parsed = JSON.parse(row.variables_json) as unknown;
-    variables = parseEnvVariables(parsed) ?? [];
-  } catch {
-    variables = [];
-  }
+  const variables = readEnvVariables(row);
 
   return {
     id: row.id,
@@ -830,11 +802,12 @@ export function listProjectEnvFiles(projectId: number): ProjectEnvFile[] {
 
 export function createProjectEnvFile(projectId: number, relativePath: string, variables: EnvVariable[]): ProjectEnvFile {
   const now = new Date().toISOString();
+  const sealed = sealEnvVariables(variables);
   const result = getDatabase()
     .prepare(
-      "INSERT INTO project_env_files (project_id, relative_path, variables_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO project_env_files (project_id, relative_path, variables_json, variables_enc, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
     )
-    .run(projectId, relativePath, JSON.stringify(variables), now, now);
+    .run(projectId, relativePath, sealed.json, sealed.enc, now, now);
   const row = getDatabase()
     .prepare("SELECT * FROM project_env_files WHERE id = ?")
     .get(result.lastInsertRowid) as ProjectEnvFileRow;
@@ -843,9 +816,10 @@ export function createProjectEnvFile(projectId: number, relativePath: string, va
 
 export function updateProjectEnvFile(id: number, projectId: number, relativePath: string, variables: EnvVariable[]): ProjectEnvFile | null {
   const now = new Date().toISOString();
+  const sealed = sealEnvVariables(variables);
   const result = getDatabase()
-    .prepare("UPDATE project_env_files SET relative_path = ?, variables_json = ?, updated_at = ? WHERE id = ? AND project_id = ?")
-    .run(relativePath, JSON.stringify(variables), now, id, projectId);
+    .prepare("UPDATE project_env_files SET relative_path = ?, variables_json = ?, variables_enc = ?, updated_at = ? WHERE id = ? AND project_id = ?")
+    .run(relativePath, sealed.json, sealed.enc, now, id, projectId);
   if (result.changes === 0) return null;
   const row = getDatabase()
     .prepare("SELECT * FROM project_env_files WHERE id = ? AND project_id = ?")
