@@ -16,10 +16,20 @@ import { ensureBootstrapCredential } from "./modules/identity/installation";
 import { ensureAppIngress } from "./modules/ingress/bootstrap";
 import { reconcileAllTcpExposures } from "./modules/ingress/tcp";
 import { reconcileIngressNetworks, reconcileNetworkGroups } from "./modules/deployments/operations";
+import { removeLegacyIngressNetworks } from "./modules/ingress/networks";
 import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./modules/maintenance/selfUpdate";
 import { getPushConfig } from "./modules/notifications/push/transport";
 import { pushDeliveryWorker } from "./modules/notifications/push/worker";
 import { logger } from "./shared/logger";
+
+/** In this order: services on the shared network first (nginx's config names them by alias), then the config,
+ *  then the TCP proxies, then the per-project networks 1.3.0 left behind. */
+async function startIngress(): Promise<void> {
+  await reconcileIngressNetworks();
+  await ensureAppIngress().catch((err: unknown) => console.error("[ingress] nginx config at start-up failed:", err));
+  await reconcileAllTcpExposures().catch((err: unknown) => console.error("[ingress] TCP exposures at start-up failed:", err));
+  await removeLegacyIngressNetworks();
+}
 
 try {
   initializeDatabase();
@@ -27,9 +37,7 @@ try {
   pushDeliveryWorker.start();
   markInterruptedActions();
   ensureBootstrapCredential();
-  void ensureAppIngress();
-  // Ingress networks first: the TCP proxies join them.
-  void reconcileIngressNetworks().then(() => reconcileAllTcpExposures());
+  void startIngress();
   void reconcileNetworkGroups();
   healthChecker.start();
   resetPendingAutoDeploys();

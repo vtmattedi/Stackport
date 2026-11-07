@@ -1,37 +1,46 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import { loadYamlDoc, dumpYamlDoc } from "./yaml";
-import { execFile } from "child_process";
-import { promisify } from "util";
-import { ingressAlias, ingressNetworkName } from "../../../shared/ingressNames";
+import { dockerCli, type GroupDocker } from "./groupNetworks";
+import { INGRESS_NETWORK, ingressAlias, LEGACY_INGRESS_PREFIX } from "../../../shared/ingressNames";
 
-const execFileAsync = promisify(execFile);
+/** The network nginx and every routed service share. Declared by the system stack, so nginx is always on it. */
+export const STACKPORT_PROXY_NETWORK = INGRESS_NETWORK;
 
-/** The shared network every routed project used to join (before per-project ingress networks, S9).
- *  Stackport no longer attaches it, and removes it from a Compose file an older release rewrote. */
-export const STACKPORT_PROXY_NETWORK = "stackport-proxy";
+const missing = (err: unknown): boolean => /No such (network|container|object)|is not connected|not found/i.test(err instanceof Error ? err.message : String(err));
 
-/** A route can be added after deployment. Attach existing containers to the project's ingress
- *  network immediately, under the alias nginx uses, and take them off the old shared network;
- *  applyStackportProxyNetwork keeps the connection on the next Compose recreation. */
-export async function connectRunningProxyServices(projectId: number, projectName: string, services: string[]): Promise<void> {
-  const network = ingressNetworkName(projectId);
+/** A route can be added after deployment, and a project that predates this release has to be moved over.
+ *  Puts each running container of the routed services on the shared network under the alias nginx uses
+ *  (`sp<id>-<service>`) and, for compatibility, its plain name; applyStackportProxyNetwork keeps it there
+ *  across Compose recreations. A container that sat on a per-project network from 1.3.0 is taken off it
+ *  only after it is on the shared one, so there is no moment without a route.
+ *
+ *  Returns how many containers were already or are now in place. Throws on the first Docker error so the
+ *  caller can report which project failed. */
+export async function connectRunningProxyServices(projectId: number, projectName: string, services: string[], docker: GroupDocker = dockerCli): Promise<number> {
+  let placed = 0;
   for (const service of services) {
-    const { stdout } = await execFileAsync("docker", ["ps", "-q", "--filter", `label=com.docker.compose.project=${projectName}`,
-      "--filter", `label=com.docker.compose.service=${service}`], { timeout: 12_000 });
-    for (const id of stdout.trim().split(/\s+/).filter(Boolean)) {
-      const inspected = await execFileAsync("docker", ["inspect", "--format", "{{json .NetworkSettings.Networks}}", id], { timeout: 12_000 });
-      const networks = JSON.parse(inspected.stdout) as Record<string, { Aliases?: string[] | null }>;
-      const alias = ingressAlias(projectId, service);
-      if (!networks[network]?.Aliases?.includes(alias)) {
-        if (networks[network]) await execFileAsync("docker", ["network", "disconnect", network, id], { timeout: 12_000 });
-        await execFileAsync("docker", ["network", "connect", "--alias", alias, network, id], { timeout: 12_000 });
+    const ids = (await docker(["ps", "-q", "--filter", `label=com.docker.compose.project=${projectName}`,
+      "--filter", `label=com.docker.compose.service=${service}`])).trim().split(/\s+/).filter(Boolean);
+    const alias = ingressAlias(projectId, service);
+    for (const id of ids) {
+      const networks = JSON.parse(await docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", id])) as Record<string, { Aliases?: string[] | null }>;
+      if (!networks[INGRESS_NETWORK]?.Aliases?.includes(alias)) {
+        // Docker cannot add an alias to a connected endpoint; reconnecting is a moment on this network only.
+        if (networks[INGRESS_NETWORK]) {
+          try { await docker(["network", "disconnect", INGRESS_NETWORK, id]); }
+          catch (err) { if (!missing(err)) throw err; }
+        }
+        await docker(["network", "connect", "--alias", alias, "--alias", service, INGRESS_NETWORK, id]);
       }
-      if (networks[STACKPORT_PROXY_NETWORK]) {
-        await execFileAsync("docker", ["network", "disconnect", STACKPORT_PROXY_NETWORK, id], { timeout: 12_000 }).catch(() => undefined);
+      for (const name of Object.keys(networks).filter((n) => n.startsWith(LEGACY_INGRESS_PREFIX))) {
+        try { await docker(["network", "disconnect", name, id]); }
+        catch (err) { if (!missing(err)) throw err; }
       }
+      placed += 1;
     }
   }
+  return placed;
 }
 
 /** Services' `networks:` in object form, keeping what the file said (an empty list entry is `{}`). */
@@ -41,18 +50,20 @@ function networksAsObject(current: unknown): Record<string, unknown> | null {
   return null;
 }
 
+const isLegacy = (name: string): boolean => name.startsWith(LEGACY_INGRESS_PREFIX);
+
 /** StackPort-owned augmentation, ephemeral — parsed, mutated, and re-dumped, then
  *  written straight into the working-tree checkout, never committed (same philosophy
  *  the old SP:AUTO/port-hiding rewrites used, and for the same reason: git operations
  *  in ensureRepo wipe it back to the plain source file on every fresh pull, so this
  *  re-applies on every runCompose call rather than persisting once).
  *
- *  Attaches each routed service to the project's own ingress network (stackport-ingress-<id>,
- *  which only nginx and this project join) under the alias sp<id>-<service>, so nginx never has
- *  to tell two projects' `web` services apart (S9). An explicit `networks:` list on a service
+ *  Attaches each routed service to the shared ingress network under the alias sp<id>-<service>, so nginx
+ *  never has to tell two projects' `web` services apart. An explicit `networks:` list on a service
  *  *replaces* Compose's implicit default-network attachment rather than adding to it, so "default"
  *  is added alongside when networking was implicit; dropping it would cut the service off from
- *  its own project's other containers (e.g. its own database). */
+ *  its own project's other containers (e.g. its own database). A per-project network that 1.3.0 wrote into
+ *  the file is removed. */
 export async function applyStackportProxyNetwork(
   repoPath: string,
   composeFile: string,
@@ -60,7 +71,6 @@ export async function applyStackportProxyNetwork(
   projectId: number
 ): Promise<{ ok: boolean; message: string }> {
   const filePath = path.join(repoPath, composeFile);
-  const ingress = ingressNetworkName(projectId);
   let raw: string;
   try {
     raw = await fs.readFile(filePath, "utf8");
@@ -85,18 +95,17 @@ export async function applyStackportProxyNetwork(
   }
 
   let changed = false;
-  // A file an older release rewrote still joins the shared network; it must not keep sharing it.
+  // A file rewritten by 1.3.0 still names a per-project network; it must not stay there.
   for (const service of Object.values(servicesDoc as Record<string, unknown>)) {
     if (!service || typeof service !== "object") continue;
     const serviceObj = service as Record<string, unknown>;
     const current = serviceObj["networks"];
-    if (Array.isArray(current) && current.includes(STACKPORT_PROXY_NETWORK)) {
-      const rest = current.filter((n) => n !== STACKPORT_PROXY_NETWORK);
+    if (Array.isArray(current) && current.some((n) => typeof n === "string" && isLegacy(n))) {
+      const rest = current.filter((n) => !(typeof n === "string" && isLegacy(n)));
       if (rest.length) serviceObj["networks"] = rest; else delete serviceObj["networks"];
       changed = true;
-    } else if (current && typeof current === "object" && !Array.isArray(current) && STACKPORT_PROXY_NETWORK in current) {
-      const rest = { ...(current as Record<string, unknown>) };
-      delete rest[STACKPORT_PROXY_NETWORK];
+    } else if (current && typeof current === "object" && !Array.isArray(current) && Object.keys(current).some(isLegacy)) {
+      const rest = Object.fromEntries(Object.entries(current as Record<string, unknown>).filter(([name]) => !isLegacy(name)));
       if (Object.keys(rest).length) serviceObj["networks"] = rest; else delete serviceObj["networks"];
       changed = true;
     }
@@ -108,8 +117,8 @@ export async function applyStackportProxyNetwork(
     const serviceObj = service as Record<string, unknown>;
     const attached = networksAsObject(serviceObj["networks"]) ?? { default: {} };
     const wanted = { aliases: [ingressAlias(projectId, name)] };
-    if (JSON.stringify(attached[ingress]) !== JSON.stringify(wanted)) {
-      attached[ingress] = wanted;
+    if (JSON.stringify(attached[INGRESS_NETWORK]) !== JSON.stringify(wanted)) {
+      attached[INGRESS_NETWORK] = wanted;
       changed = true;
     }
     // Compose treats `networks` as a list only when no entry carries options; keep one shape.
@@ -118,14 +127,14 @@ export async function applyStackportProxyNetwork(
   }
 
   const topNetworks = (root["networks"] && typeof root["networks"] === "object") ? { ...(root["networks"] as Record<string, unknown>) } : {};
-  if (STACKPORT_PROXY_NETWORK in topNetworks) { delete topNetworks[STACKPORT_PROXY_NETWORK]; changed = true; }
+  for (const name of Object.keys(topNetworks).filter(isLegacy)) { delete topNetworks[name]; changed = true; }
   if (services.length > 0) {
-    const existing = topNetworks[ingress];
+    const existing = topNetworks[INGRESS_NETWORK];
     const declared = !!existing && typeof existing === "object"
       && (existing as Record<string, unknown>)["external"] === true
-      && (existing as Record<string, unknown>)["name"] === ingress;
+      && (existing as Record<string, unknown>)["name"] === INGRESS_NETWORK;
     if (!declared) {
-      topNetworks[ingress] = { external: true, name: ingress };
+      topNetworks[INGRESS_NETWORK] = { external: true, name: INGRESS_NETWORK };
       changed = true;
     }
   }
