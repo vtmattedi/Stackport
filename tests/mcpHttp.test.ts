@@ -143,3 +143,25 @@ test("repositories are reduced to owner/name with no credentials", () => {
   assert.equal(safeRepo("not a repo"), null);
   assert.equal(safeRepo(null), null);
 });
+
+test("write tools are offered only to a token with the write scope", async () => {
+  const names = async (bearer: string) => {
+    const client = await connect(bearer);
+    try { return (await client.listTools()).tools.map((t) => t.name); } finally { await client.close(); }
+  };
+  const readOnly = await names(token);
+  assert.equal(readOnly.some((n) => /_(deploy|rollback|restart|stop)_project$/.test(n)), false);
+
+  const writer = await names(createApiToken({ name: "writer", scope: "write" }).token);
+  for (const verb of ["deploy", "rollback", "restart", "stop"]) assert.ok(writer.includes(`stackport_${verb}_project`), verb);
+});
+
+test("a write token's first call to a write tool changes nothing", async () => {
+  const client = await connect(createApiToken({ name: "writer-2", scope: "write" }).token);
+  try {
+    const result = await client.callTool({ name: "stackport_stop_project", arguments: { projectId } });
+    const body = result.structuredContent as { requiresConfirmation?: boolean; confirmationId?: string };
+    assert.equal(body.requiresConfirmation, true);
+    assert.ok(body.confirmationId);
+  } finally { await client.close(); }
+});

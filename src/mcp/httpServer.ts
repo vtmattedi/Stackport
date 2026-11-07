@@ -8,12 +8,14 @@ import { requireApiToken } from "../middleware/apiTokenAuth";
 import type { ApiToken } from "../services/apiTokens";
 import { auditLog } from "../utils/logger";
 import { getProjectView, getStatusView, listProjectsView } from "./readModel";
+import { registerWriteTools } from "./writeTools";
 
 /**
  * The MCP endpoint at /mcp: Streamable HTTP, stateless (a fresh server per request),
  * JSON responses, API-token auth with the `read` scope. It runs inside the app, so it
- * reads the same state the UI does and never writes. The stdio server (server.ts) is
- * separate and unchanged.
+ * reads the same state the UI does. A token that also has the `write` scope gets the
+ * deploy, rollback, restart and stop tools (writeTools.ts); a read token never sees
+ * them. The stdio server (server.ts) is separate and unchanged.
  */
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
@@ -29,7 +31,7 @@ function notFound(message: string): CallToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-export function buildReadOnlyMcpServer(token: ApiToken): McpServer {
+export function buildMcpServer(token: ApiToken): McpServer {
   const server = new McpServer({ name: "stackport", version: "1.0.0" });
   const actor = `token:${token.name}#${token.id}`;
   const audit = (tool: string, meta: Record<string, unknown> = {}): void =>
@@ -76,6 +78,8 @@ export function buildReadOnlyMcpServer(token: ApiToken): McpServer {
     }
   );
 
+  if (token.scopes.includes("write")) registerWriteTools(server, token);
+
   return server;
 }
 
@@ -92,7 +96,7 @@ const perTokenLimiter = rateLimit({
 });
 
 router.post("/", requireApiToken("read"), perTokenLimiter, async (req: Request, res: Response): Promise<void> => {
-  const server = buildReadOnlyMcpServer(req.apiToken!);
+  const server = buildMcpServer(req.apiToken!);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => {
     void transport.close();
