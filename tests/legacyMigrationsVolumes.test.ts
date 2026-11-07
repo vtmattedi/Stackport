@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runVolumeMigration, type DockerResult, type VolumeMigrationDeps } from "../src/modules/maintenance/migrations/volumeMounts";
+import { runVolumeMigration, VERIFY_SCRIPT, type DockerResult, type VolumeMigrationDeps } from "../src/modules/maintenance/migrations/volumeMounts";
 
 const REPO = "/app/data/repos/7-shop";
 const project = { id: 7, name: "shop", composeFile: "compose.yml", repoPath: REPO, composeProject: "7-shop" };
@@ -9,7 +9,7 @@ const resolved = { services: { web: { volumes: [{ type: "bind", source: `${REPO}
 interface Harness { deps: VolumeMigrationDeps; calls: string[][]; made: string[]; marked: number[]; recorded: string[] }
 
 /** `present` maps a host path to what a probe of it finds ("kb entries"). */
-function harness(options: { present?: Record<string, string>; running?: boolean; resolved?: unknown | null; copyFails?: boolean; projects?: typeof project[]; daemonDown?: boolean; psFails?: boolean } = {}): Harness {
+function harness(options: { present?: Record<string, string>; running?: boolean; resolved?: unknown | null; copyFails?: boolean; projects?: typeof project[]; daemonDown?: boolean; psFails?: boolean; verifyFails?: boolean } = {}): Harness {
   const calls: string[][] = [];
   const made: string[] = [];
   const marked: number[] = [];
@@ -21,6 +21,7 @@ function harness(options: { present?: Record<string, string>; running?: boolean;
     if (args[0] === "ps") return { code: 0, stdout: options.running ? "abc123\n" : "", stderr: "" };
     const mount = args.find((a) => a.startsWith("type=bind,src="));
     const src = mount?.split(",")[1].slice("src=".length) ?? "";
+    if (args[args.length - 1] === VERIFY_SCRIPT) return options.verifyFails ? { code: 1, stdout: "Files /from/a.db and /to/a.db differ\n", stderr: "" } : { code: 0, stdout: "", stderr: "" };
     if (args.includes("cp -a /from/. /to/")) return options.copyFails ? { code: 1, stdout: "", stderr: "cp: no space left" } : { code: 0, stdout: "", stderr: "" };
     const found = options.present?.[src];
     return found ? { code: 0, stdout: `${found.split(" ")[0]}\n${found.split(" ")[1]}\n`, stderr: "" } : { code: 1, stdout: "", stderr: 'invalid mount config for type "bind": bind source path does not exist' };
@@ -109,6 +110,24 @@ test("a Docker error while looking for data is not read as 'no data': the projec
   assert.deepEqual(h.made, [], "no empty directory was prepared");
   assert.deepEqual(h.marked, []);
   assert.match(report.items.map((i) => i.detail ?? "").join("\n"), /Cannot connect to the Docker daemon/);
+});
+
+test("the copy is verified against the original, read-only, before the project is switched", async () => {
+  const h = harness({ present: { [`${REPO}/data`]: "2048 12" } });
+  await runVolumeMigration("execute", h.deps);
+  const verify = h.calls.find((c) => c[c.length - 1] === VERIFY_SCRIPT);
+  assert.ok(verify, "a verification ran");
+  assert.ok(verify.includes("type=bind,src=/var/lib/stackport/data/volumes/7/data,dst=/to,readonly"), "both sides read-only");
+  assert.deepEqual(h.marked, [7]);
+});
+
+test("a copy that does not match the original is not switched to and is not recorded", async () => {
+  const h = harness({ present: { [`${REPO}/data`]: "2048 12" }, verifyFails: true });
+  const report = await runVolumeMigration("execute", h.deps);
+  assert.match(report.summary, /1 blocked/);
+  assert.match(report.items.map((i) => i.label + (i.detail ?? "")).join("\n"), /does not match the original[\s\S]*differ/);
+  assert.deepEqual(h.marked, []);
+  assert.deepEqual(h.recorded, [], "so the cleanup can never delete an original whose copy was not verified");
 });
 
 test("a project whose containers are running is not migrated, in the dry run or the execute", async () => {

@@ -35,6 +35,11 @@ interface Probe { exists: boolean; kb: number; entries: number }
 const bindMount = (source: string, target: string, readOnly: boolean): string[] =>
   ["--mount", `type=bind,src=${source},dst=${target}${readOnly ? ",readonly" : ""}`];
 
+/** Run after the copy, with both directories mounted read-only: every file, link and directory must be
+ *  identical. A partial or damaged copy fails here instead of being switched to. `--no-dereference` keeps
+ *  a link from being followed (GNU diff); busybox does not know it, so the plain form is the fallback. */
+export const VERIFY_SCRIPT = "diff -rq --no-dereference /from /to || diff -rq /from /to";
+
 function formatKb(kb: number): string {
   return kb >= 1024 * 1024 ? `${(kb / 1024 / 1024).toFixed(1)} GB` : kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB`;
 }
@@ -114,8 +119,16 @@ export async function runVolumeMigration(mode: MigrationMode, deps: VolumeMigrat
         "run", "--rm", ...bindMount(from, "/from", true), ...bindMount(entry.managedHostPath, "/to", false),
         "--entrypoint", "sh", image, "-c", "cp -a /from/. /to/",
       ]);
+      const verify = copy.code === 0
+        ? await deps.docker(["run", "--rm", ...bindMount(from, "/from", true), ...bindMount(entry.managedHostPath, "/to", true), "--entrypoint", "sh", image, "-c", VERIFY_SCRIPT])
+        : null;
       if (copy.code !== 0) {
         projectItems.push({ status: "error", label: `${entry.name}: copy failed`, detail: copy.stderr.trim().slice(0, 500) || `exit code ${copy.code}` });
+        problem = true;
+      } else if (verify && verify.code !== 0) {
+        // The original is untouched, so nothing is lost; the project stays on it.
+        const first = (verify.stdout.trim() || verify.stderr.trim()).split("\n")[0]?.slice(0, 300);
+        projectItems.push({ status: "error", label: `${entry.name}: the copy does not match the original`, detail: `${first || `exit code ${verify.code}`}. The project stays on its original data; clear ${entry.managedHostPath} and run this again.` });
         problem = true;
       } else {
         deps.recordCopied(project.id, from, entry.name);
