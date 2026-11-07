@@ -155,6 +155,11 @@ Stackport needs, or rootless Docker. Must account for the self-update path
 mounted and `chroot`s into it to run `stackport.sh`; whatever contains the socket has
 to keep that working or replace it.
 
+**Status: deferred.** No design has been chosen. The question is which of a filtering socket
+proxy, user-namespace remapping or rootless Docker fits, given that `selfUpdate.ts` needs a
+container with the host's `/` mounted. Until then, anyone who gets code execution inside the
+Stackport container has root on the host.
+
 ## Network
 
 ### S3 — Take Stackport off the `stackport-proxy` network · 🟠 · M
@@ -181,12 +186,26 @@ fix S3 first, after which only nginx can reach the app).
 All routed projects share `stackport-proxy`, so they can reach each other. One network
 per project, joined by nginx and that project only.
 
+**Status: deferred.** The shape worked out: a network `stackport-ingress-<projectId>` per
+project, created before a deploy and removed with the project; nginx connected to each at
+app start and after every deploy (a recreated nginx container loses its connections); routed
+services reachable by a unique alias `sp<projectId>-<service>` because service names collide
+across networks, so the nginx upstream URL and its generated config change; TCP exposure
+proxies join their project's network; existing projects move on their next deploy. It is
+cross-cutting and needs a real stack to test, so it waits. Until then, routed projects can
+still reach each other's services (S3 already stops them reaching Stackport's API).
+
 ### S10 — Block cloud metadata and LAN egress · 🟡 · M
 
 Project containers can reach `169.254.169.254` (cloud credentials on most providers)
 and the host's LAN. Needs `DOCKER-USER` iptables rules on the host. Stackport has no
 host agent, so this goes through `stackport.sh` (install, update and repair), not the
 app.
+
+**Status: deferred.** Needs a Linux host to write and test the `DOCKER-USER` rules. Planned:
+an idempotent rule set in `stackport.sh` that drops traffic from the project networks to
+`169.254.169.254` by default, and to the private ranges when `STACKPORT_BLOCK_LAN=1`, removed
+on uninstall. Until then, a project container can reach the cloud metadata address.
 
 ## Sessions, keys and stored secrets
 

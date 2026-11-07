@@ -66,6 +66,11 @@ Ordered by criticality, then by how much each item unblocks.
 | N1 | `/version.json` exposes the exact commit without auth | ⚪ | S | — | backlog |
 | A3 | Build before `up`, blue-green | ⚪ | L | — | backlog |
 
-**Until S14, S1 and S2 land:** treat every repository Stackport deploys as able to run
-code as root on the host. Turn off auto-deploy for any repository that someone other
+**Status:** S14, S1, S2, S3, S4, S5, S6, S7, S8, S12 and S13 are built; S9, S10 and S11 are
+deferred (see security.md). Several of them are tested only without a real Docker host:
+see verification.md before relying on them.
+
+**Before S1 and S2 apply to a project:** a project that existed before them keeps its old
+behaviour until it is migrated (Settings > Migrations) or switched on, so treat every
+repository Stackport deploys as able to run code as root on the host. Turn off auto-deploy for any repository that someone other
 than the admin can push to.
