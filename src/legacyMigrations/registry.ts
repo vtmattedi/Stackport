@@ -1,10 +1,11 @@
 import { logger } from "../utils/logger";
 import type { LegacyMigration, MigrationJob, MigrationMode } from "./types";
 import { cleanupMountsMigration } from "./cleanupMounts";
+import { reencryptSecretsMigration } from "./reencryptSecrets";
 import { volumeMountsMigration } from "./volumeMounts";
 
 /** Add a migration here. Order is the order shown on the page. */
-export const LEGACY_MIGRATIONS: LegacyMigration[] = [volumeMountsMigration, cleanupMountsMigration];
+export const LEGACY_MIGRATIONS: LegacyMigration[] = [volumeMountsMigration, cleanupMountsMigration, reencryptSecretsMigration];
 
 const idle = (): MigrationJob => ({ state: "idle", mode: null, startedAt: null, finishedAt: null, report: null, error: null });
 const jobs = new Map<string, MigrationJob>();
