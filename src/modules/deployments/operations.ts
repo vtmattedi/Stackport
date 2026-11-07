@@ -14,6 +14,7 @@ import { normalizeRelativePath, resolveContainedPath } from "../../shared/safePa
 import { emitProjectDeploy, type ProjectDeployEvent } from "../../application/realtime";
 import { actionRegistry, projectRepoKey } from "../actions/registry";
 import { loadYamlDoc } from "./compose/yaml";
+import { checkComposeFileReferences } from "./compose/references";
 import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
@@ -139,7 +140,7 @@ export async function getProjectComposeEnvFiles(projectId: number, selectedFile?
  *  none here: the deploy leaves that to docker compose too. */
 export async function getProjectComposePolicy(projectId: number): Promise<{ composeFile: string; violations: PolicyViolation[] }> {
   const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
-  return { composeFile, violations: validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations };
+  return { composeFile, violations: [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)] };
 }
 
 export interface ComposeVariableStatus extends ComposeVariableRef {
@@ -350,8 +351,10 @@ async function checkComposePolicy(projectId: number, repoPath: string, composeFi
   } catch {
     return { ok: true, message: "" }; // malformed YAML is a separate failure mode — let `docker compose` report it
   }
-  const result = validateComposePolicy(doc);
-  if (!result.ok) return { ok: false, message: formatPolicyRejection(result.violations) };
+  // The raw checks apply to every project, old or new: a file that reads Stackport's own secrets is not
+  // something a project may rely on (the resolved-config rules below warn old projects instead).
+  const violations = [...validateComposePolicy(doc).violations, ...await checkComposeFileReferences(repoPath, composeFile)];
+  if (violations.length) return { ok: false, message: formatPolicyRejection(violations) };
 
   // The raw file passed; now check what Compose will actually run (S1). A file that can't be
   // resolved is refused for a project that enforces the policy: it can't be checked.

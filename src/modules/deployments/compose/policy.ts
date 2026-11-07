@@ -42,7 +42,7 @@ function longFormVolumeHostPath(entry: Record<string, unknown>): string | null {
  *  the service (`ports`, `volumes`, ...). */
 export interface PolicyViolation {
   /** Top-level section the entry sits in; absent means `services`. */
-  section?: "volumes" | "secrets" | "configs" | "networks";
+  section?: "volumes" | "secrets" | "configs" | "networks" | "include";
   /** The service, or the entry name when `section` is set. */
   service: string;
   key: string;
@@ -361,4 +361,88 @@ export function evaluateResolvedPolicy(resolution: ComposeResolution, options: {
       "Warning — this project predates the compose policy, so the deploy continues, but a new project would be rejected for:",
     ),
   };
+}
+
+/** A file Compose reads from the filesystem it runs on, which is the Stackport container's
+ *  own: `env_file: /app/.env` would copy the app's secrets into a service's environment, and
+ *  `include`, `extends` and a Dockerfile read files the same way. Each must stay inside the
+ *  project folder. Only the raw YAML still has these paths: the resolved config inlines env
+ *  files, so this check cannot be done there. */
+export interface FileReference {
+  kind: "env_file" | "extends" | "dockerfile" | "include" | "include-env_file";
+  path: string;
+  /** The service the reference belongs to; absent for a top-level `include`. */
+  service?: string;
+  /** For a Dockerfile: the build context it is relative to. */
+  context?: string;
+}
+
+function stringsOf(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function envFilePaths(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => (typeof entry === "string" ? [entry] : typeof asRecord(entry)?.["path"] === "string" ? [asRecord(entry)!["path"] as string] : []));
+}
+
+export function findFileReferences(doc: unknown): FileReference[] {
+  const refs: FileReference[] = [];
+  const root = asRecord(doc);
+  const include = root?.["include"];
+  for (const entry of Array.isArray(include) ? include : []) {
+    if (typeof entry === "string") { refs.push({ kind: "include", path: entry }); continue; }
+    const mapping = asRecord(entry);
+    if (!mapping) continue;
+    for (const target of stringsOf(mapping["path"])) refs.push({ kind: "include", path: target });
+    for (const target of stringsOf(mapping["project_directory"])) refs.push({ kind: "include", path: target });
+    for (const target of envFilePaths(mapping["env_file"])) refs.push({ kind: "include-env_file", path: target });
+  }
+  for (const [name, value] of Object.entries(asRecord(root?.["services"]) ?? {})) {
+    const service = asRecord(value);
+    if (!service) continue;
+    for (const target of envFilePaths(service["env_file"])) refs.push({ kind: "env_file", path: target, service: name });
+    const extendsFile = asRecord(service["extends"])?.["file"];
+    if (typeof extendsFile === "string") refs.push({ kind: "extends", path: extendsFile, service: name });
+    const build = asRecord(service["build"]);
+    if (typeof build?.["dockerfile"] === "string") {
+      refs.push({ kind: "dockerfile", path: build["dockerfile"], service: name, context: typeof build["context"] === "string" ? build["context"] : "." });
+    }
+  }
+  return refs;
+}
+
+const REMOTE_CONTEXT_RE = /^([a-z][a-z0-9+.-]*:\/\/|git@|github\.com\/)/i;
+
+/** The absolute path a reference points at, or null when it cannot be known (a variable, or a
+ *  remote build context). `baseDir` is the directory of the file the reference is written in. */
+export function resolveReferencedPath(ref: FileReference, baseDir: string): string | null {
+  if (ref.path.includes("$") || ref.path.startsWith("~")) return null;
+  if (ref.kind !== "dockerfile") return path.resolve(baseDir, ref.path);
+  const context = ref.context ?? ".";
+  if (context.includes("$") || REMOTE_CONTEXT_RE.test(context)) return null;
+  return path.resolve(baseDir, context, ref.path);
+}
+
+/** Null when the reference is fine; otherwise what is wrong with it. */
+export function checkFileReference(ref: FileReference, baseDir: string, projectDir: string): PolicyViolation | null {
+  const where = ref.kind === "include" || ref.kind === "include-env_file"
+    ? { section: "include" as const, service: ref.path, key: ref.kind === "include" ? "path" : "env_file" }
+    : { service: ref.service ?? "", key: ref.kind };
+  const fix = "Keep the file inside the project folder and refer to it with a relative path.";
+  if (ref.kind === "dockerfile" && (ref.context?.includes("$") || ref.path.includes("$"))) {
+    return { ...where, problem: `"${ref.path}" depends on a variable, so it cannot be checked.`, fix };
+  }
+  if (ref.kind === "dockerfile" && ref.context && REMOTE_CONTEXT_RE.test(ref.context)) return null;
+  const target = resolveReferencedPath(ref, baseDir);
+  if (target === null) {
+    const why = ref.path.startsWith("~") ? "starts with ~" : "depends on a variable, so it cannot be checked";
+    return { ...where, problem: `"${ref.path}" ${why}.`, fix };
+  }
+  if (!isInsideProject(target, projectDir)) {
+    return { ...where, problem: `"${ref.path}" is outside the project folder. Compose reads it from Stackport's own filesystem, which holds Stackport's secrets.`, fix };
+  }
+  return null;
 }
