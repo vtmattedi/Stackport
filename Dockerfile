@@ -1,6 +1,10 @@
 FROM node:24-bookworm-slim AS builder
 WORKDIR /app
 
+# The image reports the version committed in package.json. Without this, each build script
+# (server and client) would bump the patch number and the UI would show 1.3.1 for 1.3.0.
+ENV STACKPORT_KEEP_VERSION=1
+
 # ── Backend ────────────────────────────────────────
 COPY package*.json ./
 RUN npm ci
