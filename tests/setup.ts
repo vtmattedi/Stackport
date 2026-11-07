@@ -12,6 +12,8 @@ process.env["SQLITE_PATH"] = path.join(dir, "stackport.sqlite");
 process.env["DEPLOY_ROOT"] = path.join(dir, "repos");
 process.env["SCRIPTS_DIR"] = path.join(dir, "scripts");
 process.env["LOG_DIR"] = path.join(dir, "logs");
+// Generated nginx config goes to the temp directory, never to /etc/nginx (not writable on CI).
+process.env["NGINX_PATH"] ??= path.join(dir, "nginx");
 process.env["LOG_LEVEL"] = "error";
 
 process.on("exit", () => fs.rmSync(dir, { recursive: true, force: true }));

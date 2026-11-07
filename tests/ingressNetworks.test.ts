@@ -239,8 +239,6 @@ test("policy: a service named like Stackport or like an alias is refused on the 
 });
 
 test("nginx reaches a service by its project's alias, not its plain name", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nginx-"));
-  process.env["NGINX_PATH"] = dir;
   const { initializeDatabase, getDatabase } = await import("../src/config/database");
   const { generateNginxConfig } = await import("../src/modules/ingress/nginx/configWriter");
   const { createProject } = await import("../src/modules/projects/operations");
