@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createKeyring } from "../src/shared/crypto";
-import { runReencryption, type ReencryptDeps, type SecretColumn, type SecretRow } from "../src/modules/maintenance/migrations/reencryptSecrets";
+import { closeDatabase, initializeDatabase } from "../src/config/database";
+import { runReencryption, SECRET_COLUMNS, type ReencryptDeps, type SecretColumn, type SecretRow } from "../src/modules/maintenance/migrations/reencryptSecrets";
 
 const COLUMNS: SecretColumn[] = [
   { table: "credentials", column: "secret_enc", idColumn: "id", label: "Credentials" },
@@ -86,4 +87,16 @@ test("a value that is not a ciphertext is reported and left alone", () => {
   const report = runReencryption("execute", h.deps);
   assert.deepEqual(h.saved, []);
   assert.equal(report.items[0].status, "error");
+});
+
+test("every encrypted column in the schema is covered, so a rotation cannot leave one behind", () => {
+  const db = initializeDatabase();
+  try {
+    const found = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[])
+      .flatMap(({ name }) => (db.prepare(`PRAGMA table_info(${name})`).all() as { name: string }[])
+        .filter((column) => column.name.endsWith("_enc")).map((column) => `${name}.${column.name}`))
+      .sort();
+    const listed = SECRET_COLUMNS.map((column) => `${column.table}.${column.column}`).sort();
+    assert.deepEqual(listed, found, "add the new *_enc column to SECRET_COLUMNS (reencryptSecrets.ts)");
+  } finally { closeDatabase(); }
 });

@@ -15,6 +15,8 @@ export const SECRET_COLUMNS: SecretColumn[] = [
   { table: "credentials", column: "secret_enc", idColumn: "id", label: "Credentials (GitHub tokens, API keys, webhook secrets)" },
   { table: "projects", column: "hook_secret_enc", idColumn: "id", label: "GitHub webhook secrets" },
   { table: "project_env_files", column: "variables_enc", idColumn: "id", label: "Managed env values" },
+  { table: "push_config", column: "vapid_private_key_enc", idColumn: "id", label: "Web-push signing key" },
+  { table: "github_poller_config", column: "token_enc", idColumn: "id", label: "GitHub poller token" },
 ];
 
 export interface SecretRow { id: number | string; value: string }
