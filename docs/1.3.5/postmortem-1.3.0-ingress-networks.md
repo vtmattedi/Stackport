@@ -94,11 +94,11 @@ Done in 1.3.1:
 | Docs state that Docker's address pool is a shared limit and how to enlarge it | `docs/1.3/security.md` S9 |
 | Tests no longer write to `/etc/nginx` | `tests/setup.ts` |
 
-Still to do (tracked in the 1.3.5 plan):
+Still to do (P1 is planned for 1.4, see [../1.4/README.md](../1.4/README.md); the rest for 1.3.5):
 
 | # | Action | Why it would have helped |
 | --- | --- | --- |
-| P1 | **Regression report and a restore point** (see below). `stackport update` probes every route before the swap and again after it, and reports only what the update broke, never blaming a route that was already down. It does not roll anything back by itself. The update also keeps a restore point, and a **Restore** action (System page and `stackport restore`) puts the previous state back on request | Within a minute of the swap it would have listed the seven routes that went from working to unreachable, apart from the ones that were already down, and Restore would have returned the services, networks and nginx config to what they were |
+| P1 (1.4) | **Regression report and a restore point** (see below). `stackport update` probes every route before the swap and again after it, and reports only what the update broke, never blaming a route that was already down. It does not roll anything back by itself. The update also keeps a restore point, and a **Restore** action (System page and `stackport restore`) puts the previous state back on request | Within a minute of the swap it would have listed the seven routes that went from working to unreachable, apart from the ones that were already down, and Restore would have returned the services, networks and nginx config to what they were |
 | P2 | **Ingress health per project** in the UI and over MCP (is nginx on the network, is the service reachable by its alias), using the same probe as P1. No automatic alert for now | Anyone looking would have seen the cause without asking for logs |
 | P3 | **Docker network headroom** shown on the System page, in `stackport status` and before an update, with a warning near the limit and the daemon-setting fix | The limit would have been visible before 1.3.0 |
 | P4 | **Warnings reach `docker logs`.** In production, log warnings and errors to the console as well as the file | The cause would have been in the first thing anyone looks at |
@@ -107,7 +107,7 @@ Still to do (tracked in the 1.3.5 plan):
 | P7 | **Per-project isolation, redone safely** (1.3.5): networks from an address range of our own, created and verified before nginx's config switches to them, with the old route kept until then | Brings back S9's isolation without the pool |
 | P8 | **Operator runbook.** Where logs are (`/app/logs/app.log`, console for ingress), the three commands that diagnose routing, and what not to hide with `2>/dev/null` | Faster diagnosis |
 
-### P1 in detail
+### P1 in detail (planned for 1.4)
 
 Two decisions shape it. **An update never undoes itself.** Rolling the application image back is not enough, because an update also changes things outside the image: which networks containers are on, which networks exist, nginx's generated config, TCP proxy containers, and the Compose files Stackport rewrites in each checkout. In this incident the old version would still have had no routes. And an automatic undo is itself a change nobody asked for, on a server with other things going on. So the update reports and the owner decides. **A probe has to say what the update broke**, not what is broken.
 

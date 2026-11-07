@@ -10,7 +10,7 @@ Ratings follow [../1.3/README.md](../1.3/README.md): 🔴 fix first, 🟠 soon, 
 
 If PR #33 is squash-merged, this branch needs a rebase onto `main` first.
 
-**Incident:** 1.3.0 took routed projects down on 7 November 2026 when per-project networks exhausted Docker's address pool; fixed by 1.3.1. See [postmortem-1.3.0-ingress-networks.md](postmortem-1.3.0-ingress-networks.md). Its open follow-ups (P1 to P8) belong to this release. P1 is a regression report plus a restore point and Restore action, not an automatic rollback.
+**Incident:** 1.3.0 took routed projects down on 7 November 2026 when per-project networks exhausted Docker's address pool; fixed by 1.3.1. See [postmortem-1.3.0-ingress-networks.md](postmortem-1.3.0-ingress-networks.md). Its open follow-ups (P1 to P8) belong to this release. P1 is a regression report plus a restore point and Restore action, not an automatic rollback, and it is planned for 1.4 ([../1.4/README.md](../1.4/README.md)); the rest are for 1.3.5.
 
 ## 1. Inventory: what 1.3 missed
 
