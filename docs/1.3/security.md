@@ -225,6 +225,17 @@ restart) need a `write` scope, per-token project limits, an audit entry per call
 a confirmation step for destructive tools. Do S6 first so a stolen browser session
 can't mint tokens.
 
+**Status: done, with decisions.** A token created with the `write` scope gets four more
+tools on `/mcp`: `stackport_deploy_project`, `_rollback_project`, `_restart_project`
+(recreates the containers from the running revision, no pull) and `_stop_project`. Each is
+two calls: the first changes nothing and returns what would happen plus a one-time
+confirmation id (5 minutes, bound to the token, tool, project and arguments); only a
+second call that presents it runs the action. That is enforced by the server, not by a
+client hint. A write token is for all projects or one project group (`api_tokens.project_group`;
+a project with no group is outside every group). The limit applies to writes: reads still
+see every project. Every preview, refusal, start and finish is audited with the token as the
+actor. The stdio MCP is unchanged and still local-only.
+
 ### S12 — `resolveContainedPath` should resolve symlinks · 🟡 · S
 
 `src/utils/safePath.ts` checks containment lexically. A symlink inside the root can
