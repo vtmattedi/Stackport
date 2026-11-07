@@ -99,7 +99,7 @@ cannot be resolved (error, timeout, output over 32 MB); older projects get a war
 Also refused, found in review: any file Compose reads from Stackport's own filesystem outside
 the project (`env_file`, `include`, `extends.file`, `build.dockerfile`, checked in the raw YAML
 and in every included file, for every project, because an absolute `env_file: /app/.env` copied
-the app's secrets into a service), external networks other than `stackport-proxy` and networks
+the app's secrets into a service), external networks other than the project's own ingress network (S9) and networks
 or volumes that do not carry the project's name (a service could join `stackport_default`, where
 the admin API listens, or attach to another project's volume), external volumes, and non-bridge
 network drivers. The project's policy panel shows the raw-file results too.
@@ -201,14 +201,28 @@ see nginx as trusted.
 All routed projects share `stackport-proxy`, so they can reach each other. One network
 per project, joined by nginx and that project only.
 
-**Status: deferred.** The shape worked out: a network `stackport-ingress-<projectId>` per
-project, created before a deploy and removed with the project; nginx connected to each at
-app start and after every deploy (a recreated nginx container loses its connections); routed
-services reachable by a unique alias `sp<projectId>-<service>` because service names collide
-across networks, so the nginx upstream URL and its generated config change; TCP exposure
-proxies join their project's network; existing projects move on their next deploy. It is
-cross-cutting and needs a real stack to test, so it waits. Until then, routed projects can
-still reach each other's services (S3 already stops them reaching Stackport's API).
+**Status: done.** Also the fix for two projects with a service of the same name (`web`)
+being mixed up by Docker's DNS on the shared network: nginx could send one project's domain
+to the other project's container.
+
+- Each project with a route has a network `stackport-ingress-<projectId>`, created before its
+  deploy and removed with the project. Only nginx and that project's routed services are on it.
+- Routed services get the alias `sp<projectId>-<service>` on it; the nginx upstream and the TCP
+  proxy target use the alias, never the plain service name. The Compose rewrite does this and also
+  removes `stackport-proxy` from a file an older release rewrote.
+- nginx is connected to each network at start-up and whenever its config is applied (a recreated
+  nginx container starts with none of them). At start-up, running routed services of existing
+  projects are connected under their alias and taken off `stackport-proxy`, so nothing waits for a
+  redeploy. TCP proxies are recreated on the new network (their target label changed).
+- The policy allows only the project's own ingress network as external, with no extra aliases on it,
+  and refuses a routed service named `stackport` or `sp<number>-…`: on this network the service's
+  own name is visible to nginx, so those names could answer for Stackport's admin route or for
+  another project's alias.
+- `stackport-proxy` still exists (the system stack declares it and nginx stays on it) but projects
+  no longer join it. It can be removed from the stack in a later release.
+
+Not covered: services of one project reach each other as before (that is the project's own network),
+and a project's non-routed services are on no ingress network at all.
 
 ### S10 — Block cloud metadata and LAN egress · 🟡 · M
 

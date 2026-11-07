@@ -34,9 +34,9 @@ test("the resolved config is checked too, so a value only spelled indirectly in 
   assert.deepEqual(result.violations.map((v) => `${v.service}.${v.key}`), ["web.privileged"]);
 });
 
-const POSIX = { projectDir: "/srv/stackport/7-app" };
+const POSIX = { projectDir: "/srv/stackport/7-app", projectId: 7 };
 const resolvedWith = (service: Record<string, unknown>) => ({ services: { web: { image: "nginx", ...service } } });
-const keys = (doc: unknown, ctx = POSIX) => validateResolvedComposePolicy(doc, ctx).violations.map((v) => `${v.service}.${v.key}`);
+const keys = (doc: unknown, ctx: { projectDir: string; projectId?: number } = POSIX) => validateResolvedComposePolicy(doc, ctx).violations.map((v) => `${v.service}.${v.key}`);
 
 test("a: a variable that resolves to the host root is refused as a host mount", () => {
   // volumes: ["${HOSTROOT:-/}:/host"] arrives resolved, as an absolute bind source.
@@ -228,8 +228,10 @@ test("networks: joining Stackport's own network through external is refused", ()
   assert.match(validateResolvedComposePolicy(doc, POSIX).violations[0].problem, /stackport_default/);
 });
 
-test("networks: only the shared ingress network may be external", () => {
-  assert.deepEqual(topKeys(withTop({ networks: { "stackport-proxy": { name: "stackport-proxy", external: true } } })), []);
+test("networks: only the project's own ingress network may be external", () => {
+  assert.deepEqual(topKeys(withTop({ networks: { ingress: { name: "stackport-ingress-7", external: true } } })), []);
+  assert.deepEqual(topKeys(withTop({ networks: { "stackport-proxy": { name: "stackport-proxy", external: true } } })), ["networks.stackport-proxy.external"]);
+  assert.deepEqual(topKeys(withTop({ networks: { x: { name: "stackport-ingress-8", external: true } } })), ["networks.x.external"]);
   assert.deepEqual(topKeys(withTop({ networks: { other: { name: "3-blog_default", external: true } } })), ["networks.other.external"]);
   assert.deepEqual(topKeys(withTop({ networks: { h: { name: "host", external: true } } })), ["networks.h.external"]);
 });

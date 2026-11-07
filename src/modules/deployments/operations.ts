@@ -8,6 +8,7 @@ import { statSync } from "fs";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { getDatabase } from "../../config/database";
+import { logger } from "../../shared/logger";
 import { rowToProject, type Project, type ProjectRow } from "../projects/types";
 import { decryptSecret } from "../../shared/crypto";
 import { normalizeRelativePath, resolveContainedPath } from "../../shared/safePath";
@@ -17,6 +18,7 @@ import { loadYamlDoc } from "./compose/yaml";
 import { checkComposeFileReferences } from "./compose/references";
 import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
+import { ensureIngressNetwork } from "../ingress/networks";
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
 import { listRoutedServiceNames } from "../ingress/domains";
@@ -79,14 +81,26 @@ interface ComposeCommand {
   argsPrefix: string[];
 }
 
+/** At start-up: every routed project gets its ingress network, nginx joins it, and running services
+ *  move onto it under their alias. This is also how a project that was routed over the old shared
+ *  network switches over without a redeploy. One project failing does not stop the others. */
+export async function reconcileIngressNetworks(): Promise<void> {
+  const rows = getDatabase().prepare("SELECT id FROM projects WHERE compose_file IS NOT NULL").all() as { id: number }[];
+  for (const { id } of rows) {
+    try { await ensureProjectProxyNetwork(id); }
+    catch (err) { logger.warn({ projectId: id, reason: err instanceof Error ? err.message : String(err) }, "ingress.reconcile.failed"); }
+  }
+}
+
 export async function ensureProjectProxyNetwork(projectId: number): Promise<void> {
   const project = getProjectById(projectId);
   if (!project?.composeFile) return;
   const services = listRoutedServiceNames(projectId);
   if (!services.length) return;
-  const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services);
+  await ensureIngressNetwork(projectId);
+  const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services, projectId);
   if (!result.ok) throw new Error(result.message);
-  await connectRunningProxyServices(expectedComposeProjectName(project), services);
+  await connectRunningProxyServices(projectId, expectedComposeProjectName(project), services);
   invalidateContainers();
 }
 
@@ -358,7 +372,7 @@ async function checkComposePolicy(projectId: number, repoPath: string, composeFi
 
   // The raw file passed; now check what Compose will actually run (S1). A file that can't be
   // resolved is refused for a project that enforces the policy: it can't be checked.
-  return evaluateResolvedPolicy(resolution, { enforced: isComposePolicyEnforced(projectId), projectDir: repoPath });
+  return evaluateResolvedPolicy(resolution, { enforced: isComposePolicyEnforced(projectId), projectDir: repoPath, projectId });
 }
 
 /** The arguments that resolve a Compose file. `--profile '*'` turns every profile on, so a
@@ -456,16 +470,24 @@ async function runCompose(
     // Phase 1.7 — StackPort-owned augmentation, ephemeral (never committed, same
     // philosophy the old SP:AUTO/port-hiding rewrites used): attaches whichever
     // services this project's domains actually route to onto the shared
-    // stackport-proxy network so nginx can reach them by service name. Re-applied on
+    // project's own ingress network (stackport-ingress-<id>) so nginx can reach them by a project-unique alias. Re-applied on
     // every runCompose call because git operations (ensureRepo's reset --hard) wipe
     // it back to the plain source file on every fresh pull, same reason SP:AUTO
     // needed re-substitution before every invocation.
     const routedServices = listRoutedServiceNames(projectId);
     if (routedServices.length > 0) {
-      const network = await applyStackportProxyNetwork(repoPath, composeFile, routedServices);
+      try {
+        await ensureIngressNetwork(projectId);
+      } catch (err) {
+        const message = `Could not prepare the project ingress network: ${err instanceof Error ? err.message : String(err)}
+`;
+        emit(projectId, action, "stderr", message);
+        return { ok: false, output: message, stdout: "", command: "ingress network" };
+      }
+      const network = await applyStackportProxyNetwork(repoPath, composeFile, routedServices, projectId);
       if (!network.ok) {
         emit(projectId, action, "stderr", network.message);
-        return { ok: false, output: network.message, stdout: "", command: "stackport-proxy network attachment" };
+        return { ok: false, output: network.message, stdout: "", command: "ingress network attachment" };
       }
     }
 
@@ -815,7 +837,7 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   }
 
   // Discard local modifications before pulling — e.g. composeNetworking.ts's
-  // stackport-proxy network attachment rewrites the compose file in place on every
+  // ingress network attachment rewrites the compose file in place on every
   // build/deploy, and deliberately never commits that (ephemeral, StackPort-owned
   // augmentation only). Left uncommitted, that dirty working tree makes the
   // pull/checkout below fail once upstream touches the same file, since neither
@@ -943,7 +965,7 @@ async function syncAfterPull(project: Project, repoPath: string): Promise<PullSy
 }
 
 /** Reads whatever the resolved compose file currently looks like on disk — for the
- *  read-only "view docker-compose.yml" viewer. Reflects the last stackport-proxy
+ *  read-only "view docker-compose.yml" viewer. Reflects the last
  *  network augmentation if a deploy action has run since the last pull, or the raw
  *  source file otherwise. */
 export async function getProjectComposeFileContent(projectId: number): Promise<{ fileName: string; content: string } | null> {

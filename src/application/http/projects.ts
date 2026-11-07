@@ -69,6 +69,7 @@ import {
   type TcpExposure,
   TcpExposureError,
 } from "../../modules/ingress/tcp";
+import { removeIngressNetwork } from "../../modules/ingress/networks";
 import multer from "multer";
 
 const router = Router();
@@ -1260,6 +1261,7 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   deleteProjectActionLogs(id);
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   healthChecker.unschedule(id);
+  void removeIngressNetwork(id);
 
   auditLog(req.user ?? "unknown", "project.delete", row.name, "ok");
   res.status(204).send();

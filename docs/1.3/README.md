@@ -66,7 +66,7 @@ Ordered by criticality, then by how much each item unblocks.
 | N1 | `/version.json` exposes the exact commit without auth | ⚪ | S | — | backlog |
 | A3 | Build before `up`, blue-green | ⚪ | L | — | backlog |
 
-**Status:** S14, S1, S2, S3, S4, S5, S6, S7, S8, S12 and S13 are built; S9, S10 and S11 are
+**Status:** S14, S1, S2, S3, S4, S5, S6, S7, S8, S9, S12 and S13 are built; S10 and S11 are
 deferred (see security.md). Several of them are tested only without a real Docker host:
 see verification.md before relying on them.
 

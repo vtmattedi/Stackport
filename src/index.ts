@@ -15,6 +15,7 @@ import { certbotRenewalMonitor } from "./modules/ingress/certificates/renewal";
 import { ensureBootstrapCredential } from "./modules/identity/installation";
 import { ensureAppIngress } from "./modules/ingress/bootstrap";
 import { reconcileAllTcpExposures } from "./modules/ingress/tcp";
+import { reconcileIngressNetworks } from "./modules/deployments/operations";
 import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./modules/maintenance/selfUpdate";
 import { getPushConfig } from "./modules/notifications/push/transport";
 import { pushDeliveryWorker } from "./modules/notifications/push/worker";
@@ -27,7 +28,8 @@ try {
   markInterruptedActions();
   ensureBootstrapCredential();
   void ensureAppIngress();
-  void reconcileAllTcpExposures();
+  // Ingress networks first: the TCP proxies join them.
+  void reconcileIngressNetworks().then(() => reconcileAllTcpExposures());
   healthChecker.start();
   resetPendingAutoDeploys();
   githubPoller.start();

@@ -1,5 +1,7 @@
 # Stackport system stack, installed and maintained by stackport.sh.
-# Managed applications use separate Compose projects and join stackport-proxy.
+# Managed applications use separate Compose projects. Each routed project gets its own
+# stackport-ingress-<id> network, created and joined by nginx at run time (S9); stackport-proxy
+# is no longer used by projects and stays only so nginx keeps its old attachment.
 name: stackport
 
 networks:
@@ -20,7 +22,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
-    networks: [default] # not stackport-proxy: managed projects share that network and must not reach the API directly (S3)
+    networks: [default] # not an ingress network: managed projects must not reach the API directly (S3)
     volumes:
       # The app user receives Docker socket access through docker-entrypoint.sh.
       - /var/run/docker.sock:/var/run/docker.sock
