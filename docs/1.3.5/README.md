@@ -88,9 +88,11 @@ Settled defaults from §12 of the plan, unless you say otherwise:
 
 ## 3. Leftovers to clear
 
+**Moved or changed after the 1.3.0 incident:** the follow-ups P2 to P8 are 1.3.5 work; P1 (regression report, restore point, Restore) and database backup and restore are 1.4 ([../1.4/README.md](../1.4/README.md)). The Working On It board has a task for each (#380 to #388).
+
 | ID | Item | Size | Notes |
 |---|---|---|---|
-| L1 | Remove the vestigial `stackport-proxy` network | S | Projects stopped using it in S9. Still declared in `docker-compose.system.yml`, created and removed in `stackport.sh`, the constant `STACKPORT_PROXY_NETWORK` is only used to strip it from old Compose files, and two comments describe it as current. Keep the strip-from-old-files code for one more release, drop the rest. Needs care: `stackport update` on an existing host must not fail when the network is gone. |
+| L1 | ~~Remove the vestigial `stackport-proxy` network~~ **Withdrawn. Do not do this.** | | After 1.3.1, `stackport-proxy` is the shared ingress network again: nginx is on it (declared in `docker-compose.system.yml`) and every routed service joins it under its alias. Removing it takes every routed project down. See the [postmortem](postmortem-1.3.0-ingress-networks.md). |
 | L2 | Stale comments and names | S | 32 comments say "Phase 1.7"; `ensureProjectProxyNetwork` and `applyStackportProxyNetwork` now mean the ingress network; two doc comments name a file that no longer exists (`composeNetworking.ts`). |
 | L3 | `docs/plan.md` repeats the 1.3 security table | S | Out of date the day it was written (S9 and S15 changed). Point it at `docs/1.3/` instead of keeping two copies. |
 | L4 | Delete `docs/deprecated/` (B7) | S | Nothing in it is current. |
