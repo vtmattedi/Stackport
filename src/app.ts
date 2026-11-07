@@ -3,15 +3,15 @@ import helmet from "helmet";
 import cors from "cors";
 import path from "path";
 import { config } from "./config/env";
-import { globalLimiter } from "./middleware/rateLimiter";
-import { errorHandler } from "./middleware/errorHandler";
-import router from "./routes";
-import githubHooksRouter from "./routes/githubHooks";
-import mcpRouter from "./mcp/httpServer";
-import { getReadiness } from "./services/readiness";
-import { runningSha } from "./services/appVersion";
-import { createTrustedProxy } from "./services/trustedProxy";
-import { logger } from "./utils/logger";
+import { globalLimiter } from "./application/http/rateLimiter";
+import { errorHandler } from "./application/http/errorHandler";
+import router from "./application/http/routes";
+import githubHooksRouter from "./modules/automation/routes/githubHooks";
+import mcpRouter from "./transports/mcp/http";
+import { getReadiness } from "./modules/maintenance/readiness";
+import { runningSha } from "./modules/maintenance/version";
+import { createTrustedProxy } from "./modules/ingress/trustedProxy";
+import { logger } from "./shared/logger";
 
 const app = express();
 
@@ -26,7 +26,7 @@ const app = express();
 // loopback and the nginx container's address may set X-Forwarded-For; any other peer
 // is taken at its socket address, so a container cannot claim a client address to dodge
 // the login rate limit (S4). The address is looked up by name and refreshed, because it
-// changes when nginx restarts: see services/trustedProxy.ts.
+// changes when nginx restarts: see modules/ingress/trustedProxy.ts.
 export const trustedProxy = createTrustedProxy({
   host: config.trustedProxyHost,
   onError: (error) => logger.warn({ error: error instanceof Error ? error.message : String(error) }, "trusted-proxy.lookup-failed"),
@@ -87,7 +87,18 @@ if (config.nodeEnv === "production") {
   app.get("/version.json", (_req, res) => {
     res.set("Cache-Control", "no-store").json({version: runningSha() ?? "unknown"});
   });
-  app.use(express.static(clientDist));
+  // Worker scripts and navigation HTML must revalidate on every request.
+  // Fingerprinted Vite assets are immutable and safe to cache for a year.
+  app.use(express.static(clientDist, {
+    setHeaders(res, filePath) {
+      const name = path.basename(filePath);
+      if (name === "index.html" || name === "sw.js" || name === "registerSW.js" || name === "manifest.webmanifest") {
+        res.setHeader("Cache-Control", "no-cache, must-revalidate");
+      } else if (filePath.includes(`${path.sep}assets${path.sep}`) && /-[a-zA-Z0-9_-]{8,}\./.test(name)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      }
+    },
+  }));
   app.use((_req, res, next) => {
     res.sendFile(path.join(clientDist, "index.html"), (err?: Error) => {
       if (err) next(err);

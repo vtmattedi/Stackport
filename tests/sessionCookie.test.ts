@@ -2,11 +2,11 @@ import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import type { NextFunction, Request, Response } from "express";
 import { initializeDatabase } from "../src/config/database";
-import { requireAuth } from "../src/middleware/auth";
-import { issueAuthToken } from "../src/services/authTokens";
+import { requireAuth } from "../src/modules/identity/middleware/session";
+import { issueAuthToken } from "../src/modules/identity/sessions";
 import {
   buildClearedSessionCookie, buildSessionCookie, isSameOrigin, passesCsrfCheck, readCookie, SESSION_COOKIE,
-} from "../src/services/sessionCookie";
+} from "../src/modules/identity/sessionCookie";
 
 before(() => { initializeDatabase(); });
 

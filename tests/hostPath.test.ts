@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isInsideDir, rebasePath, relativeInside } from "../src/utils/hostPath";
+import { isInsideDir, rebasePath, relativeInside } from "../src/shared/hostPath";
 
 test("a path inside a POSIX directory is found, a sibling that shares its prefix is not", () => {
   assert.equal(relativeInside("/app/data/repos/7-x/data", "/app/data/repos/7-x"), "data");

@@ -12,8 +12,9 @@ import { notify } from "../../lib/notify";
 import { cn } from "../../lib/utils";
 import styles from "../Settings.module.scss";
 import systemStyles from "../System.module.scss";
+import BrowserPushSection from "./BrowserPushSection";
 
-/** Email alerts for project health, with a test send and the recent email log. */
+/** Independent email and browser push channels, with a shared delivery log. */
 export default function NotificationsSection() {
   const [apiKeyCredentials, setApiKeyCredentials] = useState<Credential[]>([]);
   const [notifConfig, setNotifConfig] = useState<NotificationConfig | null>(null);
@@ -90,6 +91,7 @@ export default function NotificationsSection() {
 
   return (
     <div className={styles.sectionStack}>
+      <BrowserPushSection onDelivery={() => { void api.getNotificationLogs().then(setNotifLogs).catch(() => {}); }} />
       <section className={systemStyles.systemPanel}>
         <div className={systemStyles.sectionTitle}>
           <Bell size={14} />
@@ -127,7 +129,7 @@ export default function NotificationsSection() {
           <label className={styles.switchField}>
             <Switch checked={notifEnabled} onCheckedChange={setNotifEnabled} />
             <span>
-              <span>Enable notifications</span>
+              <span>Enable email alerts</span>
               <span>Send project health alerts to the configured email address.</span>
             </span>
           </label>
@@ -182,24 +184,26 @@ export default function NotificationsSection() {
       <section className={systemStyles.systemPanel}>
         <div className={systemStyles.sectionTitle}>
           <Mail size={14} />
-          Email log
+          Delivery log
           <span className={systemStyles.titleMeta}>last 10</span>
         </div>
         {notifLogs.length === 0 ? (
-          <p className="muted-text" style={{ margin: 0, fontSize: "0.82rem" }}>No emails sent yet.</p>
+          <p className="muted-text" style={{ margin: 0, fontSize: "0.82rem" }}>No notifications sent yet.</p>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Type</th><th>Result</th><th>Project</th><th>Sent</th></tr>
+                <tr><th>Channel</th><th>Type</th><th>Result</th><th>Project</th><th>Sent</th></tr>
               </thead>
               <tbody>
                 {notifLogs.slice(0, 10).map((log) => (
                   <tr key={log.id}>
-                    <td>{log.eventType === "test" ? "Test" : "Alert"}</td>
+                    <td>{log.channel === "web_push" ? "Browser push" : "Email"}</td>
+                    <td title={log.subject}>{log.eventType === "test" ? "Test" : log.eventType.replace(/_/g, " ")}</td>
                     <td style={{ color: log.result === "ok" ? "var(--success)" : "var(--danger)" }}>
                       {log.result === "ok" ? <Check size={12} style={{ display: "inline", marginRight: 4 }} /> : <AlertCircle size={12} style={{ display: "inline", marginRight: 4 }} />}
-                      {log.result}
+                      {log.channel === "web_push" && log.result === "ok" ? "Accepted by push service" : log.result}
+                      {log.errorMessage && <span className="hint">{log.errorMessage}</span>}
                     </td>
                     <td>{log.projectName ?? "—"}</td>
                     <td>{formatShortDateTime(log.sentAt)}</td>

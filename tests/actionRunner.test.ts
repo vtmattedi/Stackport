@@ -4,12 +4,12 @@ import fs from "fs";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
 import { closeDatabase, getDatabase, initializeDatabase } from "../src/config/database";
-import { encryptSecret } from "../src/utils/crypto";
-import { createProject } from "../src/services/projectAdmin";
-import { createProjectEnvFile } from "../src/services/projectDeploy";
-import { actionRegistry, markInterruptedActions, type OutputChunk } from "../src/services/actionRegistry";
-import { actionLogPath, deleteProjectActionLogs, LOG_KEEP_PER_KEY, pruneActionLogs, readActionLog } from "../src/services/actionLog";
-import { issueAuthToken } from "../src/services/authTokens";
+import { encryptSecret } from "../src/shared/crypto";
+import { createProject } from "../src/modules/projects/operations";
+import { createProjectEnvFile } from "../src/modules/deployments/operations";
+import { actionRegistry, markInterruptedActions, type OutputChunk } from "../src/modules/actions/registry";
+import { actionLogPath, deleteProjectActionLogs, LOG_KEEP_PER_KEY, pruneActionLogs, readActionLog } from "../src/modules/actions/log";
+import { issueAuthToken } from "../src/modules/identity/sessions";
 import app from "../src/app";
 
 const CREDENTIAL_SECRET = "ghp_credential_secret_value";

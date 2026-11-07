@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createTrustedProxy, isLoopback, normalizeAddress } from "../src/services/trustedProxy";
+import { createTrustedProxy, isLoopback, normalizeAddress } from "../src/modules/ingress/trustedProxy";
 
 test("loopback is trusted in every spelling", () => {
   for (const address of ["127.0.0.1", "::1", "::ffff:127.0.0.1", "127.0.1.1"]) assert.equal(isLoopback(address), true, address);

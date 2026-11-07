@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { ApiToken } from "../src/services/apiTokens";
+import type { ApiToken } from "../src/modules/identity/apiTokens";
 import {
   CONFIRMATION_TTL_MS, ConfirmationStore, mayActOn, registerWriteTools, type ProjectLike, type WriteDeps, type WriteKind, type WriteParams,
-} from "../src/mcp/writeTools";
+} from "../src/transports/mcp/writeTools";
 
 const PROJECTS: Record<number, ProjectLike> = {
   1: { id: 1, name: "shop", groupName: "prod", lastStatus: "up", autoDeployBranch: "main" },

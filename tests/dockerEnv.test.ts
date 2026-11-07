@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildDockerEnv } from "../src/services/projectDeploy";
+import { buildDockerEnv } from "../src/modules/deployments/operations";
 
 test("docker compose never receives Stackport's secrets", () => {
   const env = buildDockerEnv({

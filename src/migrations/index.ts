@@ -1,16 +1,18 @@
 import type Database from "better-sqlite3";
-import { logger } from "../utils/logger";
+import { logger } from "../shared/logger";
 import m001 from "./001_deployment_rolled_back_at";
 import m002 from "./002_deploy_health_gate";
 import m003 from "./003_api_tokens";
 import m004 from "./004_actions";
 import m005 from "./005_host_metrics";
-import m006 from "./006_compose_policy_enforced";
-import m007 from "./007_volumes_managed";
-import m008 from "./008_legacy_mount_sources";
-import m009 from "./009_hardened_defaults";
-import m010 from "./010_api_token_project_group";
-import m011 from "./011_env_values_encrypted";
+import m006 from "./006_web_push";
+import m007 from "./007_push_outbox";
+import m008 from "./008_compose_policy_enforced";
+import m009 from "./009_volumes_managed";
+import m010 from "./010_legacy_mount_sources";
+import m011 from "./011_hardened_defaults";
+import m012 from "./012_api_token_project_group";
+import m013 from "./013_env_values_encrypted";
 
 /** A schema change that runs once, in order, recorded in `PRAGMA user_version`.
  *  `stackport rollback` runs the previous release's code on the migrated database,
@@ -23,7 +25,7 @@ export interface Migration {
 }
 
 /** Ordered by id. Append only: never edit or reorder a migration that has shipped. */
-export const MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011];
+export const MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013];
 
 export function schemaVersion(db: Database.Database): number {
   return db.pragma("user_version", { simple: true }) as number;

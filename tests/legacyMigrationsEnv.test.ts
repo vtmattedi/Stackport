@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runEnvEncryption, type EncryptEnvDeps, type PlainEnvRow } from "../src/legacyMigrations/encryptEnvValues";
+import { runEnvEncryption, type EncryptEnvDeps, type PlainEnvRow } from "../src/modules/maintenance/migrations/encryptEnvValues";
 
 function harness(rows: PlainEnvRow[]) {
   const saved: { id: number; encrypted: string }[] = [];

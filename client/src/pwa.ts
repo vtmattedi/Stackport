@@ -1,43 +1,95 @@
 import { registerSW } from "virtual:pwa-register";
 
-const VERSION_POLL_INTERVAL_MS = 5 * 60_000;
+declare const __DEPLOY_COMMIT__: string;
 
-async function fetchDeployedVersion(): Promise<string | null> {
+const POLL_MS = 60_000;
+const MAX_RETRY_MS = 5 * 60_000;
+const initialVersion = __DEPLOY_COMMIT__;
+let lastSuccessfulVersion = initialVersion;
+let retryDelay = 5_000;
+let checking = false;
+let registration: ServiceWorkerRegistration | undefined;
+let retryTimer: number | undefined;
+
+// Other UI flows can dispatch this event when it becomes safe to reload.
+// A pending terminal or destructive operation must not be interrupted.
+const RELOAD_SAFE_EVENT = "stackport:pwa-reload-safe";
+
+function isBusy(): boolean {
+  return document.querySelector('[data-pwa-update-blocker="true"]') !== null;
+}
+
+function notifyPending(): void {
+  window.dispatchEvent(new CustomEvent("stackport:pwa-update-pending"));
+}
+
+async function deployedVersion(): Promise<string | null> {
   try {
-    const res = await fetch("/version.json", { cache: "no-store" });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { version?: string };
-    return data.version ?? null;
+    const response = await fetch("/version.json", { cache: "no-store" });
+    if (!response.ok) return null;
+    const json: unknown = await response.json();
+    if (!json || typeof json !== "object" || !("version" in json)) return null;
+    const version = (json as { version: unknown }).version;
+    return typeof version === "string" && version !== "unknown" && version.length > 0 ? version : null;
   } catch {
     return null;
   }
 }
 
-// The server answers /version.json with the running commit (src/app.ts), so it
-// changes with every release. There's no push here — we just poll it, and when it
-// changes, ask the already-installed service worker to check for a new one.
-// registerType: "autoUpdate" takes it from there (installs + activates the
-// new worker and reloads controlled clients without prompting).
-function watchForNewVersion(onNewVersion: () => void): void {
-  let lastVersion: string | null = null;
-  window.setInterval(() => {
-    void fetchDeployedVersion().then((version) => {
-      if (!version) return;
-      if (lastVersion && version !== lastVersion) onNewVersion();
-      lastVersion = version;
-    });
-  }, VERSION_POLL_INTERVAL_MS);
+async function checkForUpdate(): Promise<void> {
+  if (!registration || checking || !navigator.onLine) return;
+  checking = true;
+  try {
+    const version = await deployedVersion();
+    if (!version) return;
+    if (version === lastSuccessfulVersion) return;
+    // Don't mark a version as checked until the browser has successfully checked
+    // its worker script. Failed requests must be retried.
+    await registration.update();
+    lastSuccessfulVersion = version;
+    retryDelay = 5_000;
+    if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    retryTimer = undefined;
+  } catch {
+    if (retryTimer === undefined) {
+      retryTimer = window.setTimeout(() => {
+        retryTimer = undefined;
+        void checkForUpdate();
+      }, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
+    }
+  } finally {
+    checking = false;
+  }
 }
 
 export function registerPwa(): void {
   if (!("serviceWorker" in navigator)) return;
-  registerSW({
+  const updateSW = registerSW({
     immediate: true,
-    onRegisteredSW(_swUrl, registration) {
-      if (!registration) return;
-      watchForNewVersion(() => {
-        void registration.update();
+    onNeedRefresh() {
+      // In-progress operations can mark their root with data-pwa-update-blocker.
+      if (isBusy()) {
+        notifyPending();
+        const reloadWhenSafe = () => {
+          if (isBusy()) return;
+          window.removeEventListener(RELOAD_SAFE_EVENT, reloadWhenSafe);
+          void updateSW(true);
+        };
+        window.addEventListener(RELOAD_SAFE_EVENT, reloadWhenSafe);
+      } else {
+        void updateSW(true);
+      }
+    },
+    onRegisteredSW(_url, registered) {
+      if (!registered) return;
+      registration = registered;
+      void checkForUpdate();
+      window.setInterval(() => void checkForUpdate(), POLL_MS);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) void checkForUpdate();
       });
+      window.addEventListener("online", () => void checkForUpdate());
     },
   });
 }

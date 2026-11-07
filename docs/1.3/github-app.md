@@ -37,13 +37,13 @@ An administrator connects GitHub to Stackport once, authorizes selected reposito
 
 | Current file | Existing behavior | Planned change |
 | --- | --- | --- |
-| `src/services/projectDeploy.ts` | PAT/default credential used by `gitAuthHeader()`; clone, fetch, SHA-pinned checkout and Compose deployment | Replace credential selection with an async auth provider supporting App/PAT/anonymous; keep deployment logic |
-| `src/services/githubPoller.ts` | Branch discovery, ETags, optional webhook safety polling, per-project PAT selection | Use the same auth provider for App projects; fix ETag cache scoping by installation/identity |
-| `src/services/githubWebhooks.ts` | Per-project hook provisioning, HMAC verification and recent deliveries | Retain for legacy PAT projects; **do not** install repository hooks for App projects |
-| `src/routes/githubHooks.ts` / `src/app.ts` | Raw webhook payload processed before global JSON parser and limiter | Add distinct App webhook endpoint before body parsing |
-| `src/services/autoDeploy.ts` | `requestAutoDeploy()`, project action slot, latest-push queue | Reuse; add durable event intake/replay before dispatch |
-| `src/routes/projects.ts` / `src/services/projectAdmin.ts` | Repo and branch selection and project credential mapping | Accept an App repository/installation binding and migration flow |
-| `src/routes/credentials.ts` / `src/utils/crypto.ts` | Encrypted long-lived PATs in SQLite, currently keyed from JWT secret | Preserve legacy credentials; do not store App installation tokens in SQLite |
+| `src/modules/deployments/operations.ts` | PAT/default credential used by `gitAuthHeader()`; clone, fetch, SHA-pinned checkout and Compose deployment | Replace credential selection with an async auth provider supporting App/PAT/anonymous; keep deployment logic |
+| `src/modules/automation/githubPolling.ts` | Branch discovery, ETags, optional webhook safety polling, per-project PAT selection | Use the same auth provider for App projects; fix ETag cache scoping by installation/identity |
+| `src/modules/automation/githubWebhooks.ts` | Per-project hook provisioning, HMAC verification and recent deliveries | Retain for legacy PAT projects; **do not** install repository hooks for App projects |
+| `src/modules/automation/routes/githubHooks.ts` / `src/app.ts` | Raw webhook payload processed before global JSON parser and limiter | Add distinct App webhook endpoint before body parsing |
+| `src/modules/automation/autoDeploy.ts` | `requestAutoDeploy()`, project action slot, latest-push queue | Reuse; add durable event intake/replay before dispatch |
+| `src/application/http/projects.ts` / `src/modules/projects/operations.ts` | Repo and branch selection and project credential mapping | Accept an App repository/installation binding and migration flow |
+| `src/modules/credentials/routes.ts` / `src/shared/crypto.ts` | Encrypted long-lived PATs in SQLite, currently keyed from JWT secret | Preserve legacy credentials; do not store App installation tokens in SQLite |
 | `src/config/database.ts` / `src/migrations/index.ts` | SQLite and additive, rollback-compatible migrations | Add installation/repository/event tables and nullable project fields |
 | `client/src/pages/settings/SettingsLayout.tsx` | Deploy Triggers and Credentials settings sections | Add GitHub Connections section; update project wizard and project settings |
 
@@ -158,7 +158,7 @@ async function resolveGithubAccess(project: Project): Promise<GithubAccess>;
 async function getInstallationToken(installationId: number): Promise<GithubAccess>;
 ```
 
-`src/services/projectDeploy.ts` currently constructs `git -c http.extraHeader=...` arguments containing the credential; this can expose it through process arguments. Replace that with a short-lived Git credential helper or process-local `GIT_CONFIG_*` environment variables, suppress credential-bearing output, and ensure stored Git remotes never contain tokens. Apply this improvement to both App and legacy PAT modes.
+`src/modules/deployments/operations.ts` currently constructs `git -c http.extraHeader=...` arguments containing the credential; this can expose it through process arguments. Replace that with a short-lived Git credential helper or process-local `GIT_CONFIG_*` environment variables, suppress credential-bearing output, and ensure stored Git remotes never contain tokens. Apply this improvement to both App and legacy PAT modes.
 
 ### 4.2 Binding an installation to the Stackport administrator
 
@@ -265,7 +265,7 @@ Protect the configuration/mutation routes with existing admin authentication and
 
 ## 7. App-wide webhook ingestion
 
-Implement `src/routes/githubAppHooks.ts` mounted in `src/app.ts` **before the global JSON parser** (as with existing `/api/hooks/github/:publicId`).
+Implement `src/modules/automation/routes/githubAppHooks.ts` mounted in `src/app.ts` **before the global JSON parser** (as with existing `/api/hooks/github/:publicId`).
 
 For each request:
 

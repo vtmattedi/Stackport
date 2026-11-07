@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadYamlDoc } from "../src/services/composeYaml";
-import { extractComposeEnvFileRefs, extractRawComposeIngressTargets } from "../src/services/composeIngress";
+import { loadYamlDoc } from "../src/modules/deployments/compose/yaml";
+import { extractComposeEnvFileRefs, extractRawComposeIngressTargets } from "../src/modules/deployments/compose/ingress";
 
 const COMPOSE = `
 services:

@@ -1,6 +1,6 @@
 import type { Migration } from "./index";
 
-/** Bearer tokens for machine clients (the MCP endpoint, services/apiTokens.ts). Only
+/** Bearer tokens for machine clients (the MCP endpoint, modules/identity/apiTokens.ts). Only
  *  a SHA-256 hash of each token is stored; the token itself is shown once. */
 const migration: Migration = {
   id: 3,

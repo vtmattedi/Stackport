@@ -4,9 +4,9 @@ import crypto from "crypto";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
 import { getDatabase, initializeDatabase } from "../src/config/database";
-import { encryptSecret } from "../src/utils/crypto";
-import { createProject } from "../src/services/projectAdmin";
-import { actionRegistry, projectRepoKey } from "../src/services/actionRegistry";
+import { encryptSecret } from "../src/shared/crypto";
+import { createProject } from "../src/modules/projects/operations";
+import { actionRegistry, projectRepoKey } from "../src/modules/actions/registry";
 import app from "../src/app";
 
 const SECRET = "hook-secret";
@@ -106,7 +106,7 @@ test("payloads larger than the app-wide JSON limit still arrive", async () => {
 });
 
 test("the poller covers webhook projects whose hook is failing, at the normal interval", async () => {
-  const { selectProjectsToPoll } = await import("../src/services/githubPoller");
+  const { selectProjectsToPoll } = await import("../src/modules/automation/githubPolling");
   const db = getDatabase();
   const make = (name: string, trigger: string, hookStatus: string | null, checkedMinutesAgo: number | null) => {
     const { id } = createProject({ name, sourceType: "github", githubRepo: `o/${name}` });

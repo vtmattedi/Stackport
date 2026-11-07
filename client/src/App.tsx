@@ -9,6 +9,7 @@ import { Toaster } from "./components/ui/sonner";
 import { ConfirmProvider } from "./components/ConfirmDialog";
 import { GlobalRealtime } from "./components/GlobalRealtime";
 import { GlobalActionToasts } from "./components/GlobalActionToasts";
+import { BrowserPushRecoveryNotice } from "./components/BrowserPushRecoveryNotice";
 import { SystemProvider } from "./context/SystemContext";
 
 // Each page is its own chunk, so the login screen and first page don't download
@@ -54,6 +55,7 @@ function PrivateLayout() {
         <GlobalActionToasts />
         <CommandPalette />
         <div className="app-content">
+          <BrowserPushRecoveryNotice />
           <Suspense
             fallback={(
               <main className="main">

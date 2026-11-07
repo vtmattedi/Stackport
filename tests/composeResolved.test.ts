@@ -4,9 +4,9 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/services/composePolicy";
-import { dumpYamlDoc, loadYamlDoc } from "../src/services/composeYaml";
-import { buildHardeningOverride, DEFAULT_HARDENING } from "../src/services/containerHardening";
+import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/modules/deployments/compose/policy";
+import { dumpYamlDoc, loadYamlDoc } from "../src/modules/deployments/compose/yaml";
+import { buildHardeningOverride, DEFAULT_HARDENING } from "../src/modules/deployments/compose/hardening";
 
 /** These run real `docker compose config`, the same command a deploy resolves the file
  *  with, so they prove the policy sees what Compose will run. Skipped without Docker. */

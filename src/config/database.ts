@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 import { config } from "./env";
-import { runMigrations } from "../migrations";
+import { runMigrations } from "../migrations/index";
 
 let db: Database.Database | null = null;
 
@@ -45,7 +45,7 @@ export function initializeDatabase(): Database.Database {
       ON auth_tokens (expires_at);
 
     -- Phase 1.9 — one-time bootstrap and admin-recovery credentials (routes/setup.ts).
-    -- 'bootstrap' is generated once at first boot (services/installation.ts) and
+    -- 'bootstrap' is generated once at first boot (modules/identity/installation.ts) and
     -- consumed when the operator creates their real superadmin; 'recovery' is
     -- generated on demand by the host CLI's admin-recovery command (cli/adminRecovery.ts).
     -- Only one unconsumed/unexpired row per kind is meant to exist at a time —

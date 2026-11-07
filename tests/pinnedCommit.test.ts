@@ -5,7 +5,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { initializeDatabase } from "../src/config/database";
-import { checkoutPinnedCommit, COMMIT_SHA_RE } from "../src/services/projectDeploy";
+import { checkoutPinnedCommit, COMMIT_SHA_RE } from "../src/modules/deployments/operations";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" }).trim();

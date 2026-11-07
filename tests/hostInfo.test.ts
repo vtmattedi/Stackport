@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readDiskSpace, readHostname, readNetworkTotals } from "../src/services/hostInfo";
-import { networkRates } from "../src/services/hardwareSampler";
+import { readDiskSpace, readHostname, readNetworkTotals } from "../src/modules/observability/hostInfo";
+import { networkRates } from "../src/modules/observability/samplers/hardware";
 
 const root = mkdtempSync(path.join(os.tmpdir(), "hostinfo-"));
 after(() => rmSync(root, { recursive: true, force: true }));

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildVolumesOverride, managedVolumesRoot, planManagedVolumes, type PlanOptions } from "../src/services/managedVolumes";
-import { loadYamlDoc } from "../src/services/composeYaml";
+import { buildVolumesOverride, managedVolumesRoot, planManagedVolumes, type PlanOptions } from "../src/modules/deployments/compose/managedVolumes";
+import { loadYamlDoc } from "../src/modules/deployments/compose/yaml";
 
 const options: PlanOptions = {
   projectId: 7,

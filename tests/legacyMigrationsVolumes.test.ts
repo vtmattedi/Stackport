@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runVolumeMigration, type DockerResult, type VolumeMigrationDeps } from "../src/legacyMigrations/volumeMounts";
+import { runVolumeMigration, type DockerResult, type VolumeMigrationDeps } from "../src/modules/maintenance/migrations/volumeMounts";
 
 const REPO = "/app/data/repos/7-shop";
 const project = { id: 7, name: "shop", composeFile: "compose.yml", repoPath: REPO, composeProject: "7-shop" };

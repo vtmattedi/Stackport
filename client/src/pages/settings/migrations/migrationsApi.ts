@@ -1,7 +1,7 @@
 /**
  * TEMPORARY: the whole Settings > Migrations page lives in this folder, with its own
  * API calls so nothing else in the client depends on it. To remove it, see
- * src/legacyMigrations/types.ts on the server.
+ * src/modules/maintenance/migrations/types.ts on the server.
  */
 import { ApiError, sessionHeaders } from "../../../api/client";
 

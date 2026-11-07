@@ -1,8 +1,8 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDatabase, initializeDatabase } from "../src/config/database";
-import { createProject } from "../src/services/projectAdmin";
-import { recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "../src/services/projectDeployments";
+import { createProject } from "../src/modules/projects/operations";
+import { recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "../src/modules/deployments/history";
 
 before(() => { initializeDatabase(); });
 
@@ -74,6 +74,20 @@ test("with only one revision there is nothing to roll back to", () => {
   deploy(id, "aaaaaaa");
   const result = resolveRollbackTarget(id);
   assert.equal(result.ok, false);
+});
+
+test("failed attempts retain the active artifact and default rollback target within a bounded history", () => {
+  const id = project();
+  deploy(id, "aaaaaaa");
+  deploy(id, "bbbbbbb");
+  for (let attempt = 0; attempt < 40; attempt++) {
+    recordFailedDeployment(id, { commitSha: "ccccccc", branch: "main", composeFileName: "docker-compose.yml", triggeredBy: "auto" }, "blocked");
+  }
+  assert.equal(targetSha(id), "aaaaaaa");
+  assert.ok(idOf(id, "bbbbbbb", "active"));
+  assert.equal((getDatabase().prepare("SELECT COUNT(*) AS count FROM project_deployments WHERE project_id=?").get(id) as { count: number }).count, 22);
+  deploy(id, "aaaaaaa", { rollback: true });
+  assert.equal(targetSha(id), null, "the broken revision must remain excluded after rollback");
 });
 
 test("an explicit target may be a revision rolled back from, but not the running one", () => {

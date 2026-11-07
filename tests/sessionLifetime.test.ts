@@ -2,7 +2,7 @@ import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDatabase, initializeDatabase } from "../src/config/database";
 import { config } from "../src/config/env";
-import { issueAuthToken, refreshAuthToken, sessionWindow, verifyStoredAuthToken } from "../src/services/authTokens";
+import { issueAuthToken, refreshAuthToken, sessionWindow, verifyStoredAuthToken } from "../src/modules/identity/sessions";
 
 before(() => { initializeDatabase(); });
 

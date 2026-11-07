@@ -28,7 +28,7 @@ ENV NODE_ENV=production
 # StackPort shells out to `docker`/`docker compose` (to run managed projects against
 # the host daemon via the mounted socket), `git` (repo clone/fetch/pull), and (Phase
 # 1.6) `openssl` directly for certificate expiry/issuer reads against the bind-mounted
-# /etc/letsencrypt — see docs/dockerization/BASELINE.md §6, src/services/certbot.ts.
+# /etc/letsencrypt — see docs/dockerization/BASELINE.md §6, src/modules/ingress/certificates/operations.ts.
 # `gosu` is used by docker-entrypoint.sh to drop from root (needed once at startup to
 # align with the mounted docker.sock's GID) back to the unprivileged `node` user
 # before the app actually runs.
@@ -40,7 +40,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" \
       > /etc/apt/sources.list.d/docker.list \
     && apt-get update && apt-get install -y --no-install-recommends \
-      docker-ce-cli docker-compose-plugin \
+      docker-ce-cli docker-buildx-plugin docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
@@ -48,6 +48,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/client/dist ./client/dist
 COPY --chown=node:node scripts/ ./scripts/
+# Agent skill served through the Stackport MCP resource.
+COPY --chown=node:node .agents/skills/stackport/SKILL.md ./.agents/skills/stackport/SKILL.md
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

@@ -1,7 +1,7 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeDatabase } from "../src/config/database";
-import { ApiTokenError, createApiToken, verifyApiToken } from "../src/services/apiTokens";
+import { ApiTokenError, createApiToken, verifyApiToken } from "../src/modules/identity/apiTokens";
 
 before(() => { initializeDatabase(); });
 

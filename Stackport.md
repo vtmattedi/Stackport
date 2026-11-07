@@ -2,15 +2,18 @@
 
 StackPort is a self-hosted DevOps control plane: a Node/Express backend + React client that deploys GitHub-repo or manually-uploaded projects via `docker compose`, fronts them with its own containerized nginx reverse proxy, issues Let's Encrypt certificates, and monitors the host — all from a single admin UI/API. (The optional Hostinger VPS fleet and firewall integration was removed in October 2026; its database tables are kept, unused, so `stackport rollback` still works.)
 
-StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today; see `docs/deprecated/` for the design docs that shaped it (kept as historical record, not current reference) and `Skills.md` for the operational guide to preparing a repository for deployment.
+StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today; see `docs/deprecated/` for the design docs that shaped it (kept as historical record, not current reference) and `.agents/skills/stackport/SKILL.md` for the agent skill used to prepare a repository for deployment.
 
 ---
 
 ## 1. Architecture
 
+The backend uses [capability-owned modules](docs/backend-modules.md). Implementations
+live at their canonical module paths; the former `src/services` directory has been removed.
+
 ### 1.1 System plane vs. workload plane
 
-Everything StackPort itself needs to run — its own container, its own nginx, its own network — lives in one pinned Docker Compose project named `stackport` (`docker-compose.system.yml`). Every project an operator deploys through StackPort is a **separate** Compose project, isolated from the system plane and from each other. `src/services/systemResources.ts` draws this line by checking a container's `com.docker.compose.project` label — "system" is exactly the containers belonging to the `stackport` project, everything else is a managed workload.
+Everything StackPort itself needs to run — its own container, its own nginx, its own network — lives in one pinned Docker Compose project named `stackport` (`docker-compose.system.yml`). Every project an operator deploys through StackPort is a **separate** Compose project, isolated from the system plane and from each other. `src/integrations/docker/systemResources.ts` draws this line by checking a container's `com.docker.compose.project` label — "system" is exactly the containers belonging to the `stackport` project, everything else is a managed workload.
 
 ```
 Host OS
@@ -29,13 +32,13 @@ Host OS
 
 ### 1.2 Networking — no host ports for managed apps
 
-Managed projects never publish a host port. `docker-compose.system.yml` declares a shared bridge network, `stackport-proxy`; only `stackport-nginx` and the routed projects join it (the `stackport` app does not, so a project cannot call the admin API directly; nginx reaches the app over the stack's own `default` network), and every project's compose file gets an **ephemeral, never-committed** rewrite (`src/services/composeNetworking.ts`) adding `networks: [default, stackport-proxy]` to whichever service(s) a domain is routed to. Nginx reaches a project by Docker DNS service name over that network (`http://<service>:<containerPort>`), not `127.0.0.1:<port>`.
+Managed projects never publish a host port. `docker-compose.system.yml` declares a shared bridge network, `stackport-proxy`; only `stackport-nginx` and the routed projects join it (the `stackport` app does not, so a project cannot call the admin API directly; nginx reaches the app over the stack's own `default` network), and every project's compose file gets an **ephemeral, never-committed** rewrite (`src/modules/deployments/compose/networking.ts`) adding `networks: [default, stackport-proxy]` to whichever service(s) a domain is routed to. Nginx reaches a project by Docker DNS service name over that network (`http://<service>:<containerPort>`), not `127.0.0.1:<port>`.
 
-`docker-compose.system.yml`'s `nginx` service publishes the public HTTP/HTTPS ports (the app port is bound only to host loopback) — `80:80` and `443:443`. A managed project's compose file that includes a `ports:` entry (any form) or `network_mode: host` is **rejected outright** by `src/services/composePolicy.ts` at deploy time, with an actionable error pointing at `expose:` instead. This is a hard, fail-closed invariant, not a default that can be silently bypassed: StackPort decides what the host exposes publicly, not the application being deployed.
+`docker-compose.system.yml`'s `nginx` service publishes the public HTTP/HTTPS ports (the app port is bound only to host loopback) — `80:80` and `443:443`. A managed project's compose file that includes a `ports:` entry (any form) or `network_mode: host` is **rejected outright** by `src/modules/deployments/compose/policy.ts` at deploy time, with an actionable error pointing at `expose:` instead. This is a hard, fail-closed invariant, not a default that can be silently bypassed: StackPort decides what the host exposes publicly, not the application being deployed.
 
 ### 1.3 Domain routing model
 
-A domain doesn't route to "a project" — it routes to a specific `(service, container_port)` pair within that project's compose file (`project_domains.service` / `project_domains.container_port`). One project can have several domains, each pointing at a different service if it needs to (e.g. a public web frontend on one domain, an admin API on another). `src/services/nginx/configWriter.ts`'s `generateNginxConfig()` builds one nginx server block per routed domain, proxying to `http://<service>:<containerPort>` — see `docs/deprecated/stackport_yml.md` for the original design rationale.
+A domain doesn't route to "a project" — it routes to a specific `(service, container_port)` pair within that project's compose file (`project_domains.service` / `project_domains.container_port`). One project can have several domains, each pointing at a different service if it needs to (e.g. a public web frontend on one domain, an admin API on another). `src/modules/ingress/nginx/configWriter.ts`'s `generateNginxConfig()` builds one nginx server block per routed domain, proxying to `http://<service>:<containerPort>` — see `docs/deprecated/stackport_yml.md` for the original design rationale.
 
 ### 1.4 Compose security policy
 
@@ -62,11 +65,13 @@ Every successful `up` records a `project_deployments` row: the resolved git comm
 
 Without a `deploymentId`, the target is the newest earlier revision that differs from the running one and that no rollback has moved away from: a rollback marks the revision it replaces (`rolled_back_at`), so rolling back twice keeps going back instead of returning to the broken revision. A revision marked this way can still be restored explicitly. Revisions are ordered by id, since `created_at` has one-second resolution.
 
+Deployment history keeps the 20 newest attempts plus the active revision and default rollback target when those fall outside the recent window. Repeated blocked or failed attempts cannot evict these recovery artifacts. Project creation and its optional initial domain commit together; a rejected initial domain leaves no partially created project.
+
 Auto-deploys (poller and webhook) deploy the commit that triggered them, not whatever the branch tip is by the time the deploy starts. If that commit is no longer on the branch (for example after a force-push), the deploy fails with that reason; the new tip arrives as its own deploy.
 
 ### 1.7 Docker storage management
 
-Unbounded image/build-cache growth on a long-running host is a real failure mode, so StackPort manages it actively (`src/services/dockerStorage.ts`, `dockerStorageMonitor.ts`):
+Unbounded image/build-cache growth on a long-running host is a real failure mode, so StackPort manages it actively (`src/modules/maintenance/storage/operations.ts`, `src/modules/maintenance/storage/monitor.ts`):
 
 - A background monitor (`certbotRenewalMonitor.ts`) sweeps temporary Certbot containers daily and reloads nginx after successful renewal.
 - A pre-build disk-pressure guard runs before every build — if free space is critically low, the build is blocked with a clear message rather than being allowed to run the host out of disk mid-build.
@@ -111,6 +116,32 @@ Other commands:
 The CLI and Settings share the same source-update and rollback flow. A detached Docker updater runs the installed host CLI and survives app replacement.
 
 ---
+
+### Release promotion and update branch
+
+Development happens on `main`, but installed servers follow `stable` by default.
+On each push to `main`, [`promote.yml`](.github/workflows/promote.yml)
+runs the reusable [CI workflow](.github/workflows/ci.yml) and
+[upgrade scenarios](.github/workflows/upgrade.yml). The upgrade job installs
+the version at the current `stable` tip on a fresh runner and tests the
+transition to the candidate commit, including CLI and in-app update paths,
+broken builds, broken runtimes, and rollback against a newer database.
+If either validation job fails, promotion does not run. The promotion job
+uses a non-forced push, so `stable` only fast-forwards.
+
+The host CLI's `configured_branch()` defaults to `stable`. An explicit
+`stackport install --branch=<name>` saves another branch for subsequent
+updates; `STACKPORT_BRANCH` overrides the configured branch for one invocation.
+The installer script can be downloaded from `main`, but installation still
+checks out `stable` unless overridden.
+
+Promotion is not a fleet rollout: running installations update only when
+the operator invokes `stackport update` (directly or through Settings).
+The updater backs up the Stackport database before switching versions,
+checks the replacement's health, and rolls back to the previous recorded
+version on failure. Managed projects are not updated by this operation.
+Because rollback may run older code on a newer database, schema migrations
+must preserve backward compatibility.
 
 ## 3. First login and administrator identity
 
@@ -158,7 +189,7 @@ StackPort owns one generated file, `<NGINX_PATH>/sites-available/default`, rebui
 
 ### 5.3 HTTPS with no domain — self-signed bootstrap
 
-A raw-IP install (§2 step 3, blank domain) still needs HTTPS for the very first login. `src/services/appIngress.ts`'s `ensureAppIngress()` runs once at boot: if no app domain is configured and no domain was supplied, it generates a long-lived self-signed certificate (`src/services/nginx/selfSignedCert.ts`, via an ephemeral `docker run` since the app's own `/etc/letsencrypt` mount is deliberately read-only) and nginx serves it as the HTTPS `default_server` — reachable at `https://<server-ip>/` with a browser trust warning, but encrypted. The moment a real app domain is configured (via System → Nginx, or `STACKPORT_DOMAIN` at install time), StackPort automatically runs the same three-stage HTTP→issue→HTTPS flow used for projects (below) and the self-signed fallback is superseded — no manual cleanup needed.
+A raw-IP install (§2 step 3, blank domain) still needs HTTPS for the very first login. `src/modules/ingress/bootstrap.ts`'s `ensureAppIngress()` runs once at boot: if no app domain is configured and no domain was supplied, it generates a long-lived self-signed certificate (`src/modules/ingress/nginx/selfSignedCert.ts`, via an ephemeral `docker run` since the app's own `/etc/letsencrypt` mount is deliberately read-only) and nginx serves it as the HTTPS `default_server` — reachable at `https://<server-ip>/` with a browser trust warning, but encrypted. The moment a real app domain is configured (via System → Nginx, or `STACKPORT_DOMAIN` at install time), StackPort automatically runs the same three-stage HTTP→issue→HTTPS flow used for projects (below) and the self-signed fallback is superseded — no manual cleanup needed.
 
 ### 5.4 Per-project SSL issuance
 
@@ -202,7 +233,7 @@ Closing before the deploy finishes offers to keep or discard the project. A kept
 - No `network_mode: host`, no `privileged: true`, no dangerous bind mounts (§1.4) — a violating file is rejected at deploy time with a specific error, not silently rewritten.
 - The service you register a domain against must actually exist in the compose file (validated server-side before the domain is saved).
 
-See `Skills.md` for the full operational checklist (this is what the StackPort MCP server's `stackport://skills/project-prep` resource also serves).
+See `.agents/skills/stackport/SKILL.md` for the full operational checklist (this is what the StackPort MCP server's `stackport://skills/project-prep` resource also serves).
 
 ### 6.3 Actions
 
@@ -217,6 +248,24 @@ A project's health check is a path on one of its domains, fetched over HTTPS or 
 **Deploy triggers.** Each GitHub project picks one: `webhook` (GitHub calls Stackport on every push; needs Stackport published on an HTTPS domain), `poller` (Stackport asks GitHub at the poll interval), or `manual`. New projects start on the webhook when it's available. With the poller's webhook safety check on (the default), webhook projects are also checked every 30 minutes, since a push sent while Stackport was down is never redelivered; if that check finds a commit the hook didn't deliver, the hook is marked failing and the project is polled at the normal interval until a delivery succeeds again.
 
 ---
+
+## Browser push and email alerts
+
+Configure both channels in **Settings → Notifications**. Browser push has its own enable switch, contact email or HTTPS URL, and per-event preferences for health failures, blocked automatic deployments, unhealthy deployments, failed automatic rollbacks and failed Stackport updates. An optional **Automatic rollback restored service** preference is off by default; enabling it sends a separate recovery alert after successful rollback without changing the original unhealthy-deployment alert. Email remains independently configurable through its existing provider and credential settings. Routine successful operations keep their existing in-app toasts.
+
+After saving push settings, click **Enable on this browser** and accept the browser's permission prompt. Each browser is registered separately; Settings lists registered devices and lets you name the current browser, remove devices and send tests to one or all browsers. Permission is requested only after a click. A blocked permission must be changed in browser site settings. Push requires a secure context and a compatible browser; iPhone/iPad users must install the PWA on the Home Screen.
+
+After login, the app passively checks browsers that opted in and shows a notice on any signed-in page if browser alerts need registration or permission repair. Checks repeat on focus, reconnect and once per minute while visible. The notice links to Notifications settings; it never requests permission or re-registers the browser automatically. Intentionally disabled browsers do not receive repair reminders.
+
+Signing keys are generated automatically at startup and preserved in `push_config` in the persistent SQLite database. The private key uses the same encryption as stored credentials and is never returned to clients. There are no push environment variables to configure. Back up the database **and** the host secrets containing `JWT_SECRET`; repair, updates, rollback and reinstall without purge preserve the identity and subscriptions.
+
+Push messages contain only concise operational metadata. Clicking a notification focuses or opens Stackport at the relevant project or Settings page. Browser push runs in the service worker even when the tab is closed; delivery depends on browser permission and the browser's push service. Expired subscriptions are removed automatically, temporary failures remain registered, and delivery failures cannot fail a deploy or health check. The shared delivery log records email and browser push separately without exposing subscription endpoints or keys.
+
+Automatic alerts are first committed to a SQLite outbox, atomically with their health/deployment classification wherever they share the database. One in-process worker polls every five seconds and submits at most four requests concurrently. Each browser has its own delivery state and retry schedule; restarts and container replacement recover pending work and expired leases. Transient failures retry with bounded backoff, jitter and Retry-After handling. Recovered health incidents, disabled preferences and removed browsers cancel unsent work; re-enabling never replays incidents skipped while disabled. Failure events expire after one to twenty-four hours depending on their type, and terminal history is retained for thirty days with bounded cleanup. See [the reliability contract](docs/web-push-reliability.md) for exact policies.
+
+Provider success means **accepted by the push service**, not displayed or read. Submission is at least once: a crash after acceptance but before committing the result can cause another attempt. Retries share an incident tag while separate incidents have separate tags. A request already in flight cannot be unsent after cancellation. Settings shows pending/retry/failure counts, the worker's last poll and provider acceptance, and diagnoses a signing identity that cannot be decrypted. Its Refresh action reconciles the browser's real subscription after local storage loss or database restore. Removing a browser disables server submissions first, then removes the local capability, with a recovery button for partial failure.
+
+The custom Workbox worker retains asset precaching, old-cache cleanup, automatic activation and client claiming. Existing release polling and Socket.IO feedback continue unchanged. Detached self-update outcomes enqueue once per updater ID/outcome; launch failures are also reported. Host-only CLI operations do not create a detached updater and are not monitored by this channel. An older release can use the additive schema after rollback but cannot drain queued alerts until a worker-capable release returns. Restore must keep the matching database and host secret: a failed identity check is visible and never silently regenerates keys. Identity failures suspend queued deliveries without spending their provider retry budget; they resume automatically after repair if still eligible and unexpired.
 
 ## 7. Security model summary
 
@@ -270,7 +319,7 @@ The application checkout (`/var/lib/stackport/app`) is disposable and rebuildabl
 
 ## 10. Actions and their logs
 
-Every action (deploys, pulls, rollbacks, stops, SSL issuance, nginx applies, certbot runs, Docker prunes) goes through one runner, `src/services/actionRegistry.ts`, which allows one action per slot (a project's build/deploy slot, each domain's SSL slot, nginx, ...).
+Every action (deploys, pulls, rollbacks, stops, SSL issuance, nginx applies, certbot runs, Docker prunes) goes through one runner, `src/modules/actions/registry.ts`, which allows one action per slot (a project's build/deploy slot, each domain's SSL slot, nginx, ...).
 
 - **History:** each run is a row in the `actions` table: kind, project, status (`running`, `success`, `failed`, `cancelled`, `interrupted`), who or what triggered it, the commit and branch for deploy-type actions, and start and end times. Rows still `running` when Stackport starts are marked `interrupted`: their processes died with the previous Stackport process. This table is also the deploy log behind Insights and "Recent deploys", replacing `project_deploys` (whose rows were copied in once; the table is kept, unwritten, for `stackport rollback`).
 - **Output:** numbered chunks, sent every 100 ms to clients that attach over the socket (`action:attach {id, fromSeq}` replays and then streams), and appended to `<LOG_DIR>/actions/<id>.log`. Actions that don't stream (nginx, certbot, SSL, prune) store their final output. `GET /api/actions/:id/log` returns a stored log; `GET /api/actions/running` lists running actions.

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveContainedPath } from "../src/utils/safePath";
+import { resolveContainedPath } from "../src/shared/safePath";
 
 let base: string;
 let root: string;

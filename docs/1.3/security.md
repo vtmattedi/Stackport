@@ -14,7 +14,7 @@ socket, which is root on the host. So today, repository content can reach the ho
 ### S14 — Run `docker compose` with a minimal environment · 🔴 · S
 
 **Problem.** `dotenv` loads Stackport's own `.env` into `process.env`, and
-`dockerEnv()` (`src/services/projectDeploy.ts`) passes all of it to every
+`dockerEnv()` (`src/modules/deployments/operations.ts`) passes all of it to every
 `docker compose` run. Compose interpolates `${VAR}` from that environment, so any
 project's Compose file can read Stackport's secrets:
 
@@ -27,7 +27,7 @@ services:
 ```
 
 `JWT_SECRET` signs admin sessions **and** is the key the stored credentials (GitHub
-tokens, API keys) are encrypted with (`src/utils/crypto.ts`). One leaked value gives
+tokens, API keys) are encrypted with (`src/shared/crypto.ts`). One leaked value gives
 admin access and every stored credential. No policy bypass is needed: this is plain
 interpolation.
 
@@ -48,7 +48,7 @@ install where an untrusted repository has been deployed.
 
 ### S1 — Compose policy: allowlist the resolved config · 🔴 · L
 
-**Problem.** `src/services/composePolicy.ts` checks the raw YAML against a denylist.
+**Problem.** `src/modules/deployments/compose/policy.ts` checks the raw YAML against a denylist.
 Eight demonstrated bypasses, each a working Compose file:
 
 | Case | How | Result |
@@ -72,7 +72,7 @@ service, key and fix (the 1.2 violations table already renders that).
 be rejected, deploy anyway. Then enforce.
 
 **Status: done (a–h), with one change to the rollout.** Projects created after this
-change are enforced; projects that already existed (migration 006,
+change are enforced; projects that already existed (migration 008,
 `projects.compose_policy_enforced = 0`) deploy and log what a new project would be
 rejected for. There is no setting to enforce an existing project yet: add one before
 the next release.
@@ -117,13 +117,13 @@ daemon reads as a host path.
   to its managed directory, a read-only mount (repository config files) keeps its place
   with the path translated to the host, and what cannot move (a file, or the whole
   checkout writable) is kept the same way and reported. `managedVolumes.ts` plans it.
-- New projects are managed from the start. Existing ones (migration 007) keep their
+- New projects are managed from the start. Existing ones (migration 009) keep their
   current mounts until **Settings > Migrations** copies their data (a helper container
   runs `cp -a`, so ownership survives), leaves the originals in place, and switches
   them over. It has a dry run, blocks a project on a failed copy or on data found in two
   places, and warns when containers are running. A second entry removes the original
   directories afterwards, once the managed copy holds files and no running container
-  still mounts the original. The page is temporary: delete `src/legacyMigrations`,
+  still mounts the original. The page is temporary: delete `src/modules/maintenance/migrations`,
   `client/src/pages/settings/migrations` and the lines marked TEMPORARY once installs
   have migrated.
 
@@ -143,7 +143,7 @@ Container defaults (0 turns one off), and a service that declares its own limit 
 it. Capabilities stay at Docker's defaults: `cap_drop: [ALL]` was left out because it
 breaks images whose entrypoints need CHOWN, SETUID or SETGID, and S1 already refuses the
 dangerous additions. New projects start with the defaults on; existing ones start off
-(migration 009) until an admin switches them on from the project's settings, since a
+(migration 011) until an admin switches them on from the project's settings, since a
 memory limit can stop a service that has run without one.
 
 ### S11 — Docker socket containment · 🟠 · XL
@@ -151,7 +151,7 @@ memory limit can stop a service that has run without one.
 Stackport mounts `/var/run/docker.sock`, which is root on the host. Options:
 user-namespace remapping, a filtering socket proxy that allows only the API calls
 Stackport needs, or rootless Docker. Must account for the self-update path
-(`src/services/selfUpdate.ts`), which starts a container with the host's whole `/`
+(`src/modules/maintenance/selfUpdate.ts`), which starts a container with the host's whole `/`
 mounted and `chroot`s into it to run `stackport.sh`; whatever contains the socket has
 to keep that working or replace it.
 
@@ -251,7 +251,7 @@ unlike credentials. Encrypt them with S7's key; decrypt only when writing the `.
 file a deploy uses. Found during PR 8.
 
 **Status: done.** New and edited env files store their values only as ciphertext
-(`project_env_files.variables_enc`, migration 011; `variables_json` is `[]`). Files saved
+(`project_env_files.variables_enc`, migration 013; `variables_json` is `[]`). Files saved
 before are encrypted by **Settings > Migrations > Encrypt managed env values**. Env values
 are in the re-encryption list, so a key rotation covers them. Rolling back to a release
 older than 1.3 deploys an encrypted project with an empty env file, so take the database
@@ -277,7 +277,7 @@ actor. The stdio MCP is unchanged and still local-only.
 
 ### S12 — `resolveContainedPath` should resolve symlinks · 🟡 · S
 
-`src/utils/safePath.ts` checks containment lexically. A symlink inside the root can
+`src/shared/safePath.ts` checks containment lexically. A symlink inside the root can
 point outside it. Resolve with `realpath` before the containment check. Unverified
 whether anything exploitable relies on it today; fixing it is cheap and S2 needs it.
 

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isSafeToRemove, runCleanup, type CleanupDeps, type RecordedSource } from "../src/legacyMigrations/cleanupMounts";
-import type { DockerResult } from "../src/legacyMigrations/docker";
+import { isSafeToRemove, runCleanup, type CleanupDeps, type RecordedSource } from "../src/modules/maintenance/migrations/cleanupMounts";
+import type { DockerResult } from "../src/modules/maintenance/migrations/docker";
 
 const source: RecordedSource = { id: 1, projectId: 7, projectName: "shop", composeProject: "7-shop", sourcePath: "/app/data/repos/7-shop/data", name: "data" };
 const MANAGED = "/var/lib/stackport/data/volumes/7/data";

@@ -1,9 +1,9 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDatabase, initializeDatabase } from "../src/config/database";
-import { createProject } from "../src/services/projectAdmin";
-import { DEFAULT_HARDENING, getHardeningDefaults, isHardeningEnabled, setHardeningDefaults } from "../src/services/containerHardening";
-import { isComposePolicyEnforced, isVolumesManaged } from "../src/services/projectDeploy";
+import { createProject } from "../src/modules/projects/operations";
+import { DEFAULT_HARDENING, getHardeningDefaults, isHardeningEnabled, setHardeningDefaults } from "../src/modules/deployments/compose/hardening";
+import { isComposePolicyEnforced, isVolumesManaged } from "../src/modules/deployments/operations";
 
 before(() => { initializeDatabase(); });
 
@@ -37,7 +37,7 @@ test("a new project starts with every 1.3 protection on, an existing one with th
 });
 
 test("the project exposes the hardened-defaults flag to the client", async () => {
-  const { getProjectById } = await import("../src/services/projectDeploy");
+  const { getProjectById } = await import("../src/modules/deployments/operations");
   const id = createProject({ name: "hardening-entity", sourceType: "github", githubRepo: "o/r" }).id;
   assert.equal(getProjectById(id)?.hardenedDefaults, true);
   getDatabase().prepare("UPDATE projects SET hardened_defaults = 0 WHERE id = ?").run(id);

@@ -1,6 +1,6 @@
 import type { Migration } from "./index";
 
-/** Every action the runner tracks (services/actionRegistry.ts): one row per run, with
+/** Every action the runner tracks (modules/actions/registry.ts): one row per run, with
  *  the commit for deploy-type actions. Replaces project_deploys as the deploy log
  *  (Insights, "Recent deploys"); its rows are copied in once. project_deploys stays,
  *  unwritten, because `stackport rollback` may put back code that reads it. Output

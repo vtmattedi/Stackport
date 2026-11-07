@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createKeyring, LEGACY_KEY_ID } from "../src/utils/crypto";
+import { createKeyring, LEGACY_KEY_ID } from "../src/shared/crypto";
 
 const base = { jwtSecret: "jwt-secret-for-tests" };
 

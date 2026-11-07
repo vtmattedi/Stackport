@@ -11,7 +11,7 @@ import styles from "./MigrationsSection.module.scss";
 const STATUS_ICON: Record<ReportStatus, typeof Info> = { ok: CheckCircle2, warn: AlertTriangle, error: AlertCircle, info: Info };
 
 /** TEMPORARY: one-off migrations with a dry run and an execute. Delete this folder when
- *  every install has run them (see src/legacyMigrations/types.ts on the server). */
+ *  every install has run them (see src/modules/maintenance/migrations/types.ts on the server). */
 export default function MigrationsSection() {
   const confirmDialog = useConfirm();
   const [migrations, setMigrations] = useState<MigrationInfo[] | null>(null);

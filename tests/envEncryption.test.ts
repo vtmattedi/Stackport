@@ -1,10 +1,10 @@
 import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { getDatabase, initializeDatabase } from "../src/config/database";
-import { createProject } from "../src/services/projectAdmin";
-import { createProjectEnvFile, listProjectEnvFiles, updateProjectEnvFile } from "../src/services/projectDeploy";
-import { collectSecrets } from "../src/services/actionLog";
-import { readEnvVariables, sealEnvVariables } from "../src/services/projectEnvValues";
+import { createProject } from "../src/modules/projects/operations";
+import { createProjectEnvFile, listProjectEnvFiles, updateProjectEnvFile } from "../src/modules/deployments/operations";
+import { collectSecrets } from "../src/modules/actions/log";
+import { readEnvVariables, sealEnvVariables } from "../src/modules/projects/envFiles";
 
 before(() => { initializeDatabase(); });
 

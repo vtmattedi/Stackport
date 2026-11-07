@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createKeyring } from "../src/utils/crypto";
-import { runReencryption, type ReencryptDeps, type SecretColumn, type SecretRow } from "../src/legacyMigrations/reencryptSecrets";
+import { createKeyring } from "../src/shared/crypto";
+import { runReencryption, type ReencryptDeps, type SecretColumn, type SecretRow } from "../src/modules/maintenance/migrations/reencryptSecrets";
 
 const COLUMNS: SecretColumn[] = [
   { table: "credentials", column: "secret_enc", idColumn: "id", label: "Credentials" },

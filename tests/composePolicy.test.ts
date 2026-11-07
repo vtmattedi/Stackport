@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/services/composePolicy";
+import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/modules/deployments/compose/policy";
 
 test("violations name the service, key and a fix", () => {
   const result = validateComposePolicy({

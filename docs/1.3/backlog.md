@@ -48,13 +48,13 @@ rollback.
 
 ### B2 — Upstream keepalive in the nginx proxy blocks · ⚪ · S
 
-`locationBlock` (`src/services/nginx/configWriter.ts`) sets `Connection "upgrade"` on
+`locationBlock` (`src/modules/ingress/nginx/configWriter.ts`) sets `Connection "upgrade"` on
 every request, which disables upstream keepalive for ordinary requests. Use the
 standard `map $http_upgrade $connection_upgrade` instead.
 
 ### B3 — Bound the GitHub ETag cache · ⚪ · S
 
-`etagCache` in `src/services/githubPoller.ts` never evicts. Bounded in practice by
+`etagCache` in `src/modules/automation/githubPolling.ts` never evicts. Bounded in practice by
 projects × branch-list pages, but an LRU cap is a few lines. (Deploy previews already
 bypass it.)
 

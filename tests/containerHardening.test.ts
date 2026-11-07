@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHardeningOverride, DEFAULT_HARDENING } from "../src/services/containerHardening";
-import { loadYamlDoc } from "../src/services/composeYaml";
+import { buildHardeningOverride, DEFAULT_HARDENING } from "../src/modules/deployments/compose/hardening";
+import { loadYamlDoc } from "../src/modules/deployments/compose/yaml";
 
 const parse = (text: string | null) => loadYamlDoc(text ?? "") as { services: Record<string, Record<string, unknown>> };
 const build = (resolved: unknown, defaults = DEFAULT_HARDENING) => parse(buildHardeningOverride(resolved, defaults));
