@@ -122,8 +122,8 @@ export default function McpSection() {
         <div className="card-title"><KeyRound size={13} />API tokens</div>
         <p className="hint" style={{ marginBottom: 12 }}>
           Tokens give access to <span className="mono">{endpoint}</span>: project status, repository, branch,
-          health, recent deployments and containers. They never expose credentials, env files or logs.
-          A <strong>read and write</strong> token can also deploy, roll back, restart and stop projects, in all projects or
+          health, recent deployments, containers and network groups. They never expose credentials, env files or logs.
+          A <strong>read and write</strong> token can also deploy, roll back, restart and stop projects, and change which projects can reach which services (network groups), in all projects or
           in one project group. Every one of those takes two calls: the first only says what would happen, and the action
           runs only when the second call presents the confirmation it returned. Each call is written to the audit log.
           Works with Claude Code and Claude Desktop. claude.ai connectors need OAuth, which isn't supported yet.

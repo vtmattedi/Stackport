@@ -34,6 +34,8 @@ import {
 } from "../../modules/ingress/domains";
 import { writeNginxConfig } from "../../modules/ingress/nginx/configWriter";
 import { packageVersion } from "../../modules/maintenance/version";
+import { assignNetworkGroup } from "../../modules/deployments/networkGroupAssignment";
+import { getProjectNetworkView, listNetworkGroupsView } from "./readModel";
 
 const projectIdSchema = z.coerce.number().int().positive();
 const credentialTypeSchema = z.enum(["github", "webhook", "api_key"]).optional();
@@ -306,6 +308,49 @@ function registerTools(server: McpServer): void {
     inputSchema: {projectId: projectIdSchema, composeFile: z.string().optional()},
     annotations: {readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false},
   }, async (input) => toolResult({targets: await getProjectIngressTargets(input.projectId, input.composeFile)}));
+
+  server.registerTool(
+    "stackport_list_network_groups",
+    {
+      title: "List Network Groups",
+      description: "List network groups: projects that reach each other's shared services without a public domain, with the hostname (<service>.p<projectId>) each shared service answers to.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    () => toolResult({ ...listNetworkGroupsView() })
+  );
+
+  server.registerTool(
+    "stackport_get_project_network_group",
+    {
+      title: "Get Project Network Group",
+      description: "Show a project's network group, the services it shares, the services its Compose file has, and the other projects in the group.",
+      inputSchema: { projectId: projectIdSchema },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input) => {
+      const view = await getProjectNetworkView(input.projectId);
+      if (!view) throw new Error(`No project with id ${input.projectId}.`);
+      return toolResult({ ...view });
+    }
+  );
+
+  server.registerTool(
+    "stackport_set_project_network_group",
+    {
+      title: "Set Project Network Group",
+      description: "Put a project in a network group (empty group to leave) and choose which of its services the other projects in the group can reach, as <service>.p<projectId>. Nothing is shared unless listed. The shared services can also reach what the others share, on any port. Applied to running containers now and after each deploy.",
+      inputSchema: {
+        projectId: projectIdSchema,
+        group: z.string().max(40).describe("Lower-case letters, digits, - and _. Empty to leave the group."),
+        services: z.array(z.string().min(1).max(63)).max(50).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async (input) => {
+      const result = await assignNetworkGroup(input.projectId, input.group, input.services ?? []);
+      return toolResult({ ...(await getProjectNetworkView(input.projectId)), applied: result.applied, ...(result.warning ? { warning: result.warning } : {}) });
+    }
+  );
 
   server.registerTool(
     "stackport_add_project_domain",

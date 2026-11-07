@@ -250,6 +250,16 @@ is a supported way, configured in Stackport and never in the Compose file.
   someone else's group. Only a signed-in admin changes membership; it is audited as
   `project.network-group`. MCP tokens cannot change it.
 
+- **MCP.** Any token (read or write) can list network groups and see one project's group
+  (`stackport_list_network_groups`, `stackport_get_project_network_group`). A write token also gets
+  `stackport_set_network_group`, two calls like the other write tools: the first returns what would
+  happen, including which other projects gain a path, and a one-time confirmation id; only the second,
+  with that id and the same arguments, applies it. A token limited to a project group may only act on
+  projects in it **and may not join a network group that has projects outside its project group**,
+  checked on both calls, because joining would give its projects a path to services the token could not
+  otherwise touch. The stdio MCP (local, trusted) has the same three tools without the confirmation,
+  like its other write tools.
+
 Not covered: a group is a trust boundary of its own. Every joined service can reach every other joined
 service in the group on any port, with no per-service rules. Put projects that should not trust each
 other in different groups.
@@ -332,7 +342,8 @@ second call that presents it runs the action. That is enforced by the server, no
 client hint. A write token is for all projects or one project group (`api_tokens.project_group`;
 a project with no group is outside every group). The limit applies to writes: reads still
 see every project. Every preview, refusal, start and finish is audited with the token as the
-actor. The stdio MCP is unchanged and still local-only.
+actor. The stdio MCP is unchanged in this respect and still local-only. `stackport_set_network_group`
+(S15) is a fifth write tool, with the same two-call rule and one extra rule for limited tokens.
 
 ### S12 — `resolveContainedPath` should resolve symlinks · 🟡 · S
 

@@ -16,9 +16,7 @@ import {
   cleanOrphanFolder,
   composeProject,
   deployProject,
-  applyProjectNetworkGroup,
   ensureProjectProxyNetwork,
-  getProjectComposeServiceNames,
   leaveNetworkGroup,
   getProjectById,
   getProjectComposeEnvFiles,
@@ -73,8 +71,7 @@ import {
   TcpExposureError,
 } from "../../modules/ingress/tcp";
 import { removeIngressNetwork } from "../../modules/ingress/networks";
-import { getNetworkGroup, listNetworkGroupPeers, setNetworkGroup } from "../../modules/projects/networkGroups";
-import { groupAlias, isServiceName, normalizeNetworkGroup } from "../../shared/networkGroups";
+import { assignNetworkGroup, getNetworkGroupView, NetworkGroupError } from "../../modules/deployments/networkGroupAssignment";
 import multer from "multer";
 
 const router = Router();
@@ -685,26 +682,11 @@ router.put("/:id/hardening", requireAuth, (req: Request<{ id: string }>, res: Re
   res.json({ hardenedDefaults: enabled });
 });
 
-/** What a project's network group looks like: its own services, which of them have joined, the other
- *  projects in the group and the hostname each joined service answers to. */
-async function networkGroupView(id: number) {
-  const { group, services } = getNetworkGroup(id);
-  return {
-    group,
-    services,
-    availableServices: await getProjectComposeServiceNames(id),
-    hostnames: services.map((service) => ({ service, hostname: groupAlias(id, service) })),
-    peers: group ? listNetworkGroupPeers(group, id).map((peer) => ({
-      ...peer, hostnames: peer.services.map((service) => ({ service, hostname: groupAlias(peer.projectId, service) })),
-    })) : [],
-  };
-}
-
 router.get("/:id/network-group", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
-  res.json(await networkGroupView(id));
+  res.json(await getNetworkGroupView(id));
 });
 
 /** Sets the project's network group and which of its services join the group's network. Applied to
@@ -712,25 +694,14 @@ router.get("/:id/network-group", requireAuth, async (req: Request<{ id: string }
 router.put("/:id/network-group", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
-  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
-  const group = normalizeNetworkGroup(req.body?.group);
-  if (group === undefined) { res.status(400).json({ error: "group must be 1-40 characters: lower-case letters, digits, - or _ (or empty to leave the group)" }); return; }
-  const requested: unknown = req.body?.services ?? [];
-  if (!Array.isArray(requested) || requested.length > 50 || !requested.every(isServiceName)) {
-    res.status(400).json({ error: "services must be a list of Compose service names" }); return;
+  try {
+    const { assignment, applied, warning } = await assignNetworkGroup(id, req.body?.group, req.body?.services);
+    auditLog(req.user ?? "unknown", "project.network-group", String(id), "ok", { group: assignment.group, services: assignment.services });
+    res.json({ ...(await getNetworkGroupView(id)), applied, ...(warning ? { warning } : {}) });
+  } catch (err) {
+    if (err instanceof NetworkGroupError) { res.status(err.statusCode).json({ error: err.message }); return; }
+    throw err;
   }
-  const services = [...new Set(requested as string[])];
-  const available = await getProjectComposeServiceNames(id);
-  const unknown = available.length ? services.filter((s) => !available.includes(s)) : [];
-  if (group && unknown.length) { res.status(400).json({ error: `Not services of this project's Compose file: ${unknown.join(", ")}` }); return; }
-
-  setNetworkGroup(id, group, services);
-  auditLog(req.user ?? "unknown", "project.network-group", String(id), "ok", { group, services: group ? services : [] });
-  let applied = true;
-  let warning: string | undefined;
-  try { await applyProjectNetworkGroup(id); }
-  catch (err) { applied = false; warning = err instanceof Error ? err.message : String(err); }
-  res.json({ ...(await networkGroupView(id)), applied, ...(warning ? { warning } : {}) });
 });
 
 router.get("/:id/domains", requireAuth, (req: Request<{ id: string }>, res: Response): void => {

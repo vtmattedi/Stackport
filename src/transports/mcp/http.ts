@@ -7,7 +7,7 @@ import { z } from "zod";
 import { requireApiToken } from "../../modules/identity/middleware/apiToken";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
-import { getProjectView, getStatusView, listProjectsView } from "./readModel";
+import { getProjectNetworkView, getProjectView, getStatusView, listNetworkGroupsView, listProjectsView } from "./readModel";
 import { registerWriteTools } from "./writeTools";
 import { packageVersion } from "../../modules/maintenance/version";
 
@@ -75,6 +75,34 @@ export function buildMcpServer(token: ApiToken): McpServer {
     async ({ projectId }) => {
       audit("stackport_get_project", { projectId });
       const view = await getProjectView(projectId);
+      return view ? result(view) : notFound(`No project with id ${projectId}.`);
+    }
+  );
+
+  server.registerTool(
+    "stackport_list_network_groups",
+    {
+      title: "List network groups",
+      description: "Every network group (projects that can reach each other's shared services without a public domain), with its projects and the hostname each shared service answers to, such as db.p7.",
+      annotations: READ_ONLY,
+    },
+    () => {
+      audit("stackport_list_network_groups");
+      return result(listNetworkGroupsView());
+    }
+  );
+
+  server.registerTool(
+    "stackport_get_project_network_group",
+    {
+      title: "Get project network group",
+      description: "One project's network group: the group it is in, which of its services it shares, which services its Compose file has, and the other projects in the group.",
+      inputSchema: { projectId: z.number().int().positive() },
+      annotations: READ_ONLY,
+    },
+    async ({ projectId }) => {
+      audit("stackport_get_project_network_group", { projectId });
+      const view = await getProjectNetworkView(projectId);
       return view ? result(view) : notFound(`No project with id ${projectId}.`);
     }
   );

@@ -7,6 +7,9 @@ import { actionRegistry, projectRepoKey } from "../../modules/actions/registry";
 import { resolveRollbackTarget } from "../../modules/deployments/history";
 import { deployProject, getProjectById, isValidBranchName, recreateProject, rollbackProject, stopProject } from "../../modules/deployments/operations";
 import { auditLog } from "../../shared/logger";
+import { listNetworkGroups } from "../../modules/projects/networkGroups";
+import { assignNetworkGroup, NetworkGroupError, validateNetworkGroupAssignment } from "../../modules/deployments/networkGroupAssignment";
+import { groupAlias } from "../../shared/networkGroups";
 
 /**
  * Write tools for the HTTP MCP endpoint (S5): deploy, roll back, restart and stop. A token
@@ -17,7 +20,7 @@ import { auditLog } from "../../shared/logger";
  * act on a first call. Every call is audited, with the token as the actor.
  */
 
-export type WriteKind = "deploy" | "rollback" | "restart" | "stop";
+export type WriteKind = "deploy" | "rollback" | "restart" | "stop" | "network_group";
 
 export interface ProjectLike { id: number; name: string; groupName: string | null; lastStatus: string; autoDeployBranch: string | null }
 
@@ -29,7 +32,7 @@ export interface WriteDeps {
   now(): number;
 }
 
-export interface WriteParams { branch?: string; deploymentId?: number }
+export interface WriteParams { branch?: string; deploymentId?: number; networkGroup?: string | null; networkServices?: string[] }
 
 export const CONFIRMATION_TTL_MS = 5 * 60_000;
 
@@ -63,7 +66,10 @@ export class ConfirmationStore {
 }
 
 function canonical(params: WriteParams): string {
-  return JSON.stringify({ branch: params.branch ?? null, deploymentId: params.deploymentId ?? null });
+  return JSON.stringify({
+    branch: params.branch ?? null, deploymentId: params.deploymentId ?? null,
+    networkGroup: params.networkGroup ?? null, networkServices: params.networkServices ? [...params.networkServices].sort() : null,
+  });
 }
 
 const confirmations = new ConfirmationStore();
@@ -160,13 +166,118 @@ const SPECS: ToolSpec[] = [
   },
 ];
 
+/** What the network-group tool needs from the rest of Stackport (replaceable in tests). */
+export interface NetworkDeps {
+  /** The request as it would be stored, plus the other projects already in that group. Throws NetworkGroupError. */
+  preview(projectId: number, group: unknown, services: unknown): Promise<{ group: string | null; services: string[]; currentGroup: string | null; peers: { name: string; visualGroup: string | null }[] }>;
+  apply(projectId: number, group: string | null, services: string[]): Promise<{ applied: boolean; warning?: string }>;
+}
+
+export function defaultNetworkDeps(): NetworkDeps {
+  return {
+    preview: async (projectId, group, services) => {
+      const valid = await validateNetworkGroupAssignment(projectId, group, services);
+      const all = listNetworkGroups();
+      const current = all.find((g) => g.projects.some((p) => p.projectId === projectId))?.group ?? null;
+      const peers = valid.group ? (all.find((g) => g.group === valid.group)?.projects ?? []).filter((p) => p.projectId !== projectId).map((p) => ({ name: p.name, visualGroup: p.visualGroup })) : [];
+      return { ...valid, currentGroup: current, peers };
+    },
+    apply: async (projectId, group, services) => {
+      const { applied, warning } = await assignNetworkGroup(projectId, group, services);
+      return { applied, ...(warning ? { warning } : {}) };
+    },
+  };
+}
+
+/** A token limited to a project group may not join a network group that has projects outside its group:
+ *  that would give its projects a path to services it could not otherwise touch. */
+export function networkGroupScopeProblem(token: Pick<ApiToken, "projectGroup">, group: string | null, peers: { name: string; visualGroup: string | null }[]): string | null {
+  if (token.projectGroup === null || group === null) return null;
+  const outside = peers.filter((p) => p.visualGroup !== token.projectGroup).map((p) => p.name);
+  return outside.length
+    ? `This token is limited to the project group "${token.projectGroup}", and the network group "${group}" has projects outside it (${outside.join(", ")}).`
+    : null;
+}
+
+function registerNetworkGroupTool(server: McpServer, token: ApiToken, deps: WriteDeps, net: NetworkDeps, store: ConfirmationStore): void {
+  const actor = `token:${token.name}#${token.id}`;
+  const tool = "stackport_set_network_group";
+  server.registerTool(
+    tool,
+    {
+      title: "Set project network group",
+      description: "Put a project in a network group, or take it out (empty group), and choose which of its services the group's other projects can reach (as <service>.p<projectId>). Nothing is shared unless listed in services. The services it shares can also reach what the others share. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to apply it.",
+      inputSchema: {
+        projectId: z.number().int().positive(),
+        group: z.string().max(40).describe("Lower-case letters, digits, - and _. Empty to leave the group."),
+        services: z.array(z.string().min(1).max(63)).max(50).optional().describe("Compose services to share. Default: none."),
+        confirmationId: z.string().uuid().optional(),
+      },
+      annotations: DESTRUCTIVE,
+    },
+    async (input: { projectId: number; group: string; services?: string[]; confirmationId?: string }) => {
+      const { projectId, confirmationId } = input;
+      const refuse = (reason: string, message: string): CallToolResult => {
+        auditLog(actor, "mcp.write", tool, "fail", { tokenId: token.id, projectId, reason });
+        return text(message, true);
+      };
+      const project = deps.getProject(projectId);
+      if (!project) return refuse("not-found", `No project with id ${projectId}.`);
+      if (!mayActOn(token, project)) {
+        return refuse("outside-group", `This token may only act on projects in the group "${token.projectGroup}". Project ${projectId} is not in it.`);
+      }
+      let preview: Awaited<ReturnType<NetworkDeps["preview"]>>;
+      try { preview = await net.preview(projectId, input.group, input.services ?? []); }
+      catch (err) {
+        if (err instanceof NetworkGroupError) return refuse("invalid", err.message);
+        throw err;
+      }
+      // Checked on both calls: the group's members can change between the preview and the confirmation.
+      const scope = networkGroupScopeProblem(token, preview.group, preview.peers);
+      if (scope) return refuse("outside-group-peers", scope);
+
+      const params: WriteParams = { networkGroup: preview.group, networkServices: preview.services };
+      if (!confirmationId) {
+        const peerNames = preview.peers.length ? preview.peers.map((p) => p.name).join(", ") : "none yet";
+        const summary = preview.group === null
+          ? `Take "${project.name}" out of its network group${preview.currentGroup ? ` "${preview.currentGroup}"` : ""}. Its services stop being reachable from, and stop reaching, the other projects in it.`
+          : `Put "${project.name}" in network group "${preview.group}" and share ${preview.services.length ? preview.services.map((s) => `${s} (as ${groupAlias(projectId, s)})`).join(", ") : "no services"}. Other projects in the group: ${peerNames}. They can reach what is shared, and the shared services can reach what they share, on any port.`;
+        const { id, expiresAt } = store.issue(token.id, "network_group", projectId, params);
+        auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, projectId, group: preview.group, services: preview.services });
+        return data({
+          requiresConfirmation: true,
+          summary,
+          confirmationId: id,
+          expiresAt: new Date(expiresAt).toISOString(),
+          next: `Nothing has changed. To proceed, call ${tool} again with the same arguments and this confirmationId.`,
+        });
+      }
+      if (!store.consume(confirmationId, token.id, "network_group", projectId, params)) {
+        return refuse("bad-confirmation", "That confirmationId is unknown, expired, already used, or was issued for different arguments. Call the tool without it to get a new one.");
+      }
+      const result = await net.apply(projectId, preview.group, preview.services);
+      auditLog(actor, "mcp.write", tool, "ok", { tokenId: token.id, projectId, group: preview.group, services: preview.services, applied: result.applied });
+      return data({
+        done: true,
+        projectId,
+        group: preview.group,
+        services: preview.services.map((service) => ({ service, hostname: groupAlias(projectId, service) })),
+        applied: result.applied,
+        ...(result.warning ? { warning: `Saved, but not applied to the running containers (${result.warning}). It applies on the next deploy.` } : {}),
+      });
+    },
+  );
+}
+
 export function registerWriteTools(
   server: McpServer,
   token: ApiToken,
   deps: WriteDeps = defaultWriteDeps(),
   store: ConfirmationStore = confirmations,
+  net: NetworkDeps = defaultNetworkDeps(),
 ): void {
   const actor = `token:${token.name}#${token.id}`;
+  registerNetworkGroupTool(server, token, deps, net, store);
 
   for (const spec of SPECS) {
     server.registerTool(

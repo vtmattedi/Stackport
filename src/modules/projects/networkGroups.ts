@@ -39,3 +39,19 @@ export function listNetworkGroupPeers(group: string, exceptProjectId: number): N
 export function listProjectsInNetworkGroups(): number[] {
   return (getDatabase().prepare("SELECT id FROM projects WHERE network_group IS NOT NULL").all() as { id: number }[]).map((r) => r.id);
 }
+
+export interface NetworkGroupOverview { group: string; projects: { projectId: number; name: string; visualGroup: string | null; services: string[] }[] }
+
+/** Every network group with its member projects and the services each has joined. */
+export function listNetworkGroups(): NetworkGroupOverview[] {
+  const db = getDatabase();
+  const rows = db.prepare("SELECT id, name, group_name AS visualGroup, network_group AS grp FROM projects WHERE network_group IS NOT NULL ORDER BY network_group, name").all() as { id: number; name: string; visualGroup: string | null; grp: string }[];
+  const services = db.prepare("SELECT service FROM network_group_services WHERE project_id = ? ORDER BY service");
+  const groups = new Map<string, NetworkGroupOverview>();
+  for (const row of rows) {
+    const entry = groups.get(row.grp) ?? { group: row.grp, projects: [] };
+    entry.projects.push({ projectId: row.id, name: row.name, visualGroup: row.visualGroup, services: (services.all(row.id) as { service: string }[]).map((r) => r.service) });
+    groups.set(row.grp, entry);
+  }
+  return [...groups.values()];
+}

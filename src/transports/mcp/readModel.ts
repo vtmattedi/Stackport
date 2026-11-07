@@ -6,6 +6,9 @@ import { getContainerListCached } from "../../integrations/docker/statusCache";
 import { listProjectDeployments } from "../../modules/deployments/history";
 import { listProjectDomains } from "../../modules/ingress/domains";
 import { expectedComposeProjectName } from "../../modules/projects/workspace";
+import { listNetworkGroups } from "../../modules/projects/networkGroups";
+import { getNetworkGroupView, type NetworkGroupView } from "../../modules/deployments/networkGroupAssignment";
+import { groupAlias } from "../../shared/networkGroups";
 
 /**
  * What the read-only MCP tools return. Every field is picked by name here, never by
@@ -147,6 +150,33 @@ export async function getProjectView(id: number): Promise<ProjectDetailView | nu
     containers: await projectContainers(project),
     runningAction: running && running.status === "running" ? { kind: running.kind, startedAt: running.startedAt } : null,
   };
+}
+
+export interface NetworkGroupsView {
+  groups: {
+    group: string;
+    projects: { projectId: number; name: string; services: { service: string; hostname: string }[] }[];
+  }[];
+}
+
+/** Every network group with its member projects and the hostname each joined service answers to. */
+export function listNetworkGroupsView(): NetworkGroupsView {
+  return {
+    groups: listNetworkGroups().map((entry) => ({
+      group: entry.group,
+      projects: entry.projects.map((p) => ({
+        projectId: p.projectId,
+        name: p.name,
+        services: p.services.map((service) => ({ service, hostname: groupAlias(p.projectId, service) })),
+      })),
+    })),
+  };
+}
+
+/** One project's network group: where it is, what it shares, what it could share, and its peers. */
+export async function getProjectNetworkView(id: number): Promise<(NetworkGroupView & { projectId: number }) | null> {
+  if (!loadProject(id)) return null;
+  return { projectId: id, ...(await getNetworkGroupView(id)) };
 }
 
 export interface StatusView {
