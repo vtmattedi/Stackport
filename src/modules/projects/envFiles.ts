@@ -12,6 +12,9 @@ export interface ProjectEnvFile {
   projectId: number;
   relativePath: string;
   variables: EnvVariable[];
+  /** The stored values could not be read (their key is not configured, or the data is damaged).
+   *  `variables` is empty then, which must not be mistaken for an empty file. */
+  unreadable: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -60,13 +63,25 @@ export function parseEnvVariables(input: unknown): EnvVariable[] | null {
 }
 
 /** The variables of a stored env file: decrypted, or read as plain JSON for a row that
- *  predates the encryption (S13). A row that can't be read yields none. */
-export function readEnvVariables(row: Pick<ProjectEnvFileRow, "variables_json" | "variables_enc">): EnvVariable[] {
+ *  predates the encryption (S13). Null when the row cannot be read. */
+export function tryReadEnvVariables(row: Pick<ProjectEnvFileRow, "variables_json" | "variables_enc">): EnvVariable[] | null {
   try {
     const parsed = JSON.parse(row.variables_enc ? decryptSecret(row.variables_enc) : row.variables_json) as unknown;
-    return parseEnvVariables(parsed) ?? [];
+    return parseEnvVariables(parsed);
   } catch {
-    return [];
+    return null;
+  }
+}
+
+/** Like tryReadEnvVariables, for callers that only need what can be read (masking secrets in logs). */
+export function readEnvVariables(row: Pick<ProjectEnvFileRow, "variables_json" | "variables_enc">): EnvVariable[] {
+  return tryReadEnvVariables(row) ?? [];
+}
+
+/** Thrown when a file whose stored values cannot be read is about to be overwritten. */
+export class EnvFileUnreadableError extends Error {
+  constructor(relativePath: string) {
+    super(`The stored values of ${relativePath} cannot be decrypted with the configured keys. Restore the key (ENCRYPTION_KEY, or the old one as ENCRYPTION_KEY_PREVIOUS), or delete the file and create it again.`);
   }
 }
 
@@ -76,13 +91,15 @@ export function sealEnvVariables(variables: EnvVariable[]): { json: string; enc:
 }
 
 function rowToEnvFile(row: ProjectEnvFileRow): ProjectEnvFile {
-  const variables = readEnvVariables(row);
+  const read = tryReadEnvVariables(row);
+  const variables = read ?? [];
 
   return {
     id: row.id,
     projectId: row.project_id,
     relativePath: row.relative_path,
     variables,
+    unreadable: read === null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -110,6 +127,9 @@ export function createProjectEnvFile(projectId: number, relativePath: string, va
 }
 
 export function updateProjectEnvFile(id: number, projectId: number, relativePath: string, variables: EnvVariable[]): ProjectEnvFile | null {
+  const existing = getDatabase().prepare("SELECT * FROM project_env_files WHERE id = ? AND project_id = ?").get(id, projectId) as ProjectEnvFileRow | undefined;
+  // Saving over values we cannot read would destroy them for good.
+  if (existing && tryReadEnvVariables(existing) === null) throw new EnvFileUnreadableError(existing.relative_path);
   const now = new Date().toISOString();
   const sealed = sealEnvVariables(variables);
   const result = getDatabase()

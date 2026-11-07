@@ -952,11 +952,13 @@ export async function getProjectComposeFileContent(projectId: number): Promise<{
   }
 }
 
-async function writeEnvFiles(repoPath: string, envFiles: ProjectEnvFile[]): Promise<string[]> {
+export async function writeEnvFiles(repoPath: string, envFiles: ProjectEnvFile[]): Promise<string[]> {
   const written: string[] = [];
   for (const envFile of envFiles) {
     const normalized = normalizeEnvRelativePath(envFile.relativePath);
     if (!normalized) throw new Error(`Invalid env path: ${envFile.relativePath}`);
+    // Writing an empty .env for values we cannot read would start the project with blank secrets.
+    if (envFile.unreadable) throw new Error(`Cannot write ${envFile.relativePath}: its stored values cannot be decrypted with the configured keys. Restore the key (ENCRYPTION_KEY, or the old one as ENCRYPTION_KEY_PREVIOUS) and deploy again.`);
     const target = resolveContainedPath(repoPath, normalized);
     if (!target) {
       throw new Error(`Env path escapes repository: ${envFile.relativePath}`);

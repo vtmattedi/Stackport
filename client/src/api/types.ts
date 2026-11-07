@@ -190,6 +190,8 @@ export interface ProjectEnvFile {
   projectId: number;
   relativePath: string;
   variables: EnvVariable[];
+  /** The stored values cannot be decrypted; `variables` is empty but the file is not. */
+  unreadable?: boolean;
   createdAt: string;
   updatedAt: string;
 }

@@ -545,6 +545,13 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
               </div>
             )}
 
+            {envFiles.find((file) => file.id === editingEnvId)?.unreadable && (
+              <div className="alert alert-error">
+                The stored values of this file cannot be decrypted with the configured keys, so they are not shown and it cannot be saved over.
+                Restore the key (ENCRYPTION_KEY, or the old one as ENCRYPTION_KEY_PREVIOUS), or delete the file and create it again.
+              </div>
+            )}
+
             <div className={styles.pathRow}>
               <div className="field field-wide">
                 <label>Relative .env path</label>
@@ -633,7 +640,7 @@ export function EnvManagerDialog({ projectId, projectName, envFiles, onEnvFilesC
               <Button type="button" variant="outline" size="xs" onClick={resetDraft} disabled={!envDraftChanged}>
                 <X size={12} /> Reset
               </Button>
-              <Button type="submit" size="xs" disabled={savingEnv || !envPath.trim()}>
+              <Button type="submit" size="xs" disabled={savingEnv || !envPath.trim() || !!envFiles.find((file) => file.id === editingEnvId)?.unreadable}>
                 {savingEnv ? <Loader size={12} className="spin" /> : <Save size={12} />}
                 {editingEnvId ? "Save file" : "Create file"}
               </Button>

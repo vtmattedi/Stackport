@@ -1,5 +1,5 @@
 import { projectRepoDir } from "../../modules/projects/workspace";
-import { createProjectEnvFile, deleteProjectEnvFile, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../../modules/projects/envFiles";
+import { createProjectEnvFile, deleteProjectEnvFile, EnvFileUnreadableError, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../../modules/projects/envFiles";
 import { previewDeploy, previewRollback } from "../../modules/deployments/preview";
 import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../../config/database";
@@ -291,7 +291,13 @@ router.put("/:id/env-files/:envId", requireAuth, (req: Request<{ id: string; env
     return;
   }
 
-  const envFile = updateProjectEnvFile(envId, id, normalizedPath, parsedVariables);
+  let envFile;
+  try {
+    envFile = updateProjectEnvFile(envId, id, normalizedPath, parsedVariables);
+  } catch (err) {
+    if (err instanceof EnvFileUnreadableError) { res.status(409).json({ error: err.message }); return; }
+    throw err;
+  }
   if (!envFile) {
     res.status(404).json({ error: "Env file not found" });
     return;
