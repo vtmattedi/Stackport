@@ -99,7 +99,7 @@ Still to do (tracked in the 1.3.5 plan):
 | # | Action | Why it would have helped |
 | --- | --- | --- |
 | P1 | **Regression report and a restore point** (see below). `stackport update` probes every route before the swap and again after it, and reports only what the update broke, never blaming a route that was already down. It does not roll anything back by itself. The update also keeps a restore point, and a **Restore** action (System page and `stackport restore`) puts the previous state back on request | Within a minute of the swap it would have listed the seven routes that went from working to unreachable, apart from the ones that were already down, and Restore would have returned the services, networks and nginx config to what they were |
-| P2 | **Ingress health per project** in the UI and over MCP (is nginx on the network, is the service reachable by its alias), and a push notification when a routed project stops answering | Detection in minutes instead of by a person |
+| P2 | **Ingress health per project** in the UI and over MCP (is nginx on the network, is the service reachable by its alias), using the same probe as P1. No automatic alert for now | Anyone looking would have seen the cause without asking for logs |
 | P3 | **Docker network headroom** shown on the System page, in `stackport status` and before an update, with a warning near the limit and the daemon-setting fix | The limit would have been visible before 1.3.0 |
 | P4 | **Warnings reach `docker logs`.** In production, log warnings and errors to the console as well as the file | The cause would have been in the first thing anyone looks at |
 | P5 | **A pool-exhaustion scenario in the clean-install test** (pre-create about 28 networks, then update and check routing) | CI would have failed on 1.3.0 |
@@ -123,7 +123,7 @@ Two decisions shape it. **An update never undoes itself.** Rolling the applicati
 | reachable | reachable | Fine |
 | not present before | any | New route; informational |
 
-The report goes to the CLI output, to the System page as a banner on the last update, and as a push notification when anything regressed. The existing rule stays: a version that cannot start or does not report ready is still handled as today.
+The report goes to the CLI output and to the System page as a banner on the last update. There is no push notification or other automatic alert for now, and nothing is undone automatically. The existing rule for a version that cannot start or does not report ready is unchanged: `stackport update` already rolls that back.
 
 **The restore point.** Just before the swap, the update records what it is about to change, next to the database backup it already makes:
 - for every routed container, the networks it is on and its aliases
@@ -134,10 +134,19 @@ The report goes to the CLI output, to the System page as a banner on the last up
 
 **Restore.** A button on the System page after an update, and `sudo stackport restore` on the host for when the UI is down. It first shows what it would do (which containers it would reconnect to which networks, which networks it would recreate with their recorded ranges, which config it would put back), then does it only after confirmation. It rolls the application image back, replays that state, runs the probe again and prints the same before and after table. It does not restore the database by default, because the migrations only add and a restore would also discard work done since the update; that is an explicit option. Every restore is written to the audit log.
 
-**Open decisions:**
-1. Where the baseline probe runs. The old version has no probe, so it would run from the staged new image against the live Docker, before the swap.
-2. How long restore points are kept (suggest the last two updates).
-3. Whether Restore may also undo the database, and under what warning.
+**Decisions (7 November):**
+
+1. **The baseline probe runs from the staged new image against the live Docker, before the swap.** The old version has no probe. It fits the existing order in `stackport.sh`: the image is built first (`stage_update`), then the database backup is made (`create_update_backup`), then the swap. The probe goes between the backup and the swap and reads its route list from the backup copy, which is a consistent snapshot, so it never opens the live database. What it finds is written into the restore point as `routes-before.json`, next to a record of the network attachments, the existing networks, the TCP proxies and the nginx config.
+2. **Restore is manual only, with no automatic alert.** The report is shown, and the owner decides.
+3. **Keep the last two restore points, pending a size measurement.** Today the update backups under `/var/lib/stackport/backups/update-*` are never pruned, so they only grow. A restore point is the database copy (about the size of the database) plus small files, so the database size decides this. Measure on the server:
+   ```
+   du -sh /var/lib/stackport/data/stackport.sqlite /var/lib/stackport/backups/* 2>/dev/null
+   df -h /var/lib/stackport
+   ```
+   Pruning then runs after a successful update and never removes the point just made, or one that a Restore has under way.
+4. **Restore may also restore the database, and Stackport's database gets a first-class backup and restore.** In the Restore preview, restoring the database is a separate choice, off by default, with what it discards spelled out (deployments, audit entries and settings changes made since the update). It reuses `restore_update_backup` (stop Stackport, replace the file, remove the WAL files, start). Beyond updates: a **Back up now** and **Restore a backup** on the System page and as `stackport backup` and `stackport restore --database`, with their own retention. Scheduled off-host copies stay A2.
+
+**How it fits what exists.** Restore is the existing `rollback_stackport` (image) and `restore_update_backup` (database) plus one new step that replays the recorded state, so most of it is composing parts that are already there. New work: the probe, the state record, the replay with its preview, the System page buttons, pruning, and the backup and restore commands.
 
 ## Lessons
 
