@@ -224,6 +224,36 @@ to the other project's container.
 Not covered: services of one project reach each other as before (that is the project's own network),
 and a project's non-routed services are on no ingress network at all.
 
+### S15 — Network groups · 🟡 · M · needs S9
+
+S9 isolates projects, so two projects that need to talk to each other (an API and a worker kept in
+separate projects, a shared database) had no way to do it short of a public domain. A network group
+is a supported way, configured in Stackport and never in the Compose file.
+
+**Status: done.**
+
+- A project has a `network_group` (a short lower-case name) and a list of its services that join
+  it. Both are set on the project's Settings tab and stored in the database
+  (`projects.network_group`, `network_group_services`). It is separate from the project list's
+  grouping and from the MCP token scope: neither is touched by it.
+- Nothing is shared by default. A project in a group with no service switched on exposes nothing.
+- Each group with a joined service has a network `stackport-group-<group>`. A joined service is
+  connected to it with `docker network connect --alias <service>.p<projectId>`, not through the
+  Compose file: a Compose-declared network also gives the service its plain name there, and `db` in
+  one project would then answer for `db` in another. The other projects in the group reach it as
+  `db.p7`. A joined service can also reach the others, since a connected container shares the network.
+- It is applied to the running containers when the setting changes, after every `up` (new containers
+  start without it), and at start-up. Leaving the group or switching a service off disconnects it;
+  a group network nothing is connected to is deleted.
+- A Compose file cannot opt in. The policy still refuses any external network except the project's
+  own ingress network, so the people who can push to a repository cannot pull its services into
+  someone else's group. Only a signed-in admin changes membership; it is audited as
+  `project.network-group`. MCP tokens cannot change it.
+
+Not covered: a group is a trust boundary of its own. Every joined service can reach every other joined
+service in the group on any port, with no per-service rules. Put projects that should not trust each
+other in different groups.
+
 ### S10 — Block cloud metadata and LAN egress · 🟡 · M
 
 Project containers can reach `169.254.169.254` (cloud credentials on most providers)

@@ -50,6 +50,7 @@ Ordered by criticality, then by how much each item unblocks.
 | S7 | Separate encryption key, with versioning | 🟡 | M | — | security |
 | S13 | Encrypt managed env values at rest | 🟡 | M | S7 | security |
 | S9 | Per-project ingress networks | 🟡 | M | S3 | security |
+| S15 | Network groups: projects that reach each other's chosen services | 🟡 | M | S9 | security |
 | S10 | Block cloud metadata and LAN egress | 🟡 | M | — | security |
 | S12 | `resolveContainedPath` should resolve symlinks | 🟡 | S | — | security |
 | MCP-2 | OAuth for claude.ai connectors | 🟡 | L | — | backlog |
@@ -66,7 +67,7 @@ Ordered by criticality, then by how much each item unblocks.
 | N1 | `/version.json` exposes the exact commit without auth | ⚪ | S | — | backlog |
 | A3 | Build before `up`, blue-green | ⚪ | L | — | backlog |
 
-**Status:** S14, S1, S2, S3, S4, S5, S6, S7, S8, S9, S12 and S13 are built; S10 and S11 are
+**Status:** S14, S1, S2, S3, S4, S5, S6, S7, S8, S9, S12, S13 and S15 are built; S10 and S11 are
 deferred (see security.md). Several of them are tested only without a real Docker host:
 see verification.md before relying on them.
 

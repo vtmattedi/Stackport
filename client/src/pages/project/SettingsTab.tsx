@@ -17,6 +17,7 @@ import { cn } from "../../lib/utils";
 import styles from "../ProjectDetails.module.scss";
 import { DetailRow } from "./shared";
 import { HardeningCard } from "./HardeningCard";
+import { NetworkGroupCard } from "./NetworkGroupCard";
 
 const INTERVALS = [
   { label: "Off", value: 0 },
@@ -386,6 +387,8 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
         </ExpandableCard>
 
         <HardeningCard project={project} setProject={setProject} />
+
+        <NetworkGroupCard project={project} />
 
         <ExpandableCard
           icon={<FolderDot size={13} />}

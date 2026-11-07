@@ -19,6 +19,8 @@ import { checkComposeFileReferences } from "./compose/references";
 import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
 import { ensureIngressNetwork } from "../ingress/networks";
+import { dockerCli, pruneGroupNetworks, syncGroupNetwork } from "./compose/groupNetworks";
+import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networkGroups";
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
 import { listRoutedServiceNames } from "../ingress/domains";
@@ -90,6 +92,38 @@ export async function reconcileIngressNetworks(): Promise<void> {
     try { await ensureProjectProxyNetwork(id); }
     catch (err) { logger.warn({ projectId: id, reason: err instanceof Error ? err.message : String(err) }, "ingress.reconcile.failed"); }
   }
+}
+
+/** Puts the project's running containers on (or takes them off) its network group's network to match
+ *  its settings. Called after a deploy, when the settings change and at start-up. */
+export async function applyProjectNetworkGroup(projectId: number): Promise<void> {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const { group, services } = getNetworkGroup(projectId);
+  await syncGroupNetwork({ projectId, composeProject: expectedComposeProjectName(project), group, services });
+}
+
+/** Takes a project that is being deleted off its group network. */
+export async function leaveNetworkGroup(project: Pick<Project, "id" | "name">): Promise<void> {
+  await syncGroupNetwork({ projectId: project.id, composeProject: expectedComposeProjectName(project), group: null, services: [] });
+}
+
+export async function reconcileNetworkGroups(): Promise<void> {
+  for (const id of listProjectsInNetworkGroups()) {
+    try { await applyProjectNetworkGroup(id); }
+    catch (err) { logger.warn({ projectId: id, reason: err instanceof Error ? err.message : String(err) }, "network-group.reconcile.failed"); }
+  }
+  try { await pruneGroupNetworks(dockerCli); }
+  catch (err) { logger.warn({ reason: err instanceof Error ? err.message : String(err) }, "network-group.prune.failed"); }
+}
+
+/** Services named in the project's Compose file, for choosing which ones join a network group. */
+export async function getProjectComposeServiceNames(projectId: number): Promise<string[]> {
+  const project = getProjectById(projectId);
+  if (!project?.composeFile) return [];
+  const doc = await readRawComposeDoc(projectRepoDir(project), project.composeFile);
+  const services = doc && typeof doc === "object" ? (doc as Record<string, unknown>)["services"] : null;
+  return services && typeof services === "object" ? Object.keys(services as Record<string, unknown>).sort() : [];
 }
 
 export async function ensureProjectProxyNetwork(projectId: number): Promise<void> {
@@ -540,6 +574,12 @@ async function runCompose(
   // still leave containers partially changed.
   if (args[0] === "up" || args[0] === "down") {
     invalidateContainers();
+  }
+  if (args[0] === "up" && result.ok) {
+    // New containers start without the group network (it is not in the Compose file).
+    try { await applyProjectNetworkGroup(projectId); }
+    catch (err) { emit(projectId, action, "stderr", `Warning — could not join the network group: ${err instanceof Error ? err.message : String(err)}
+`); }
   }
   return result;
 }

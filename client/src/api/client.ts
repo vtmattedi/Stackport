@@ -32,6 +32,7 @@ import type {
   SystemUpdateConfig,
   DockerStorageThresholds,
   HardeningDefaults,
+  NetworkGroupView,
   AppVersionInfo,
   NotificationConfig,
   NotificationLogEntry,
@@ -435,6 +436,9 @@ export const api = {
   getHardeningDefaults: () => request<HardeningDefaults>("/system/hardening-defaults"),
   updateHardeningDefaults: (values: HardeningDefaults) =>
     request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
+  getProjectNetworkGroup: (projectId: number) => request<NetworkGroupView>(`/projects/${projectId}/network-group`),
+  setProjectNetworkGroup: (projectId: number, group: string, services: string[]) =>
+    request<NetworkGroupView>(`/projects/${projectId}/network-group`, { method: "PUT", body: JSON.stringify({ group, services }) }),
   setProjectHardening: (projectId: number, enabled: boolean) =>
     request<{ hardenedDefaults: boolean }>(`/projects/${projectId}/hardening`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   getDockerStorageThresholds: () => request<DockerStorageThresholds>("/system/docker/storage-thresholds"),

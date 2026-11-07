@@ -20,6 +20,8 @@ export interface Project {
   autoRollbackUnhealthy: boolean;
   /** Services get Stackport's hardened defaults: no-new-privileges and default limits (S8). */
   hardenedDefaults: boolean;
+  /** Network group: projects in the same one reach each other's chosen services (separate from groupName). */
+  networkGroup: string | null;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
   lastCheckedAt: string | null;
@@ -102,6 +104,7 @@ export interface ProjectRow {
   deploy_health_grace_s?: number | null;
   auto_rollback_unhealthy?: number | null;
   hardened_defaults?: number | null;
+  network_group?: string | null;
   pending_deploy_sha?: string | null;
   github_checked_at?: string | null;
   github_check_error?: string | null;
@@ -132,6 +135,7 @@ export function rowToProject(row: ProjectRow): Project {
     deployHealthGraceS: row.deploy_health_grace_s ?? 60,
     autoRollbackUnhealthy: !!row.auto_rollback_unhealthy,
     hardenedDefaults: row.hardened_defaults !== 0,
+    networkGroup: row.network_group ?? null,
     lastStatus: (validStatus.includes(row.last_status) ? row.last_status : "unknown") as
       | "up"
       | "down"

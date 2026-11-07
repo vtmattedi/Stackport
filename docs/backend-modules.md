@@ -11,7 +11,7 @@ services, builders, configuration, or database migrations.
 | `src/modules/projects` | Project records, configuration, workspaces, and environment files |
 | `src/modules/deployments` | Deploy, rollback, health gates, revision history, uploads, and Compose preparation |
 | `src/modules/automation` | Automatic deployment, GitHub polling/hooks, and script webhooks |
-| `src/modules/ingress` | Domains, nginx configuration, certificates, and TCP exposures |
+| `src/modules/ingress` | Domains, nginx configuration, certificates, TCP exposures, and the per-project ingress networks |
 | `src/modules/notifications` | Event creation, email, browser push, outbox, subscriptions, and delivery worker |
 | `src/modules/actions` | Action ownership, logs, and build progress |
 | `src/modules/observability` | Host/project snapshots, sampling, metrics, and log routes |

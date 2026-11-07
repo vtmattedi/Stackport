@@ -44,6 +44,8 @@ export interface Project {
   autoRollbackUnhealthy: boolean;
   /** Services get Stackport's hardened defaults: no-new-privileges and default limits. */
   hardenedDefaults: boolean;
+  /** Projects in the same network group reach each other's chosen services. */
+  networkGroup: string | null;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
   lastCheckedAt: string | null;
@@ -1020,4 +1022,17 @@ export interface ComposePolicyResult {
   /** Null when there is no checkout or no Compose file selected yet. */
   composeFile: string | null;
   violations: PolicyViolation[];
+}
+
+export interface NetworkGroupHostname { service: string; hostname: string }
+
+export interface NetworkGroupView {
+  group: string | null;
+  services: string[];
+  availableServices: string[];
+  hostnames: NetworkGroupHostname[];
+  peers: { projectId: number; name: string; services: string[]; hostnames: NetworkGroupHostname[] }[];
+  /** Set by a save: false when Docker could not be updated now (it is applied on the next deploy). */
+  applied?: boolean;
+  warning?: string;
 }
