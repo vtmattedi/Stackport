@@ -1,6 +1,6 @@
 # Stackport 1.3.5
 
-Branch `1.3.5`, started from `1.3`. Three jobs, one of which has moved to 1.3.7 (below).
+Branch `1.3.5`, started from `1.3`. Release order: 1.3.1 (done) → 1.3.5 → 1.3.7 (GitHub App) → 1.4. Three jobs, one of which has moved to 1.3.7 (below).
 
 1. **Inventory** what 1.3 missed, deferred or left unverified.
 2. ~~**GitHub App** integration~~ **Moved to 1.3.7.** Plan: [../1.3.7/github-app.md](../1.3.7/github-app.md).

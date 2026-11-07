@@ -1,6 +1,8 @@
 # Stackport 1.3.7 (plan)
 
-Not started. 1.3.7 is the **GitHub App** release, moved out of 1.3.5 on 7 November 2026 so that 1.3.5 can ship the fixes that follow the 1.3.0 incident ([../1.3.5/postmortem-1.3.0-ingress-networks.md](../1.3.5/postmortem-1.3.0-ingress-networks.md)) without waiting for a feature that needs a real GitHub account and a real HTTPS host to test.
+Not started. Release order: **1.3.1** (done) → **1.3.5** → **1.3.7** → **1.4**. There is no 1.3.6.
+
+1.3.7 is the **GitHub App** release, moved out of 1.3.5 on 7 November 2026 so that 1.3.5 can ship the fixes that follow the 1.3.0 incident ([../1.3.5/postmortem-1.3.0-ingress-networks.md](../1.3.5/postmortem-1.3.0-ingress-networks.md)) without waiting for a feature that needs a real GitHub account and a real HTTPS host to test.
 
 Plan: [github-app.md](github-app.md). Security reference it builds on: [../1.3/github-app.md](../1.3/github-app.md).
 
@@ -18,5 +20,4 @@ Working On It: tasks #368 to #371.
 
 ## Before starting
 
-- Decide what 1.3.6 is, if anything, so the numbering is intentional.
 - Have the staging host ready: the manifest flow needs a public HTTPS domain, and webhooks need to reach it.
