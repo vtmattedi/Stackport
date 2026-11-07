@@ -32,6 +32,14 @@ test("the version is a plain release number", () => {
   assert.match(read("package.json").version, /^\d+\.\d+\.\d+$/);
 });
 
+test("the MCP servers announce the app version, not a hard-coded one", () => {
+  for (const file of ["src/transports/mcp/http.ts", "src/transports/mcp/stdio.ts"]) {
+    const source = fs.readFileSync(path.join(root, file), "utf8");
+    assert.doesNotMatch(source, /version:\s*"\d/, `${file} hard-codes a version`);
+    assert.match(source, /version:\s*packageVersion\(\)/, `${file} should announce packageVersion()`);
+  }
+});
+
 test("the version the app reports is the one in package.json", async () => {
   assert.equal((await getAppVersion()).version, read("package.json").version);
 });

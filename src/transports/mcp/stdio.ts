@@ -33,6 +33,7 @@ import {
   setProjectDomainSsl,
 } from "../../modules/ingress/domains";
 import { writeNginxConfig } from "../../modules/ingress/nginx/configWriter";
+import { packageVersion } from "../../modules/maintenance/version";
 
 const projectIdSchema = z.coerce.number().int().positive();
 const credentialTypeSchema = z.enum(["github", "webhook", "api_key"]).optional();
@@ -474,7 +475,7 @@ function createServer(): McpServer {
     {
       name: "stackport",
       title: "Stackport",
-      version: "1.0.0",
+      version: packageVersion(),
     },
     {
       instructions: [

@@ -9,6 +9,7 @@ import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
 import { getProjectView, getStatusView, listProjectsView } from "./readModel";
 import { registerWriteTools } from "./writeTools";
+import { packageVersion } from "../../modules/maintenance/version";
 
 /**
  * The MCP endpoint at /mcp: Streamable HTTP, stateless (a fresh server per request),
@@ -32,7 +33,7 @@ function notFound(message: string): CallToolResult {
 }
 
 export function buildMcpServer(token: ApiToken): McpServer {
-  const server = new McpServer({ name: "stackport", version: "1.0.0" });
+  const server = new McpServer({ name: "stackport", version: packageVersion() });
   const actor = `token:${token.name}#${token.id}`;
   const audit = (tool: string, meta: Record<string, unknown> = {}): void =>
     auditLog(actor, "mcp.tool", tool, "ok", { tokenId: token.id, ...meta });
