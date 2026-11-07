@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/modules/deployments/compose/policy";
+import { evaluateResolvedPolicy, formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/modules/deployments/compose/policy";
+import { composeConfigArgs, resolveComposeConfigDetailed } from "../src/modules/deployments/operations";
 import { dumpYamlDoc, loadYamlDoc } from "../src/modules/deployments/compose/yaml";
 import { buildHardeningOverride, DEFAULT_HARDENING } from "../src/modules/deployments/compose/hardening";
 
@@ -75,4 +76,34 @@ test("S8: the hardening override adds no-new-privileges and limits without dropp
     assert.equal(services["web"].pids_limit, 512);
     assert.equal(Number(services["worker"].mem_limit), 1024 * 1024 * 1024);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("S1: a service behind a Compose profile is resolved, so the policy sees it", { skip }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sp-profile-"));
+  fs.writeFileSync(path.join(dir, "compose.yml"), "services:\n  web:\n    image: alpine\n  evil:\n    image: alpine\n    profiles: [debug]\n    cap_add: [SYS_PTRACE]\n");
+  try {
+    const resolution = await resolveComposeConfigDetailed(dir, "compose.yml");
+    assert.equal(resolution.ok, true);
+    if (!resolution.ok) return;
+    assert.ok((resolution.doc as { services: Record<string, unknown> }).services["evil"], "the profile service is in the resolved config");
+    const outcome = evaluateResolvedPolicy(resolution, { enforced: true, projectDir: dir });
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.message, /services\.evil\.cap_add/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("S1: a file Compose cannot resolve comes back with a reason instead of passing", { skip }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sp-unresolved-"));
+  fs.writeFileSync(path.join(dir, "compose.yml"), "services:\n  web:\n    image: ${REQUIRED_BUT_UNSET:?set it}\n");
+  try {
+    const resolution = await resolveComposeConfigDetailed(dir, "compose.yml");
+    assert.equal(resolution.ok, false);
+    if (resolution.ok) return;
+    assert.match(resolution.reason, /REQUIRED_BUT_UNSET|set it/);
+    assert.equal(evaluateResolvedPolicy(resolution, { enforced: true, projectDir: dir }).ok, false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("composeConfigArgs turns every profile on before the subcommand", () => {
+  assert.deepEqual(composeConfigArgs(["compose"], "compose.yml"), ["compose", "--profile", "*", "-f", "compose.yml", "config", "--format", "json"]);
 });

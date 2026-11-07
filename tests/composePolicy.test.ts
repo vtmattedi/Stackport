@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/modules/deployments/compose/policy";
+import { evaluateResolvedPolicy, formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/modules/deployments/compose/policy";
 
 test("violations name the service, key and a fix", () => {
   const result = validateComposePolicy({
@@ -195,4 +195,26 @@ test("S12: a mount inside the project that is a symlink to outside it is refused
     fsMod.rmSync(base, { recursive: true, force: true });
     t.diagnostic("temp directories removed");
   }
+});
+
+const BAD_DOC = { services: { web: { image: "x", cap_add: ["SYS_PTRACE"] } } };
+
+test("evaluateResolvedPolicy: a file that cannot be resolved is refused for an enforcing project", () => {
+  const outcome = evaluateResolvedPolicy({ ok: false, reason: "timed out" }, { enforced: true, projectDir: "/srv/p" });
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.message, /cannot be checked against the policy \(timed out\)/);
+});
+
+test("evaluateResolvedPolicy: a project that predates the policy only gets a warning when the file cannot be resolved", () => {
+  const outcome = evaluateResolvedPolicy({ ok: false, reason: "output too large" }, { enforced: false, projectDir: "/srv/p" });
+  assert.equal(outcome.ok, true);
+  assert.match(outcome.warning ?? "", /policy was not checked/);
+});
+
+test("evaluateResolvedPolicy: violations reject an enforcing project and warn the others", () => {
+  assert.equal(evaluateResolvedPolicy({ ok: true, doc: BAD_DOC }, { enforced: true, projectDir: "/srv/p" }).ok, false);
+  const legacy = evaluateResolvedPolicy({ ok: true, doc: BAD_DOC }, { enforced: false, projectDir: "/srv/p" });
+  assert.equal(legacy.ok, true);
+  assert.match(legacy.warning ?? "", /would be rejected for/);
+  assert.deepEqual(evaluateResolvedPolicy({ ok: true, doc: { services: { web: { image: "x" } } } }, { enforced: true, projectDir: "/srv/p" }), { ok: true, message: "" });
 });

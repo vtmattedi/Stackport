@@ -14,7 +14,7 @@ import { normalizeRelativePath, resolveContainedPath } from "../../shared/safePa
 import { emitProjectDeploy, type ProjectDeployEvent } from "../../application/realtime";
 import { actionRegistry, projectRepoKey } from "../actions/registry";
 import { loadYamlDoc } from "./compose/yaml";
-import { formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy, type PolicyViolation } from "./compose/policy";
+import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
@@ -328,17 +328,13 @@ async function composeCommand(): Promise<ComposeCommand> {
   return { cmd: "docker", argsPrefix: ["compose"] };
 }
 
-function policyRejection(violations: PolicyViolation[]): string {
-  return `Deployment rejected — compose policy violation:\n\n${violations.map(formatPolicyViolation).join("\n")}\n`;
-}
-
 /** Phase 1.3 policy gate — only for commands that actually create/start containers
  *  (`up`) or dry-run what would (`config`, the upload path's pre-flight validation).
  *  `build`/`down`/`ps`/`rm` don't act on these directives at all, so re-checking there
  *  would be redundant. Reads the resolved file fresh (post Phase 1.7 network
  *  augmentation), matching the existing pattern in this file where each pass over a
  *  compose file re-reads independently rather than sharing one parsed doc. */
-async function checkComposePolicy(projectId: number, repoPath: string, composeFile: string): Promise<{ ok: boolean; message: string; warning?: string }> {
+async function checkComposePolicy(projectId: number, repoPath: string, composeFile: string, resolution: ComposeResolution): Promise<{ ok: boolean; message: string; warning?: string }> {
   let raw: string;
   try {
     raw = await fs.readFile(path.join(repoPath, composeFile), "utf8");
@@ -352,38 +348,50 @@ async function checkComposePolicy(projectId: number, repoPath: string, composeFi
     return { ok: true, message: "" }; // malformed YAML is a separate failure mode — let `docker compose` report it
   }
   const result = validateComposePolicy(doc);
-  if (!result.ok) return { ok: false, message: policyRejection(result.violations) };
+  if (!result.ok) return { ok: false, message: formatPolicyRejection(result.violations) };
 
-  // The raw file passed; now check what Compose will actually run (S1). If it can't be
-  // resolved, `docker compose` reports why when it runs.
-  const resolved = await resolveComposeConfig(repoPath, composeFile);
-  if (resolved === null) return { ok: true, message: "" };
-  const resolvedResult = validateResolvedComposePolicy(resolved, { projectDir: repoPath });
-  if (resolvedResult.ok) return { ok: true, message: "" };
-  if (isComposePolicyEnforced(projectId)) return { ok: false, message: policyRejection(resolvedResult.violations) };
-  return {
-    ok: true,
-    message: "",
-    warning: policyRejection(resolvedResult.violations).replace(
-      "Deployment rejected — compose policy violation:",
-      "Warning — this project predates the compose policy, so the deploy continues, but a new project would be rejected for:",
-    ),
-  };
+  // The raw file passed; now check what Compose will actually run (S1). A file that can't be
+  // resolved is refused for a project that enforces the policy: it can't be checked.
+  return evaluateResolvedPolicy(resolution, { enforced: isComposePolicyEnforced(projectId), projectDir: repoPath });
 }
 
-/** The Compose file as `docker compose config` resolves it, or null when it can't be
- *  (a missing env file, bad YAML): the caller then leaves the error to `up`. Runs with
- *  the same minimal environment as every other Compose call. Never logged: the resolved
- *  config can contain secrets. */
-export async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
+/** The arguments that resolve a Compose file. `--profile '*'` turns every profile on, so a
+ *  service behind `profiles:` is resolved too: naming it in `up` enables its profile, and
+ *  it would otherwise run without ever being checked. */
+export function composeConfigArgs(argsPrefix: string[], composeFile: string): string[] {
+  return [...argsPrefix, "--profile", "*", "-f", composeFile, "config", "--format", "json"];
+}
+
+const RESOLVE_TIMEOUT_MS = 60_000;
+const RESOLVE_MAX_BUFFER = 32 * 1024 * 1024;
+
+/** The Compose file as `docker compose config` resolves it, or why it could not be. Runs
+ *  with the same minimal environment as every other Compose call. The document is never
+ *  logged: it can contain secrets. Callers decide what an unresolvable file means. */
+export async function resolveComposeConfigDetailed(repoPath: string, composeFile: string): Promise<ComposeResolution> {
   const compose = await composeCommand();
-  const raw = await new Promise<string | null>((resolve) => {
-    execFile(compose.cmd, [...compose.argsPrefix, "-f", composeFile, "config", "--format", "json"],
-      { cwd: repoPath, env: dockerEnv(), timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
-      (err, stdout) => resolve(err ? null : stdout));
+  const outcome = await new Promise<{ stdout: string } | { reason: string }>((resolve) => {
+    execFile(compose.cmd, composeConfigArgs(compose.argsPrefix, composeFile),
+      { cwd: repoPath, env: dockerEnv(), timeout: RESOLVE_TIMEOUT_MS, maxBuffer: RESOLVE_MAX_BUFFER },
+      (err, stdout, stderr) => {
+        if (!err) { resolve({ stdout }); return; }
+        const code = (err as NodeJS.ErrnoException).code;
+        const firstLine = String(stderr).split("\n").map((line) => line.trim()).find(Boolean);
+        resolve({
+          reason: err.killed ? "docker compose config timed out"
+            : code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "the resolved configuration is too large"
+            : (firstLine ?? err.message).slice(0, 300),
+        });
+      });
   });
-  if (raw === null) return null;
-  try { return JSON.parse(raw); } catch { return null; }
+  if ("reason" in outcome) return { ok: false, reason: outcome.reason };
+  try { return { ok: true, doc: JSON.parse(outcome.stdout) }; } catch { return { ok: false, reason: "docker compose config did not return JSON" }; }
+}
+
+/** The resolved document, or null when there is none. For callers that can go on without it. */
+export async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+  return resolution.ok ? resolution.doc : null;
 }
 
 /** Projects that existed before S2 keep their current mounts until they are migrated. */
@@ -395,9 +403,7 @@ export function isVolumesManaged(projectId: number): boolean {
 /** Creates the project's managed mount directories and writes the Compose override that
  *  points its bind mounts at them (S2). Returns the override's path, or null when there
  *  is nothing to override or the file can't be resolved (`up` then reports why). */
-async function prepareManagedVolumes(projectId: number, repoPath: string, composeFile: string): Promise<string | null> {
-  const resolved = await resolveComposeConfig(repoPath, composeFile);
-  if (resolved === null) return null;
+async function prepareManagedVolumes(projectId: number, repoPath: string, resolved: unknown): Promise<string | null> {
   const plan = planManagedVolumes(resolved, {
     projectId, projectDir: repoPath, roots: currentVolumeRoots(),
     isFile: (source) => statSync(source, { throwIfNoEntry: false })?.isFile() ?? false,
@@ -415,9 +421,8 @@ async function prepareManagedVolumes(projectId: number, repoPath: string, compos
 
 /** Writes the hardened-defaults override (S8) and returns its path, or null when the file
  *  can't be resolved (`up` then reports why). */
-async function prepareHardening(projectId: number, repoPath: string, composeFile: string): Promise<string | null> {
-  const resolved = await resolveComposeConfig(repoPath, composeFile);
-  const override = resolved === null ? null : buildHardeningOverride(resolved, getHardeningDefaults());
+async function prepareHardening(projectId: number, resolved: unknown): Promise<string | null> {
+  const override = buildHardeningOverride(resolved, getHardeningDefaults());
   if (override === null) return null;
   const overridePath = path.join(deployRoot(), ".stackport", String(projectId), "hardening.override.yml");
   await fs.mkdir(path.dirname(overridePath), { recursive: true });
@@ -440,6 +445,7 @@ async function runCompose(
   timeoutMs: number
 ): Promise<RunResult> {
   await fs.mkdir(dockerConfigDir(), { recursive: true });
+  let resolution: ComposeResolution | null = null;
   if (composeFile) {
     // Phase 1.7 — StackPort-owned augmentation, ephemeral (never committed, same
     // philosophy the old SP:AUTO/port-hiding rewrites used): attaches whichever
@@ -458,7 +464,9 @@ async function runCompose(
     }
 
     if (args[0] === "up" || args[0] === "config") {
-      const policy = await checkComposePolicy(projectId, repoPath, composeFile);
+      // Resolved once: the policy, the mount rewrite and the hardening all work from the same snapshot.
+      resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+      const policy = await checkComposePolicy(projectId, repoPath, composeFile, resolution);
       if (!policy.ok) {
         emit(projectId, action, "stderr", policy.message);
         return { ok: false, output: policy.message, stdout: "", command: "compose policy check" };
@@ -470,13 +478,24 @@ async function runCompose(
   const compose = await composeCommand();
   const fileArgs = composeFile ? ["-f", composeFile] : [];
   const env = dockerEnv();
-  if (composeFile && (args[0] === "up" || args[0] === "config") && isVolumesManaged(projectId)) {
-    const override = await prepareManagedVolumes(projectId, repoPath, composeFile);
-    if (override) fileArgs.push("-f", override);
-  }
-  if (composeFile && (args[0] === "up" || args[0] === "config") && isHardeningEnabled(projectId)) {
-    const override = await prepareHardening(projectId, repoPath, composeFile);
-    if (override) fileArgs.push("-f", override);
+  if (resolution) {
+    const managed = isVolumesManaged(projectId);
+    const hardened = isHardeningEnabled(projectId);
+    if (!resolution.ok) {
+      // Only reachable for a project that doesn't enforce the policy: an enforcing one was refused above.
+      if (managed || hardened) {
+        emit(projectId, action, "stderr", "Warning — the managed mounts and hardened defaults were not applied because the Compose configuration could not be resolved.\n");
+      }
+    } else {
+      if (managed) {
+        const override = await prepareManagedVolumes(projectId, repoPath, resolution.doc);
+        if (override) fileArgs.push("-f", override);
+      }
+      if (hardened) {
+        const override = await prepareHardening(projectId, resolution.doc);
+        if (override) fileArgs.push("-f", override);
+      }
+    }
   }
   if (args[0] === "build" || (args[0] === "up" && args.includes("--build"))) {
     env["DOCKER_BUILDKIT"] = "1";

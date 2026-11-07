@@ -327,3 +327,38 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
   });
   return { ok: unique.length === 0, violations: unique };
 }
+
+/** What `docker compose config` produced: the resolved document, or why there is none. */
+export type ComposeResolution = { ok: true; doc: unknown } | { ok: false; reason: string };
+
+/** The message deploy logs and the UI show for a rejected file. */
+export function formatPolicyRejection(violations: PolicyViolation[]): string {
+  return `Deployment rejected — compose policy violation:\n\n${violations.map(formatPolicyViolation).join("\n")}\n`;
+}
+
+export interface PolicyOutcome { ok: boolean; message: string; warning?: string }
+
+/** Decides what to do with the resolved config (S1). A project that enforces the policy is
+ *  refused when the config can't be resolved as well as when it breaks a rule: a file that
+ *  cannot be checked is not allowed to run, whatever the reason (a timeout or a config too
+ *  large for the buffer would otherwise let anything through). A project that predates the
+ *  policy only gets a warning. */
+export function evaluateResolvedPolicy(resolution: ComposeResolution, options: { enforced: boolean; projectDir: string }): PolicyOutcome {
+  if (!resolution.ok) {
+    if (options.enforced) {
+      return { ok: false, message: `Deployment refused: the Compose configuration could not be resolved, so it cannot be checked against the policy (${resolution.reason}). Fix the file or its env files and deploy again.\n` };
+    }
+    return { ok: true, message: "", warning: `Warning — the Compose configuration could not be resolved (${resolution.reason}), so the compose policy was not checked for this project.\n` };
+  }
+  const result = validateResolvedComposePolicy(resolution.doc, { projectDir: options.projectDir });
+  if (result.ok) return { ok: true, message: "" };
+  if (options.enforced) return { ok: false, message: formatPolicyRejection(result.violations) };
+  return {
+    ok: true,
+    message: "",
+    warning: formatPolicyRejection(result.violations).replace(
+      "Deployment rejected — compose policy violation:",
+      "Warning — this project predates the compose policy, so the deploy continues, but a new project would be rejected for:",
+    ),
+  };
+}
