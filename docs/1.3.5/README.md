@@ -64,7 +64,7 @@ A single pass on a staging host closes all of these. Task #287 already holds the
 
 ## 2. GitHub App
 
-Design is settled in [../1.3/github-app.md](../1.3/github-app.md): each Stackport instance registers its own GitHub App through the App Manifest flow; installation tokens replace PATs; one signed webhook endpoint on the instance. Four phases; this branch builds A to C and the testable part of D.
+Plan: [github-app.md](github-app.md) in this folder (it replaces the phases and storage choices of [../1.3/github-app.md](../1.3/github-app.md), which stays as the security reference). Design: each Stackport instance registers its own GitHub App through the App Manifest flow; installation tokens replace PATs; one signed webhook endpoint on the instance. Four phases; this branch builds A to C and the testable part of D.
 
 | Phase | Delivers | Needs a real GitHub account? |
 |---|---|---|
