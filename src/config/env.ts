@@ -20,6 +20,10 @@ export const config = {
   port: parseInt(process.env["PORT"] ?? "3000", 10),
   nodeEnv: process.env["NODE_ENV"] ?? "development",
   jwtSecret: require_env("JWT_SECRET"),
+  // Key for stored secrets, separate from the session secret (utils/crypto.ts). Optional so an
+  // install keeps working until stackport.sh has generated one.
+  encryptionKey: process.env["ENCRYPTION_KEY"] ?? "",
+  encryptionKeysPrevious: (process.env["ENCRYPTION_KEY_PREVIOUS"] ?? "").split(",").map((key) => key.trim()).filter(Boolean),
   // A session ends after this long without use, and in any case this long after login (S6).
   sessionIdleHours: positiveNumber(process.env["SESSION_IDLE_HOURS"], 24),
   sessionMaxHours: positiveNumber(process.env["SESSION_MAX_HOURS"], 12),
