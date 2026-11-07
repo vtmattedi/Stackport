@@ -98,7 +98,7 @@ Still to do (tracked in the 1.3.5 plan):
 
 | # | Action | Why it would have helped |
 | --- | --- | --- |
-| P1 | **`stackport update` probes routes before accepting a version.** After the swap, request each routed domain through nginx locally and roll back automatically if several answer with a gateway error | It would have rolled 1.3.0 back by itself within a minute |
+| P1 | **Regression report and a restore point** (see below). `stackport update` probes every route before the swap and again after it, and reports only what the update broke, never blaming a route that was already down. It does not roll anything back by itself. The update also keeps a restore point, and a **Restore** action (System page and `stackport restore`) puts the previous state back on request | Within a minute of the swap it would have listed the seven routes that went from working to unreachable, apart from the ones that were already down, and Restore would have returned the services, networks and nginx config to what they were |
 | P2 | **Ingress health per project** in the UI and over MCP (is nginx on the network, is the service reachable by its alias), and a push notification when a routed project stops answering | Detection in minutes instead of by a person |
 | P3 | **Docker network headroom** shown on the System page, in `stackport status` and before an update, with a warning near the limit and the daemon-setting fix | The limit would have been visible before 1.3.0 |
 | P4 | **Warnings reach `docker logs`.** In production, log warnings and errors to the console as well as the file | The cause would have been in the first thing anyone looks at |
@@ -107,9 +107,43 @@ Still to do (tracked in the 1.3.5 plan):
 | P7 | **Per-project isolation, redone safely** (1.3.5): networks from an address range of our own, created and verified before nginx's config switches to them, with the old route kept until then | Brings back S9's isolation without the pool |
 | P8 | **Operator runbook.** Where logs are (`/app/logs/app.log`, console for ingress), the three commands that diagnose routing, and what not to hide with `2>/dev/null` | Faster diagnosis |
 
+### P1 in detail
+
+Two decisions shape it. **An update never undoes itself.** Rolling the application image back is not enough, because an update also changes things outside the image: which networks containers are on, which networks exist, nginx's generated config, TCP proxy containers, and the Compose files Stackport rewrites in each checkout. In this incident the old version would still have had no routes. And an automatic undo is itself a change nobody asked for, on a server with other things going on. So the update reports and the owner decides. **A probe has to say what the update broke**, not what is broken.
+
+**The probe.** For each routed domain and TCP exposure it asks nginx's own network namespace whether the upstream is reachable: the name resolves and the port accepts a connection (`docker exec stackport-nginx` with a name lookup and a connect, no dependence on what the application answers). That is exactly what failed here, and it keeps a project's own bad response (a 500 from the app, a login page) from counting as unreachable. A second, HTTP-level request through nginx is recorded as information only.
+
+**Baseline and comparison.** The probe runs once before the swap (the old version still serving) and again after the new one has settled: it waits until two consecutive results agree, up to 90 seconds, since start-up moves services for a while. Each route is then classified:
+
+| Before | After | Meaning |
+| --- | --- | --- |
+| reachable | unreachable | **Broken by this update.** Reported, with the reason (name does not resolve, connection refused, timed out) |
+| unreachable | unreachable | **Already broken.** Listed separately, not blamed |
+| unreachable | reachable | Fixed by the update |
+| reachable | reachable | Fine |
+| not present before | any | New route; informational |
+
+The report goes to the CLI output, to the System page as a banner on the last update, and as a push notification when anything regressed. The existing rule stays: a version that cannot start or does not report ready is still handled as today.
+
+**The restore point.** Just before the swap, the update records what it is about to change, next to the database backup it already makes:
+- for every routed container, the networks it is on and its aliases
+- the networks that exist (name, labels, address range)
+- the TCP proxy containers (network, published port, target)
+- the generated nginx config
+- the Compose files Stackport rewrote in each checkout
+
+**Restore.** A button on the System page after an update, and `sudo stackport restore` on the host for when the UI is down. It first shows what it would do (which containers it would reconnect to which networks, which networks it would recreate with their recorded ranges, which config it would put back), then does it only after confirmation. It rolls the application image back, replays that state, runs the probe again and prints the same before and after table. It does not restore the database by default, because the migrations only add and a restore would also discard work done since the update; that is an explicit option. Every restore is written to the audit log.
+
+**Open decisions:**
+1. Where the baseline probe runs. The old version has no probe, so it would run from the staged new image against the live Docker, before the swap.
+2. How long restore points are kept (suggest the last two updates).
+3. Whether Restore may also undo the database, and under what warning.
+
 ## Lessons
 
 - A change that creates one of something per project needs a number: how many, and what limit it meets.
+- Undoing an update means undoing everything it changed, not only the program. Keep a record of what it changed.
+- A health check must compare against what was true before, or it will blame the update for what was already broken.
 - Switch a route only after the destination is confirmed, and keep the old route until then.
 - A failure that exists only in a file nobody watches is not handled.
 - If a plan says "needs a real stack to test", the change does not go to `stable` until it has had one.
