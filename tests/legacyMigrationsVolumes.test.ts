@@ -9,7 +9,7 @@ const resolved = { services: { web: { volumes: [{ type: "bind", source: `${REPO}
 interface Harness { deps: VolumeMigrationDeps; calls: string[][]; made: string[]; marked: number[]; recorded: string[] }
 
 /** `present` maps a host path to what a probe of it finds ("kb entries"). */
-function harness(options: { present?: Record<string, string>; running?: boolean; resolved?: unknown | null; copyFails?: boolean; projects?: typeof project[]; daemonDown?: boolean } = {}): Harness {
+function harness(options: { present?: Record<string, string>; running?: boolean; resolved?: unknown | null; copyFails?: boolean; projects?: typeof project[]; daemonDown?: boolean; psFails?: boolean } = {}): Harness {
   const calls: string[][] = [];
   const made: string[] = [];
   const marked: number[] = [];
@@ -17,6 +17,7 @@ function harness(options: { present?: Record<string, string>; running?: boolean;
   const docker = async (args: string[]): Promise<DockerResult> => {
     calls.push(args);
     if (options.daemonDown) return { code: 1, stdout: "", stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" };
+    if (args[0] === "ps" && options.psFails) return { code: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" };
     if (args[0] === "ps") return { code: 0, stdout: options.running ? "abc123\n" : "", stderr: "" };
     const mount = args.find((a) => a.startsWith("type=bind,src="));
     const src = mount?.split(",")[1].slice("src=".length) ?? "";
@@ -110,8 +111,22 @@ test("a Docker error while looking for data is not read as 'no data': the projec
   assert.match(report.items.map((i) => i.detail ?? "").join("\n"), /Cannot connect to the Docker daemon/);
 });
 
-test("running containers produce a warning", async () => {
-  const h = harness({ running: true, present: { [`${REPO}/data`]: "10 1" } });
-  const report = await runVolumeMigration("dry-run", h.deps);
-  assert.equal(report.items.some((i) => i.status === "warn" && /running/.test(i.label)), true);
+test("a project whose containers are running is not migrated, in the dry run or the execute", async () => {
+  for (const mode of ["dry-run", "execute"] as const) {
+    const h = harness({ running: true, present: { [`${REPO}/data`]: "10 1" } });
+    const report = await runVolumeMigration(mode, h.deps);
+    assert.match(report.summary, /0 projects (would be )?switched, 1 blocked/, mode);
+    assert.match(report.items[0].detail ?? "", /containers are running/, mode);
+    assert.deepEqual(copies(h), [], mode);
+    assert.deepEqual(h.made, [], mode);
+    assert.deepEqual(h.marked, [], mode);
+  }
+});
+
+test("when the container listing fails the project is not migrated either", async () => {
+  const h = harness({ psFails: true, present: { [`${REPO}/data`]: "10 1" } });
+  const report = await runVolumeMigration("execute", h.deps);
+  assert.match(report.summary, /1 blocked/);
+  assert.match(report.items[0].detail ?? "", /Could not tell whether the project is running/);
+  assert.deepEqual(h.marked, []);
 });

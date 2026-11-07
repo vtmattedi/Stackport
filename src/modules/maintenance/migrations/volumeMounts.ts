@@ -62,8 +62,17 @@ export async function runVolumeMigration(mode: MigrationMode, deps: VolumeMigrat
     let problem = false;
 
     const running = await deps.docker(["ps", "-q", "--filter", `label=com.docker.compose.project=${project.composeProject}`]);
-    if (running.code === 0 && running.stdout.trim()) {
-      projectItems.push({ status: "warn", label: "Containers are running", detail: "Writes made after the copy are not carried over. Stop the project first for a consistent copy." });
+    // A copy of live data loses what the app writes during and after it, and a failed listing says nothing
+    // about whether the project is running, so both stop the project here (the dry run shows the same).
+    if (running.code !== 0) {
+      items.push({ status: "error", label, detail: `Could not tell whether the project is running (${running.stderr.trim().split("\n")[0] || `exit code ${running.code}`}). Not switched over.` });
+      blocked += 1;
+      continue;
+    }
+    if (running.stdout.trim()) {
+      items.push({ status: "error", label, detail: "Its containers are running. Stop the project and run this again: data written during and after the copy would not be carried over. Not switched over." });
+      blocked += 1;
+      continue;
     }
 
     const managed = plan.filter((entry): entry is MountPlanEntry & { managedContainerPath: string; managedHostPath: string; name: string } => entry.action === "managed");
@@ -170,9 +179,9 @@ export const volumeMountsMigration: LegacyMigration = {
   title: "Stackport-owned mount directories (S2)",
   description:
     "Copies each existing project's writable bind-mount data into a directory Stackport owns, then switches the project to it. " +
-    "Originals are never touched. Run the dry run first, stop the projects you are migrating, then execute, then redeploy.",
+    "Originals are never touched. Stop the projects you are migrating first (a project whose containers are running is skipped), run the dry run, then execute, then redeploy.",
   executeWarning:
     "Copies each project's data into its Stackport-owned directory and switches the project over. The originals are not touched. " +
-    "Stop the projects first so the copy is consistent, and redeploy them afterwards. Run the dry run first if you have not.",
+    "Projects whose containers are running are skipped, so stop them first; redeploy each one afterwards. Run the dry run first if you have not.",
   run: (mode) => runVolumeMigration(mode, defaultDeps()),
 };
