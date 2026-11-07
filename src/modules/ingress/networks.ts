@@ -1,112 +1,82 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { getDatabase } from "../../config/database";
-import { ingressNetworkName, NGINX_CONTAINER } from "../../shared/ingressNames";
+import { INGRESS_NETWORK, LEGACY_INGRESS_PREFIX, legacyIngressNetworkName, NGINX_CONTAINER } from "../../shared/ingressNames";
 import { logger } from "../../shared/logger";
 
 const execFileAsync = promisify(execFile);
 
-/** Docker side of the per-project ingress networks (S9): create the network, put nginx on it,
- *  remove it with the project. Which containers join it is the deployment's business
- *  (deployments/compose/networking.ts). */
+/** Docker side of the shared ingress network (see shared/ingressNames.ts). */
 
-async function docker(args: string[]): Promise<string> {
+export type DockerRun = (args: string[]) => Promise<string>;
+
+export const dockerRun: DockerRun = async (args) => {
   try {
     return (await execFileAsync("docker", args, { timeout: 15_000 })).stdout;
   } catch (err) {
     const stderr = (err as { stderr?: string }).stderr;
     throw new Error(stderr?.trim() || (err instanceof Error ? err.message : String(err)));
   }
-}
+};
 
-const alreadyThere = (err: unknown): boolean => /already exists|already connected|endpoint with name .* already exists/i.test(err instanceof Error ? err.message : String(err));
-const notThere = (err: unknown): boolean => /No such (network|container|object)|is not connected|not found/i.test(err instanceof Error ? err.message : String(err));
+const text = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+const notThere = (err: unknown): boolean => /No such (network|container|object)|is not connected|not found/i.test(text(err));
+const alreadyThere = (err: unknown): boolean => /already exists/i.test(text(err));
 
-async function networkExists(name: string): Promise<boolean> {
+/** The network nginx and the routed services share. The system stack declares it, so it normally exists;
+ *  this creates it if someone removed it. */
+export async function ensureSharedIngressNetwork(run: DockerRun = dockerRun): Promise<void> {
   try {
-    await docker(["network", "inspect", name, "--format", "{{.Id}}"]);
-    return true;
+    await run(["network", "inspect", INGRESS_NETWORK, "--format", "{{.Id}}"]);
+    return;
   } catch (err) {
-    if (notThere(err)) return false;
-    throw err;
+    if (!notThere(err)) throw err;
   }
-}
-
-/** The networks nginx is on now. A recreated nginx container starts with none of the ingress
- *  networks, so this is read again whenever nginx's config is applied. */
-async function nginxNetworks(): Promise<Set<string>> {
-  const raw = await docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", NGINX_CONTAINER]);
-  return new Set(Object.keys(JSON.parse(raw) as Record<string, unknown>));
-}
-
-async function connectNginx(network: string, joined?: Set<string>): Promise<void> {
-  if ((joined ?? await nginxNetworks()).has(network)) return;
   try {
-    await docker(["network", "connect", network, NGINX_CONTAINER]);
+    await run(["network", "create", "--driver", "bridge", INGRESS_NETWORK]);
   } catch (err) {
     if (!alreadyThere(err)) throw err;
   }
 }
 
-/** Creates the project's ingress network if it is missing and puts nginx on it. Safe to repeat. Without
- *  nginx (not started yet, or being recreated) the network is still created: a deploy must not depend on
- *  nginx, and connectNginxToIngressNetworks puts it on the network when its config is next applied. */
-export async function ensureIngressNetwork(projectId: number): Promise<void> {
-  const name = ingressNetworkName(projectId);
-  if (!(await networkExists(name))) {
+export interface LegacyCleanup { removed: string[]; kept: { name: string; reason: string }[] }
+
+/** Removes the per-project networks 1.3.0 created, once nothing but nginx is on them. They hold slices of
+ *  Docker's address pool, so removing them gives that room back. A network that still has another container
+ *  (a service not moved yet, a TCP proxy) is left for the next run. Never throws. */
+export async function removeLegacyIngressNetworks(run: DockerRun = dockerRun, only?: string): Promise<LegacyCleanup> {
+  const result: LegacyCleanup = { removed: [], kept: [] };
+  let names: string[];
+  try {
+    names = (await run(["network", "ls", "--format", "{{.Name}}"])).split(/\s+/).filter((n) => n.startsWith(LEGACY_INGRESS_PREFIX) && (only === undefined || n === only));
+  } catch (err) {
+    logger.warn({ reason: text(err) }, "ingress.legacy-cleanup.failed");
+    return result;
+  }
+  for (const name of names) {
     try {
-      await docker(["network", "create", "--driver", "bridge",
-        "--label", "com.stackport.managed=ingress", "--label", `com.stackport.project-id=${projectId}`, name]);
+      const members = (await run(["network", "inspect", name, "--format", "{{range $id, $c := .Containers}}{{$c.Name}} {{end}}"])).split(/\s+/).filter(Boolean);
+      const others = members.filter((m) => m !== NGINX_CONTAINER);
+      if (others.length) { result.kept.push({ name, reason: `still has ${others.join(", ")}` }); continue; }
+      if (members.includes(NGINX_CONTAINER)) {
+        try { await run(["network", "disconnect", "--force", name, NGINX_CONTAINER]); }
+        catch (err) { if (!notThere(err)) throw err; }
+      }
+      await run(["network", "rm", name]);
+      result.removed.push(name);
     } catch (err) {
-      if (!alreadyThere(err)) throw err;
+      if (notThere(err)) continue;
+      result.kept.push({ name, reason: text(err) });
     }
   }
-  try {
-    await connectNginx(name);
-  } catch (err) {
-    logger.warn({ network: name, reason: err instanceof Error ? err.message : String(err) }, "ingress.nginx-connect.deferred");
+  if (result.removed.length || result.kept.length) {
+    const line = `[ingress] legacy per-project networks: removed ${result.removed.length}, kept ${result.kept.length}${result.kept.length ? ` (${result.kept.map((k) => `${k.name}: ${k.reason}`).join("; ")})` : ""}`;
+    console.log(line);
+    logger.info({ removed: result.removed, kept: result.kept }, "ingress.legacy-cleanup");
   }
+  return result;
 }
 
-/** Projects that have a domain or TCP exposure pointing at a service. */
-function routedProjectIds(): number[] {
-  const rows = getDatabase().prepare(
-    `SELECT project_id AS id FROM project_domains WHERE service <> ''
-     UNION SELECT project_id AS id FROM tcp_exposures WHERE service <> ''`
-  ).all() as { id: number }[];
-  return rows.map((row) => row.id);
-}
-
-/** Puts nginx back on every routed project's ingress network. Best effort: a missing nginx or
- *  network is reported to the log, not thrown, because the deploy that creates it comes later. */
-export async function connectNginxToIngressNetworks(): Promise<void> {
-  let joined: Set<string>;
-  try { joined = await nginxNetworks(); }
-  catch (err) { logger.warn({ reason: err instanceof Error ? err.message : String(err) }, "ingress.nginx-networks.skipped"); return; }
-  for (const id of routedProjectIds()) {
-    const name = ingressNetworkName(id);
-    try {
-      if (!(await networkExists(name))) continue; // created by the project's next deploy
-      await connectNginx(name, joined);
-    } catch (err) {
-      logger.warn({ network: name, reason: err instanceof Error ? err.message : String(err) }, "ingress.nginx-connect.failed");
-    }
-  }
-}
-
-/** Takes nginx off the network and deletes it. The network cannot go while a container is
- *  still on it (a project that was removed from Stackport but not stopped), so that case is
- *  reported and left for the next cleanup. */
-export async function removeIngressNetwork(projectId: number): Promise<void> {
-  const name = ingressNetworkName(projectId);
-  try {
-    await docker(["network", "disconnect", "--force", name, NGINX_CONTAINER]);
-  } catch (err) {
-    if (!notThere(err)) logger.warn({ network: name, reason: err instanceof Error ? err.message : String(err) }, "ingress.network-disconnect.failed");
-  }
-  try {
-    await docker(["network", "rm", name]);
-  } catch (err) {
-    if (!notThere(err)) logger.warn({ network: name, reason: err instanceof Error ? err.message : String(err) }, "ingress.network-remove.failed");
-  }
+/** Removes one project's legacy network, when a project is deleted. */
+export async function removeIngressNetwork(projectId: number, run: DockerRun = dockerRun): Promise<void> {
+  await removeLegacyIngressNetworks(run, legacyIngressNetworkName(projectId));
 }

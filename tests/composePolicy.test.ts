@@ -228,10 +228,9 @@ test("networks: joining Stackport's own network through external is refused", ()
   assert.match(validateResolvedComposePolicy(doc, POSIX).violations[0].problem, /stackport_default/);
 });
 
-test("networks: only the project's own ingress network may be external", () => {
-  assert.deepEqual(topKeys(withTop({ networks: { ingress: { name: "stackport-ingress-7", external: true } } })), []);
-  assert.deepEqual(topKeys(withTop({ networks: { "stackport-proxy": { name: "stackport-proxy", external: true } } })), ["networks.stackport-proxy.external"]);
-  assert.deepEqual(topKeys(withTop({ networks: { x: { name: "stackport-ingress-8", external: true } } })), ["networks.x.external"]);
+test("networks: only the shared ingress network may be external", () => {
+  assert.deepEqual(topKeys(withTop({ networks: { "stackport-proxy": { name: "stackport-proxy", external: true } } })), []);
+  assert.deepEqual(topKeys(withTop({ networks: { ingress: { name: "stackport-ingress-7", external: true } } })), ["networks.ingress.external"]);
   assert.deepEqual(topKeys(withTop({ networks: { other: { name: "3-blog_default", external: true } } })), ["networks.other.external"]);
   assert.deepEqual(topKeys(withTop({ networks: { h: { name: "host", external: true } } })), ["networks.h.external"]);
 });
