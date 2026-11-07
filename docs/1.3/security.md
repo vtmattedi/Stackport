@@ -212,6 +212,19 @@ the session secret breaks every credential, and leaking it (S14) exposes them. G
 encryption its own key, prefix each ciphertext with a key version, and add a
 re-encryption migration so either key can rotate.
 
+**Status: done.** `ENCRYPTION_KEY` (generated into `secrets.env` by install, update and
+repair) encrypts new secrets as `v2:<keyId>:<iv>:<tag>:<data>`; `ENCRYPTION_KEY_PREVIOUS`
+keeps older keys readable. Old-format values are still read with the JWT-derived key until
+**Settings > Migrations > Re-encrypt stored secrets** moves them, after which `JWT_SECRET`
+can rotate without breaking them. To rotate the encryption key: put the old value in
+`ENCRYPTION_KEY_PREVIOUS`, set a new `ENCRYPTION_KEY`, restart, run the re-encryption, then
+drop the previous key.
+
+Two things to know. **Back up `secrets.env`**: without `ENCRYPTION_KEY` the stored credentials
+cannot be read. And once secrets are written under the new key, rolling back to a release
+older than 1.3 cannot read them. That entry is the one migration worth keeping when the
+temporary page is removed, because it also finishes a later key rotation.
+
 ### S13 — Encrypt managed env values at rest · 🟡 · M · needs S7
 
 `project_env_files.variables_json` holds project environment values in plain text,
