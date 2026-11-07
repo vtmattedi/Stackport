@@ -7,7 +7,7 @@ description: Adapt Docker Compose projects for deployment on Stackport. Use when
 
 Use this guide when preparing an application repository to deploy on Stackport.
 
-Stackport deploys one GitHub repository (or a manually uploaded Compose file plus support files) as one project. It clones or stages the project, writes configured `.env` files, runs Docker Compose against the selected top-level Compose file, and joins routed services to its `stackport-proxy` network. HTTP traffic is routed through Stackport's nginx with optional Let's Encrypt certificates. Generic TCP traffic is routed through Stackport-owned TCP proxy containers without protocol inspection or TLS termination. Prepare the project so this flow is boring and repeatable.
+Stackport deploys one GitHub repository (or a manually uploaded Compose file plus support files) as one project. It clones or stages the project, writes configured `.env` files, runs Docker Compose against the selected top-level Compose file, and joins routed services to its `stackport-proxy` network. Compose runs with a minimal environment: Stackport's own settings and secrets are never visible to the project, so every `${VAR}` the Compose file interpolates must come from the project's own root `.env` (a Stackport env file) or have a default. HTTP traffic is routed through Stackport's nginx with optional Let's Encrypt certificates. Generic TCP traffic is routed through Stackport-owned TCP proxy containers without protocol inspection or TLS termination. Prepare the project so this flow is boring and repeatable.
 
 ## The one invariant that matters most
 
@@ -45,7 +45,22 @@ Web entrypoints normally serve plain HTTP on their exposed container port. Stack
 
 Non-HTTP services declare TCP ports with `expose:` and use an explicit Stackport TCP exposure. Stackport publishes the selected host port through a Stackport-owned `stackport-tcp-<id>` proxy container, joins that proxy and the selected project service to `stackport-proxy`, and forwards bytes to `<service>:<containerPort>` unchanged. Stackport does not inspect the protocol, terminate TLS, issue a certificate, authenticate clients, or define application authorization for a TCP exposure. Those responsibilities stay with the project.
 
-Use named volumes for persistent runtime data. Relative project bind mounts are suitable for versioned configuration and scripts. Avoid machine-specific or sensitive host paths (`/`, `/etc`, `/proc`, `/sys`, `/run`, `/var/run`, the Docker socket, etc.); Stackport's compose policy rejects those outright. It also rejects privileged containers, host PID/IPC namespaces, device mappings, and dangerous `cap_add` values (`ALL` and `SYS_ADMIN`).
+Use named volumes for persistent runtime data. Relative project bind mounts are suitable for versioned configuration and scripts. See the next section for exactly what the compose policy allows.
+
+### What the compose policy enforces
+
+Stackport checks the file twice: the raw YAML, and the configuration `docker compose config` resolves (variables substituted, `include:` merged, every profile turned on, so a service behind `profiles:` is checked too). Anything not allowed below is rejected with the service, key and a fix. A project created on Stackport 1.3 or later is rejected; a project that existed before is deployed with a warning that names what a new project would be rejected for. A file Stackport cannot resolve at all (a missing required variable, a timeout, a syntax error) is also refused for a new project, because it cannot be checked.
+
+- **Mounts.** Named volumes and `tmpfs` are fine. A bind mount must point inside the project folder (a relative path such as `./config`); any other host path is rejected, including `/`, `/etc`, `/proc`, `/sys`, `/run`, `/var/run`, the Docker socket, and a symlink in the repository that leads outside it. Other mount types (named pipes and the like) are rejected.
+- **Where bind-mounted data lives.** For a writable directory, Stackport swaps the source for a directory it owns, `<data>/volumes/<project id>/<name>`, and creates it. Do not expect `./data` in the checkout to hold the data. A read-only mount (`:ro`) of repository files keeps pointing at the checkout. A single file mounted writable, or the whole checkout (`.:/app`) mounted writable, is not moved and is reported. Prefer a named volume for anything the app writes.
+- **Named volumes.** Plain `local` volumes only; no plugin drivers, and no `driver_opts` with `bind`/`rbind` or `type: none`.
+- **Privileges.** No `privileged: true`, `network_mode`/`pid`/`ipc`/`uts`/`cgroup: host`, `userns_mode`, or `devices`. `cap_add` accepts only: CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, SETGID, SETUID, SETPCAP, NET_BIND_SERVICE, NET_RAW, NET_ADMIN, SYS_CHROOT, MKNOD, AUDIT_WRITE, SETFCAP. `security_opt` accepts only `no-new-privileges` (no `seccomp:unconfined`, `apparmor:unconfined`, `label:disable`).
+- **Builds and files.** `build.context` and `additional_contexts` that are host paths must be inside the project folder (git and http contexts are fine). `secrets:` and `configs:` with `file:` must point inside the project folder; `environment:` and `content:` are fine.
+- **Joining other containers.** `volumes_from`, `network_mode`, `pid` and `ipc` may only name a service of the same project (`service:name`), never `container:<name>`.
+
+### Hardened defaults
+
+Unless the operator turns them off for the project (project settings > Container Hardening), every service gets `no-new-privileges`, a memory limit (default 1024 MB) and a process limit (default 512). A limit the Compose file declares itself (`mem_limit`, `pids_limit`, or `deploy.resources.limits`) is kept, so a database or build-heavy service that needs more should declare it. The defaults are editable in Settings > Container defaults. Projects that existed before 1.3 start with the defaults off.
 
 Multiple services can be exposed and routed independently — e.g. a public frontend on one domain and an internal API on another, both from the same compose file. Each domain registered in Stackport names exactly one `(service, container port)` pair.
 
@@ -80,7 +95,9 @@ Variable keys must match `^[A-Za-z_][A-Za-z0-9_]*$`. Values cannot contain newli
 
 The API's JSON request limit is 10 KB. For large one-line values such as base64-encoded PEM material, use several Stackport env files and keep every individual save request below that limit. Stackport has no generic "copy this file into a named volume" feature. A project that must be initialized entirely through Stackport can use a one-shot init service to decode one-line env values into a named volume, then gate the main service with `depends_on: condition: service_completed_successfully`. Make env-file references optional at Compose-parse time when target discovery must work before the operator has created them, but make the init script fail closed when required values are absent.
 
-Env-file values are stored in Stackport's database and written as plaintext env files into the project checkout before Compose actions. They are redacted from MCP/read responses, but must still be treated as operational secrets. Never print them in logs or final handoffs, and protect Stackport's database, project files, and backups accordingly.
+Env-file values are stored encrypted in Stackport's database (with Stackport's `ENCRYPTION_KEY`) and written as plaintext env files into the project checkout before Compose actions. They are redacted from MCP/read responses, but must still be treated as operational secrets. Never print them in logs or final handoffs, and protect Stackport's `secrets.env`, project files, and backups accordingly. If an env file shows as unreadable, its key is missing from Stackport; do not recreate it blindly, ask the operator to restore the key.
+
+Because Compose is run with a minimal environment, a `${VAR}` in the Compose file is filled only from the project's root `.env` (the env file with the relative path `.env`) or from its default. A deploy warns, by name, about a variable that used to come from Stackport's own environment and is now empty.
 
 ## Health Checks
 
@@ -109,12 +126,14 @@ The service remains visible in Stackport's Docker views and its logs/actions rem
 Run these from the application repo before onboarding — note there is no host-side port to curl against here, since the whole point is that nothing is published to the host; validate against the container network directly:
 
 ```bash
-docker compose config
+docker compose --profile '*' config
 docker compose build
 docker compose up -d
 docker compose exec <service> curl -fsS http://localhost:<container-port>/<health-path>
 docker compose down
 ```
+
+`--profile '*'` resolves every service, including those behind `profiles:`, which is what Stackport checks. Read the resolved output for any bind mount that points outside the project, any capability outside the allowed list, and any `${VAR}` that resolved to empty.
 
 If the app has no health endpoint, validate the home page or another stable unauthenticated endpoint the same way.
 
@@ -144,7 +163,9 @@ The host follows the CI-validated `stable` branch by default; `main` is not the 
 
 ## Interacting with a running Stackport instance
 
-If you have MCP access to a Stackport host, its tools are self-documenting (titles/descriptions/annotations on each tool, plus a `stackport://skills/project-prep` resource serving this same guide) — inspect what's available at call time rather than relying on a fixed sequence written here, since tool names/parameters can change independently of this document. The MCP server exposes a runtime-dependent tool catalog. In the checked implementation (`src/mcp/server.ts`), GitHub-backed project creation, env-file management, ingress-target discovery, HTTP domains, and project actions are available; manual project upload and TCP-exposure management are handled through the UI/API rather than corresponding MCP tools. Always use the live MCP tool list as the authority, not this snapshot. Never invent a TCP tool: if it is absent at runtime, prepare and validate the project, then hand the exact `publicPort -> service:containerPort` values to the operator for the project page.
+If you have MCP access to a Stackport host, its tools are self-documenting (titles/descriptions/annotations on each tool, plus a `stackport://skills/project-prep` resource serving this same guide) — inspect what's available at call time rather than relying on a fixed sequence written here, since tool names/parameters can change independently of this document. The MCP server exposes a runtime-dependent tool catalog. In the checked implementation (`src/transports/mcp/stdio.ts`), GitHub-backed project creation, env-file management, ingress-target discovery, HTTP domains, and project actions are available; manual project upload and TCP-exposure management are handled through the UI/API rather than corresponding MCP tools. Always use the live MCP tool list as the authority, not this snapshot. Never invent a TCP tool: if it is absent at runtime, prepare and validate the project, then hand the exact `publicPort -> service:containerPort` values to the operator for the project page.
+
+A Stackport host can also expose an HTTP MCP endpoint at `/mcp` with an API token (Settings > MCP). A read token inspects status and deployments. A read-and-write token also offers `stackport_deploy_project`, `stackport_rollback_project`, `stackport_restart_project` and `stackport_stop_project`, limited to all projects or one project group. Each of those is two calls: the first changes nothing and returns what would happen plus a one-time `confirmationId` (valid five minutes, for those exact arguments); run it only after the operator has agreed, by calling again with that id. Never pass a `confirmationId` you were not just given, and never retry a refused call with different arguments to get around it.
 
 The other rules worth stating explicitly:
 
@@ -160,6 +181,7 @@ When you finish preparing a repo, summarize:
 
 - Files changed.
 - The chosen Stackport fields (project + each HTTP domain route and/or TCP exposure).
-- Required env variables and which `.env` path Stackport should write.
+- Required env variables and which `.env` path Stackport should write, including any `${VAR}` the Compose file interpolates.
+- Any volume the app writes to, and whether it is a named volume (preferred) or a bind mount whose data Stackport will move to its own directory.
 - Validation commands run and their results.
 - Any remaining manual steps such as DNS, GitHub credentials, or SSL issuance.
