@@ -5,12 +5,16 @@ import { getSystemSnapshot } from "../../modules/observability/snapshots/system"
 import { getHardwareSnapshot } from "../../modules/observability/snapshots/hardware";
 import { setRealtimeServer } from "../../application/realtime";
 import { verifyStoredAuthToken } from "../../modules/identity/sessions";
+import { isSameOrigin, readCookie, SESSION_COOKIE } from "../../modules/identity/sessionCookie";
 import { actionRegistry, dockerPruneKey, nginxKey, projectRepoKey, projectSslKeyPrefix } from "../../modules/actions/registry";
 import { attachDomains } from "../../modules/ingress/domains";
+import { socketSessionIsLive, sweepEndedSessions } from "./sessionGuard";
 import { bindDockerShellEvents } from "./shell";
 import { bindDockerLogsEvents } from "./logs";
 
 type Channel = "system" | "projects" | "hardware";
+
+const SESSION_SWEEP_MS = 30_000;
 
 /** Action ids are UUIDs, or "legacy-<n>" for deploys copied from project_deploys. */
 const ACTION_ID_RE = /^(?:[0-9a-f-]{36}|legacy-[0-9]+)$/;
@@ -45,12 +49,16 @@ export class SocketManager {
   private timers = new Map<Channel, NodeJS.Timeout>();
   /** The last payload pushed to each channel's room, serialized. */
   private lastSent = new Map<Channel, string>();
+  /** Closes sockets whose session has ended; see sessionGuard.ts. */
+  private sessionSweep: NodeJS.Timeout;
 
   constructor(io: SocketIOServer) {
     this.io = io;
     setRealtimeServer(io);
     this.applyAuth();
     this.bindEvents();
+    this.sessionSweep = setInterval(() => { sweepEndedSessions(this.io.sockets.sockets.values()); }, SESSION_SWEEP_MS);
+    this.sessionSweep.unref();
   }
 
   // ── Auth middleware ────────────────────────────────────────────────────────
@@ -58,7 +66,11 @@ export class SocketManager {
   private applyAuth(): void {
     this.io.use((socket: Socket, next) => {
       try {
-        const token = (socket.handshake.auth as { token?: string }).token;
+        const explicit = (socket.handshake.auth as { token?: string }).token;
+        const cookie = explicit ? null : readCookie(socket.handshake.headers.cookie, SESSION_COOKIE);
+        // A cookie is ambient, so a browser's handshake must come from this host (S6).
+        if (cookie && !isSameOrigin(socket.handshake.headers.origin, socket.handshake.headers.host)) throw new Error("Cross-origin");
+        const token = explicit ?? cookie;
         if (!token) throw new Error("No token");
         const verified = verifyStoredAuthToken(token);
         if (!verified) throw new Error("Invalid token");
@@ -76,8 +88,9 @@ export class SocketManager {
   private bindEvents(): void {
     this.io.on("connection", (socket: Socket) => {
       void socket.join("global");
-      bindDockerShellEvents(socket);
-      bindDockerLogsEvents(socket);
+      const sessionLive = (): boolean => socketSessionIsLive(socket);
+      bindDockerShellEvents(socket, sessionLive);
+      bindDockerLogsEvents(socket, sessionLive);
       socket.emit("system:actions:sync", {
         nginx: actionRegistry.get(nginxKey()) ?? null,
         certbot: actionRegistry.list("system:certbot:"),
@@ -214,6 +227,7 @@ export class SocketManager {
   // ── Shutdown ──────────────────────────────────────────────────────────────
 
   stop(): void {
+    clearInterval(this.sessionSweep);
     for (const t of this.timers.values()) clearInterval(t);
     this.timers.clear();
   }

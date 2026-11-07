@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadYamlDoc } from "../src/modules/deployments/compose/yaml";
-import { dotenvKeys, extractComposeVariables } from "../src/modules/deployments/compose/variables";
+import { dotenvKeys, extractComposeVariables, findUnresolvedStackportVariables } from "../src/modules/deployments/compose/variables";
 
 const COMPOSE = `
 # \${IN_A_COMMENT} is ignored
@@ -36,4 +36,15 @@ test("escaped dollars and comments are not references", () => {
 
 test("dotenv keys are read, including export lines, ignoring comments", () => {
   assert.deepEqual([...dotenvKeys("# c\nA=1\nexport B=2\n  C = 3\nnot a line\n")].sort(), ["A", "B", "C"]);
+});
+
+test("variables only Stackport's environment provided are reported by name", () => {
+  const refs = [{ name: "JWT_SECRET" }, { name: "TAG" }, { name: "PATH" }, { name: "UNSET" }, { name: "DB_PASS" }];
+  const found = findUnresolvedStackportVariables(
+    refs,
+    new Set(["DB_PASS"]),
+    { JWT_SECRET: "x", TAG: "1", PATH: "/bin", DB_PASS: "y" },
+    (name) => name === "PATH",
+  );
+  assert.deepEqual(found, ["JWT_SECRET", "TAG"]);
 });

@@ -32,6 +32,7 @@ import {
   pruneBuildCache,
 } from "../../integrations/docker/statusCache";
 import { isSystemComposeProject } from "../../integrations/docker/systemResources";
+import { getHardeningDefaults, setHardeningDefaults } from "../../modules/deployments/compose/hardening";
 import { getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../../modules/maintenance/storage/operations";
 
 import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../../modules/maintenance/selfUpdate";
@@ -214,6 +215,20 @@ router.put("/docker/storage-thresholds", requireAuth, (req: Request, res: Respon
   setStorageThresholds(thresholds);
   auditLog(req.user ?? "unknown", "system.docker-storage-thresholds", "app_meta", "ok", { ...thresholds });
   res.json(thresholds);
+});
+
+router.get("/hardening-defaults", requireAuth, (_req: Request, res: Response): void => {
+  res.json(getHardeningDefaults());
+});
+
+router.put("/hardening-defaults", requireAuth, (req: Request, res: Response): void => {
+  try {
+    const saved = setHardeningDefaults(req.body);
+    auditLog(req.user ?? "unknown", "system.hardening-defaults", "app_meta", "ok", { ...saved });
+    res.json(saved);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : "Invalid values" });
+  }
 });
 
 router.get("/nginx/runtime", requireAuth, (_req: Request, res: Response): void => {

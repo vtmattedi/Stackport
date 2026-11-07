@@ -1,0 +1,57 @@
+.list { display: grid; gap: 12px; }
+
+.empty { color: var(--dim); font-size: 13px; display: flex; align-items: center; gap: 8px; }
+
+.card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(13, 17, 23, 0.28);
+  padding: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+
+  h3 { margin: 0; font-size: 14px; font-weight: 600; }
+}
+
+.actions { display: flex; gap: 8px; }
+
+.description { margin: 0; color: var(--dim); font-size: 13px; }
+
+.status { margin: 0; font-size: 13px; }
+
+.report {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 10px;
+
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+
+  li {
+    display: grid;
+    grid-template-columns: 14px 1fr;
+    gap: 8px;
+    align-items: start;
+    font-size: 13px;
+
+    svg { margin-top: 2px; }
+    div { display: grid; gap: 2px; min-width: 0; }
+    span { color: var(--dim); overflow-wrap: anywhere; }
+  }
+}
+
+.summary { margin: 0; font-size: 13px; font-weight: 600; }
+.time { color: var(--dim); font-weight: 400; }
+
+.ok svg { color: #3fb950; }
+.warn svg { color: #d29922; }
+.error svg { color: #f85149; }
+.info svg { color: var(--dim); }

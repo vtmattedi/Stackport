@@ -21,7 +21,7 @@ test("migration 007 preserves an existing 006 identity/preferences/subscriptions
     legacy.prepare("INSERT INTO push_subscriptions (endpoint,p256dh,auth,label) VALUES ('https://fcm.googleapis.com/migration','p256','auth','Laptop')").run();
     const before = legacy.prepare("SELECT * FROM push_config").get();
     runMigrations(legacy); runMigrations(legacy);
-    assert.equal(schemaVersion(legacy), 7);
+    assert.equal(schemaVersion(legacy), Math.max(...MIGRATIONS.map((migration) => migration.id)), "brought to the latest migration, however many follow 007");
     assert.deepEqual(legacy.prepare("SELECT * FROM push_config").get(), before);
     assert.equal((legacy.prepare("SELECT COUNT(*) AS n FROM push_subscriptions").get() as { n: number }).n, 1);
     runMigrations(legacy, MIGRATIONS.filter((migration) => migration.id <= 6));

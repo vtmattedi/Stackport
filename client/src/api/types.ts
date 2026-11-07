@@ -42,6 +42,10 @@ export interface Project {
   deployHealthGraceS: number;
   /** Roll back automatically when a deploy fails its health check. */
   autoRollbackUnhealthy: boolean;
+  /** Services get Stackport's hardened defaults: no-new-privileges and default limits. */
+  hardenedDefaults: boolean;
+  /** Projects in the same network group reach each other's chosen services. */
+  networkGroup: string | null;
   lastStatus: "up" | "down" | "unknown";
   lastResponseMs: number | null;
   lastCheckedAt: string | null;
@@ -188,6 +192,8 @@ export interface ProjectEnvFile {
   projectId: number;
   relativePath: string;
   variables: EnvVariable[];
+  /** The stored values cannot be decrypted; `variables` is empty but the file is not. */
+  unreadable?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -435,6 +441,20 @@ export interface DockerDiskUsageEntry {
   active: string;
   size: string;
   reclaimable: string;
+}
+
+export interface HardeningDefaults {
+  /** Process limit per service; 0 means no default. */
+  pidsLimit: number;
+  /** Memory limit per service in megabytes; 0 means no default. */
+  memoryMb: number;
+}
+
+export interface HardeningDefaults {
+  /** Process limit per service; 0 means no default. */
+  pidsLimit: number;
+  /** Memory limit per service in megabytes; 0 means no default. */
+  memoryMb: number;
 }
 
 export interface DockerStorageThresholds {
@@ -935,6 +955,8 @@ export interface ApiToken {
   name: string;
   prefix: string;
   scopes: string[];
+  /** A write token acts only on projects in this group; null means every project. */
+  projectGroup: string | null;
   createdAt: string;
   lastUsedAt: string | null;
   expiresAt: string | null;
@@ -1000,4 +1022,17 @@ export interface ComposePolicyResult {
   /** Null when there is no checkout or no Compose file selected yet. */
   composeFile: string | null;
   violations: PolicyViolation[];
+}
+
+export interface NetworkGroupHostname { service: string; hostname: string }
+
+export interface NetworkGroupView {
+  group: string | null;
+  services: string[];
+  availableServices: string[];
+  hostnames: NetworkGroupHostname[];
+  peers: { projectId: number; name: string; services: string[]; hostnames: NetworkGroupHostname[] }[];
+  /** Set by a save: false when Docker could not be updated now (it is applied on the next deploy). */
+  applied?: boolean;
+  warning?: string;
 }

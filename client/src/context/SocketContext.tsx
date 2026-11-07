@@ -3,7 +3,7 @@ import {
 } from "react";
 import { io, Socket } from "socket.io-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getToken, clearToken } from "../api/client";
+import { isAuthenticated, markSignedOut } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -128,11 +128,10 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
   // provider mounts before the user has logged in and set a token).
   const getOrCreate = useCallback((): Socket | null => {
     if (socketRef.current) return socketRef.current;
-    const token = getToken();
-    if (!token) return null;
+    if (!isAuthenticated()) return null;
 
+    // The session cookie goes with the handshake; there is no token to pass.
     const socket = io(window.location.origin, {
-      auth: { token },
       transports: ["websocket", "polling"],
     });
     socket.on("connect", () => {
@@ -145,22 +144,17 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       setConnected(false);
       resetLatency();
     });
-    socket.io.on("reconnect_attempt", () => {
-      socket.auth = { token: getToken() };
-    });
     socket.on("connect_error", (err: Error) => {
       setConnected(false);
       resetLatency();
-      const currentToken = getToken();
-      const attemptedToken = (socket.auth as { token?: string }).token;
-      // Auth rejection → clear stale token and redirect to login
-      if ((err.message === "Unauthorized" || err.message === "No token") && (!currentToken || currentToken === attemptedToken)) {
-        clearToken();
+      // Auth rejection: the session is gone, so forget it and go to the login page
+      if (err.message === "Unauthorized" || err.message === "No token") {
+        markSignedOut();
         window.location.href = "/";
       }
     });
     socket.on("auth:revoked", () => {
-      clearToken();
+      markSignedOut();
       socket.disconnect();
       window.location.href = "/";
     });

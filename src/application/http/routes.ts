@@ -12,6 +12,7 @@ import metricsRouter from "../../modules/observability/routes/metrics";
 import hardwareRouter from "../../modules/observability/routes/hardware";
 import apiTokensRouter from "../../modules/identity/routes/apiTokens";
 import actionsRouter from "../../modules/actions/routes";
+import legacyMigrationsRouter from "../../modules/maintenance/migrations/routes"; // TEMPORARY, see modules/maintenance/migrations/types.ts
 
 const router = Router();
 
@@ -28,5 +29,6 @@ router.use("/metrics", metricsRouter);
 router.use("/hardware", hardwareRouter);
 router.use("/api-tokens", apiTokensRouter);
 router.use("/actions", actionsRouter);
+router.use("/legacy-migrations", legacyMigrationsRouter); // TEMPORARY
 
 export default router;

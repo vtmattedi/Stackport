@@ -7,13 +7,16 @@ import { z } from "zod";
 import { requireApiToken } from "../../modules/identity/middleware/apiToken";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
-import { getProjectView, getStatusView, listProjectsView } from "./readModel";
+import { getProjectNetworkView, getProjectView, getStatusView, listNetworkGroupsView, listProjectsView } from "./readModel";
+import { registerWriteTools } from "./writeTools";
+import { packageVersion } from "../../modules/maintenance/version";
 
 /**
  * The MCP endpoint at /mcp: Streamable HTTP, stateless (a fresh server per request),
  * JSON responses, API-token auth with the `read` scope. It runs inside the app, so it
- * reads the same state the UI does and never writes. The stdio server (server.ts) is
- * separate and unchanged.
+ * reads the same state the UI does. A token that also has the `write` scope gets the
+ * deploy, rollback, restart and stop tools (writeTools.ts); a read token never sees
+ * them. The stdio server (server.ts) is separate and unchanged.
  */
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
@@ -29,8 +32,10 @@ function notFound(message: string): CallToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-export function buildReadOnlyMcpServer(token: ApiToken): McpServer {
-  const server = new McpServer({ name: "stackport", version: "1.0.0" });
+export function buildMcpServer(token: ApiToken): McpServer {
+  const server = new McpServer({ name: "stackport", version: packageVersion() }, {
+    instructions: "Tools whose description starts with DESTRUCTIVE: change, interrupt or remove something that is running or overwrite stored data. Do not call one unless the user has asked for that change. Each takes two calls: the first only describes what would happen; show that to the user and call again with the confirmationId only after they agree.",
+  });
   const actor = `token:${token.name}#${token.id}`;
   const audit = (tool: string, meta: Record<string, unknown> = {}): void =>
     auditLog(actor, "mcp.tool", tool, "ok", { tokenId: token.id, ...meta });
@@ -76,6 +81,36 @@ export function buildReadOnlyMcpServer(token: ApiToken): McpServer {
     }
   );
 
+  server.registerTool(
+    "stackport_list_network_groups",
+    {
+      title: "List network groups",
+      description: "Every network group (projects that can reach each other's shared services without a public domain), with its projects and the hostname each shared service answers to, such as db.p7.",
+      annotations: READ_ONLY,
+    },
+    () => {
+      audit("stackport_list_network_groups");
+      return result(listNetworkGroupsView());
+    }
+  );
+
+  server.registerTool(
+    "stackport_get_project_network_group",
+    {
+      title: "Get project network group",
+      description: "One project's network group: the group it is in, which of its services it shares, which services its Compose file has, and the other projects in the group.",
+      inputSchema: { projectId: z.number().int().positive() },
+      annotations: READ_ONLY,
+    },
+    async ({ projectId }) => {
+      audit("stackport_get_project_network_group", { projectId });
+      const view = await getProjectNetworkView(projectId);
+      return view ? result(view) : notFound(`No project with id ${projectId}.`);
+    }
+  );
+
+  if (token.scopes.includes("write")) registerWriteTools(server, token);
+
   return server;
 }
 
@@ -92,7 +127,7 @@ const perTokenLimiter = rateLimit({
 });
 
 router.post("/", requireApiToken("read"), perTokenLimiter, async (req: Request, res: Response): Promise<void> => {
-  const server = buildReadOnlyMcpServer(req.apiToken!);
+  const server = buildMcpServer(req.apiToken!);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => {
     void transport.close();

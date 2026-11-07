@@ -7,6 +7,7 @@ type StoredAuthTokenRow = {
   id: string;
   username: string;
   expires_at: string;
+  created_at: string;
 };
 
 export type VerifiedAuthToken = {
@@ -26,9 +27,23 @@ function tokenExpiryIso(token: string): string {
   return new Date(decoded.exp * 1000).toISOString();
 }
 
-function signAuthToken(username: string, tokenId: string): string {
+const HOUR_MS = 3_600_000;
+
+/** A session's two limits (S6): it slides forward while in use, but never past a fixed
+ *  time after login. */
+export function sessionWindow(createdAtMs: number, nowMs: number): { expiresAtMs: number; capMs: number } {
+  const capMs = createdAtMs + config.sessionMaxHours * HOUR_MS;
+  return { expiresAtMs: Math.min(nowMs + config.sessionIdleHours * HOUR_MS, capMs), capMs };
+}
+
+/** SQLite's own default timestamps have no zone and a space instead of the T. */
+function parseStoredTime(value: string): number {
+  return Date.parse(/[zZ]$|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`);
+}
+
+function signAuthToken(username: string, tokenId: string, expiresAtMs: number): string {
   return jwt.sign({ sub: username }, config.jwtSecret, {
-    expiresIn: config.jwtExpiry as jwt.SignOptions["expiresIn"],
+    expiresIn: Math.max(1, Math.ceil((expiresAtMs - Date.now()) / 1000)),
     jwtid: tokenId,
   });
 }
@@ -43,7 +58,7 @@ export function issueAuthToken(username: string): string {
   pruneExpiredAuthTokens();
 
   const tokenId = crypto.randomUUID();
-  const token = signAuthToken(username, tokenId);
+  const token = signAuthToken(username, tokenId, sessionWindow(Date.now(), Date.now()).expiresAtMs);
   const now = nowIso();
 
   getDatabase()
@@ -56,8 +71,17 @@ export function issueAuthToken(username: string): string {
   return token;
 }
 
+/** Slides the session forward, but not past its cap. Throws when the session is gone or
+ *  has reached its cap (and deletes it then). */
 export function refreshAuthToken(username: string, tokenId: string): string {
-  const token = signAuthToken(username, tokenId);
+  const stored = getDatabase().prepare("SELECT created_at FROM auth_tokens WHERE id = ? AND username = ?").get(tokenId, username) as { created_at: string } | undefined;
+  if (!stored) throw new Error("Auth token is no longer stored");
+  const { expiresAtMs, capMs } = sessionWindow(parseStoredTime(stored.created_at), Date.now());
+  if (capMs <= Date.now()) {
+    invalidateAuthToken(tokenId);
+    throw new Error("Session reached its maximum lifetime");
+  }
+  const token = signAuthToken(username, tokenId, expiresAtMs);
   const now = nowIso();
 
   const result = getDatabase()
@@ -89,10 +113,14 @@ export function verifyStoredAuthToken(token: string): VerifiedAuthToken | null {
 
   const now = nowIso();
   const row = getDatabase()
-    .prepare("SELECT id, username, expires_at FROM auth_tokens WHERE id = ?")
+    .prepare("SELECT id, username, expires_at, created_at FROM auth_tokens WHERE id = ?")
     .get(decoded.jti) as StoredAuthTokenRow | undefined;
 
   if (!row || row.username !== decoded.sub || row.expires_at <= now) {
+    return null;
+  }
+  if (sessionWindow(parseStoredTime(row.created_at), Date.now()).capMs <= Date.now()) {
+    invalidateAuthToken(row.id);
     return null;
   }
 
@@ -104,6 +132,14 @@ export function verifyStoredAuthToken(token: string): VerifiedAuthToken | null {
     username: row.username,
     tokenId: row.id,
   };
+}
+
+/** Whether a session is still valid, without extending it. For connections that outlive a request
+ *  (WebSockets), which must stop when the session expires, reaches its cap or is ended. */
+export function isSessionLive(tokenId: string): boolean {
+  const row = getDatabase().prepare("SELECT expires_at, created_at FROM auth_tokens WHERE id = ?").get(tokenId) as Pick<StoredAuthTokenRow, "expires_at" | "created_at"> | undefined;
+  if (!row || row.expires_at <= nowIso()) return false;
+  return sessionWindow(parseStoredTime(row.created_at), Date.now()).capMs > Date.now();
 }
 
 export function invalidateAuthTokens(username?: string): number {

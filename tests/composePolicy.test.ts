@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatPolicyViolation, validateComposePolicy } from "../src/modules/deployments/compose/policy";
+import path from "node:path";
+import { evaluateResolvedPolicy, formatPolicyViolation, validateComposePolicy, validateResolvedComposePolicy } from "../src/modules/deployments/compose/policy";
 
 test("violations name the service, key and a fix", () => {
   const result = validateComposePolicy({
@@ -24,4 +25,235 @@ test("the log line keeps the old services.<name>.<key> form", () => {
 
 test("a clean file passes", () => {
   assert.deepEqual(validateComposePolicy({ services: { web: { image: "nginx", expose: ["80"], volumes: ["./data:/data"] } } }), { ok: true, violations: [] });
+});
+
+test("the resolved config is checked too, so a value only spelled indirectly in the file is caught", () => {
+  // `privileged: ${PRIV:-true}` reaches the check as the boolean Compose will run.
+  const result = validateResolvedComposePolicy({ services: { web: { image: "nginx", privileged: true } } }, { projectDir: "/srv/p" });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.violations.map((v) => `${v.service}.${v.key}`), ["web.privileged"]);
+});
+
+const POSIX = { projectDir: "/srv/stackport/7-app", projectId: 7 };
+const resolvedWith = (service: Record<string, unknown>) => ({ services: { web: { image: "nginx", ...service } } });
+const keys = (doc: unknown, ctx: { projectDir: string; projectId?: number } = POSIX) => validateResolvedComposePolicy(doc, ctx).violations.map((v) => `${v.service}.${v.key}`);
+
+test("a: a variable that resolves to the host root is refused as a host mount", () => {
+  // volumes: ["${HOSTROOT:-/}:/host"] arrives resolved, as an absolute bind source.
+  const doc = resolvedWith({ volumes: [{ type: "bind", source: "/", target: "/host" }] });
+  assert.deepEqual(keys(doc), ["web.volumes"]);
+  assert.match(validateResolvedComposePolicy(doc, POSIX).violations[0].problem, /not allowed/);
+});
+
+test("a: mounts inside the project folder, named volumes and tmpfs pass", () => {
+  const doc = resolvedWith({ volumes: [
+    { type: "bind", source: "/srv/stackport/7-app/data", target: "/data" },
+    { type: "bind", source: "/srv/stackport/7-app", target: "/app" },
+    { type: "volume", source: "pgdata", target: "/var/lib/postgresql" },
+    { type: "tmpfs", target: "/tmp" },
+  ] });
+  assert.deepEqual(keys(doc), []);
+});
+
+test("a: a sibling folder that merely shares the project's prefix is outside it", () => {
+  const doc = resolvedWith({ volumes: [{ type: "bind", source: "/srv/stackport/7-app-other/data", target: "/d" }] });
+  assert.deepEqual(keys(doc), ["web.volumes"]);
+});
+
+test("a: paths are compared the Windows way when the project folder is a Windows path", () => {
+  const ctx = { projectDir: "C:\\Deploy\\7-app" };
+  assert.deepEqual(keys(resolvedWith({ volumes: [{ type: "bind", source: "c:\\deploy\\7-app\\data", target: "/d" }] }), ctx), []);
+  assert.deepEqual(keys(resolvedWith({ volumes: [{ type: "bind", source: "C:\\Windows", target: "/d" }] }), ctx), ["web.volumes"]);
+});
+
+test("a: a mount type outside the allowlist is refused", () => {
+  assert.deepEqual(keys(resolvedWith({ volumes: [{ type: "npipe", source: "\\\\.\\pipe\\docker_engine", target: "/p" }] })), ["web.volumes"]);
+});
+
+test("a: an ordinary host folder outside the project is refused with a message that says why", () => {
+  const [v] = validateResolvedComposePolicy(resolvedWith({ volumes: [{ type: "bind", source: "/home/deploy", target: "/h" }] }), POSIX).violations;
+  assert.match(v.problem, /\/home\/deploy.*outside the project folder/);
+});
+
+test("b: privileged chosen through a variable is caught once it is resolved", () => {
+  // privileged: ${PRIV:-true} is a string in the file and the boolean true in the resolved config.
+  assert.deepEqual(keys(resolvedWith({ privileged: true })), ["web.privileged"]);
+  assert.deepEqual(keys(resolvedWith({ privileged: false })), []);
+});
+
+test("c: a named volume that bind-mounts the host through driver_opts is refused", () => {
+  const doc = { services: { web: { image: "nginx" } }, volumes: { root: { name: "p_root", driver_opts: { type: "none", o: "bind", device: "/" } } } };
+  const [v] = validateResolvedComposePolicy(doc, POSIX).violations;
+  assert.equal(formatPolicyViolation(v).split(":")[0], "volumes.root.driver_opts");
+  assert.equal(validateResolvedComposePolicy(doc, POSIX).violations.length, 1);
+});
+
+test("c: rbind, type bind and plugin drivers are refused too", () => {
+  const volumes = (opts: Record<string, unknown>) => ({ services: {}, volumes: { v: opts } });
+  assert.equal(validateResolvedComposePolicy(volumes({ driver_opts: { o: "rw,rbind", device: "/etc" } }), POSIX).ok, false);
+  assert.equal(validateResolvedComposePolicy(volumes({ driver_opts: { type: "bind", device: "/etc" } }), POSIX).ok, false);
+  assert.equal(validateResolvedComposePolicy(volumes({ driver: "rclone" }), POSIX).ok, false);
+});
+
+test("c: plain, local and network-backed volumes pass", () => {
+  const doc = { services: {}, volumes: {
+    plain: { name: "p_plain" },
+    local: { driver: "local" },
+    share: { driver: "local", driver_opts: { type: "nfs", o: "addr=10.0.0.5,rw", device: ":/exports/data" } },
+  } };
+  assert.equal(validateResolvedComposePolicy(doc, POSIX).ok, true);
+});
+
+test("e: capabilities outside the allowlist are refused, ordinary ones pass", () => {
+  assert.deepEqual(keys(resolvedWith({ cap_add: ["SYS_PTRACE", "SYS_MODULE", "NET_BIND_SERVICE", "CAP_CHOWN"] })), ["web.cap_add", "web.cap_add"]);
+  assert.deepEqual(keys(resolvedWith({ cap_add: ["NET_BIND_SERVICE", "CHOWN", "net_admin"] })), []);
+});
+
+test("e: SYS_ADMIN is reported once, not by both the denylist and the allowlist", () => {
+  assert.deepEqual(keys(resolvedWith({ cap_add: ["SYS_ADMIN"] })), ["web.cap_add"]);
+});
+
+test("e: security_opt that switches confinement off is refused", () => {
+  assert.deepEqual(keys(resolvedWith({ security_opt: ["seccomp:unconfined", "apparmor:unconfined", "label:disable"] })), ["web.security_opt", "web.security_opt", "web.security_opt"]);
+  assert.deepEqual(keys(resolvedWith({ security_opt: ["no-new-privileges:true"] })), []);
+});
+
+test("e: sharing the host's user, UTS or cgroup namespace is refused", () => {
+  assert.deepEqual(keys(resolvedWith({ userns_mode: "host", uts: "host", cgroup: "host" })), ["web.userns_mode", "web.uts", "web.cgroup"]);
+});
+
+test("f: a build context outside the project folder is refused", () => {
+  assert.deepEqual(keys(resolvedWith({ build: { context: "/", dockerfile: "Dockerfile" } })), ["web.build"]);
+  assert.deepEqual(keys(resolvedWith({ build: { context: "/srv/stackport", dockerfile: "Dockerfile" } })), ["web.build"]);
+});
+
+test("f: contexts inside the project, and remote contexts, pass", () => {
+  assert.deepEqual(keys(resolvedWith({ build: { context: "/srv/stackport/7-app/api", dockerfile: "Dockerfile" } })), []);
+  assert.deepEqual(keys(resolvedWith({ build: { context: "https://github.com/acme/app.git#main" } })), []);
+});
+
+test("f: an additional build context is held to the same rule", () => {
+  const doc = resolvedWith({ build: { context: "/srv/stackport/7-app", additional_contexts: { secrets: "/etc", base: "docker-image://alpine", lib: "service:other" } } });
+  const [v] = validateResolvedComposePolicy(doc, POSIX).violations;
+  assert.match(v.problem, /additional_contexts\.secrets "\/etc"/);
+  assert.equal(validateResolvedComposePolicy(doc, POSIX).violations.length, 1);
+});
+
+test("f: a Windows host path is recognised as a local build context", () => {
+  assert.deepEqual(keys(resolvedWith({ build: { context: "C:\\Windows" } })), ["web.build"]);
+});
+
+test("g: a secret or config that reads a file outside the project is refused", () => {
+  const doc = { services: { web: { image: "nginx" } },
+    secrets: { shadow: { name: "p_shadow", file: "/etc/shadow" }, ok: { file: "/srv/stackport/7-app/secrets/api" } },
+    configs: { hosts: { file: "/etc/hosts" } } };
+  const found = validateResolvedComposePolicy(doc, POSIX).violations.map(formatPolicyViolation).map((line) => line.split(":")[0]);
+  assert.deepEqual(found, ["secrets.shadow.file", "configs.hosts.file"]);
+});
+
+test("g: environment, content and external entries read nothing from the host", () => {
+  const doc = { services: {}, secrets: { token: { environment: "API_TOKEN" }, shared: { external: true } }, configs: { inline: { content: "x=1" } } };
+  assert.equal(validateResolvedComposePolicy(doc, POSIX).ok, true);
+});
+
+test("h: joining Stackport's own container is refused in every form", () => {
+  const doc = { services: {
+    web: { image: "x", volumes_from: ["container:stackport"], network_mode: "container:stackport", pid: "container:stackport", ipc: "container:stackport" },
+  } };
+  assert.deepEqual(keys(doc), ["web.network_mode", "web.pid", "web.ipc", "web.volumes_from"]);
+});
+
+test("h: sharing another service of the same project passes", () => {
+  const doc = { services: {
+    db: { image: "postgres" },
+    web: { image: "x", volumes_from: ["db", "db:ro"], network_mode: "service:db", pid: "service:db" },
+  } };
+  assert.deepEqual(keys(doc), []);
+});
+
+test("h: a service name that is not in the project is refused", () => {
+  assert.deepEqual(keys({ services: { web: { image: "x", network_mode: "service:ghost", volumes_from: ["ghost"] } } }), ["web.network_mode", "web.volumes_from"]);
+});
+
+test("h: network_mode host is reported once, by the denylist", () => {
+  assert.deepEqual(keys(resolvedWith({ network_mode: "host" })), ["web.network_mode"]);
+});
+
+test("S12: a mount inside the project that is a symlink to outside it is refused", async (t) => {
+  const fsMod = await import("node:fs");
+  const os = await import("node:os");
+  const base = fsMod.mkdtempSync(path.join(os.tmpdir(), "sp-policy-link-"));
+  const project = path.join(base, "project");
+  fsMod.mkdirSync(project);
+  fsMod.mkdirSync(path.join(base, "outside"));
+  fsMod.symlinkSync(path.join(base, "outside"), path.join(project, "data"), "junction");
+  try {
+    const link = keys(resolvedWith({ volumes: [{ type: "bind", source: path.join(project, "data"), target: "/d", read_only: true }] }), { projectDir: project });
+    assert.deepEqual(link, ["web.volumes"], "looks inside the project, but the link leaves it");
+    assert.deepEqual(keys(resolvedWith({ volumes: [{ type: "bind", source: path.join(project, "real"), target: "/d" }] }), { projectDir: project }), []);
+  } finally {
+    fsMod.rmSync(base, { recursive: true, force: true });
+    t.diagnostic("temp directories removed");
+  }
+});
+
+const BAD_DOC = { services: { web: { image: "x", cap_add: ["SYS_PTRACE"] } } };
+
+test("evaluateResolvedPolicy: a file that cannot be resolved is refused for an enforcing project", () => {
+  const outcome = evaluateResolvedPolicy({ ok: false, reason: "timed out" }, { enforced: true, projectDir: "/srv/p" });
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.message, /cannot be checked against the policy \(timed out\)/);
+});
+
+test("evaluateResolvedPolicy: a project that predates the policy only gets a warning when the file cannot be resolved", () => {
+  const outcome = evaluateResolvedPolicy({ ok: false, reason: "output too large" }, { enforced: false, projectDir: "/srv/p" });
+  assert.equal(outcome.ok, true);
+  assert.match(outcome.warning ?? "", /policy was not checked/);
+});
+
+test("evaluateResolvedPolicy: violations reject an enforcing project and warn the others", () => {
+  assert.equal(evaluateResolvedPolicy({ ok: true, doc: BAD_DOC }, { enforced: true, projectDir: "/srv/p" }).ok, false);
+  const legacy = evaluateResolvedPolicy({ ok: true, doc: BAD_DOC }, { enforced: false, projectDir: "/srv/p" });
+  assert.equal(legacy.ok, true);
+  assert.match(legacy.warning ?? "", /would be rejected for/);
+  assert.deepEqual(evaluateResolvedPolicy({ ok: true, doc: { services: { web: { image: "x" } } } }, { enforced: true, projectDir: "/srv/p" }), { ok: true, message: "" });
+});
+
+const withTop = (top: Record<string, unknown>, project = "7-shop") => ({ name: project, services: { web: { image: "x" } }, ...top });
+const topKeys = (doc: unknown) => validateResolvedComposePolicy(doc, POSIX).violations.map((v) => `${v.section ?? "services"}.${v.service}.${v.key}`);
+
+test("networks: joining Stackport's own network through external is refused", () => {
+  const doc = withTop({ networks: { default: { name: "stackport_default", external: true } } });
+  assert.deepEqual(topKeys(doc), ["networks.default.external"]);
+  assert.match(validateResolvedComposePolicy(doc, POSIX).violations[0].problem, /stackport_default/);
+});
+
+test("networks: only the project's own ingress network may be external", () => {
+  assert.deepEqual(topKeys(withTop({ networks: { ingress: { name: "stackport-ingress-7", external: true } } })), []);
+  assert.deepEqual(topKeys(withTop({ networks: { "stackport-proxy": { name: "stackport-proxy", external: true } } })), ["networks.stackport-proxy.external"]);
+  assert.deepEqual(topKeys(withTop({ networks: { x: { name: "stackport-ingress-8", external: true } } })), ["networks.x.external"]);
+  assert.deepEqual(topKeys(withTop({ networks: { other: { name: "3-blog_default", external: true } } })), ["networks.other.external"]);
+  assert.deepEqual(topKeys(withTop({ networks: { h: { name: "host", external: true } } })), ["networks.h.external"]);
+});
+
+test("networks: a network that takes another project's or the system's name is refused too", () => {
+  assert.deepEqual(topKeys(withTop({ networks: { default: { name: "stackport_default" } } })), ["networks.default.name"]);
+  assert.deepEqual(topKeys(withTop({ networks: { back: { name: "3-blog_default" } } })), ["networks.back.name"]);
+});
+
+test("networks: the project's own networks, and bridge-driver ones, pass; other drivers do not", () => {
+  assert.deepEqual(topKeys(withTop({ networks: { default: { name: "7-shop_default" }, back: { name: "7-shop_back", driver: "bridge" } } })), []);
+  assert.deepEqual(topKeys(withTop({ networks: { fast: { name: "7-shop_fast", driver: "macvlan" } } })), ["networks.fast.driver"]);
+});
+
+test("volumes: an external named volume is refused, so is a name that is not the project's", () => {
+  assert.deepEqual(topKeys(withTop({ volumes: { data: { name: "3-blog_data", external: true } } })), ["volumes.data.external"]);
+  assert.deepEqual(topKeys(withTop({ volumes: { data: { name: "3-blog_data" } } })), ["volumes.data.name"]);
+  assert.deepEqual(topKeys(withTop({ volumes: { data: { name: "7-shop_data" }, cache: { name: "7-shop_cache", driver: "local" } } })), []);
+});
+
+test("a file with no project name in the resolved config skips only the name checks", () => {
+  const doc = { services: { web: { image: "x" } }, networks: { default: { name: "anything" } }, volumes: { v: { name: "anything" } } };
+  assert.deepEqual(topKeys(doc), []);
+  assert.deepEqual(topKeys({ ...doc, networks: { x: { external: true, name: "stackport_default" } } }), ["networks.x.external"]);
 });

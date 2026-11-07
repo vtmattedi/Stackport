@@ -1,7 +1,7 @@
 import { createServer } from "http";
 import { markInterruptedActions } from "./modules/actions/registry";
 import { Server as SocketIOServer } from "socket.io";
-import app from "./app";
+import app, { trustedProxy } from "./app";
 import { config } from "./config/env";
 import { closeDatabase, initializeDatabase } from "./config/database";
 import { healthChecker } from "./modules/deployments/health";
@@ -15,6 +15,7 @@ import { certbotRenewalMonitor } from "./modules/ingress/certificates/renewal";
 import { ensureBootstrapCredential } from "./modules/identity/installation";
 import { ensureAppIngress } from "./modules/ingress/bootstrap";
 import { reconcileAllTcpExposures } from "./modules/ingress/tcp";
+import { reconcileIngressNetworks, reconcileNetworkGroups } from "./modules/deployments/operations";
 import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./modules/maintenance/selfUpdate";
 import { getPushConfig } from "./modules/notifications/push/transport";
 import { pushDeliveryWorker } from "./modules/notifications/push/worker";
@@ -27,7 +28,9 @@ try {
   markInterruptedActions();
   ensureBootstrapCredential();
   void ensureAppIngress();
-  void reconcileAllTcpExposures();
+  // Ingress networks first: the TCP proxies join them.
+  void reconcileIngressNetworks().then(() => reconcileAllTcpExposures());
+  void reconcileNetworkGroups();
   healthChecker.start();
   resetPendingAutoDeploys();
   githubPoller.start();
@@ -73,9 +76,13 @@ try {
     }, 10_000).unref();
   }
 
-  httpServer.listen(config.port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`[server] running on port ${config.port} (${config.nodeEnv})`);
+  // Take requests only once nginx's address is known (or the lookup has had its few seconds), so the
+  // first logins are not all counted as coming from nginx and the session cookie gets its Secure flag.
+  void trustedProxy.start().then(() => {
+    httpServer.listen(config.port, () => {
+      // eslint-disable-next-line no-console
+      console.log(`[server] running on port ${config.port} (${config.nodeEnv})`);
+    });
   });
 
   process.on("SIGTERM", () => shutdown("SIGTERM"));

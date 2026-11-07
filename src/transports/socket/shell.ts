@@ -43,8 +43,12 @@ function isShellStopPayload(value: unknown): value is ShellStopPayload {
   return typeof v["sessionId"] === "string";
 }
 
-export function bindDockerShellEvents(socket: Socket): void {
+export function bindDockerShellEvents(socket: Socket, sessionLive: () => boolean = () => true): void {
   socket.on("shell:start", (payload: unknown, ack?: (res: ShellStartAck) => void) => {
+    if (!sessionLive()) {
+      ack?.({ ok: false, error: "Session ended" });
+      return;
+    }
     if (!isShellStartPayload(payload)) {
       ack?.({ ok: false, error: "Invalid request" });
       return;
@@ -69,6 +73,7 @@ export function bindDockerShellEvents(socket: Socket): void {
   });
 
   socket.on("shell:input", (payload: unknown) => {
+    if (!sessionLive()) return;
     if (!isShellInputPayload(payload)) return;
     writeToSession(payload.sessionId, socket.id, payload.data);
   });

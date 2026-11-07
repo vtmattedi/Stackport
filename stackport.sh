@@ -334,6 +334,9 @@ ensure_secrets() {
 
   generate_secret_if_missing "JWT_SECRET"
   generate_secret_if_missing "WEBHOOK_SECRET"
+  # Encrypts stored credentials and tokens, separate from JWT_SECRET so rotating the
+  # session secret cannot break them. Back up secrets.env: without this key they are lost.
+  generate_secret_if_missing "ENCRYPTION_KEY"
 
   # Bootstrap password: generated once, here, by bash — the app only ever consumes
   # it (modules/identity/installation.ts's ensureBootstrapCredential), it never invents or

@@ -1,5 +1,5 @@
 import { projectRepoDir } from "../../modules/projects/workspace";
-import { createProjectEnvFile, deleteProjectEnvFile, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../../modules/projects/envFiles";
+import { createProjectEnvFile, deleteProjectEnvFile, EnvFileUnreadableError, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../../modules/projects/envFiles";
 import { previewDeploy, previewRollback } from "../../modules/deployments/preview";
 import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../../config/database";
@@ -17,6 +17,7 @@ import {
   composeProject,
   deployProject,
   ensureProjectProxyNetwork,
+  leaveNetworkGroup,
   getProjectById,
   getProjectComposeEnvFiles,
   getProjectComposeVariables,
@@ -69,6 +70,8 @@ import {
   type TcpExposure,
   TcpExposureError,
 } from "../../modules/ingress/tcp";
+import { removeIngressNetwork } from "../../modules/ingress/networks";
+import { assignNetworkGroup, getNetworkGroupView, NetworkGroupError } from "../../modules/deployments/networkGroupAssignment";
 import multer from "multer";
 
 const router = Router();
@@ -291,7 +294,13 @@ router.put("/:id/env-files/:envId", requireAuth, (req: Request<{ id: string; env
     return;
   }
 
-  const envFile = updateProjectEnvFile(envId, id, normalizedPath, parsedVariables);
+  let envFile;
+  try {
+    envFile = updateProjectEnvFile(envId, id, normalizedPath, parsedVariables);
+  } catch (err) {
+    if (err instanceof EnvFileUnreadableError) { res.status(409).json({ error: err.message }); return; }
+    throw err;
+  }
   if (!envFile) {
     res.status(404).json({ error: "Env file not found" });
     return;
@@ -658,6 +667,41 @@ router.get("/:id/compose-policy", requireAuth, async (req: Request<{ id: string 
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   try { res.json(await getProjectComposePolicy(id)); }
   catch { res.json({ composeFile: null, violations: [] }); }
+});
+
+/** Turns the hardened container defaults (S8) on or off for one project; they take
+ *  effect on its next deploy. */
+router.put("/:id/hardening", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  const enabled: unknown = req.body?.enabled;
+  if (typeof enabled !== "boolean") { res.status(400).json({ error: "enabled must be true or false" }); return; }
+  getDatabase().prepare("UPDATE projects SET hardened_defaults = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(enabled ? 1 : 0, id);
+  auditLog(req.user ?? "unknown", "project.hardening", String(id), "ok", { enabled });
+  res.json({ hardenedDefaults: enabled });
+});
+
+router.get("/:id/network-group", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  res.json(await getNetworkGroupView(id));
+});
+
+/** Sets the project's network group and which of its services join the group's network. Applied to
+ *  the running containers straight away and re-applied after every deploy. */
+router.put("/:id/network-group", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  try {
+    const { assignment, applied, warning } = await assignNetworkGroup(id, req.body?.group, req.body?.services);
+    auditLog(req.user ?? "unknown", "project.network-group", String(id), "ok", { group: assignment.group, services: assignment.services });
+    res.json({ ...(await getNetworkGroupView(id)), applied, ...(warning ? { warning } : {}) });
+  } catch (err) {
+    if (err instanceof NetworkGroupError) { res.status(err.statusCode).json({ error: err.message }); return; }
+    throw err;
+  }
 });
 
 router.get("/:id/domains", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
@@ -1227,6 +1271,7 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
   if (!row) { res.status(404).json({ error: "Project not found" }); return; }
 
+  await leaveNetworkGroup({ id, name: row.name }).catch(() => undefined);
   try {
     await removeProjectTcpRuntime(id);
   } catch (err) {
@@ -1241,6 +1286,7 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   deleteProjectActionLogs(id);
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   healthChecker.unschedule(id);
+  void removeIngressNetwork(id);
 
   auditLog(req.user ?? "unknown", "project.delete", row.name, "ok");
   res.status(204).send();

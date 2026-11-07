@@ -6,7 +6,7 @@ import {
   ShieldCheck, Cpu, ChevronLeft, ChevronRight,
   Layers, Box, Loader, BarChart2, Star, Menu, Search,
 } from "lucide-react";
-import { api, clearToken } from "../api/client";
+import { api, markSignedOut } from "../api/client";
 import { useSocket } from "../context/SocketContext";
 import { useSystem } from "../context/SystemContext";
 import { cn } from "../lib/utils";
@@ -149,7 +149,7 @@ export default function Nav() {
     void api.logout()
       .catch(() => {})
       .finally(() => {
-        clearToken();
+        markSignedOut();
         disconnect();
         navigate("/");
       });

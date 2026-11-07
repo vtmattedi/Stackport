@@ -177,7 +177,7 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
       >
         <div className={styles.ingressBlock}>
           <div className={styles.historyHeading}>Domains</div>
-          <p className="muted-text">Each domain routes to a compose service and container port over the stackport-proxy network.</p>
+          <p className="muted-text">Each domain routes to a compose service and container port over the project's own ingress network.</p>
           <div className="row-actions">
             <Input
               type="text"

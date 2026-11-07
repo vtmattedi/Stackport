@@ -33,18 +33,25 @@ function gitValue(args) {
   }
 }
 
-const pkg = readJson(packagePath);
-const nextVersion = bumpPatch(pkg.version);
-pkg.version = nextVersion;
-writeJson(packagePath, pkg);
+// A release image must report the version that is committed, not one patch above it, so the
+// Docker build sets STACKPORT_KEEP_VERSION=1. A local `npm run build` still bumps the patch.
+const keepVersion = process.env.STACKPORT_KEEP_VERSION === "1";
 
-if (fs.existsSync(lockPath)) {
-  const lock = readJson(lockPath);
-  lock.version = nextVersion;
-  if (lock.packages && lock.packages[""]) {
-    lock.packages[""].version = nextVersion;
+const pkg = readJson(packagePath);
+const nextVersion = keepVersion ? String(pkg.version || "0.0.0") : bumpPatch(pkg.version);
+
+if (!keepVersion) {
+  pkg.version = nextVersion;
+  writeJson(packagePath, pkg);
+
+  if (fs.existsSync(lockPath)) {
+    const lock = readJson(lockPath);
+    lock.version = nextVersion;
+    if (lock.packages && lock.packages[""]) {
+      lock.packages[""].version = nextVersion;
+    }
+    writeJson(lockPath, lock);
   }
-  writeJson(lockPath, lock);
 }
 
 writeJson(buildInfoPath, {

@@ -33,6 +33,9 @@ import {
   setProjectDomainSsl,
 } from "../../modules/ingress/domains";
 import { writeNginxConfig } from "../../modules/ingress/nginx/configWriter";
+import { packageVersion } from "../../modules/maintenance/version";
+import { assignNetworkGroup } from "../../modules/deployments/networkGroupAssignment";
+import { getProjectNetworkView, listNetworkGroupsView } from "./readModel";
 
 const projectIdSchema = z.coerce.number().int().positive();
 const credentialTypeSchema = z.enum(["github", "webhook", "api_key"]).optional();
@@ -241,7 +244,7 @@ function registerTools(server: McpServer): void {
     "stackport_update_project",
     {
       title: "Update Project",
-      description: "Update Stackport project metadata. Use healthCheckDomainId to choose which project domain the relative healthCheckEndpoint runs against. Use null to clear nullable fields. Domains are managed separately — see the project-domain tools. Optionally apply nginx when routing fields change.",
+      description: "DESTRUCTIVE: overwrites the project's stored settings with the values given (a field set to null is cleared) and can change how it is routed. Update Stackport project metadata. Use healthCheckDomainId to choose which project domain the relative healthCheckEndpoint runs against. Use null to clear nullable fields. Domains are managed separately — see the project-domain tools. Optionally apply nginx when routing fields change.",
       inputSchema: {
         projectId: projectIdSchema,
         name: z.string().min(1).optional(),
@@ -257,7 +260,7 @@ function registerTools(server: McpServer): void {
         nginxExtraBlocks: optionalNullableStringSchema,
         applyNginx: z.boolean().optional().default(true),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     async (input) => {
       const { project, nginxFieldsChanged } = updateProject(input.projectId, input);
@@ -270,13 +273,13 @@ function registerTools(server: McpServer): void {
     "stackport_set_project_paused",
     {
       title: "Set Project Paused",
-      description: "Pause or resume a Stackport project. Paused projects are excluded from generated nginx routes.",
+      description: "DESTRUCTIVE: pausing removes the project's domains from nginx, so they stop being served. Pause or resume a Stackport project. Paused projects are excluded from generated nginx routes.",
       inputSchema: {
         projectId: projectIdSchema,
         paused: z.boolean(),
         applyNginx: z.boolean().optional().default(true),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     async (input) => {
       const project = setProjectPaused(input.projectId, input.paused);
@@ -307,6 +310,49 @@ function registerTools(server: McpServer): void {
   }, async (input) => toolResult({targets: await getProjectIngressTargets(input.projectId, input.composeFile)}));
 
   server.registerTool(
+    "stackport_list_network_groups",
+    {
+      title: "List Network Groups",
+      description: "List network groups: projects that reach each other's shared services without a public domain, with the hostname (<service>.p<projectId>) each shared service answers to.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    () => toolResult({ ...listNetworkGroupsView() })
+  );
+
+  server.registerTool(
+    "stackport_get_project_network_group",
+    {
+      title: "Get Project Network Group",
+      description: "Show a project's network group, the services it shares, the services its Compose file has, and the other projects in the group.",
+      inputSchema: { projectId: projectIdSchema },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (input) => {
+      const view = await getProjectNetworkView(input.projectId);
+      if (!view) throw new Error(`No project with id ${input.projectId}.`);
+      return toolResult({ ...view });
+    }
+  );
+
+  server.registerTool(
+    "stackport_set_project_network_group",
+    {
+      title: "Set Project Network Group",
+      description: "DESTRUCTIVE (security-sensitive): changes which projects can reach this project's services, and what it can reach, on any port; applied to running containers immediately, and taking a service out cuts live connections. Put a project in a network group (empty group to leave) and choose which of its services the other projects in the group can reach, as <service>.p<projectId>. Nothing is shared unless listed. The shared services can also reach what the others share, on any port. Applied to running containers now and after each deploy.",
+      inputSchema: {
+        projectId: projectIdSchema,
+        group: z.string().max(40).describe("Lower-case letters, digits, - and _. Empty to leave the group."),
+        services: z.array(z.string().min(1).max(63)).max(50).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async (input) => {
+      const result = await assignNetworkGroup(input.projectId, input.group, input.services ?? []);
+      return toolResult({ ...(await getProjectNetworkView(input.projectId)), applied: result.applied, ...(result.warning ? { warning: result.warning } : {}) });
+    }
+  );
+
+  server.registerTool(
     "stackport_add_project_domain",
     {
       title: "Add Project Domain",
@@ -334,7 +380,7 @@ function registerTools(server: McpServer): void {
     "stackport_delete_project_domain",
     {
       title: "Delete Project Domain",
-      description: "Stop routing a domain to a project. Does not touch any issued certificate files on disk. Optionally apply nginx after removing.",
+      description: "DESTRUCTIVE: removes the route, and the domain stops being served. Stop routing a domain to a project. Does not touch any issued certificate files on disk. Optionally apply nginx after removing.",
       inputSchema: {
         projectId: projectIdSchema,
         domainId: z.coerce.number().int().positive(),
@@ -353,14 +399,14 @@ function registerTools(server: McpServer): void {
     "stackport_set_project_domain_ssl",
     {
       title: "Set Project Domain SSL",
-      description: "Toggle whether a project's domain is served over HTTPS. Does not issue a certificate — the domain must already have one (see certbot tools) for this to actually take effect. Optionally apply nginx after toggling.",
+      description: "DESTRUCTIVE: changes how a live domain is served; turning HTTPS on without a certificate breaks it. Toggle whether a project's domain is served over HTTPS. Does not issue a certificate — the domain must already have one (see certbot tools) for this to actually take effect. Optionally apply nginx after toggling.",
       inputSchema: {
         projectId: projectIdSchema,
         domainId: z.coerce.number().int().positive(),
         useSsl: z.boolean(),
         applyNginx: z.boolean().optional().default(true),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     async (input) => {
       const domain = setProjectDomainSsl(input.projectId, input.domainId, input.useSsl);
@@ -387,13 +433,13 @@ function registerTools(server: McpServer): void {
     "stackport_set_project_env_file",
     {
       title: "Set Project Env File",
-      description: "Create or replace one Stackport-managed .env file. Values are accepted but redacted from the response.",
+      description: "DESTRUCTIVE: replaces the env file's contents (existing values are overwritten); it applies on the next deploy. Create or replace one Stackport-managed .env file. Values are accepted but redacted from the response.",
       inputSchema: {
         projectId: projectIdSchema,
         relativePath: z.string().min(1),
         variables: z.array(envVariableSchema),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     (input) => {
       getProjectOrThrow(input.projectId);
@@ -416,7 +462,7 @@ function registerTools(server: McpServer): void {
     "stackport_delete_project_env_file",
     {
       title: "Delete Project Env File",
-      description: "Delete a Stackport-managed env file by id or relative path.",
+      description: "DESTRUCTIVE: deletes the env file and its values. Delete a Stackport-managed env file by id or relative path.",
       inputSchema: {
         projectId: projectIdSchema,
         envFileId: z.coerce.number().int().positive().optional(),
@@ -438,7 +484,7 @@ function registerTools(server: McpServer): void {
     "stackport_run_project_action",
     {
       title: "Run Project Action",
-      description: "Run a project action: pull, build, deploy, compose, or stop.",
+      description: "DESTRUCTIVE for deploy, compose and stop: they replace or stop the running containers (a short outage; a stopped project stays down). pull and build do not touch what is running. Run a project action: pull, build, deploy, compose, or stop.",
       inputSchema: {
         projectId: projectIdSchema,
         action: z.enum(["pull", "build", "deploy", "compose", "stop"]),
@@ -462,8 +508,8 @@ function registerTools(server: McpServer): void {
     "stackport_apply_nginx_config",
     {
       title: "Apply Nginx Config",
-      description: "Regenerate and reload Stackport nginx config from current project records.",
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      description: "DESTRUCTIVE: reloads nginx for every project, so a bad route can interrupt other domains (the config is validated first and rolled back on failure). Regenerate and reload Stackport nginx config from current project records.",
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
     async () => toolResult({ nginx: await writeNginxConfig() })
   );
@@ -474,12 +520,13 @@ function createServer(): McpServer {
     {
       name: "stackport",
       title: "Stackport",
-      version: "1.0.0",
+      version: packageVersion(),
     },
     {
       instructions: [
         "Use this server to inspect and operate Stackport projects on the local Stackport host.",
         "Read stackport://skills/project-prep before preparing an application repository for Stackport deployment.",
+        "Tools whose description starts with DESTRUCTIVE: change, interrupt or remove something that is running or overwrite stored data (they also carry destructiveHint). Do not call one unless the user has asked for that change.",
         "Env-file tool responses redact values; do not request stored secret values unless the user provides them in the current task.",
       ].join(" "),
     }

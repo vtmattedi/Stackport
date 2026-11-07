@@ -4,26 +4,35 @@ import { deployRoot, projectRepoDir, slugify, expectedComposeProjectName } from 
 export { deployRoot, projectRepoDir, slugify, expectedComposeProjectName } from "../projects/workspace";
 import { execFile, spawn } from "child_process";
 import { randomUUID } from "crypto";
+import { statSync } from "fs";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { getDatabase } from "../../config/database";
+import { logger } from "../../shared/logger";
 import { rowToProject, type Project, type ProjectRow } from "../projects/types";
 import { decryptSecret } from "../../shared/crypto";
 import { normalizeRelativePath, resolveContainedPath } from "../../shared/safePath";
 import { emitProjectDeploy, type ProjectDeployEvent } from "../../application/realtime";
 import { actionRegistry, projectRepoKey } from "../actions/registry";
 import { loadYamlDoc } from "./compose/yaml";
-import { formatPolicyViolation, validateComposePolicy, type PolicyViolation } from "./compose/policy";
+import { checkComposeFileReferences } from "./compose/references";
+import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
+import { ensureIngressNetwork } from "../ingress/networks";
+import { dockerCli, pruneGroupNetworks, syncGroupNetwork } from "./compose/groupNetworks";
+import { seedManagedDirectory } from "./compose/seedVolumes";
+import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networkGroups";
+import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
+import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
 import { listRoutedServiceNames } from "../ingress/domains";
 import { ensureBuildCapacity } from "../maintenance/storage/operations";
-import { markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./history";
+import { getActiveDeployment, markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./history";
 import { healthCheckUrl, probeHealth, type HealthProbe } from "./health";
 import { enqueueNotificationTx, sendNotificationEmail, type DeployRollbackOutcome } from "../notifications/operations";
 import { deployBlockedEvent, deployUnhealthyEvent, rollbackFailedEvent, rollbackRecoveredEvent } from "../notifications/events";
 import { invalidateContainers } from "../../integrations/docker/statusCache";
 import { extractComposeEnvFileRefs, extractComposeIngressTargets, extractRawComposeIngressTargets, type ComposeEnvFileRef, type ComposeIngressTarget } from "./compose/ingress";
-import { dotenvKeys, extractComposeVariables, type ComposeVariableRef } from "./compose/variables";
+import { dotenvKeys, extractComposeVariables, findUnresolvedStackportVariables, type ComposeVariableRef } from "./compose/variables";
 
 //temp fix for honest >15m builds 
 const MAX_BUILD_TIME_MS = 60 * 60 * 1000;
@@ -75,14 +84,58 @@ interface ComposeCommand {
   argsPrefix: string[];
 }
 
+/** At start-up: every routed project gets its ingress network, nginx joins it, and running services
+ *  move onto it under their alias. This is also how a project that was routed over the old shared
+ *  network switches over without a redeploy. One project failing does not stop the others. */
+export async function reconcileIngressNetworks(): Promise<void> {
+  const rows = getDatabase().prepare("SELECT id FROM projects WHERE compose_file IS NOT NULL").all() as { id: number }[];
+  for (const { id } of rows) {
+    try { await ensureProjectProxyNetwork(id); }
+    catch (err) { logger.warn({ projectId: id, reason: err instanceof Error ? err.message : String(err) }, "ingress.reconcile.failed"); }
+  }
+}
+
+/** Puts the project's running containers on (or takes them off) its network group's network to match
+ *  its settings. Called after a deploy, when the settings change and at start-up. */
+export async function applyProjectNetworkGroup(projectId: number): Promise<void> {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const { group, services } = getNetworkGroup(projectId);
+  await syncGroupNetwork({ projectId, composeProject: expectedComposeProjectName(project), group, services });
+}
+
+/** Takes a project that is being deleted off its group network. */
+export async function leaveNetworkGroup(project: Pick<Project, "id" | "name">): Promise<void> {
+  await syncGroupNetwork({ projectId: project.id, composeProject: expectedComposeProjectName(project), group: null, services: [] });
+}
+
+export async function reconcileNetworkGroups(): Promise<void> {
+  for (const id of listProjectsInNetworkGroups()) {
+    try { await applyProjectNetworkGroup(id); }
+    catch (err) { logger.warn({ projectId: id, reason: err instanceof Error ? err.message : String(err) }, "network-group.reconcile.failed"); }
+  }
+  try { await pruneGroupNetworks(dockerCli); }
+  catch (err) { logger.warn({ reason: err instanceof Error ? err.message : String(err) }, "network-group.prune.failed"); }
+}
+
+/** Services named in the project's Compose file, for choosing which ones join a network group. */
+export async function getProjectComposeServiceNames(projectId: number): Promise<string[]> {
+  const project = getProjectById(projectId);
+  if (!project?.composeFile) return [];
+  const doc = await readRawComposeDoc(projectRepoDir(project), project.composeFile);
+  const services = doc && typeof doc === "object" ? (doc as Record<string, unknown>)["services"] : null;
+  return services && typeof services === "object" ? Object.keys(services as Record<string, unknown>).sort() : [];
+}
+
 export async function ensureProjectProxyNetwork(projectId: number): Promise<void> {
   const project = getProjectById(projectId);
   if (!project?.composeFile) return;
   const services = listRoutedServiceNames(projectId);
   if (!services.length) return;
-  const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services);
+  await ensureIngressNetwork(projectId);
+  const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services, projectId);
   if (!result.ok) throw new Error(result.message);
-  await connectRunningProxyServices(expectedComposeProjectName(project), services);
+  await connectRunningProxyServices(projectId, expectedComposeProjectName(project), services);
   invalidateContainers();
 }
 
@@ -136,7 +189,7 @@ export async function getProjectComposeEnvFiles(projectId: number, selectedFile?
  *  none here: the deploy leaves that to docker compose too. */
 export async function getProjectComposePolicy(projectId: number): Promise<{ composeFile: string; violations: PolicyViolation[] }> {
   const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
-  return { composeFile, violations: validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations };
+  return { composeFile, violations: [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)] };
 }
 
 export interface ComposeVariableStatus extends ComposeVariableRef {
@@ -171,8 +224,52 @@ function dockerConfigDir(): string {
   return path.join(deployRoot(), ".docker");
 }
 
+/** What the docker CLI needs to find and reach the daemon and its registries. Nothing else
+ *  from Stackport's own environment may reach `docker compose`: Compose interpolates `${VAR}`
+ *  from it, so a project's Compose file could read JWT_SECRET and the other secrets (S14).
+ *  The proxy and certificate variables stay because pulls and builds fail without them on a
+ *  host behind a proxy; note a proxy URL can carry credentials, which a Compose file could
+ *  then interpolate. The Windows entries are needed for the CLI to start there. */
+const DOCKER_ENV_ALLOWLIST = new Set([
+  "PATH", "HOME", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT",
+  "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_API_VERSION",
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+  "USERPROFILE", "SYSTEMROOT", "COMSPEC", "PATHEXT", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA",
+]);
+
+export function buildDockerEnv(source: NodeJS.ProcessEnv, defaultConfigDir: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    // Windows env names are case-insensitive ("Path"); keep the original spelling.
+    if (value !== undefined && DOCKER_ENV_ALLOWLIST.has(key.toUpperCase())) env[key] = value;
+  }
+  env["DOCKER_CONFIG"] ??= defaultConfigDir;
+  return env;
+}
+
 function dockerEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, DOCKER_CONFIG: process.env["DOCKER_CONFIG"] ?? dockerConfigDir() };
+  return buildDockerEnv(process.env, dockerConfigDir());
+}
+
+/** Warns when the Compose file references a variable that only Stackport's environment
+ *  used to provide, so a deploy that now gets an empty value is visible in the log. */
+async function warnUnresolvedStackportVariables(projectId: number, action: ProjectDeployEvent["action"], composeFile: string): Promise<void> {
+  try {
+    const refs = await getProjectComposeVariables(projectId, composeFile);
+    const passed = buildDockerEnv(process.env, "");
+    const missing = findUnresolvedStackportVariables(
+      refs,
+      new Set(refs.filter((ref) => ref.definedIn !== null).map((ref) => ref.name)),
+      process.env,
+      (name) => passed[name] !== undefined,
+    );
+    if (missing.length) {
+      emit(projectId, action, "stderr",
+        `Warning: ${missing.join(", ")} used to come from Stackport's own environment and is no longer passed to docker compose. Define ${missing.length === 1 ? "it" : "them"} in the project's .env.\n`);
+    }
+  } catch {
+    // Advisory only: never block a deploy because the scan failed.
+  }
 }
 
 function githubCloneUrl(repo: string): string {
@@ -290,7 +387,7 @@ async function composeCommand(): Promise<ComposeCommand> {
  *  would be redundant. Reads the resolved file fresh (post Phase 1.7 network
  *  augmentation), matching the existing pattern in this file where each pass over a
  *  compose file re-reads independently rather than sharing one parsed doc. */
-async function checkComposePolicy(repoPath: string, composeFile: string): Promise<{ ok: boolean; message: string }> {
+async function checkComposePolicy(projectId: number, repoPath: string, composeFile: string, resolution: ComposeResolution): Promise<{ ok: boolean; message: string; warning?: string }> {
   let raw: string;
   try {
     raw = await fs.readFile(path.join(repoPath, composeFile), "utf8");
@@ -303,12 +400,103 @@ async function checkComposePolicy(repoPath: string, composeFile: string): Promis
   } catch {
     return { ok: true, message: "" }; // malformed YAML is a separate failure mode — let `docker compose` report it
   }
-  const result = validateComposePolicy(doc);
-  if (result.ok) return { ok: true, message: "" };
-  return {
-    ok: false,
-    message: `Deployment rejected — compose policy violation:\n\n${result.violations.map(formatPolicyViolation).join("\n")}\n`,
-  };
+  // The raw checks apply to every project, old or new: a file that reads Stackport's own secrets is not
+  // something a project may rely on (the resolved-config rules below warn old projects instead).
+  const violations = [...validateComposePolicy(doc).violations, ...await checkComposeFileReferences(repoPath, composeFile)];
+  if (violations.length) return { ok: false, message: formatPolicyRejection(violations) };
+
+  // The raw file passed; now check what Compose will actually run (S1). A file that can't be
+  // resolved is refused for a project that enforces the policy: it can't be checked.
+  return evaluateResolvedPolicy(resolution, { enforced: isComposePolicyEnforced(projectId), projectDir: repoPath, projectId });
+}
+
+/** The arguments that resolve a Compose file. `--profile '*'` turns every profile on, so a
+ *  service behind `profiles:` is resolved too: naming it in `up` enables its profile, and
+ *  it would otherwise run without ever being checked. */
+export function composeConfigArgs(argsPrefix: string[], composeFile: string): string[] {
+  return [...argsPrefix, "--profile", "*", "-f", composeFile, "config", "--format", "json"];
+}
+
+const RESOLVE_TIMEOUT_MS = 60_000;
+const RESOLVE_MAX_BUFFER = 32 * 1024 * 1024;
+
+/** The Compose file as `docker compose config` resolves it, or why it could not be. Runs
+ *  with the same minimal environment as every other Compose call. The document is never
+ *  logged: it can contain secrets. Callers decide what an unresolvable file means. */
+export async function resolveComposeConfigDetailed(repoPath: string, composeFile: string): Promise<ComposeResolution> {
+  const compose = await composeCommand();
+  const outcome = await new Promise<{ stdout: string } | { reason: string }>((resolve) => {
+    execFile(compose.cmd, composeConfigArgs(compose.argsPrefix, composeFile),
+      { cwd: repoPath, env: dockerEnv(), timeout: RESOLVE_TIMEOUT_MS, maxBuffer: RESOLVE_MAX_BUFFER },
+      (err, stdout, stderr) => {
+        if (!err) { resolve({ stdout }); return; }
+        const code = (err as NodeJS.ErrnoException).code;
+        const firstLine = String(stderr).split("\n").map((line) => line.trim()).find(Boolean);
+        resolve({
+          reason: err.killed ? "docker compose config timed out"
+            : code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "the resolved configuration is too large"
+            : (firstLine ?? err.message).slice(0, 300),
+        });
+      });
+  });
+  if ("reason" in outcome) return { ok: false, reason: outcome.reason };
+  try { return { ok: true, doc: JSON.parse(outcome.stdout) }; } catch { return { ok: false, reason: "docker compose config did not return JSON" }; }
+}
+
+/** The resolved document, or null when there is none. For callers that can go on without it. */
+export async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+  return resolution.ok ? resolution.doc : null;
+}
+
+/** Projects that existed before S2 keep their current mounts until they are migrated. */
+export function isVolumesManaged(projectId: number): boolean {
+  const row = getDatabase().prepare("SELECT volumes_managed AS managed FROM projects WHERE id = ?").get(projectId) as { managed: number } | undefined;
+  return row?.managed !== 0;
+}
+
+/** Creates the project's managed mount directories and writes the Compose override that
+ *  points its bind mounts at them (S2). Returns the override's path, or null when there
+ *  is nothing to override or the file can't be resolved (`up` then reports why). */
+async function prepareManagedVolumes(projectId: number, repoPath: string, resolved: unknown): Promise<string | null> {
+  const plan = planManagedVolumes(resolved, {
+    projectId, projectDir: repoPath, roots: currentVolumeRoots(),
+    isFile: (source) => statSync(source, { throwIfNoEntry: false })?.isFile() ?? false,
+  });
+  const override = buildVolumesOverride(plan);
+  if (override === null) return null;
+  for (const entry of plan) {
+    // A directory that is new starts with the repository's own files in that folder, once; see seedVolumes.ts.
+    if (entry.action === "managed" && entry.managedContainerPath) await seedManagedDirectory(entry.source, entry.managedContainerPath);
+  }
+  const overridePath = path.join(deployRoot(), ".stackport", String(projectId), "volumes.override.yml");
+  await fs.mkdir(path.dirname(overridePath), { recursive: true });
+  await fs.writeFile(overridePath, override, "utf8");
+  return overridePath;
+}
+
+/** Writes the hardened-defaults override (S8) and returns its path, or null when the file
+ *  can't be resolved (`up` then reports why). */
+async function prepareHardening(projectId: number, resolved: unknown): Promise<string | null> {
+  const override = buildHardeningOverride(resolved, getHardeningDefaults());
+  if (override === null) return null;
+  const overridePath = path.join(deployRoot(), ".stackport", String(projectId), "hardening.override.yml");
+  await fs.mkdir(path.dirname(overridePath), { recursive: true });
+  await fs.writeFile(overridePath, override, "utf8");
+  return overridePath;
+}
+
+/** New projects reject resolved-config violations; ones that existed before S1 only warn. */
+export function isComposePolicyEnforced(projectId: number): boolean {
+  const row = getDatabase().prepare("SELECT compose_policy_enforced AS enforced FROM projects WHERE id = ?").get(projectId) as { enforced: number } | undefined;
+  return row?.enforced !== 0;
+}
+
+/** Subcommands that read what the Compose file points at. `build` is one of them: its build context and
+ *  Dockerfile are read from this machine's disk and sent to the Docker daemon, so a context outside the
+ *  project would be copied into an image without any container ever starting. */
+export function composeSubcommandNeedsPolicy(subcommand: string | undefined): boolean {
+  return subcommand === "up" || subcommand === "config" || subcommand === "build";
 }
 
 async function runCompose(
@@ -320,34 +508,73 @@ async function runCompose(
   timeoutMs: number
 ): Promise<RunResult> {
   await fs.mkdir(dockerConfigDir(), { recursive: true });
+  let resolution: ComposeResolution | null = null;
   if (composeFile) {
     // Phase 1.7 — StackPort-owned augmentation, ephemeral (never committed, same
     // philosophy the old SP:AUTO/port-hiding rewrites used): attaches whichever
-    // services this project's domains actually route to onto the shared
-    // stackport-proxy network so nginx can reach them by service name. Re-applied on
-    // every runCompose call because git operations (ensureRepo's reset --hard) wipe
+    // services this project's domains actually route to onto the project's own
+    // ingress network (stackport-ingress-<id>), so nginx can reach them by a
+    // project-unique alias. Re-applied on every runCompose call because git
+    // operations (ensureRepo's reset --hard) wipe
     // it back to the plain source file on every fresh pull, same reason SP:AUTO
     // needed re-substitution before every invocation.
     const routedServices = listRoutedServiceNames(projectId);
     if (routedServices.length > 0) {
-      const network = await applyStackportProxyNetwork(repoPath, composeFile, routedServices);
+      try {
+        await ensureIngressNetwork(projectId);
+      } catch (err) {
+        const message = `Could not prepare the project ingress network: ${err instanceof Error ? err.message : String(err)}\n`;
+        emit(projectId, action, "stderr", message);
+        return { ok: false, output: message, stdout: "", command: "ingress network" };
+      }
+      const network = await applyStackportProxyNetwork(repoPath, composeFile, routedServices, projectId);
       if (!network.ok) {
         emit(projectId, action, "stderr", network.message);
-        return { ok: false, output: network.message, stdout: "", command: "stackport-proxy network attachment" };
+        return { ok: false, output: network.message, stdout: "", command: "ingress network attachment" };
       }
     }
 
-    if (args[0] === "up" || args[0] === "config") {
-      const policy = await checkComposePolicy(repoPath, composeFile);
+    if (composeSubcommandNeedsPolicy(args[0])) {
+      // Resolved once: the policy, the mount rewrite and the hardening all work from the same snapshot.
+      resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+      const policy = await checkComposePolicy(projectId, repoPath, composeFile, resolution);
       if (!policy.ok) {
         emit(projectId, action, "stderr", policy.message);
         return { ok: false, output: policy.message, stdout: "", command: "compose policy check" };
       }
+      if (policy.warning) emit(projectId, action, "stderr", policy.warning);
     }
+    if (args[0] === "up") await warnUnresolvedStackportVariables(projectId, action, composeFile);
   }
   const compose = await composeCommand();
   const fileArgs = composeFile ? ["-f", composeFile] : [];
   const env = dockerEnv();
+  // A build does not run containers, so it needs no mounts or limits, only the policy above.
+  if (resolution && args[0] !== "build") {
+    const managed = isVolumesManaged(projectId);
+    const hardened = isHardeningEnabled(projectId);
+    if (!resolution.ok) {
+      // Only reachable for a project that doesn't enforce the policy: an enforcing one was refused above.
+      if (managed || hardened) {
+        emit(projectId, action, "stderr", "Warning — the managed mounts and hardened defaults were not applied because the Compose configuration could not be resolved.\n");
+      }
+    } else {
+      if (managed) {
+        try {
+          const override = await prepareManagedVolumes(projectId, repoPath, resolution.doc);
+          if (override) fileArgs.push("-f", override);
+        } catch (err) {
+          const message = `${err instanceof Error ? err.message : String(err)}\n`;
+          emit(projectId, action, "stderr", message);
+          return { ok: false, output: message, stdout: "", command: "managed mount preparation" };
+        }
+      }
+      if (hardened) {
+        const override = await prepareHardening(projectId, resolution.doc);
+        if (override) fileArgs.push("-f", override);
+      }
+    }
+  }
   if (args[0] === "build" || (args[0] === "up" && args.includes("--build"))) {
     env["DOCKER_BUILDKIT"] = "1";
   }
@@ -363,6 +590,12 @@ async function runCompose(
   // still leave containers partially changed.
   if (args[0] === "up" || args[0] === "down") {
     invalidateContainers();
+  }
+  if (args[0] === "up" && result.ok) {
+    // New containers start without the group network (it is not in the Compose file).
+    try { await applyProjectNetworkGroup(projectId); }
+    catch (err) { emit(projectId, action, "stderr", `Warning — could not join the network group: ${err instanceof Error ? err.message : String(err)}
+`); }
   }
   return result;
 }
@@ -660,7 +893,7 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   }
 
   // Discard local modifications before pulling — e.g. composeNetworking.ts's
-  // stackport-proxy network attachment rewrites the compose file in place on every
+  // ingress network attachment rewrites the compose file in place on every
   // build/deploy, and deliberately never commits that (ephemeral, StackPort-owned
   // augmentation only). Left uncommitted, that dirty working tree makes the
   // pull/checkout below fail once upstream touches the same file, since neither
@@ -788,7 +1021,7 @@ async function syncAfterPull(project: Project, repoPath: string): Promise<PullSy
 }
 
 /** Reads whatever the resolved compose file currently looks like on disk — for the
- *  read-only "view docker-compose.yml" viewer. Reflects the last stackport-proxy
+ *  read-only "view docker-compose.yml" viewer. Reflects the last
  *  network augmentation if a deploy action has run since the last pull, or the raw
  *  source file otherwise. */
 export async function getProjectComposeFileContent(projectId: number): Promise<{ fileName: string; content: string } | null> {
@@ -803,11 +1036,13 @@ export async function getProjectComposeFileContent(projectId: number): Promise<{
   }
 }
 
-async function writeEnvFiles(repoPath: string, envFiles: ProjectEnvFile[]): Promise<string[]> {
+export async function writeEnvFiles(repoPath: string, envFiles: ProjectEnvFile[]): Promise<string[]> {
   const written: string[] = [];
   for (const envFile of envFiles) {
     const normalized = normalizeEnvRelativePath(envFile.relativePath);
     if (!normalized) throw new Error(`Invalid env path: ${envFile.relativePath}`);
+    // Writing an empty .env for values we cannot read would start the project with blank secrets.
+    if (envFile.unreadable) throw new Error(`Cannot write ${envFile.relativePath}: its stored values cannot be decrypted with the configured keys. Restore the key (ENCRYPTION_KEY, or the old one as ENCRYPTION_KEY_PREVIOUS) and deploy again.`);
     const target = resolveContainedPath(repoPath, normalized);
     if (!target) {
       throw new Error(`Env path escapes repository: ${envFile.relativePath}`);
@@ -843,7 +1078,7 @@ async function readComposeFileSafe(repoPath: string, composeFile: string | null)
   return fs.readFile(path.join(repoPath, composeFile), "utf8").catch(() => null);
 }
 
-async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null, pinnedSha?: string | null): Promise<DeployResult> {
+async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null, pinnedSha?: string | null, options: { build?: boolean } = {}): Promise<DeployResult> {
   const project = getProjectById(projectId);
   if (!project) {
     return { ok: false, projectId, repoPath: "", output: "Project not found", action };
@@ -932,7 +1167,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   const composeArgs = action === "build"
     ? ["build"]
     : action === "recreate"
-      ? ["up", "-d", "--build", "--force-recreate"]
+      ? ["up", "-d", ...(options.build === false ? ["--no-build"] : ["--build"]), "--force-recreate"]
       : ["up", "-d", "--build"];
   const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, MAX_BUILD_TIME_MS );
   output.push(compose.output);
@@ -1026,6 +1261,28 @@ export function composeProject(projectId: number): Promise<DeployResult> {
 /** Same as composeProject, but with `--force-recreate` — for when Compose's config diff misses a change (e.g. an env_file edit) and keeps the stale container running after a rebuild. */
 export function recreateProject(projectId: number): Promise<DeployResult> {
   return runProjectAction(projectId, "recreate", false);
+}
+
+/** Why the running revision cannot be restarted as it is, or null when it can. A restart recreates the containers
+ *  from the checkout, so it only restarts what is running while the checkout is still at the deployed commit:
+ *  after a pull that was not deployed it would start the newer code instead. */
+export async function restartBlocker(projectId: number): Promise<string | null> {
+  const project = getProjectById(projectId);
+  if (!project) return "Project not found.";
+  const active = getActiveDeployment(projectId);
+  if (!active?.commitSha || project.sourceType === "upload") return null; // nothing recorded to compare with
+  const head = await currentCommitSha(projectId, "recreate", projectRepoDir(project));
+  if (head === null) return "Could not read the checkout's commit, so it cannot be compared with the running revision. Not restarted.";
+  if (head === active.commitSha) return null;
+  return `The checkout is at ${head.slice(0, 7)} but the running revision is ${active.commitSha.slice(0, 7)}: a restart would start the checkout, not what is running. Deploy the new revision, or roll back to the running one.`;
+}
+
+/** Recreates the project's containers from the images already built for the running revision: no pull and no
+ *  build (`--no-build`), and refused when the checkout has moved on (restartBlocker). */
+export async function restartProject(projectId: number): Promise<DeployResult> {
+  const blocker = await restartBlocker(projectId);
+  if (blocker) return { ok: false, projectId, repoPath: "", output: `${blocker}\n`, action: "recreate" };
+  return runProjectAction(projectId, "recreate", false, "manual", undefined, undefined, { build: false });
 }
 
 const SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;

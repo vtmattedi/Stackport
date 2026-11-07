@@ -10,6 +10,8 @@ import githubHooksRouter from "./modules/automation/routes/githubHooks";
 import mcpRouter from "./transports/mcp/http";
 import { getReadiness } from "./modules/maintenance/readiness";
 import { runningSha } from "./modules/maintenance/version";
+import { createTrustedProxy } from "./modules/ingress/trustedProxy";
+import { logger } from "./shared/logger";
 
 const app = express();
 
@@ -20,19 +22,16 @@ const app = express();
 // become one bucket shared by all traffic instead of per-client, and
 // routes/auth.ts's audit-log IP field records nginx's address for every login.
 //
-// Nginx reaches the app over the private stackport-proxy Docker network.
-// Trust the private address range and local maintenance requests.
-//
-// Residual tradeoff: any other container joined to stackport-proxy (i.e. any
-// managed project's routed service, joined so nginx can reach it — see
-// composeNetworking.ts) is also inside this trusted range, so a compromised
-// project container could spoof X-Forwarded-For for its own direct requests to
-// this app. That only affects req.ip-derived observability (audit-log IP,
-// rate-limit bucketing) — it cannot forge auth — and reaching this container at
-// all already requires code execution inside some project StackPort itself
-// deployed. A tighter fix would mean trusting nginx by identity rather than by
-// network position; not worth the added complexity for what it buys today.
-app.set("trust proxy", ["loopback", "uniquelocal"]);
+// Nginx reaches the app over the stack's own network, never stackport-proxy (S3). Only
+// loopback and the nginx container's address may set X-Forwarded-For; any other peer
+// is taken at its socket address, so a container cannot claim a client address to dodge
+// the login rate limit (S4). The address is looked up by name and refreshed, because it
+// changes when nginx restarts: see modules/ingress/trustedProxy.ts.
+export const trustedProxy = createTrustedProxy({
+  host: config.trustedProxyHost,
+  onError: (error) => logger.warn({ error: error instanceof Error ? error.message : String(error) }, "trusted-proxy.lookup-failed"),
+});
+app.set("trust proxy", trustedProxy.trust);
 
 app.use(helmet());
 
@@ -40,7 +39,7 @@ app.use(
   cors({
     origin: config.allowedOrigins.length > 0 ? config.allowedOrigins : false,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
     exposedHeaders: ["X-Auth-Token"],
   })
 );

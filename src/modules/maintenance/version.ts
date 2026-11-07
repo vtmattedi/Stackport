@@ -38,7 +38,7 @@ const LIST_LIMIT = 20;
 const RELEASE_BRANCH = "stable";
 const DEVELOPMENT_BRANCH = "main";
 
-function packageVersion(): string {
+export function packageVersion(): string {
   try {
     const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8")) as { version?: string };
     return pkg.version ?? "0.0.0";

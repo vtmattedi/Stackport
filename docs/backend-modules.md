@@ -11,14 +11,14 @@ services, builders, configuration, or database migrations.
 | `src/modules/projects` | Project records, configuration, workspaces, and environment files |
 | `src/modules/deployments` | Deploy, rollback, health gates, revision history, uploads, and Compose preparation |
 | `src/modules/automation` | Automatic deployment, GitHub polling/hooks, and script webhooks |
-| `src/modules/ingress` | Domains, nginx configuration, certificates, and TCP exposures |
+| `src/modules/ingress` | Domains, nginx configuration, certificates, TCP exposures, and the per-project ingress networks |
 | `src/modules/notifications` | Event creation, email, browser push, outbox, subscriptions, and delivery worker |
 | `src/modules/actions` | Action ownership, logs, and build progress |
 | `src/modules/observability` | Host/project snapshots, sampling, metrics, and log routes |
 | `src/modules/identity` | Installation/bootstrap, sessions, API/setup tokens, authentication, and admin routes |
 | `src/modules/credentials` | Credential routes and record types |
 | `src/modules/containers` | Container shell and log operations |
-| `src/modules/maintenance` | Self-update, readiness, version reporting, and Docker storage maintenance |
+| `src/modules/maintenance` | Self-update, readiness, version reporting, Docker storage maintenance, and the temporary one-off data migrations behind Settings > Migrations (`maintenance/migrations`, to be deleted once installs have run them) |
 | `src/integrations/docker` | Shared Docker queries, resource classification, and container references |
 | `src/transports` | Socket.IO and MCP protocol adapters |
 | `src/application` | Composition across capabilities, including project/system HTTP routers and realtime wiring |

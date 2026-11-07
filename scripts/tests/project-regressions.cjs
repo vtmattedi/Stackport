@@ -120,10 +120,10 @@ async function main() {
   for (const networks of [['private'], {private: {aliases: ['db-client']}}]) {
     const file = path.join(dir, 'compose.yml');
     await fs.writeFile(file, yaml.dumpYamlDoc({services: {web: {image: 'nginx', networks}}, networks: {private: {}}}));
-    const result = await networking.applyStackportProxyNetwork(dir, 'compose.yml', ['web']);
+    const result = await networking.applyStackportProxyNetwork(dir, 'compose.yml', ['web'], 7);
     assert(result.ok);
     const output = yaml.loadYamlDoc(await fs.readFile(file, 'utf8'));
-    if (Array.isArray(networks)) assert.deepEqual(output.services.web.networks, ['private', 'stackport-proxy']);
+    if (Array.isArray(networks)) assert.deepEqual(output.services.web.networks, {private: {}, 'stackport-ingress-7': {aliases: ['sp7-web']}});
     else assert.deepEqual(output.services.web.networks.private, networks.private);
   }
   console.log('PASS: proxy augmentation preserves custom networks and aliases');

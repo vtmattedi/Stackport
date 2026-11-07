@@ -82,10 +82,10 @@ test("an API token is not accepted by the admin API", async () => {
   assert.equal(res.status, 401);
 });
 
-test("only the three read-only tools exist", async () => {
+test("only the read-only tools exist", async () => {
   const client = await connect(token);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_get_project", "stackport_list_projects", "stackport_status"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_get_project", "stackport_get_project_network_group", "stackport_list_network_groups", "stackport_list_projects", "stackport_status"]);
   assert.ok(tools.every((t) => t.annotations?.readOnlyHint === true));
   await client.close();
 });
@@ -116,6 +116,24 @@ test("get_project returns exactly the allowlisted fields", async () => {
   await client.close();
 });
 
+test("network group tools return exactly the allowlisted fields", async () => {
+  const other = createProject({ name: "mcp-peer", sourceType: "upload" }).id;
+  getDatabase().prepare("UPDATE projects SET network_group = 'mcp-net' WHERE id IN (?, ?)").run(projectId, other);
+  getDatabase().prepare("INSERT INTO network_group_services (project_id, service) VALUES (?, 'db')").run(projectId);
+  const client = await connect(token);
+  const list = payload(await client.callTool({ name: "stackport_list_network_groups", arguments: {} })) as { groups: { group: string; projects: Record<string, unknown>[] }[] };
+  const group = list.groups.find((g) => g.group === "mcp-net")!;
+  assert.deepEqual(Object.keys(group).sort(), ["group", "projects"]);
+  assert.deepEqual(Object.keys(group.projects[0]).sort(), ["name", "projectId", "services"]);
+  assert.deepEqual(group.projects.find((p) => p.projectId === projectId)!.services, [{ service: "db", hostname: `db.p${projectId}` }]);
+  const one = payload(await client.callTool({ name: "stackport_get_project_network_group", arguments: { projectId } }));
+  assert.deepEqual(Object.keys(one).sort(), ["availableServices", "group", "hostnames", "peers", "projectId", "services"]);
+  assert.equal((await client.callTool({ name: "stackport_get_project_network_group", arguments: { projectId: 999999 } })).isError, true);
+  await client.close();
+  getDatabase().prepare("UPDATE projects SET network_group = NULL WHERE id IN (?, ?)").run(projectId, other);
+  getDatabase().prepare("DELETE FROM network_group_services WHERE project_id = ?").run(projectId);
+});
+
 test("no tool output contains a stored secret, env name or nginx config", async () => {
   const client = await connect(token);
   const outputs = [
@@ -142,4 +160,26 @@ test("repositories are reduced to owner/name with no credentials", () => {
   assert.equal(safeRepo("https://user:ghp_secret@github.com/owner/repo.git"), "owner/repo");
   assert.equal(safeRepo("not a repo"), null);
   assert.equal(safeRepo(null), null);
+});
+
+test("write tools are offered only to a token with the write scope", async () => {
+  const names = async (bearer: string) => {
+    const client = await connect(bearer);
+    try { return (await client.listTools()).tools.map((t) => t.name); } finally { await client.close(); }
+  };
+  const readOnly = await names(token);
+  assert.equal(readOnly.some((n) => /_(deploy|rollback|restart|stop)_project$/.test(n)), false);
+
+  const writer = await names(createApiToken({ name: "writer", scope: "write" }).token);
+  for (const verb of ["deploy", "rollback", "restart", "stop"]) assert.ok(writer.includes(`stackport_${verb}_project`), verb);
+});
+
+test("a write token's first call to a write tool changes nothing", async () => {
+  const client = await connect(createApiToken({ name: "writer-2", scope: "write" }).token);
+  try {
+    const result = await client.callTool({ name: "stackport_stop_project", arguments: { projectId } });
+    const body = result.structuredContent as { requiresConfirmation?: boolean; confirmationId?: string };
+    assert.equal(body.requiresConfirmation, true);
+    assert.ok(body.confirmationId);
+  } finally { await client.close(); }
 });

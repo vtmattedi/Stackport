@@ -3,6 +3,8 @@ import { promisify } from "util";
 import { getDatabase } from "../../config/database";
 import { config } from "../../config/env";
 import { logger } from "../../shared/logger";
+import { ingressAlias, ingressNetworkName } from "../../shared/ingressNames";
+import { ensureIngressNetwork } from "./networks";
 
 const execFileAsync = promisify(execFile);
 const PROXY_IMAGE = "alpine/socat:1.8.0.3";
@@ -140,6 +142,12 @@ async function removeProxyContainer(id: number): Promise<void> {
   }
 }
 
+/** Where the proxy connects: the service's alias on the project's ingress network (S9). It is also the
+ *  label, so a proxy started against the old shared network is recreated on the next reconcile. */
+function tcpTarget(exposure: TcpExposure): string {
+  return `${ingressAlias(exposure.projectId, exposure.service)}:${exposure.containerPort}`;
+}
+
 async function proxyIsCurrent(exposure: TcpExposure): Promise<boolean> {
   try {
     const raw = await docker(["inspect", "--format", "{{json .}}", containerName(exposure.id)]);
@@ -154,7 +162,7 @@ async function proxyIsCurrent(exposure: TcpExposure): Promise<boolean> {
       && labels["com.stackport.managed"] === "tcp-exposure"
       && labels["com.stackport.tcp-exposure-id"] === String(exposure.id)
       && labels["com.stackport.project-id"] === String(exposure.projectId)
-      && labels["com.stackport.tcp-target"] === `${exposure.service}:${exposure.containerPort}`
+      && labels["com.stackport.tcp-target"] === tcpTarget(exposure)
       && binding?.some((item) => Number(item.HostPort) === exposure.publicPort) === true;
   } catch (err) {
     if (/No such (object|container)/i.test(err instanceof Error ? err.message : String(err))) return false;
@@ -177,17 +185,18 @@ export async function reconcileTcpExposure(exposure: TcpExposure): Promise<void>
 
   await removeProxyContainer(exposure.id);
   try {
+    await ensureIngressNetwork(exposure.projectId);
     await docker([
       "run", "-d", "--name", name, "--restart", "unless-stopped",
       "--read-only", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "64m",
-      "--network", "stackport-proxy", "-p", `${exposure.publicPort}:${exposure.publicPort}/tcp`,
+      "--network", ingressNetworkName(exposure.projectId), "-p", `${exposure.publicPort}:${exposure.publicPort}/tcp`,
       "--label", "com.stackport.managed=tcp-exposure",
       "--label", `com.stackport.tcp-exposure-id=${exposure.id}`,
       "--label", `com.stackport.project-id=${exposure.projectId}`,
-      "--label", `com.stackport.tcp-target=${exposure.service}:${exposure.containerPort}`,
+      "--label", `com.stackport.tcp-target=${tcpTarget(exposure)}`,
       PROXY_IMAGE, "-d", "-d",
       `TCP-LISTEN:${exposure.publicPort},fork,reuseaddr`,
-      `TCP:${exposure.service}:${exposure.containerPort}`,
+      `TCP:${tcpTarget(exposure)}`,
     ], 120_000);
     setLastError(exposure.id, null);
   } catch (err) {

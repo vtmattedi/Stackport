@@ -9,6 +9,8 @@ import { getDatabase } from "../../../config/database";
 import { rowToProject, type Project, type ProjectRow } from "../../projects/types";
 import { listAllRoutableProjectDomains, type ProjectDomain } from "../domains";
 import { invalidateNginxActiveStatus } from "./statusCache";
+import { ingressAlias, NGINX_CONTAINER } from "../../../shared/ingressNames";
+import { connectNginxToIngressNetworks } from "../networks";
 import { SELF_SIGNED_CERT_PATH, SELF_SIGNED_KEY_PATH } from "./selfSignedCert";
 
 const TEMPLATE_DIR = "templates";
@@ -19,7 +21,7 @@ const DEFAULT_SITE = path.join("sites-available", "default");
 const APP_ROUTE_NAME = "StackPort: MW VPS Manager";
 
 // Public ingress is always managed by the system Docker stack.
-const NGINX_CONTAINER_NAME = "stackport-nginx";
+const NGINX_CONTAINER_NAME = NGINX_CONTAINER;
 export type NginxRuntime = "container";
 export function getNginxRuntime(): NginxRuntime { return "container"; }
 
@@ -199,9 +201,12 @@ interface RunResult {
 interface NginxTarget {
   name: string;
   domain: string;
-  /** Compose service name this domain routes to — Docker DNS over the shared
-   *  stackport-proxy network (composeNetworking.ts), not a host port (Phase 1.7). */
+  /** Compose service name this domain routes to (Phase 1.7) — reached by Docker DNS, not a host port. */
   service: string;
+  /** The project the service belongs to. nginx reaches it by an alias that carries this id, over the
+   *  project's own ingress network (S9), so equal service names in two projects never collide. A
+   *  target without one (Stackport's own route) is reached by its plain name. */
+  projectId?: number;
   containerPort: number;
   useSsl: boolean;
   includeWwwRedirect: boolean;
@@ -318,8 +323,13 @@ function renderExtraBlocks(target: NginxTarget): string {
   return indentExtraBlocks(substituted);
 }
 
+/** The host nginx proxies to for a target. */
+function upstreamHost(target: NginxTarget): string {
+  return target.projectId === undefined ? target.service : ingressAlias(target.projectId, target.service);
+}
+
 function locationBlock(target: NginxTarget): string {
-  const upstreamUrl = `http://${target.service}:${target.containerPort}`;
+  const upstreamUrl = `http://${upstreamHost(target)}:${target.containerPort}`;
   // Resolve at request time so a stopped/not-yet-deployed workload cannot prevent
   // nginx from loading Stackport's own admin route. Also refresh DNS after recreation.
   const proxy = `resolver 127.0.0.11 valid=10s ipv6=off;\n        set $stackport_upstream ${upstreamUrl};\n        proxy_pass $stackport_upstream;`;
@@ -488,7 +498,7 @@ async function renderDomainBlock(template: string, target: NginxTarget): Promise
   const domain = target.domain;
   const hasCertificate = target.useSsl && domain ? await certificateExists(domain) : false;
   const wwwRedirect = target.includeWwwRedirect ? wwwDomain(target) ?? "" : "";
-  const upstreamUrl = `http://${target.service}:${target.containerPort}`;
+  const upstreamUrl = `http://${upstreamHost(target)}:${target.containerPort}`;
   const values: Record<string, string> = {
     name: target.name,
     domain,
@@ -518,8 +528,8 @@ async function loadProjects(): Promise<Project[]> {
 }
 
 // The compose *service* name StackPort's own container runs as in docker-compose.
-// system.yml (not container_name — Docker DNS over a shared network resolves by
-// service name). Reachable from stackport-nginx once both join stackport-proxy.
+// system.yml (not container_name — Docker DNS resolves by service name). Reachable from
+// stackport-nginx over the stack's own default network.
 const STACKPORT_APP_SERVICE = "stackport";
 
 function appRouteTarget(appConfig: NginxAppConfig = getNginxAppConfig()): NginxTarget | null {
@@ -551,6 +561,7 @@ function projectRouteTargets(projects: Project[], domainsByProject: Map<number, 
   return projects.flatMap((project) =>
     (domainsByProject.get(project.id) ?? []).filter(isRouted).map((pd) => ({
       name: project.name,
+      projectId: project.id,
       domain: pd.domain,
       service: pd.service,
       containerPort: pd.containerPort,
@@ -722,6 +733,8 @@ export async function writeNginxConfig(): Promise<NginxApplyResult> {
 }
 
 async function writeNginxConfigImpl(): Promise<NginxApplyResult> {
+  // A recreated nginx container starts without the per-project ingress networks (S9).
+  await connectNginxToIngressNetworks();
   const p = paths();
   const projects = await loadProjects();
   const content = await generateNginxConfig(projects);

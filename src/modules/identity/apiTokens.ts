@@ -1,9 +1,9 @@
 import crypto from "crypto";
 import { getDatabase } from "../../config/database";
 
-/** Scopes a token can carry. Only `read` exists for now; the check is in place so write
- *  scopes can be added without changing stored tokens. */
-export const API_TOKEN_SCOPES = ["read"] as const;
+/** Scopes a token can carry. `write` lets it deploy, roll back, restart and stop projects
+ *  over MCP (S5), within its project group; it includes everything `read` allows. */
+export const API_TOKEN_SCOPES = ["read", "write"] as const;
 export type ApiTokenScope = (typeof API_TOKEN_SCOPES)[number];
 
 const TOKEN_PREFIX = "spk_";
@@ -17,6 +17,8 @@ export interface ApiToken {
   /** The first characters of the token, so the admin can tell tokens apart. */
   prefix: string;
   scopes: ApiTokenScope[];
+  /** A `write` token acts only on projects in this group; null means every project. */
+  projectGroup: string | null;
   createdAt: string;
   lastUsedAt: string | null;
   expiresAt: string | null;
@@ -29,6 +31,7 @@ interface ApiTokenRow {
   token_hash: string;
   prefix: string;
   scopes: string;
+  project_group?: string | null;
   created_at: string;
   last_used_at: string | null;
   expires_at: string | null;
@@ -55,6 +58,7 @@ function rowToToken(row: ApiTokenRow): ApiToken {
     name: row.name,
     prefix: row.prefix,
     scopes: parseScopes(row.scopes),
+    projectGroup: row.project_group ?? null,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
     expiresAt: row.expires_at,
@@ -62,7 +66,7 @@ function rowToToken(row: ApiTokenRow): ApiToken {
   };
 }
 
-export function createApiToken(input: { name: unknown; expiresInDays?: unknown }): { token: string; record: ApiToken } {
+export function createApiToken(input: { name: unknown; expiresInDays?: unknown; scope?: unknown; projectGroup?: unknown }): { token: string; record: ApiToken } {
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (!name || name.length > MAX_NAME_LENGTH) {
     throw new ApiTokenError(400, `name is required and at most ${MAX_NAME_LENGTH} characters`);
@@ -76,11 +80,22 @@ export function createApiToken(input: { name: unknown; expiresInDays?: unknown }
     expiresAt = new Date(Date.now() + days * 86_400_000).toISOString();
   }
 
+  const scope = input.scope ?? "read";
+  if (scope !== "read" && scope !== "write") throw new ApiTokenError(400, 'scope must be "read" or "write"');
+  let projectGroup: string | null = null;
+  if (input.projectGroup !== undefined && input.projectGroup !== null && input.projectGroup !== "") {
+    if (typeof input.projectGroup !== "string" || input.projectGroup.length > MAX_NAME_LENGTH) {
+      throw new ApiTokenError(400, `projectGroup must be a group name of at most ${MAX_NAME_LENGTH} characters, or empty for every project`);
+    }
+    if (scope !== "write") throw new ApiTokenError(400, "projectGroup only applies to write tokens");
+    projectGroup = input.projectGroup;
+  }
+
   const token = TOKEN_PREFIX + crypto.randomBytes(32).toString("base64url");
   const db = getDatabase();
   const result = db.prepare(
-    "INSERT INTO api_tokens (name, token_hash, prefix, scopes, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(name, hashToken(token), token.slice(0, TOKEN_PREFIX.length + 6), "read", new Date().toISOString(), expiresAt);
+    "INSERT INTO api_tokens (name, token_hash, prefix, scopes, project_group, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).run(name, hashToken(token), token.slice(0, TOKEN_PREFIX.length + 6), scope === "write" ? "read,write" : "read", projectGroup, new Date().toISOString(), expiresAt);
   const row = db.prepare("SELECT * FROM api_tokens WHERE id = ?").get(result.lastInsertRowid) as ApiTokenRow;
   return { token, record: rowToToken(row) };
 }
