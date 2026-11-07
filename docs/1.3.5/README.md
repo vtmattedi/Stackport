@@ -1,14 +1,14 @@
 # Stackport 1.3.5
 
-Branch `1.3.5`, started from `1.3` (PR #33, not merged yet). Three jobs:
+Branch `1.3.5`, started from `1.3`. Three jobs, one of which has moved to 1.3.7 (below).
 
 1. **Inventory** what 1.3 missed, deferred or left unverified.
-2. **GitHub App** integration, from [../1.3/github-app.md](../1.3/github-app.md).
+2. ~~**GitHub App** integration~~ **Moved to 1.3.7.** Plan: [../1.3.7/github-app.md](../1.3.7/github-app.md).
 3. **Leftovers**: remove what 1.3 left behind.
 
 Ratings follow [../1.3/README.md](../1.3/README.md): 🔴 fix first, 🟠 soon, 🟡 worth doing, ⚪ housekeeping. Sizes: S, M, L, XL.
 
-If PR #33 is squash-merged, this branch needs a rebase onto `main` first.
+PR #33 is merged. `stable` (1.3.1, the incident fix) was merged into this branch on 7 November, so the branch carries the fix and `main` gets it with this PR.
 
 **Incident:** 1.3.0 took routed projects down on 7 November 2026 when per-project networks exhausted Docker's address pool; fixed by 1.3.1. See [postmortem-1.3.0-ingress-networks.md](postmortem-1.3.0-ingress-networks.md). Its open follow-ups (P1 to P8) belong to this release. P1 is a regression report plus a restore point and Restore action, not an automatic rollback, and it is planned for 1.4 ([../1.4/README.md](../1.4/README.md)); the rest are for 1.3.5.
 
@@ -64,9 +64,11 @@ A single pass on a staging host closes all of these. Task #287 already holds the
 
 #270 (S9) was built but still `todo`. S15 (network groups), the MCP network tools, both review rounds and the build/socket/cleanup/restart/seed fixes had no tasks. Brought up to date on 2026-11-07: #270 done, #376 and #377 added as done, the 1.3.5 tasks added as #367 to #375, and comments on #282 and #287.
 
-## 2. GitHub App
+## 2. GitHub App (moved to 1.3.7)
 
-Plan: [github-app.md](github-app.md) in this folder (it replaces the phases and storage choices of [../1.3/github-app.md](../1.3/github-app.md), which stays as the security reference). Design: each Stackport instance registers its own GitHub App through the App Manifest flow; installation tokens replace PATs; one signed webhook endpoint on the instance. Four phases; this branch builds A to C and the testable part of D.
+Nothing of this is built in 1.3.5 except **G1**, which is done. The rest of this section is kept so the plan can be read from here; it is scheduled in [../1.3.7/README.md](../1.3.7/README.md).
+
+Plan: [../1.3.7/github-app.md](../1.3.7/github-app.md) (it replaces the phases and storage choices of [../1.3/github-app.md](../1.3/github-app.md), which stays as the security reference). Design: each Stackport instance registers its own GitHub App through the App Manifest flow; installation tokens replace PATs; one signed webhook endpoint on the instance. Four phases, all in 1.3.7.
 
 | Phase | Delivers | Needs a real GitHub account? |
 |---|---|---|
@@ -75,7 +77,7 @@ Plan: [github-app.md](github-app.md) in this folder (it replaces the phases and 
 | C | Signed webhook receiver, durable delivery table, dedupe and replay, installation and repository events, status in the UI | Yes, for real deliveries |
 | D | Hardening, rollback and upgrade tests, key rotation and recovery docs | Partly |
 
-Order of work inside the branch: **G1** first (it is a fix on its own and unblocks B), then A, B, C.
+Order of work: **G1** (done), then A, B, C in 1.3.7.
 
 Settled defaults from §12 of the plan, unless you say otherwise:
 
@@ -99,4 +101,4 @@ Settled defaults from §12 of the plan, unless you say otherwise:
 | L5 | Temporary migrations page | S | Stays through 1.3.x so installs can migrate. Remove it (`src/modules/maintenance/migrations`, `client/src/pages/settings/migrations`, the TEMPORARY lines) in the first release after every install has run it. Decide the release now. |
 | L6 | Lint warnings (G4/B5) | M | |
 | L7 | Compat shims from the modular layout | | Main owns `src/routes`, `src/utils`, `src/middleware`, `src/mcp`, `src/entities`. Not ours; left alone unless main removes them. |
-| L8 | Version | S | Reported version is 1.3.0. Bump to 1.3.5 with `scripts/bump-version.cjs` when this branch is ready to release, not before. |
+| L8 | Version | S | Reported version is 1.3.1 (the hotfix). Bump to 1.3.5 with `scripts/bump-version.cjs` when this branch is ready to release, not before. |

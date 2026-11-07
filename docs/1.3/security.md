@@ -104,7 +104,7 @@ cannot be resolved (error, timeout, output over 32 MB); older projects get a war
 Also refused, found in review: any file Compose reads from Stackport's own filesystem outside
 the project (`env_file`, `include`, `extends.file`, `build.dockerfile`, checked in the raw YAML
 and in every included file, for every project, because an absolute `env_file: /app/.env` copied
-the app's secrets into a service), external networks other than the project's own ingress network (S9) and networks
+the app's secrets into a service), external networks other than the shared ingress network (S9) and networks
 or volumes that do not carry the project's name (a service could join `stackport_default`, where
 the admin API listens, or attach to another project's volume), external volumes, and non-bridge
 network drivers. The project's policy panel shows the raw-file results too.
@@ -211,37 +211,45 @@ fix S3 first, after which only nginx can reach the app).
 waits for the first lookup (up to 3 s) before it listens, so the first requests already
 see nginx as trusted.
 
-### S9 — Per-project ingress networks · 🟡 · M · needs S3
+### S9 — Unique aliases on the shared ingress network · 🟡 · S (changed in 1.3.1)
 
-All routed projects share `stackport-proxy`, so they can reach each other. One network
-per project, joined by nginx and that project only.
+The problem: all routed projects share `stackport-proxy`, and nginx reached a service by its plain
+name, so two projects with a service called `web` were mixed up by Docker's DNS and nginx could send one
+project's domain to the other project's container.
 
-**Status: done.** Also the fix for two projects with a service of the same name (`web`)
-being mixed up by Docker's DNS on the shared network: nginx could send one project's domain
-to the other project's container.
+**Status: done in 1.3.1, differently from 1.3.0.** 1.3.0 gave every project its own network
+(`stackport-ingress-<id>`). On a server with about 15 projects that exhausted Docker's default address
+pool (about 30 networks in all, because every Compose project already has one of its own). Docker answered
+`all predefined address pools have been fully subnetted`, the networks for the last seven projects were
+never created, nginx's config already named the new aliases, and those projects went down. 1.3.1 keeps the
+fix for the name clash and drops the part that cost an address range per project.
 
-- Each project with a route has a network `stackport-ingress-<projectId>`, created before its
-  deploy and removed with the project. Only nginx and that project's routed services are on it.
-- Routed services get the alias `sp<projectId>-<service>` on it; the nginx upstream and the TCP
-  proxy target use the alias, never the plain service name. The Compose rewrite does this and also
-  removes `stackport-proxy` from a file an older release rewrote.
-- nginx is connected to each network at start-up and whenever its config is applied (a recreated
-  nginx container starts with none of them). At start-up, running routed services of existing
-  projects are connected under their alias and taken off `stackport-proxy`, so nothing waits for a
-  redeploy. TCP proxies are recreated on the new network (their target label changed).
-- The policy allows only the project's own ingress network as external, with no extra aliases on it,
-  and refuses a routed service named `stackport` or `sp<number>-…`: on this network the service's
-  own name is visible to nginx, so those names could answer for Stackport's admin route or for
-  another project's alias.
-- `stackport-proxy` still exists (the system stack declares it and nginx stays on it) but projects
-  no longer join it. It can be removed from the stack in a later release.
+- Every routed service joins `stackport-proxy` (declared by the system stack, so nginx is always on it,
+  also after nginx is recreated) with the alias `sp<projectId>-<service>`, plus its plain name for
+  compatibility. nginx and the TCP proxies use only the alias.
+- The Compose rewrite does this on every deploy and removes any `stackport-ingress-*` network a 1.3.0
+  deploy had written into the file. At start-up running services are moved the same way (on the shared network
+  first, then off the per-project one), so no redeploy is needed.
+- At start-up the per-project networks 1.3.0 created are removed once nothing but nginx is on them, which
+  gives the address pool back. A network that still has another container is kept and reported.
+- Start-up order: services first, then nginx's config, then the TCP proxies, then the clean-up. A project
+  that cannot be put on the network is printed with the reason where `docker logs stackport` shows it.
+- The policy allows only `stackport-proxy` as an external network, with no aliases of the project's own
+  choosing, and refuses a routed service named `stackport` or `sp<number>-…`: on this network service names
+  are visible to nginx, so those names could answer for Stackport's admin route or for another project.
 
-Not covered: services of one project reach each other as before (that is the project's own network),
-and a project's non-routed services are on no ingress network at all.
+**Not done: isolation between projects.** Projects can reach each other's routed services again over
+`stackport-proxy`, as before 1.3.0 (S3 still stops them reaching Stackport's own API). Isolation comes back in
+1.3.5, with networks drawn from an address range of our own and a check before each switch.
+
+**Docker's address pool is a shared limit.** Each Compose project, each Stackport network group (S15) and
+each network you create by hand takes one slot. If a server is near the limit, give Docker a larger pool in
+`/etc/docker/daemon.json` (`"default-address-pools": [{"base": "172.80.0.0/12", "size": 24}]`) and restart
+Docker; `docker network ls -q | wc -l` shows how many are in use.
 
 ### S15 — Network groups · 🟡 · M · needs S9
 
-S9 isolates projects, so two projects that need to talk to each other (an API and a worker kept in
+Two projects that need to talk to each other (an API and a worker kept in
 separate projects, a shared database) had no way to do it short of a public domain. A network group
 is a supported way, configured in Stackport and never in the Compose file.
 
@@ -260,8 +268,8 @@ is a supported way, configured in Stackport and never in the Compose file.
 - It is applied to the running containers when the setting changes, after every `up` (new containers
   start without it), and at start-up. Leaving the group or switching a service off disconnects it;
   a group network nothing is connected to is deleted.
-- A Compose file cannot opt in. The policy still refuses any external network except the project's
-  own ingress network, so the people who can push to a repository cannot pull its services into
+- A Compose file cannot opt in. The policy still refuses any external network except the shared
+  ingress network, so the people who can push to a repository cannot pull its services into
   someone else's group. Only a signed-in admin changes membership; it is audited as
   `project.network-group`. MCP tokens cannot change it.
 
@@ -274,6 +282,9 @@ is a supported way, configured in Stackport and never in the Compose file.
   checked on both calls, because joining would give its projects a path to services the token could not
   otherwise touch. The stdio MCP (local, trusted) has the same three tools without the confirmation,
   like its other write tools.
+
+Each network group is a Docker network and takes one slot of Docker's address pool (see S9). If creating a group
+fails with "all predefined address pools have been fully subnetted", enlarge the pool.
 
 Not covered: a group is a trust boundary of its own. Every joined service can reach every other joined
 service in the group on any port, with no per-service rules. Put projects that should not trust each

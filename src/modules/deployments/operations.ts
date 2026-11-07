@@ -19,7 +19,7 @@ import { loadYamlDoc } from "./compose/yaml";
 import { checkComposeFileReferences } from "./compose/references";
 import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
-import { ensureIngressNetwork } from "../ingress/networks";
+import { ensureSharedIngressNetwork } from "../ingress/networks";
 import { dockerCli, pruneGroupNetworks, syncGroupNetwork } from "./compose/groupNetworks";
 import { seedManagedDirectory } from "./compose/seedVolumes";
 import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networkGroups";
@@ -85,15 +85,24 @@ interface ComposeCommand {
   argsPrefix: string[];
 }
 
-/** At start-up: every routed project gets its ingress network, nginx joins it, and running services
- *  move onto it under their alias. This is also how a project that was routed over the old shared
- *  network switches over without a redeploy. One project failing does not stop the others. */
-export async function reconcileIngressNetworks(): Promise<void> {
+/** At start-up: running services of every routed project go on the shared ingress network under their
+ *  alias (and off a per-project network from 1.3.0), which is how nginx reaches them. This is also how a
+ *  project switches over without a redeploy. One project failing does not stop the others, and each failure
+ *  is printed where `docker logs` shows it. Resolves to the projects that failed. */
+export async function reconcileIngressNetworks(): Promise<number[]> {
   const rows = getDatabase().prepare("SELECT id FROM projects WHERE compose_file IS NOT NULL").all() as { id: number }[];
+  const failed: number[] = [];
   for (const { id } of rows) {
     try { await ensureProjectProxyNetwork(id); }
-    catch (err) { logger.warn({ projectId: id, reason: err instanceof Error ? err.message : String(err) }, "ingress.reconcile.failed"); }
+    catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      failed.push(id);
+      console.error(`[ingress] project ${id} could not be put on the ingress network: ${reason}`);
+      logger.warn({ projectId: id, reason }, "ingress.reconcile.failed");
+    }
   }
+  console.log(`[ingress] ${rows.length - failed.length} of ${rows.length} projects checked, ${failed.length} failed`);
+  return failed;
 }
 
 /** Puts the project's running containers on (or takes them off) its network group's network to match
@@ -133,7 +142,7 @@ export async function ensureProjectProxyNetwork(projectId: number): Promise<void
   if (!project?.composeFile) return;
   const services = listRoutedServiceNames(projectId);
   if (!services.length) return;
-  await ensureIngressNetwork(projectId);
+  await ensureSharedIngressNetwork();
   const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services, projectId);
   if (!result.ok) throw new Error(result.message);
   await connectRunningProxyServices(projectId, expectedComposeProjectName(project), services);
@@ -504,7 +513,7 @@ async function runCompose(
     // Phase 1.7 — StackPort-owned augmentation, ephemeral (never committed, same
     // philosophy the old SP:AUTO/port-hiding rewrites used): attaches whichever
     // services this project's domains actually route to onto the project's own
-    // ingress network (stackport-ingress-<id>), so nginx can reach them by a
+    // shared ingress network, so nginx can reach them by a
     // project-unique alias. Re-applied on every runCompose call because git
     // operations (ensureRepo's reset --hard) wipe
     // it back to the plain source file on every fresh pull, same reason SP:AUTO
@@ -512,9 +521,9 @@ async function runCompose(
     const routedServices = listRoutedServiceNames(projectId);
     if (routedServices.length > 0) {
       try {
-        await ensureIngressNetwork(projectId);
+        await ensureSharedIngressNetwork();
       } catch (err) {
-        const message = `Could not prepare the project ingress network: ${err instanceof Error ? err.message : String(err)}\n`;
+        const message = `Could not prepare the ingress network: ${err instanceof Error ? err.message : String(err)}\n`;
         emit(projectId, action, "stderr", message);
         return { ok: false, output: message, stdout: "", command: "ingress network" };
       }

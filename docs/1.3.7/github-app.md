@@ -1,4 +1,6 @@
-# GitHub App, second plan (Stackport 1.3.5)
+# GitHub App, second plan (Stackport 1.3.7)
+
+Scheduled for 1.3.7; it was moved out of 1.3.5 on 7 November 2026 so 1.3.5 can ship the fixes that follow the 1.3.0 incident first. The one piece already done is G1 (the Git token is out of process arguments; see [../1.3/security.md](../1.3/security.md)), which this plan relies on.
 
 Supersedes the phases and storage choices in [../1.3/github-app.md](../1.3/github-app.md). That document stays as the reference for the security analysis (§4.2 installation linking, §7 webhook ingestion, §8 failure table); this one changes **what we build, in what order, and what else the App is for**.
 
