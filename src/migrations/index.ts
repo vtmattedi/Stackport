@@ -9,6 +9,7 @@ import m006 from "./006_compose_policy_enforced";
 import m007 from "./007_volumes_managed";
 import m008 from "./008_legacy_mount_sources";
 import m009 from "./009_hardened_defaults";
+import m010 from "./010_api_token_project_group";
 
 /** A schema change that runs once, in order, recorded in `PRAGMA user_version`.
  *  `stackport rollback` runs the previous release's code on the migrated database,
@@ -21,7 +22,7 @@ export interface Migration {
 }
 
 /** Ordered by id. Append only: never edit or reorder a migration that has shipped. */
-export const MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005, m006, m007, m008, m009];
+export const MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010];
 
 export function schemaVersion(db: Database.Database): number {
   return db.pragma("user_version", { simple: true }) as number;
