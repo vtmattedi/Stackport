@@ -3,8 +3,8 @@ import { promisify } from "util";
 import { getDatabase } from "../../config/database";
 import { config } from "../../config/env";
 import { logger } from "../../shared/logger";
-import { ingressAlias, ingressNetworkName } from "../../shared/ingressNames";
-import { ensureIngressNetwork } from "./networks";
+import { INGRESS_NETWORK, ingressAlias } from "../../shared/ingressNames";
+import { ensureSharedIngressNetwork } from "./networks";
 
 const execFileAsync = promisify(execFile);
 const PROXY_IMAGE = "alpine/socat:1.8.0.3";
@@ -142,10 +142,14 @@ async function removeProxyContainer(id: number): Promise<void> {
   }
 }
 
-/** Where the proxy connects: the service's alias on the project's ingress network (S9). It is also the
- *  label, so a proxy started against the old shared network is recreated on the next reconcile. */
+/** Where the proxy connects: the service's alias on the shared ingress network. */
 function tcpTarget(exposure: TcpExposure): string {
   return `${ingressAlias(exposure.projectId, exposure.service)}:${exposure.containerPort}`;
+}
+
+/** A proxy 1.3.0 started sits on a per-project network instead; it is recreated on the shared one. */
+export function tcpProxyIsOnSharedNetwork(networks: Record<string, unknown> | undefined): boolean {
+  return networks !== undefined && INGRESS_NETWORK in networks;
 }
 
 async function proxyIsCurrent(exposure: TcpExposure): Promise<boolean> {
@@ -155,10 +159,12 @@ async function proxyIsCurrent(exposure: TcpExposure): Promise<boolean> {
       State?: { Running?: boolean };
       Config?: { Labels?: Record<string, string> };
       HostConfig?: { PortBindings?: Record<string, Array<{ HostPort?: string }> | null> };
+      NetworkSettings?: { Networks?: Record<string, unknown> };
     };
     const labels = info.Config?.Labels ?? {};
     const binding = info.HostConfig?.PortBindings?.[`${exposure.publicPort}/tcp`];
     return info.State?.Running === true
+      && tcpProxyIsOnSharedNetwork(info.NetworkSettings?.Networks)
       && labels["com.stackport.managed"] === "tcp-exposure"
       && labels["com.stackport.tcp-exposure-id"] === String(exposure.id)
       && labels["com.stackport.project-id"] === String(exposure.projectId)
@@ -185,11 +191,11 @@ export async function reconcileTcpExposure(exposure: TcpExposure): Promise<void>
 
   await removeProxyContainer(exposure.id);
   try {
-    await ensureIngressNetwork(exposure.projectId);
+    await ensureSharedIngressNetwork();
     await docker([
       "run", "-d", "--name", name, "--restart", "unless-stopped",
       "--read-only", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "64m",
-      "--network", ingressNetworkName(exposure.projectId), "-p", `${exposure.publicPort}:${exposure.publicPort}/tcp`,
+      "--network", INGRESS_NETWORK, "-p", `${exposure.publicPort}:${exposure.publicPort}/tcp`,
       "--label", "com.stackport.managed=tcp-exposure",
       "--label", `com.stackport.tcp-exposure-id=${exposure.id}`,
       "--label", `com.stackport.project-id=${exposure.projectId}`,

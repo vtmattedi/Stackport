@@ -37,6 +37,7 @@ import { getStorageThresholds, setStorageThresholds, type StorageThresholds } fr
 
 import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../../modules/maintenance/selfUpdate";
 import { getAppVersion, checkForUpdates } from "../../modules/maintenance/version";
+import { basicAuthHeader } from "../../shared/gitAuth";
 
 const router = Router();
 
@@ -125,9 +126,7 @@ function gitCredentialHeader(credentialId: number | null): string | null {
     .get(credentialId) as { username: string | null; secret_enc: string } | undefined;
   if (!row) return null;
   try {
-    const username = row.username ?? "x-access-token";
-    const token = decryptSecret(row.secret_enc);
-    return `Authorization: Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`;
+    return basicAuthHeader(row.username ?? "x-access-token", decryptSecret(row.secret_enc));
   } catch {
     return null;
   }

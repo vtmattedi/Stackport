@@ -10,7 +10,6 @@ import { rowToProject, type Project, type ProjectRow } from "../../projects/type
 import { listAllRoutableProjectDomains, type ProjectDomain } from "../domains";
 import { invalidateNginxActiveStatus } from "./statusCache";
 import { ingressAlias, NGINX_CONTAINER } from "../../../shared/ingressNames";
-import { connectNginxToIngressNetworks } from "../networks";
 import { SELF_SIGNED_CERT_PATH, SELF_SIGNED_KEY_PATH } from "./selfSignedCert";
 
 const TEMPLATE_DIR = "templates";
@@ -204,7 +203,7 @@ interface NginxTarget {
   /** Compose service name this domain routes to (Phase 1.7) — reached by Docker DNS, not a host port. */
   service: string;
   /** The project the service belongs to. nginx reaches it by an alias that carries this id, over the
-   *  project's own ingress network (S9), so equal service names in two projects never collide. A
+   *  shared ingress network (S9), so equal service names in two projects never collide. A
    *  target without one (Stackport's own route) is reached by its plain name. */
   projectId?: number;
   containerPort: number;
@@ -733,8 +732,6 @@ export async function writeNginxConfig(): Promise<NginxApplyResult> {
 }
 
 async function writeNginxConfigImpl(): Promise<NginxApplyResult> {
-  // A recreated nginx container starts without the per-project ingress networks (S9).
-  await connectNginxToIngressNetworks();
   const p = paths();
   const projects = await loadProjects();
   const content = await generateNginxConfig(projects);
