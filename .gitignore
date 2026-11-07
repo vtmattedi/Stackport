@@ -47,3 +47,4 @@ coverage/
 .idea/
 
 .claude
+.local/
