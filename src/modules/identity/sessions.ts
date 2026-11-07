@@ -134,6 +134,14 @@ export function verifyStoredAuthToken(token: string): VerifiedAuthToken | null {
   };
 }
 
+/** Whether a session is still valid, without extending it. For connections that outlive a request
+ *  (WebSockets), which must stop when the session expires, reaches its cap or is ended. */
+export function isSessionLive(tokenId: string): boolean {
+  const row = getDatabase().prepare("SELECT expires_at, created_at FROM auth_tokens WHERE id = ?").get(tokenId) as Pick<StoredAuthTokenRow, "expires_at" | "created_at"> | undefined;
+  if (!row || row.expires_at <= nowIso()) return false;
+  return sessionWindow(parseStoredTime(row.created_at), Date.now()).capMs > Date.now();
+}
+
 export function invalidateAuthTokens(username?: string): number {
   const result = username
     ? getDatabase().prepare("DELETE FROM auth_tokens WHERE username = ?").run(username)

@@ -21,10 +21,11 @@ const token = (overrides: Partial<ApiToken> = {}): ApiToken => ({
 
 interface Started { kind: WriteKind; projectId: number; params: WriteParams; actor: string }
 
-async function connect(options: { token?: ApiToken; busy?: boolean; now?: () => number; net?: NetworkDeps } = {}) {
+async function connect(options: { token?: ApiToken; busy?: boolean; now?: () => number; net?: NetworkDeps; restartBlocker?: string | null } = {}) {
   const started: Started[] = [];
   const deps: WriteDeps = {
     getProject: (id) => PROJECTS[id] ?? null,
+    restartBlocker: async () => options.restartBlocker ?? null,
     rollbackTarget: (projectId, deploymentId) => (projectId === 3 ? { ok: false, error: "No earlier successful deployment to roll back to." } : { ok: true, id: deploymentId ?? 41, commitSha: "abcdef1234567" }),
     start: (kind, project, params, actor) => { if (options.busy) return null; started.push({ kind, projectId: project.id, params, actor }); return { id: `action-${started.length}` }; },
     now: Date.now,
@@ -278,4 +279,43 @@ test("networkGroupScopeProblem: leaving is always allowed, and an unlimited toke
   assert.equal(networkGroupScopeProblem({ projectGroup: "staging" }, null, prod), null);
   assert.equal(networkGroupScopeProblem({ projectGroup: null }, "lab", prod), null);
   assert.equal(networkGroupScopeProblem({ projectGroup: "staging" }, "lab", [{ name: "blog", visualGroup: "staging" }]), null);
+});
+
+test("every write tool says it is destructive, in its description and in its annotation, before it is used", async () => {
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const server = new McpServer({ name: "t", version: "1" });
+  registerWriteTools(server, token(), { getProject: () => null, rollbackTarget: () => ({ ok: false, error: "" }), start: () => null, now: Date.now }, new ConfirmationStore());
+  const client = new Client({ name: "c", version: "1" });
+  await Promise.all([server.connect(b), client.connect(a)]);
+  const { tools } = await client.listTools();
+  assert.equal(tools.length, 5);
+  for (const tool of tools) {
+    assert.match(tool.description ?? "", /^DESTRUCTIVE/, tool.name);
+    assert.equal(tool.annotations?.destructiveHint, true, tool.name);
+    assert.equal(tool.annotations?.readOnlyHint, false, tool.name);
+    assert.match(tool.title ?? "", /\(destructive\)$/, tool.name);
+  }
+  const descriptions = Object.fromEntries(tools.map((t) => [t.name, t.description ?? ""]));
+  assert.match(descriptions["stackport_stop_project"], /domains stop working/);
+  assert.match(descriptions["stackport_restart_project"], /no pull, no build/);
+  assert.match(descriptions["stackport_set_network_group"], /security-sensitive/);
+  await client.close();
+});
+
+test("restart: refused in the preview when the checkout has moved on, with no confirmation issued", async () => {
+  const h = await connect({ restartBlocker: "The checkout is at 1234567 but the running revision is abcdef1." });
+  const out = await h.call("stackport_restart_project", { projectId: 1 });
+  assert.equal(out.isError, true);
+  assert.match(out.text, /running revision is abcdef1/);
+  assert.equal(out.body?.["confirmationId"], undefined);
+  assert.deepEqual(h.started, []);
+  await h.close();
+});
+
+test("restart: when nothing blocks it, the preview says no pull and no build", async () => {
+  const h = await connect();
+  const out = await h.call("stackport_restart_project", { projectId: 1 });
+  assert.equal(out.isError, false);
+  assert.match(String(out.body?.["summary"]), /no pull, no build/);
+  await h.close();
 });

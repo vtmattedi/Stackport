@@ -1,13 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isSafeToRemove, runCleanup, type CleanupDeps, type RecordedSource } from "../src/modules/maintenance/migrations/cleanupMounts";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { isSafeToRemove, mountsPathOrInside, ORIGINAL_NOT_NEWER_SCRIPT, runCleanup, type CleanupDeps, type RecordedSource } from "../src/modules/maintenance/migrations/cleanupMounts";
 import { probeDirectory, type DockerResult } from "../src/modules/maintenance/migrations/docker";
 
 const source: RecordedSource = { id: 1, projectId: 7, projectName: "shop", composeProject: "7-shop", sourcePath: "/app/data/repos/7-shop/data", name: "data" };
 const MANAGED = "/var/lib/stackport/data/volumes/7/data";
 
 /** `present` maps a host path to what a probe finds ("kb entries"); `mounted` is what running containers mount. */
-function harness(options: { present?: Record<string, string>; mounted?: string[]; running?: boolean; rmFails?: boolean; sources?: RecordedSource[]; psFails?: boolean; probeErrorOn?: string } = {}) {
+function harness(options: { present?: Record<string, string>; mounted?: string[]; running?: boolean; rmFails?: boolean; sources?: RecordedSource[]; psFails?: boolean; probeErrorOn?: string; coverageFails?: boolean } = {}) {
   const calls: string[][] = [];
   const removed: number[] = [];
   const present = options.present ?? { [source.sourcePath]: "100 3", [MANAGED]: "100 3" };
@@ -16,6 +20,7 @@ function harness(options: { present?: Record<string, string>; mounted?: string[]
     if (args[0] === "ps" && options.psFails) return { code: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" };
     if (options.probeErrorOn && args.some((a) => a.includes(`src=${options.probeErrorOn},`))) return { code: 125, stdout: "", stderr: "Unable to find image 'img' locally" };
     if (args[0] === "ps") return { code: 0, stdout: options.running === false ? "" : "abc\n", stderr: "" };
+    if (args.includes(ORIGINAL_NOT_NEWER_SCRIPT)) return options.coverageFails ? { code: 1, stdout: "newer in the original than in the managed copy: ./a.db\n", stderr: "" } : { code: 0, stdout: "", stderr: "" };
     if (args[0] === "inspect") return { code: 0, stdout: (options.mounted ?? []).join("\n") + "\n", stderr: "" };
     if (args.includes('rm -rf "/p/$TARGET"')) return options.rmFails ? { code: 1, stdout: "", stderr: "rm: busy" } : { code: 0, stdout: "", stderr: "" };
     const src = args.find((a) => a.startsWith("type=bind,src="))?.split(",")[1].slice(4) ?? "";
@@ -92,7 +97,7 @@ test("an original that is already gone is just marked done", async () => {
 test("a failed container listing blocks removal instead of counting as 'nothing running'", async () => {
   const h = harness({ psFails: true });
   const report = await runCleanup("execute", h.deps);
-  assert.match(report.items[0].detail ?? "", /Could not list the project's running containers/);
+  assert.match(report.items[0].detail ?? "", /Could not list the containers/);
   assert.deepEqual(deletions(h.calls), []);
   assert.deepEqual(h.removed, []);
 });
@@ -133,4 +138,77 @@ test("probeDirectory tells 'missing' from 'could not tell'", async () => {
   const error = await run(125, "", "Cannot connect to the Docker daemon\nIs it running?");
   assert.deepEqual(error, { state: "error", detail: "Cannot connect to the Docker daemon" });
   assert.equal((await run(1, "", "")).state, "error");
+});
+
+test("every container on the host is looked at, stopped ones included, not just the project's", async () => {
+  const h = harness({ running: false });
+  await runCleanup("execute", h.deps);
+  assert.deepEqual(h.calls.find((c) => c[0] === "ps"), ["ps", "-aq"]);
+});
+
+test("a container that mounts something inside the original blocks removal; one that mounts a parent does not", async () => {
+  const inside = harness({ mounted: [`${source.sourcePath}/uploads`] });
+  assert.match((await runCleanup("execute", inside.deps)).items[0].detail ?? "", /still mounts/);
+  assert.deepEqual(deletions(inside.calls), []);
+  const parent = harness({ mounted: ["/app/data"] });
+  assert.match((await runCleanup("execute", parent.deps)).summary, /1 directory removed/);
+  assert.equal(mountsPathOrInside(["/app/data/repos/7-shop/data2"], source.sourcePath), false, "a sibling with the same prefix is not inside");
+});
+
+test("an original that holds something the managed copy does not cover is kept, in the dry run too", async () => {
+  for (const mode of ["dry-run", "execute"] as const) {
+    const h = harness({ running: false, coverageFails: true });
+    const report = await runCleanup(mode, h.deps);
+    assert.match(report.summary, /0 directories (would be )?removed, 1 skipped/, mode);
+    assert.match(report.items[0].detail ?? "", /not covered by the managed copy.*newer in the original/, mode);
+    assert.deepEqual(deletions(h.calls), [], mode);
+    assert.deepEqual(h.removed, [], mode);
+  }
+});
+
+test("the coverage check mounts both directories read-only and runs before anything is deleted", async () => {
+  const h = harness({ running: false });
+  await runCleanup("execute", h.deps);
+  const check = h.calls.find((c) => c.includes(ORIGINAL_NOT_NEWER_SCRIPT))!;
+  assert.ok(check.includes(`type=bind,src=${source.sourcePath},dst=/from,readonly`));
+  assert.ok(check.includes(`type=bind,src=${MANAGED},dst=/to,readonly`));
+  assert.ok(h.calls.indexOf(check) < h.calls.findIndex((c) => c.includes('rm -rf "/p/$TARGET"')));
+});
+
+/** The check script itself, against real directories. It needs a POSIX sh, so it runs on Linux and macOS. */
+const skipShell = process.platform === "win32" ? "needs a POSIX shell" : false;
+function checkTrees(setup: (from: string, to: string) => void): { code: number | null; out: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cover-"));
+  try {
+    const from = path.join(root, "from"); const to = path.join(root, "to");
+    fs.mkdirSync(from); fs.mkdirSync(to);
+    setup(from, to);
+    const run = spawnSync("sh", ["-c", ORIGINAL_NOT_NEWER_SCRIPT, "sh", from, to], { encoding: "utf8" });
+    return { code: run.status, out: run.stdout };
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+}
+const put = (dir: string, name: string, content: string, mtimeSec?: number) => {
+  const file = path.join(dir, name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, content);
+  if (mtimeSec !== undefined) fs.utimesSync(file, mtimeSec, mtimeSec);
+};
+
+test("check script: identical trees pass, and a managed copy that moved on (newer) passes", { skip: skipShell }, () => {
+  assert.equal(checkTrees((from, to) => { put(from, "a.db", "x"); put(to, "a.db", "x"); }).code, 0);
+  assert.equal(checkTrees((from, to) => { put(from, "a.db", "old", 1000); put(to, "a.db", "newer data", 2000); put(to, "extra.txt", "only in the copy"); }).code, 0);
+});
+
+test("check script: a file missing from the copy, or newer in the original, fails", { skip: skipShell }, () => {
+  const missing = checkTrees((from, to) => { put(from, "sub/a.db", "x"); fs.mkdirSync(path.join(to, "sub")); });
+  assert.equal(missing.code, 1);
+  assert.match(missing.out, /missing from the managed copy: \.\/sub\/a\.db/);
+  const newer = checkTrees((from, to) => { put(from, "a.db", "written after the revert", 3000); put(to, "a.db", "old", 1000); });
+  assert.equal(newer.code, 1);
+  assert.match(newer.out, /newer in the original/);
+});
+
+test("check script: links are compared by target", { skip: skipShell }, () => {
+  assert.equal(checkTrees((from, to) => { fs.symlinkSync("target", path.join(from, "l")); fs.symlinkSync("target", path.join(to, "l")); }).code, 0);
+  assert.equal(checkTrees((from, to) => { fs.symlinkSync("target", path.join(from, "l")); fs.symlinkSync("other", path.join(to, "l")); }).code, 1);
 });

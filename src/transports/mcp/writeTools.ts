@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { actionRegistry, projectRepoKey } from "../../modules/actions/registry";
 import { resolveRollbackTarget } from "../../modules/deployments/history";
-import { deployProject, getProjectById, isValidBranchName, recreateProject, rollbackProject, stopProject } from "../../modules/deployments/operations";
+import { deployProject, getProjectById, isValidBranchName, restartBlocker, restartProject, rollbackProject, stopProject } from "../../modules/deployments/operations";
 import { auditLog } from "../../shared/logger";
 import { listNetworkGroups } from "../../modules/projects/networkGroups";
 import { assignNetworkGroup, NetworkGroupError, validateNetworkGroupAssignment } from "../../modules/deployments/networkGroupAssignment";
@@ -27,6 +27,8 @@ export interface ProjectLike { id: number; name: string; groupName: string | nul
 export interface WriteDeps {
   getProject(id: number): ProjectLike | null;
   rollbackTarget(projectId: number, deploymentId?: number): { ok: true; id: number; commitSha: string | null } | { ok: false; error: string };
+  /** Why the running revision cannot be restarted as it is (the checkout has moved on), or null. */
+  restartBlocker?(projectId: number): Promise<string | null>;
   /** Starts the action in the project's action slot; null when another action holds it. */
   start(kind: WriteKind, project: ProjectLike, params: WriteParams, actor: string): { id: string } | null;
   now(): number;
@@ -82,6 +84,7 @@ export function defaultWriteDeps(): WriteDeps {
       const project = getProjectById(id);
       return project ? { id: project.id, name: project.name, groupName: project.groupName, lastStatus: project.lastStatus, autoDeployBranch: project.autoDeployBranch } : null;
     },
+    restartBlocker,
     rollbackTarget: (projectId, deploymentId) => {
       const result = resolveRollbackTarget(projectId, deploymentId);
       return result.ok ? { ok: true, id: result.target.id, commitSha: result.target.commitSha ?? null } : { ok: false, error: result.error };
@@ -90,7 +93,7 @@ export function defaultWriteDeps(): WriteDeps {
       const run = async (): Promise<{ ok: boolean; output: string }> => {
         const result = kind === "deploy" ? await deployProject(project.id, "manual", params.branch ?? null)
           : kind === "rollback" ? await rollbackProject(project.id, params.deploymentId)
-          : kind === "restart" ? await recreateProject(project.id)
+          : kind === "restart" ? await restartProject(project.id)
           : await stopProject(project.id);
         auditLog(actor, `mcp.write.${kind}.finished`, String(project.id), result.ok ? "ok" : "fail", { triggeredBy: MCP_TRIGGER });
         return { ok: result.ok, output: result.output };
@@ -124,14 +127,14 @@ interface ToolSpec {
   description: string;
   extra: z.ZodRawShape;
   /** What would happen, or an error that stops before any confirmation is issued. */
-  preview(project: ProjectLike, params: WriteParams, deps: WriteDeps): { summary: string; resolvedDeploymentId?: number } | { error: string };
+  preview(project: ProjectLike, params: WriteParams, deps: WriteDeps): { summary: string; resolvedDeploymentId?: number } | { error: string } | Promise<{ summary: string; resolvedDeploymentId?: number } | { error: string }>;
 }
 
 const SPECS: ToolSpec[] = [
   {
     kind: "deploy",
-    title: "Deploy project",
-    description: "Pull the latest commit of the project's branch, build and start it. Two steps: the first call returns what would happen and a confirmationId; call again with that id to run it.",
+    title: "Deploy project (destructive)",
+    description: "DESTRUCTIVE: replaces the running containers with a new build of the branch's latest commit, with a short outage; container data that is not in a volume is lost, and a failed health check can leave the project down. Pulls the latest commit of the project's branch, builds and starts it. Two steps: the first call returns what would happen and a confirmationId; call again with that id to run it.",
     extra: { branch: z.string().min(1).max(200).optional() },
     preview: (project, params) => {
       if (params.branch !== undefined && !isValidBranchName(params.branch)) return { error: "Invalid branch name." };
@@ -141,8 +144,8 @@ const SPECS: ToolSpec[] = [
   },
   {
     kind: "rollback",
-    title: "Roll back project",
-    description: "Restore an earlier deployment (the previous one unless deploymentId is given). Two steps: the first call returns what would happen and a confirmationId; call again with that id to run it.",
+    title: "Roll back project (destructive)",
+    description: "DESTRUCTIVE: replaces the running revision with an earlier one, with a short outage; changes made by the newer revision are not undone in volumes or databases. Restores an earlier deployment (the previous one unless deploymentId is given). Two steps: the first call returns what would happen and a confirmationId; call again with that id to run it.",
     extra: { deploymentId: z.number().int().positive().optional() },
     preview: (project, params, deps) => {
       const target = deps.rollbackTarget(project.id, params.deploymentId);
@@ -152,15 +155,19 @@ const SPECS: ToolSpec[] = [
   },
   {
     kind: "restart",
-    title: "Restart project",
-    description: "Recreate the project's containers from the revision that is running now, without pulling or building. Two steps: the first call returns what would happen and a confirmationId; call again with that id to run it.",
+    title: "Restart project (destructive)",
+    description: "DESTRUCTIVE: removes and recreates every container of the project, with a short outage; container data that is not in a volume is lost. It uses the images already built for the running revision (no pull, no build) and is refused when the checkout has moved on since the last deployment, because that would start different code. Two steps: the first call returns what would happen and a confirmationId; call again with that id to run it.",
     extra: {},
-    preview: (project) => ({ summary: `Recreate every container of "${project.name}" from its current revision. There is a short outage. It is currently ${project.lastStatus}.` }),
+    preview: async (project, _params, deps) => {
+      const blocker = await deps.restartBlocker?.(project.id);
+      if (blocker) return { error: blocker };
+      return { summary: `Recreate every container of "${project.name}" from the images of the running revision (no pull, no build). There is a short outage. It is currently ${project.lastStatus}.` };
+    },
   },
   {
     kind: "stop",
-    title: "Stop project",
-    description: "Stop the project's containers. Two steps: the first call returns what would happen and a confirmationId; call again with that id to run it.",
+    title: "Stop project (destructive)",
+    description: "DESTRUCTIVE: stops and removes the project's containers; the project is down, and its domains stop working, until someone deploys or restarts it. Volumes are kept. Two steps: the first call returns what would happen and a confirmationId; call again with that id to run it.",
     extra: {},
     preview: (project) => ({ summary: `Stop "${project.name}". It stays down until it is deployed or restarted. It is currently ${project.lastStatus}.` }),
   },
@@ -205,8 +212,8 @@ function registerNetworkGroupTool(server: McpServer, token: ApiToken, deps: Writ
   server.registerTool(
     tool,
     {
-      title: "Set project network group",
-      description: "Put a project in a network group, or take it out (empty group), and choose which of its services the group's other projects can reach (as <service>.p<projectId>). Nothing is shared unless listed in services. The services it shares can also reach what the others share. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to apply it.",
+      title: "Set project network group (destructive)",
+      description: "DESTRUCTIVE (security-sensitive): changes which projects can reach this project's services, and what it can reach, on any port. Applied to the running containers immediately; taking a service out cuts live connections to it. Puts a project in a network group, or take it out (empty group), and choose which of its services the group's other projects can reach (as <service>.p<projectId>). Nothing is shared unless listed in services. The services it shares can also reach what the others share. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to apply it.",
       inputSchema: {
         projectId: z.number().int().positive(),
         group: z.string().max(40).describe("Lower-case letters, digits, - and _. Empty to leave the group."),
@@ -307,7 +314,7 @@ export function registerWriteTools(
         }
 
         if (!confirmationId) {
-          const preview = spec.preview(project, params, deps);
+          const preview = await spec.preview(project, params, deps);
           if ("error" in preview) return refuse("preview-failed", preview.error);
           const { id, expiresAt } = store.issue(token.id, spec.kind, projectId, params, preview.resolvedDeploymentId);
           auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, projectId, ...params });

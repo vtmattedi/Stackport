@@ -20,12 +20,13 @@ import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, t
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
 import { ensureIngressNetwork } from "../ingress/networks";
 import { dockerCli, pruneGroupNetworks, syncGroupNetwork } from "./compose/groupNetworks";
+import { seedManagedDirectory } from "./compose/seedVolumes";
 import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networkGroups";
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
 import { listRoutedServiceNames } from "../ingress/domains";
 import { ensureBuildCapacity } from "../maintenance/storage/operations";
-import { markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./history";
+import { getActiveDeployment, markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./history";
 import { healthCheckUrl, probeHealth, type HealthProbe } from "./health";
 import { enqueueNotificationTx, sendNotificationEmail, type DeployRollbackOutcome } from "../notifications/operations";
 import { deployBlockedEvent, deployUnhealthyEvent, rollbackFailedEvent, rollbackRecoveredEvent } from "../notifications/events";
@@ -465,7 +466,8 @@ async function prepareManagedVolumes(projectId: number, repoPath: string, resolv
   const override = buildVolumesOverride(plan);
   if (override === null) return null;
   for (const entry of plan) {
-    if (entry.action === "managed" && entry.managedContainerPath) await fs.mkdir(entry.managedContainerPath, { recursive: true });
+    // A directory that is new starts with the repository's own files in that folder, once; see seedVolumes.ts.
+    if (entry.action === "managed" && entry.managedContainerPath) await seedManagedDirectory(entry.source, entry.managedContainerPath);
   }
   const overridePath = path.join(deployRoot(), ".stackport", String(projectId), "volumes.override.yml");
   await fs.mkdir(path.dirname(overridePath), { recursive: true });
@@ -490,6 +492,13 @@ export function isComposePolicyEnforced(projectId: number): boolean {
   return row?.enforced !== 0;
 }
 
+/** Subcommands that read what the Compose file points at. `build` is one of them: its build context and
+ *  Dockerfile are read from this machine's disk and sent to the Docker daemon, so a context outside the
+ *  project would be copied into an image without any container ever starting. */
+export function composeSubcommandNeedsPolicy(subcommand: string | undefined): boolean {
+  return subcommand === "up" || subcommand === "config" || subcommand === "build";
+}
+
 async function runCompose(
   projectId: number,
   action: ProjectDeployEvent["action"],
@@ -503,9 +512,10 @@ async function runCompose(
   if (composeFile) {
     // Phase 1.7 — StackPort-owned augmentation, ephemeral (never committed, same
     // philosophy the old SP:AUTO/port-hiding rewrites used): attaches whichever
-    // services this project's domains actually route to onto the shared
-    // project's own ingress network (stackport-ingress-<id>) so nginx can reach them by a project-unique alias. Re-applied on
-    // every runCompose call because git operations (ensureRepo's reset --hard) wipe
+    // services this project's domains actually route to onto the project's own
+    // ingress network (stackport-ingress-<id>), so nginx can reach them by a
+    // project-unique alias. Re-applied on every runCompose call because git
+    // operations (ensureRepo's reset --hard) wipe
     // it back to the plain source file on every fresh pull, same reason SP:AUTO
     // needed re-substitution before every invocation.
     const routedServices = listRoutedServiceNames(projectId);
@@ -513,8 +523,7 @@ async function runCompose(
       try {
         await ensureIngressNetwork(projectId);
       } catch (err) {
-        const message = `Could not prepare the project ingress network: ${err instanceof Error ? err.message : String(err)}
-`;
+        const message = `Could not prepare the project ingress network: ${err instanceof Error ? err.message : String(err)}\n`;
         emit(projectId, action, "stderr", message);
         return { ok: false, output: message, stdout: "", command: "ingress network" };
       }
@@ -525,7 +534,7 @@ async function runCompose(
       }
     }
 
-    if (args[0] === "up" || args[0] === "config") {
+    if (composeSubcommandNeedsPolicy(args[0])) {
       // Resolved once: the policy, the mount rewrite and the hardening all work from the same snapshot.
       resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
       const policy = await checkComposePolicy(projectId, repoPath, composeFile, resolution);
@@ -540,7 +549,8 @@ async function runCompose(
   const compose = await composeCommand();
   const fileArgs = composeFile ? ["-f", composeFile] : [];
   const env = dockerEnv();
-  if (resolution) {
+  // A build does not run containers, so it needs no mounts or limits, only the policy above.
+  if (resolution && args[0] !== "build") {
     const managed = isVolumesManaged(projectId);
     const hardened = isHardeningEnabled(projectId);
     if (!resolution.ok) {
@@ -550,8 +560,14 @@ async function runCompose(
       }
     } else {
       if (managed) {
-        const override = await prepareManagedVolumes(projectId, repoPath, resolution.doc);
-        if (override) fileArgs.push("-f", override);
+        try {
+          const override = await prepareManagedVolumes(projectId, repoPath, resolution.doc);
+          if (override) fileArgs.push("-f", override);
+        } catch (err) {
+          const message = `${err instanceof Error ? err.message : String(err)}\n`;
+          emit(projectId, action, "stderr", message);
+          return { ok: false, output: message, stdout: "", command: "managed mount preparation" };
+        }
       }
       if (hardened) {
         const override = await prepareHardening(projectId, resolution.doc);
@@ -1062,7 +1078,7 @@ async function readComposeFileSafe(repoPath: string, composeFile: string | null)
   return fs.readFile(path.join(repoPath, composeFile), "utf8").catch(() => null);
 }
 
-async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null, pinnedSha?: string | null): Promise<DeployResult> {
+async function runProjectAction(projectId: number, action: "build" | "deploy" | "compose" | "recreate", pullFirst = true, triggeredBy: "manual" | "auto" = "manual", branch?: string | null, pinnedSha?: string | null, options: { build?: boolean } = {}): Promise<DeployResult> {
   const project = getProjectById(projectId);
   if (!project) {
     return { ok: false, projectId, repoPath: "", output: "Project not found", action };
@@ -1151,7 +1167,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   const composeArgs = action === "build"
     ? ["build"]
     : action === "recreate"
-      ? ["up", "-d", "--build", "--force-recreate"]
+      ? ["up", "-d", ...(options.build === false ? ["--no-build"] : ["--build"]), "--force-recreate"]
       : ["up", "-d", "--build"];
   const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, MAX_BUILD_TIME_MS );
   output.push(compose.output);
@@ -1245,6 +1261,28 @@ export function composeProject(projectId: number): Promise<DeployResult> {
 /** Same as composeProject, but with `--force-recreate` — for when Compose's config diff misses a change (e.g. an env_file edit) and keeps the stale container running after a rebuild. */
 export function recreateProject(projectId: number): Promise<DeployResult> {
   return runProjectAction(projectId, "recreate", false);
+}
+
+/** Why the running revision cannot be restarted as it is, or null when it can. A restart recreates the containers
+ *  from the checkout, so it only restarts what is running while the checkout is still at the deployed commit:
+ *  after a pull that was not deployed it would start the newer code instead. */
+export async function restartBlocker(projectId: number): Promise<string | null> {
+  const project = getProjectById(projectId);
+  if (!project) return "Project not found.";
+  const active = getActiveDeployment(projectId);
+  if (!active?.commitSha || project.sourceType === "upload") return null; // nothing recorded to compare with
+  const head = await currentCommitSha(projectId, "recreate", projectRepoDir(project));
+  if (head === null) return "Could not read the checkout's commit, so it cannot be compared with the running revision. Not restarted.";
+  if (head === active.commitSha) return null;
+  return `The checkout is at ${head.slice(0, 7)} but the running revision is ${active.commitSha.slice(0, 7)}: a restart would start the checkout, not what is running. Deploy the new revision, or roll back to the running one.`;
+}
+
+/** Recreates the project's containers from the images already built for the running revision: no pull and no
+ *  build (`--no-build`), and refused when the checkout has moved on (restartBlocker). */
+export async function restartProject(projectId: number): Promise<DeployResult> {
+  const blocker = await restartBlocker(projectId);
+  if (blocker) return { ok: false, projectId, repoPath: "", output: `${blocker}\n`, action: "recreate" };
+  return runProjectAction(projectId, "recreate", false, "manual", undefined, undefined, { build: false });
 }
 
 const SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;

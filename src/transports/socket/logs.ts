@@ -31,8 +31,12 @@ function isLogsStopPayload(value: unknown): value is LogsStopPayload {
   return typeof v["sessionId"] === "string";
 }
 
-export function bindDockerLogsEvents(socket: Socket): void {
+export function bindDockerLogsEvents(socket: Socket, sessionLive: () => boolean = () => true): void {
   socket.on("logs:start", (payload: unknown, ack?: (res: LogsStartAck) => void) => {
+    if (!sessionLive()) {
+      ack?.({ ok: false, error: "Session ended" });
+      return;
+    }
     if (!isLogsStartPayload(payload)) {
       ack?.({ ok: false, error: "Invalid request" });
       return;

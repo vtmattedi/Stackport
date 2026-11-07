@@ -140,6 +140,16 @@ export function emitGlobalEvent(event: GlobalRealtimeEvent): void {
   io?.to("global").emit("global:event", event);
 }
 
+/** Closes the sockets opened with one session, e.g. on logout. */
+export function disconnectSessionSockets(tokenId: string, reason = "logout"): void {
+  if (!io) return;
+  for (const socket of io.sockets.sockets.values()) {
+    if (socket.data["authTokenId"] !== tokenId) continue;
+    socket.emit("auth:revoked", { reason });
+    socket.disconnect(true);
+  }
+}
+
 export function disconnectUserSockets(username: string, reason = "auth-revoked"): void {
   if (!io) return;
 

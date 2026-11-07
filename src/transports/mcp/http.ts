@@ -33,7 +33,9 @@ function notFound(message: string): CallToolResult {
 }
 
 export function buildMcpServer(token: ApiToken): McpServer {
-  const server = new McpServer({ name: "stackport", version: packageVersion() });
+  const server = new McpServer({ name: "stackport", version: packageVersion() }, {
+    instructions: "Tools whose description starts with DESTRUCTIVE: change, interrupt or remove something that is running or overwrite stored data. Do not call one unless the user has asked for that change. Each takes two calls: the first only describes what would happen; show that to the user and call again with the confirmationId only after they agree.",
+  });
   const actor = `token:${token.name}#${token.id}`;
   const audit = (tool: string, meta: Record<string, unknown> = {}): void =>
     auditLog(actor, "mcp.tool", tool, "ok", { tokenId: token.id, ...meta });

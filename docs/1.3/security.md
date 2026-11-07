@@ -78,6 +78,11 @@ change are enforced; projects that already existed (migration 008,
 rejected for. There is no setting to enforce an existing project yet: add one before
 the next release.
 
+The check runs before `up`, `config` and **`build`**. A build reads its context and Dockerfile from
+Stackport's own disk and sends them to the Docker daemon, so `build.context: /app/data` copied Stackport's
+files into an image (and a `RUN` could send them out) without any container starting. The Build action and
+the first step of a forced rebuild skipped the check until this was found in review.
+
 What the resolved config is held to (`validateResolvedComposePolicy`):
 
 | Case | Rule |
@@ -128,6 +133,13 @@ daemon reads as a host path.
   to its managed directory, a read-only mount (repository config files) keeps its place
   with the path translated to the host, and what cannot move (a file, or the whole
   checkout writable) is kept the same way and reported. `managedVolumes.ts` plans it.
+- A new managed directory is filled once from the repository's folder of the same path (a writable
+  `./config` or `./data` that ships default or seed files), so the container still sees them.
+  `seedVolumes.ts` copies into `<dir>.seeding`, checks it against the source (names, sizes, link
+  targets) and renames it into place, so an interrupted copy never leaves a half-filled directory. Links are
+  copied as links, not followed. It happens only when the directory does not exist yet: never into an
+  existing one (not even an empty one), and never again, so nothing the application wrote is overwritten.
+  A failed copy fails the deploy with the reason.
 - New projects are managed from the start. Existing ones (migration 009) keep their
   current mounts until **Settings > Migrations** copies their data (a helper container
   runs `cp -a`, so ownership survives), leaves the originals in place, and switches
@@ -135,8 +147,11 @@ daemon reads as a host path.
   cannot be read (a copy of live data loses writes), blocks one on a failed copy, on data found in
   two places, or on a copy that does not match the original (a read-only `diff -rq` after the copy).
   Directory names come from the mount's path alone (`<path>-<hash>`), so they never change. A second entry removes the original
-  directories afterwards, once the managed copy holds files and no running container
-  still mounts the original. The page is temporary: delete `src/modules/maintenance/migrations`,
+  directories afterwards. It re-checks right before deleting, because the project may have written to the
+  original since the copy (for example after being reverted to the old release): the managed copy must hold
+  files and cover everything in the original (a file missing from the copy, or newer in the original, stops
+  it, read-only in a helper container), and no container on the host, running or stopped, may mount the
+  original or anything inside it. The page is temporary: delete `src/modules/maintenance/migrations`,
   `client/src/pages/settings/migrations` and the lines marked TEMPORARY once installs
   have migrated.
 
@@ -293,6 +308,12 @@ handshake must come from the same host. The bearer form still works for scripts,
 CSRF header, and login returns the token only to a caller that does not send that header.
 Everyone is signed out once by the update, and `JWT_EXPIRY` is gone.
 
+A WebSocket was authenticated only when it connected, so it outlived the session: past the 12 hour cap,
+after logout, and a container shell opened on it kept working. Now logout closes the sockets opened with that
+session, a sweep every 30 seconds closes any whose session has expired, reached its cap or been revoked, and
+`shell:start`, `shell:input` and `logs:start` check the session before they act (`sessionGuard.ts`). The
+check does not extend the session.
+
 ### S7 — Separate encryption key, with versioning · 🟡 · M
 
 Stored credentials are encrypted with a key derived from `JWT_SECRET`, so rotating
@@ -335,7 +356,7 @@ can't mint tokens.
 
 **Status: done, with decisions.** A token created with the `write` scope gets four more
 tools on `/mcp`: `stackport_deploy_project`, `_rollback_project`, `_restart_project`
-(recreates the containers from the running revision, no pull) and `_stop_project`. Each is
+(recreates the containers from the images already built, with no pull and no build; refused when the checkout is no longer at the deployed commit, because it would start different code) and `_stop_project`. Each is
 two calls: the first changes nothing and returns what would happen plus a one-time
 confirmation id (5 minutes, bound to the token, tool, project and arguments); only a
 second call that presents it runs the action. That is enforced by the server, not by a
@@ -344,6 +365,13 @@ a project with no group is outside every group). The limit applies to writes: re
 see every project. Every preview, refusal, start and finish is audited with the token as the
 actor. The stdio MCP is unchanged in this respect and still local-only. `stackport_set_network_group`
 (S15) is a fifth write tool, with the same two-call rule and one extra rule for limited tokens.
+
+Every write tool, on HTTP and on the local stdio server, is marked as destructive in two places an agent
+sees before using it: `destructiveHint` in its annotations and a description that starts with
+`DESTRUCTIVE:` and says what it interrupts, replaces or overwrites. The server instructions explain the
+marker and tell the agent to call such a tool only when the user asked for that change. On stdio this also
+covers the tools that overwrite stored data or interrupt routing (update project, pause, domain SSL, env
+file replace, nginx reload), which were not marked before.
 
 ### S12 — `resolveContainedPath` should resolve symlinks · 🟡 · S
 

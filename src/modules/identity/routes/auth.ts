@@ -6,6 +6,7 @@ import { authLimiter } from "../../../application/http/rateLimiter";
 import { getActivePasswordHash } from "./admin";
 import { requireAuth } from "../middleware/session";
 import { invalidateAuthToken, issueAuthToken } from "../sessions";
+import { disconnectSessionSockets } from "../../../application/realtime";
 import { buildClearedSessionCookie, buildSessionCookie, CLIENT_HEADER, CLIENT_HEADER_VALUE } from "../sessionCookie";
 import { getActiveAdminUsername } from "../installation";
 
@@ -43,6 +44,7 @@ router.post("/login", authLimiter, async (req: Request, res: Response): Promise<
 router.post("/logout", requireAuth, (req: Request, res: Response): void => {
   if (req.authTokenId) {
     invalidateAuthToken(req.authTokenId);
+    disconnectSessionSockets(req.authTokenId);
   }
   auditLog(req.user ?? "unknown", "logout", "admin", "ok", { ip: req.ip });
   res.append("Set-Cookie", buildClearedSessionCookie(req.secure));
