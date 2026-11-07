@@ -393,8 +393,8 @@ export const api = {
   getProjectDeploys: (projectId: number) =>
     request<ProjectDeploy[]>(`/projects/${projectId}/deploys`),
   listApiTokens: () => request<ApiToken[]>("/api-tokens"),
-  createApiToken: (name: string, expiresInDays: number | null) =>
-    request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays }) }),
+  createApiToken: (name: string, expiresInDays: number | null, scope: "read" | "write" = "read", projectGroup: string | null = null) =>
+    request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays, scope, projectGroup }) }),
   revokeApiToken: (id: number) => request<void>(`/api-tokens/${id}`, { method: "DELETE" }),
   getProjectDeploymentRevisions: (projectId: number) =>
     request<ProjectDeploymentRevision[]>(`/projects/${projectId}/deployments`),

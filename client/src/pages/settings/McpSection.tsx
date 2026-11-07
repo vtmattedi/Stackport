@@ -5,6 +5,7 @@ import { useConfirm } from "../../components/ConfirmDialog";
 import { TimeAgo } from "../../components/TimeAgo";
 import { api } from "../../api/client";
 import type { ApiToken } from "../../api/types";
+import { useSystemSelector } from "../../context/SystemContext";
 import { notify } from "../../lib/notify";
 import styles from "../Settings.module.scss";
 
@@ -14,6 +15,22 @@ const EXPIRY_OPTIONS = [
   { value: "365", label: "1 year" },
   { value: "never", label: "Never" },
 ];
+
+const SCOPE_OPTIONS = [
+  { value: "read", label: "Read only" },
+  { value: "write", label: "Read and write" },
+];
+
+const ALL_PROJECTS = "";
+
+function sameGroups(a: (string | null)[], b: (string | null)[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function accessLabel(token: ApiToken): string {
+  if (!token.scopes.includes("write")) return "Read only";
+  return token.projectGroup ? `Read and write: group "${token.projectGroup}"` : "Read and write: all projects";
+}
 
 async function copy(text: string, what: string) {
   try {
@@ -30,13 +47,17 @@ function tokenState(token: ApiToken): string {
   return "Active";
 }
 
-/** API tokens for the read-only MCP endpoint at /mcp. */
+/** API tokens for the MCP endpoint at /mcp: read-only, or with write tools for deploy, rollback, restart and stop. */
 export default function McpSection() {
   const confirm = useConfirm();
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState("90");
+  const [scope, setScope] = useState("read");
+  const [group, setGroup] = useState(ALL_PROJECTS);
+  const groupNames = useSystemSelector((snap) => (snap.projects ?? []).map((project) => project.groupName), sameGroups);
+  const groups = [...new Set(groupNames.filter((name): name is string => !!name))].sort((a, b) => a.localeCompare(b));
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<{ token: string; name: string } | null>(null);
 
@@ -58,7 +79,12 @@ export default function McpSection() {
     e.preventDefault();
     setCreating(true);
     try {
-      const result = await api.createApiToken(name.trim(), expiry === "never" ? null : Number(expiry));
+      const result = await api.createApiToken(
+        name.trim(),
+        expiry === "never" ? null : Number(expiry),
+        scope === "write" ? "write" : "read",
+        scope === "write" && group !== ALL_PROJECTS ? group : null,
+      );
       setCreated({ token: result.token, name: result.record.name });
       setName("");
       void load();
@@ -95,8 +121,11 @@ export default function McpSection() {
       <div className="card" style={{ maxWidth: 720 }}>
         <div className="card-title"><KeyRound size={13} />API tokens</div>
         <p className="hint" style={{ marginBottom: 12 }}>
-          Tokens give read-only access to <span className="mono">{endpoint}</span>: project status, repository, branch,
+          Tokens give access to <span className="mono">{endpoint}</span>: project status, repository, branch,
           health, recent deployments and containers. They never expose credentials, env files or logs.
+          A <strong>read and write</strong> token can also deploy, roll back, restart and stop projects, in all projects or
+          in one project group. Every one of those takes two calls: the first only says what would happen, and the action
+          runs only when the second call presents the confirmation it returned. Each call is written to the audit log.
           Works with Claude Code and Claude Desktop. claude.ai connectors need OAuth, which isn't supported yet.
         </p>
 
@@ -121,6 +150,20 @@ export default function McpSection() {
             <label>Name</label>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. laptop Claude Code" maxLength={80} required />
           </div>
+          <div className="field" style={{ minWidth: 150, flex: "none" }}>
+            <label>Access</label>
+            <AppSelect value={scope} onValueChange={setScope} options={SCOPE_OPTIONS} />
+          </div>
+          {scope === "write" && (
+            <div className="field" style={{ minWidth: 170, flex: "none" }}>
+              <label>Projects</label>
+              <AppSelect
+                value={group}
+                onValueChange={setGroup}
+                options={[{ value: ALL_PROJECTS, label: "All projects" }, ...groups.map((name) => ({ value: name, label: `Group: ${name}` }))]}
+              />
+            </div>
+          )}
           <div className="field" style={{ minWidth: 140, flex: "none" }}>
             <label>Expires</label>
             <AppSelect value={expiry} onValueChange={setExpiry} options={EXPIRY_OPTIONS} />
@@ -141,7 +184,7 @@ export default function McpSection() {
           <div className="table-wrap" style={{ marginTop: 16 }}>
             <table>
               <thead>
-                <tr><th>Name</th><th>Token</th><th>State</th><th>Last used</th><th>Expires</th><th /></tr>
+                <tr><th>Name</th><th>Token</th><th>Access</th><th>State</th><th>Last used</th><th>Expires</th><th /></tr>
               </thead>
               <tbody>
                 {tokens.map((token) => {
@@ -150,6 +193,7 @@ export default function McpSection() {
                     <tr key={token.id}>
                       <td>{token.name}</td>
                       <td className="mono">{token.prefix}…</td>
+                      <td>{accessLabel(token)}</td>
                       <td style={{ color: state === "Active" ? "var(--success)" : "var(--dim)" }}>{state}</td>
                       <td>{token.lastUsedAt ? <TimeAgo ts={token.lastUsedAt} /> : "Never"}</td>
                       <td>{token.expiresAt ? new Date(token.expiresAt).toLocaleDateString() : "Never"}</td>

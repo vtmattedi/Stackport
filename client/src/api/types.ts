@@ -915,6 +915,8 @@ export interface ApiToken {
   name: string;
   prefix: string;
   scopes: string[];
+  /** A write token acts only on projects in this group; null means every project. */
+  projectGroup: string | null;
   createdAt: string;
   lastUsedAt: string | null;
   expiresAt: string | null;
