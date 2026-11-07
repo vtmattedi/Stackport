@@ -174,13 +174,16 @@ function dockerConfigDir(): string {
   return path.join(deployRoot(), ".docker");
 }
 
-/** What the docker CLI needs to find and reach the daemon. Nothing else from Stackport's
- *  own environment may reach `docker compose`: Compose interpolates `${VAR}` from it, so
- *  a project's Compose file could read JWT_SECRET and the other secrets (S14). The
- *  Windows entries are needed for the CLI to start there. */
+/** What the docker CLI needs to find and reach the daemon and its registries. Nothing else
+ *  from Stackport's own environment may reach `docker compose`: Compose interpolates `${VAR}`
+ *  from it, so a project's Compose file could read JWT_SECRET and the other secrets (S14).
+ *  The proxy and certificate variables stay because pulls and builds fail without them on a
+ *  host behind a proxy; note a proxy URL can carry credentials, which a Compose file could
+ *  then interpolate. The Windows entries are needed for the CLI to start there. */
 const DOCKER_ENV_ALLOWLIST = new Set([
   "PATH", "HOME", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT",
-  "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+  "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_API_VERSION",
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
   "USERPROFILE", "SYSTEMROOT", "COMSPEC", "PATHEXT", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA",
 ]);
 
