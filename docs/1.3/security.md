@@ -231,6 +231,13 @@ temporary page is removed, because it also finishes a later key rotation.
 unlike credentials. Encrypt them with S7's key; decrypt only when writing the `.env`
 file a deploy uses. Found during PR 8.
 
+**Status: done.** New and edited env files store their values only as ciphertext
+(`project_env_files.variables_enc`, migration 011; `variables_json` is `[]`). Files saved
+before are encrypted by **Settings > Migrations > Encrypt managed env values**. Env values
+are in the re-encryption list, so a key rotation covers them. Rolling back to a release
+older than 1.3 deploys an encrypted project with an empty env file, so take the database
+backup first and treat a rollback across this change as a restore.
+
 ### S5 (rest) — Write access over MCP · 🟠 · L · needs S6
 
 1.2 ships a read-only MCP with scoped tokens (`read`). Write tools (deploy, roll back,
