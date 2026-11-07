@@ -2,7 +2,7 @@ import * as path from "path";
 import { getDatabase } from "../../../config/database";
 import { currentVolumeRoots, managedVolumesRoot, type VolumeRoots } from "../../deployments/compose/managedVolumes";
 import { expectedComposeProjectName } from "../../deployments/operations";
-import { dockerRunner, type DockerRunner } from "./docker";
+import { dockerRunner, probeDirectory, type DockerRunner } from "./docker";
 import type { LegacyMigration, MigrationMode, MigrationReport, ReportItem } from "./types";
 
 /** TEMPORARY (see types.ts). S2 cleanup: delete the original mount directories that the
@@ -37,21 +37,12 @@ export function isSafeToRemove(sourcePath: string): boolean {
 const mount = (source: string, target: string, readOnly: boolean): string[] =>
   ["--mount", `type=bind,src=${source},dst=${target}${readOnly ? ",readonly" : ""}`];
 
-const PROBE = "du -sk /from | cut -f1; ls -A /from | wc -l";
-
 export async function runCleanup(mode: MigrationMode, deps: CleanupDeps): Promise<MigrationReport> {
   const items: ReportItem[] = [];
   const sources = deps.listSources();
   if (!sources.length) return { summary: "Nothing to clean up: no migrated mount directories are waiting to be removed.", items };
 
   const image = await deps.helperImage();
-  const probe = async (hostPath: string): Promise<{ exists: boolean; kb: number; entries: number }> => {
-    const result = await deps.docker(["run", "--rm", ...mount(hostPath, "/from", true), "--entrypoint", "sh", image, "-c", PROBE]);
-    if (result.code !== 0) return { exists: false, kb: 0, entries: 0 };
-    const [kb, entries] = result.stdout.trim().split(/\s+/).map(Number);
-    return { exists: true, kb: kb || 0, entries: entries || 0 };
-  };
-
   let removed = 0;
   let skipped = 0;
   for (const source of sources) {
@@ -60,18 +51,22 @@ export async function runCleanup(mode: MigrationMode, deps: CleanupDeps): Promis
 
     if (!isSafeToRemove(source.sourcePath)) { skip(`Refusing to remove "${source.sourcePath}": not a plain absolute path.`); continue; }
 
-    const original = await probe(source.sourcePath);
-    if (!original.exists) {
+    const original = await probeDirectory(deps.docker, image, source.sourcePath);
+    if (original.state === "error") { skip(`Could not look at ${source.sourcePath}: ${original.detail}. Not removed.`); continue; }
+    if (original.state === "missing") {
       if (mode === "execute") deps.markRemoved(source.id);
       items.push({ status: "info", label, detail: `${source.sourcePath} is already gone.` });
       continue;
     }
 
     const managedHost = path.posix.join(managedVolumesRoot(deps.roots, source.projectId).host, source.name);
-    const managed = await probe(managedHost);
-    if (!managed.exists || managed.entries === 0) { skip(`The managed copy at ${managedHost} is empty or missing, so the original is the only data. Not removed.`); continue; }
+    const managed = await probeDirectory(deps.docker, image, managedHost);
+    if (managed.state === "error") { skip(`Could not look at the managed copy at ${managedHost}: ${managed.detail}. Not removed.`); continue; }
+    if (managed.state === "missing" || managed.entries === 0) { skip(`The managed copy at ${managedHost} is empty or missing, so the original is the only data. Not removed.`); continue; }
 
     const containers = await deps.docker(["ps", "-q", "--filter", `label=com.docker.compose.project=${source.composeProject}`]);
+    // A failed listing is not an empty one: without it we cannot say that nothing still mounts the original.
+    if (containers.code !== 0) { skip(`Could not list the project's running containers: ${containers.stderr.trim().split("\n")[0] || `exit code ${containers.code}`}. Not removed.`); continue; }
     const ids = containers.stdout.split(/\s+/).filter(Boolean);
     if (ids.length) {
       const inspected = await deps.docker(["inspect", "--format", "{{range .Mounts}}{{println .Source}}{{end}}", ...ids]);

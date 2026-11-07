@@ -9,19 +9,20 @@ const resolved = { services: { web: { volumes: [{ type: "bind", source: `${REPO}
 interface Harness { deps: VolumeMigrationDeps; calls: string[][]; made: string[]; marked: number[]; recorded: string[] }
 
 /** `present` maps a host path to what a probe of it finds ("kb entries"). */
-function harness(options: { present?: Record<string, string>; running?: boolean; resolved?: unknown | null; copyFails?: boolean; projects?: typeof project[] } = {}): Harness {
+function harness(options: { present?: Record<string, string>; running?: boolean; resolved?: unknown | null; copyFails?: boolean; projects?: typeof project[]; daemonDown?: boolean } = {}): Harness {
   const calls: string[][] = [];
   const made: string[] = [];
   const marked: number[] = [];
   const recorded: string[] = [];
   const docker = async (args: string[]): Promise<DockerResult> => {
     calls.push(args);
+    if (options.daemonDown) return { code: 1, stdout: "", stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" };
     if (args[0] === "ps") return { code: 0, stdout: options.running ? "abc123\n" : "", stderr: "" };
     const mount = args.find((a) => a.startsWith("type=bind,src="));
     const src = mount?.split(",")[1].slice("src=".length) ?? "";
     if (args.includes("cp -a /from/. /to/")) return options.copyFails ? { code: 1, stdout: "", stderr: "cp: no space left" } : { code: 0, stdout: "", stderr: "" };
     const found = options.present?.[src];
-    return found ? { code: 0, stdout: `${found.split(" ")[0]}\n${found.split(" ")[1]}\n`, stderr: "" } : { code: 1, stdout: "", stderr: "no such path" };
+    return found ? { code: 0, stdout: `${found.split(" ")[0]}\n${found.split(" ")[1]}\n`, stderr: "" } : { code: 1, stdout: "", stderr: 'invalid mount config for type "bind": bind source path does not exist' };
   };
   const deps: VolumeMigrationDeps = {
     docker,
@@ -98,6 +99,15 @@ test("a mount with no data yet starts empty and the project still switches", asy
   assert.deepEqual(copies(h), []);
   assert.deepEqual(h.marked, [7]);
   assert.equal(report.items.some((i) => /no existing data/.test(i.label)), true);
+});
+
+test("a Docker error while looking for data is not read as 'no data': the project is blocked, not switched to an empty directory", async () => {
+  const h = harness({ daemonDown: true });
+  const report = await runVolumeMigration("execute", h.deps);
+  assert.match(report.summary, /0 projects switched, 1 blocked/);
+  assert.deepEqual(h.made, [], "no empty directory was prepared");
+  assert.deepEqual(h.marked, []);
+  assert.match(report.items.map((i) => i.detail ?? "").join("\n"), /Cannot connect to the Docker daemon/);
 });
 
 test("running containers produce a warning", async () => {

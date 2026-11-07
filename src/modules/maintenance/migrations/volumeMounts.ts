@@ -4,7 +4,7 @@ import { getDatabase } from "../../../config/database";
 import { currentVolumeRoots, planManagedVolumes, type MountPlanEntry, type VolumeRoots } from "../../deployments/compose/managedVolumes";
 import { expectedComposeProjectName, projectRepoDir, resolveComposeConfig } from "../../deployments/operations";
 import { rowToProject, type ProjectRow } from "../../projects/types";
-import { dockerRunner, type DockerResult, type DockerRunner } from "./docker";
+import { dockerRunner, probeDirectory, type DockerRunner } from "./docker";
 import type { LegacyMigration, MigrationMode, MigrationReport, ReportItem } from "./types";
 
 /** TEMPORARY (see types.ts). S2: copy each existing project's writable bind-mount data
@@ -32,12 +32,6 @@ export interface VolumeMigrationDeps {
 
 interface Probe { exists: boolean; kb: number; entries: number }
 
-function parseProbe(result: DockerResult): Probe {
-  if (result.code !== 0) return { exists: false, kb: 0, entries: 0 };
-  const [kb, entries] = result.stdout.trim().split(/\s+/).map(Number);
-  return { exists: true, kb: kb || 0, entries: entries || 0 };
-}
-
 const bindMount = (source: string, target: string, readOnly: boolean): string[] =>
   ["--mount", `type=bind,src=${source},dst=${target}${readOnly ? ",readonly" : ""}`];
 
@@ -52,9 +46,6 @@ export async function runVolumeMigration(mode: MigrationMode, deps: VolumeMigrat
   if (!projects.length) return { summary: "Nothing to migrate: every project already uses Stackport-owned mounts.", items };
 
   const image = await deps.helperImage();
-  const probe = async (hostPath: string): Promise<Probe> => parseProbe(await deps.docker([
-    "run", "--rm", ...bindMount(hostPath, "/from", true), "--entrypoint", "sh", image, "-c", "du -sk /from | cut -f1; ls -A /from | wc -l",
-  ]));
   let switched = 0;
   let blocked = 0;
 
@@ -82,9 +73,17 @@ export async function runVolumeMigration(mode: MigrationMode, deps: VolumeMigrat
       copied.add(entry.name);
       const places = [...new Set([entry.source, entry.hostSource])];
       const found: { path: string; probe: Probe }[] = [];
+      let unreadable: string | null = null;
       for (const place of places) {
-        const result = await probe(place);
-        if (result.exists && result.entries > 0) found.push({ path: place, probe: result });
+        const result = await probeDirectory(deps.docker, image, place);
+        if (result.state === "error") { unreadable = `${place}: ${result.detail}`; break; }
+        if (result.state === "present" && result.entries > 0) found.push({ path: place, probe: { exists: true, kb: result.kb, entries: result.entries } });
+      }
+      if (unreadable) {
+        // Could not tell whether there is data: never treat that as "starts empty", or the project would switch to an empty directory.
+        projectItems.push({ status: "error", label: `${entry.name}: could not look for existing data`, detail: `${unreadable}. Nothing was changed; run this again once Docker is healthy.` });
+        problem = true;
+        continue;
       }
       if (found.length > 1) {
         projectItems.push({ status: "error", label: `${entry.name}: data in two places`, detail: `${found.map((f) => f.path).join(" and ")} both hold files. Decide which one to keep, empty the other, and run this again.` });
