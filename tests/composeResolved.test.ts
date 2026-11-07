@@ -110,7 +110,7 @@ test("composeConfigArgs turns every profile on before the subcommand", () => {
 
 test("S1: an ordinary project's networks and volumes pass the policy as real Compose resolves them", { skip }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "7-shop-"));
-  fs.writeFileSync(path.join(dir, "compose.yml"), "services:\n  web:\n    image: alpine\n    volumes: [data:/data]\n    networks:\n      default: {}\n      stackport-ingress-7:\n        aliases: [sp7-web]\nvolumes:\n  data: {}\nnetworks:\n  stackport-ingress-7:\n    external: true\n    name: stackport-ingress-7\n");
+  fs.writeFileSync(path.join(dir, "compose.yml"), "services:\n  web:\n    image: alpine\n    volumes: [data:/data]\n    networks:\n      default: {}\n      stackport-proxy:\n        aliases: [sp7-web]\nvolumes:\n  data: {}\nnetworks:\n  stackport-proxy:\n    external: true\n    name: stackport-proxy\n");
   try {
     const resolution = await resolveComposeConfigDetailed(dir, "compose.yml");
     assert.equal(resolution.ok, true);

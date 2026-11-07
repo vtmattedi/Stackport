@@ -3,7 +3,7 @@ import * as path from "path";
 import { splitPortSpec } from "./yaml";
 import { relativeInside } from "../../../shared/hostPath";
 import { resolveContainedPath } from "../../../shared/safePath";
-import { ingressAlias, ingressNetworkName, isReservedIngressServiceName } from "../../../shared/ingressNames";
+import { INGRESS_NETWORK, ingressAlias, isReservedIngressServiceName } from "../../../shared/ingressNames";
 
 /** StackPort's security/exposure boundary for managed-project compose files: the
  *  Phase 1.3 directives that let a container escape into host/StackPort authority
@@ -130,7 +130,7 @@ export function validateComposePolicy(doc: unknown): { ok: boolean; violations: 
 /** Where the project's files live; bind mounts must stay inside it. */
 export interface ResolvedPolicyContext {
   projectDir: string;
-  /** Names the one external network the project may use: its own ingress network (S9). */
+  /** Lets the ingress alias rules name the project (sp<id>-<service>). */
   projectId?: number;
 }
 
@@ -308,17 +308,17 @@ function checkTopLevelVolumes(volumes: Record<string, unknown> | null, project: 
 }
 
 /** Networks. A service can join an existing Docker network by naming it, including Stackport's
- *  own (`stackport_default`, where the admin API listens) or another project's. Only the
- *  project's own ingress network may be external, and a network that is created must carry the
- *  project's name and use the bridge driver (other drivers reach the host's network). */
-function checkTopLevelNetworks(networks: Record<string, unknown> | null, project: string | null, ingress: string | null, add: Add): void {
+ *  own (`stackport_default`, where the admin API listens) or another project's. Only the shared
+ *  ingress network may be external, and a network that is created must carry the project's name
+ *  and use the bridge driver (other drivers reach the host's network). */
+function checkTopLevelNetworks(networks: Record<string, unknown> | null, project: string | null, ingress: string, add: Add): void {
   for (const [key, value] of Object.entries(networks ?? {})) {
     const network = asRecord(value);
     if (!network) continue;
     const name = typeof network["name"] === "string" ? network["name"] : key;
     if (network["external"] === true || network["external"] === "true") {
       if (name !== ingress) {
-        add(key, "external", `joining the existing network "${name}" is not allowed for managed projects.`, "Remove the external network; services reach each other on the project's own network, and Stackport attaches the project's ingress network itself.", "networks");
+        add(key, "external", `joining the existing network "${name}" is not allowed for managed projects.`, "Remove the external network; services reach each other on the project's own network, and Stackport attaches the ingress network itself.", "networks");
       }
       continue;
     }
@@ -332,8 +332,8 @@ function checkTopLevelNetworks(networks: Record<string, unknown> | null, project
   }
 }
 
-/** A service on the ingress network is visible to nginx by its own name and by its aliases. If it could
- *  choose either, it could answer for another project's service (`sp3-web`) or for Stackport's admin
+/** A service on the shared ingress network is visible to nginx by its own name and by its aliases. If it
+ *  could choose either, it could answer for another project's service (`sp3-web`) or for Stackport's admin
  *  route (`stackport`). Stackport sets the alias; nothing else is accepted. */
 function checkIngressAttachment(name: string, service: Record<string, unknown>, projectId: number, ingress: string, add: Add): void {
   const networks = asRecord(service["networks"]);
@@ -371,11 +371,10 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
   }
   const projectName = typeof asRecord(resolved)?.["name"] === "string" ? (asRecord(resolved)!["name"] as string) : null;
   checkTopLevelVolumes(asRecord(asRecord(resolved)?.["volumes"]), projectName, add);
-  const ingress = context.projectId === undefined ? null : ingressNetworkName(context.projectId);
-  checkTopLevelNetworks(asRecord(asRecord(resolved)?.["networks"]), projectName, ingress, add);
+  checkTopLevelNetworks(asRecord(asRecord(resolved)?.["networks"]), projectName, INGRESS_NETWORK, add);
   for (const [name, value] of Object.entries(services ?? {})) {
     const service = asRecord(value);
-    if (service && ingress !== null) checkIngressAttachment(name, service, context.projectId as number, ingress, add);
+    if (service && context.projectId !== undefined) checkIngressAttachment(name, service, context.projectId, INGRESS_NETWORK, add);
   }
   checkTopLevelFiles("secrets", asRecord(asRecord(resolved)?.["secrets"]), context, add);
   checkTopLevelFiles("configs", asRecord(asRecord(resolved)?.["configs"]), context, add);
