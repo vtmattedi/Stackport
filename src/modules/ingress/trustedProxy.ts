@@ -15,7 +15,9 @@ export interface TrustedProxy {
   /** Express `trust proxy` function. */
   trust: (address: string) => boolean;
   refresh: () => Promise<void>;
-  start: () => void;
+  /** Starts the regular lookups and resolves once the first one has finished (or `maxWaitMs` has passed),
+   *  so the server can wait for nginx's address before it takes requests. */
+  start: (maxWaitMs?: number) => Promise<void>;
   stop: () => void;
 }
 
@@ -50,10 +52,12 @@ export function createTrustedProxy(options: { host: string; lookup?: Lookup; int
   return {
     trust: (address) => isLoopback(address) || addresses.has(normalizeAddress(address)),
     refresh,
-    start: () => {
-      void refresh();
+    start: async (maxWaitMs = 3_000) => {
       timer ??= setInterval(() => { void refresh(); }, options.intervalMs ?? 15_000);
       timer.unref();
+      let giveUp: NodeJS.Timeout | undefined;
+      await Promise.race([refresh(), new Promise<void>((resolveWait) => { giveUp = setTimeout(resolveWait, maxWaitMs); })]);
+      clearTimeout(giveUp);
     },
     stop: () => { if (timer) clearInterval(timer); timer = null; },
   };

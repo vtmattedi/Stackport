@@ -73,10 +73,13 @@ try {
     }, 10_000).unref();
   }
 
-  trustedProxy.start();
-  httpServer.listen(config.port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`[server] running on port ${config.port} (${config.nodeEnv})`);
+  // Take requests only once nginx's address is known (or the lookup has had its few seconds), so the
+  // first logins are not all counted as coming from nginx and the session cookie gets its Secure flag.
+  void trustedProxy.start().then(() => {
+    httpServer.listen(config.port, () => {
+      // eslint-disable-next-line no-console
+      console.log(`[server] running on port ${config.port} (${config.nodeEnv})`);
+    });
   });
 
   process.on("SIGTERM", () => shutdown("SIGTERM"));

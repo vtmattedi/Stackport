@@ -48,6 +48,27 @@ test("a failed lookup keeps the last known address and reports the error", async
   assert.equal(errors.length, 1);
 });
 
+test("start waits for the first lookup, so nginx is trusted before the server takes requests", async () => {
+  const proxy = createTrustedProxy({ host: "n", lookup: async () => ["172.18.0.3"] });
+  assert.equal(proxy.trust("172.18.0.3"), false);
+  await proxy.start();
+  assert.equal(proxy.trust("172.18.0.3"), true);
+  proxy.stop();
+});
+
+test("start gives up waiting after the limit when the lookup hangs, and a later success is still picked up", async () => {
+  let release: (addresses: string[]) => void = () => {};
+  const proxy = createTrustedProxy({ host: "n", lookup: () => new Promise<string[]>((resolveLookup) => { release = resolveLookup; }) });
+  const started = Date.now();
+  await proxy.start(50);
+  assert.ok(Date.now() - started < 1000, "did not hang");
+  assert.equal(proxy.trust("172.18.0.3"), false);
+  release(["172.18.0.3"]);
+  await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  assert.equal(proxy.trust("172.18.0.3"), true);
+  proxy.stop();
+});
+
 test("addresses are normalised", () => {
   assert.equal(normalizeAddress("::ffff:10.1.2.3"), "10.1.2.3");
   assert.equal(normalizeAddress("fd00::1"), "fd00::1");
