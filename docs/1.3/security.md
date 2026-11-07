@@ -373,6 +373,29 @@ marker and tell the agent to call such a tool only when the user asked for that 
 covers the tools that overwrite stored data or interrupt routing (update project, pause, domain SSL, env
 file replace, nginx reload), which were not marked before.
 
+### G1 — The Git credential was in the command line · 🟠 · M (found in 1.3.5)
+
+Cloning and fetching a private repository ran `git -c http.extraHeader=Authorization: Basic …`. The
+arguments of every process are readable by every local user on the host (`ps`, `/proc/<pid>/cmdline`),
+so anyone with a shell on the host could read the token for as long as a clone or fetch ran. The same
+held for the self-update check with `STACKPORT_REPO_TOKEN`. Logs were already scrubbed, which hid it.
+
+**Status: done (1.3.5).** The credential is passed in the Git process's environment
+(`GIT_CONFIG_COUNT`, `_KEY_0`, `_VALUE_0`), which only the process's owner and root can read. See
+`src/shared/gitAuth.ts`.
+
+- **Scoped to the repository's origin** (`http.https://github.com/.extraHeader`), not to every host.
+  Unscoped, a submodule that points at someone else's server would have received the token.
+- **Git gets a minimal environment** (`PATH`, `HOME`, locale, proxy and certificate variables). Stackport's
+  own secrets (`JWT_SECRET`, `ENCRYPTION_KEY`, the webhook secret, `STACKPORT_REPO_TOKEN`) are not passed on,
+  and Git can never stop to ask for a password (`GIT_TERMINAL_PROMPT=0`).
+- **No fallback.** Git older than 2.31 cannot read configuration from the environment; the deploy then
+  fails with that reason. It never falls back to the command line.
+- Applies to PAT credentials today and will to GitHub App installation tokens. The remote URL and
+  `.git/config` never hold a credential.
+- A test fails if `extraHeader=` appears in any source file again, and another runs real Git against two
+  local servers to show the header reaches only its own origin.
+
 ### S12 — `resolveContainedPath` should resolve symlinks · 🟡 · S
 
 `src/shared/safePath.ts` checks containment lexically. A symlink inside the root can

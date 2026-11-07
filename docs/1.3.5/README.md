@@ -16,7 +16,7 @@ If PR #33 is squash-merged, this branch needs a rebase onto `main` first.
 
 | ID | Item | | Size | Notes |
 |---|---|---|---|---|
-| G1 | The Git token travels in process arguments | 🟠 | M | `git -c http.extraHeader=Authorization: …` (`deployments/operations.ts` `gitAuthHeader`, also `maintenance/version.ts`). Anyone who can list processes on the host reads it. Replace with environment-based `GIT_CONFIG_*` or a credential helper. Required by the GitHub App work anyway (its §4.1), so it is Phase B below. |
+| G1 | The Git token travels in process arguments (**done**, see [../1.3/security.md](../1.3/security.md)) | 🟠 | M | `git -c http.extraHeader=Authorization: …` (`deployments/operations.ts` `gitAuthHeader`, also `maintenance/version.ts`). Anyone who can list processes on the host reads it. Replace with environment-based `GIT_CONFIG_*` or a credential helper. Required by the GitHub App work anyway (its §4.1), so it is Phase B below. |
 | G2 | No way to enforce the Compose policy on an existing project | 🟠 | S | 1.3 enforces new projects only (`compose_policy_enforced = 0` for older ones). `security.md` S1 says "add one before the next release"; nothing sets it. Same for `volumes_managed` (only the temporary migration sets it). Needs a per-project switch and a Settings view of which projects are still unenforced. |
 | G3 | The policy panel misses the resolved-config results | 🟡 | S | The project page shows raw-file violations; the resolved checks (S1) only appear when a deploy is rejected. |
 | G4 | Lint warnings grew from 110 to 207 | ⚪ | M | B5 below; the 1.3 work added ~100. Fix or justify, then make warnings fail CI. |

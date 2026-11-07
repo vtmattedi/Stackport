@@ -9,6 +9,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { getDatabase } from "../../config/database";
 import { logger } from "../../shared/logger";
+import { basicAuthHeader, buildGitEnv, gitCredentialProblem, gitUrlScope } from "../../shared/gitAuth";
 import { rowToProject, type Project, type ProjectRow } from "../projects/types";
 import { decryptSecret } from "../../shared/crypto";
 import { normalizeRelativePath, resolveContainedPath } from "../../shared/safePath";
@@ -276,15 +277,6 @@ function githubCloneUrl(repo: string): string {
   return `https://github.com/${repo}.git`;
 }
 
-function gitArgs(authHeader: string | null, args: string[]): string[] {
-  return authHeader ? ["-c", `http.extraHeader=${authHeader}`, ...args] : args;
-}
-
-function publicGitArgs(args: string[]): string[] {
-  if (args[0] === "-c" && args[1]?.startsWith("http.extraHeader=")) return args.slice(2);
-  return args;
-}
-
 function gitAuthHeader(project: Project): string | null {
   const credentialId = project.githubCredentialId;
   const row = getDatabase()
@@ -293,8 +285,7 @@ function gitAuthHeader(project: Project): string | null {
       : "SELECT username, secret_enc FROM credentials WHERE type = 'github' AND is_default = 1 LIMIT 1")
     .get(...(credentialId ? [credentialId] : [])) as { username: string | null; secret_enc: string } | undefined;
   if (!row?.username) return null;
-  const token = decryptSecret(row.secret_enc);
-  return `Authorization: Basic ${Buffer.from(`${row.username}:${token}`).toString("base64")}`;
+  return basicAuthHeader(row.username, decryptSecret(row.secret_enc));
 }
 
 function emit(projectId: number, action: ProjectDeployEvent["action"], stream: ProjectDeployEvent["stream"], message: string, extra: Partial<ProjectDeployEvent> = {}): void {
@@ -306,10 +297,10 @@ function run(
   action: ProjectDeployEvent["action"],
   cmd: string,
   args: string[],
-  options: { cwd?: string; timeoutMs?: number; publicArgs?: string[]; env?: NodeJS.ProcessEnv } = {}
+  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}
 ): Promise<RunResult> {
   return new Promise((resolve) => {
-    const publicCommand = [cmd, ...(options.publicArgs ?? args)].join(" ");
+    const publicCommand = [cmd, ...args].join(" ");
     const chunks: string[] = [`$ ${publicCommand}\n`];
     const stdoutChunks: string[] = [];
     emit(projectId, action, "status", `$ ${publicCommand}\n`);
@@ -879,12 +870,17 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
     }];
   }
 
+  // The credential goes to Git in its environment, scoped to github.com, never in its arguments (see shared/gitAuth.ts).
   const authHeader = gitAuthHeader(project);
+  if (authHeader) {
+    const problem = await gitCredentialProblem();
+    if (problem) return [{ ok: false, output: `${problem}\n`, stdout: "", command: "git" }];
+  }
+  const gitEnv = buildGitEnv(process.env, authHeader, gitUrlScope(githubCloneUrl(project.githubRepo)));
   if (!hasCheckout) {
-    const args = gitArgs(authHeader, ["clone", ...(branch ? ["-b", branch] : []), githubCloneUrl(project.githubRepo), repoPath]);
-    const clone = await run(project.id, action, "git", args, {
+    const clone = await run(project.id, action, "git", ["clone", ...(branch ? ["-b", branch] : []), githubCloneUrl(project.githubRepo), repoPath], {
       timeoutMs: 300_000,
-      publicArgs: publicGitArgs(args),
+      env: gitEnv,
     });
     if (!clone.ok || !commitSha) return [clone];
     const pinnedBranch = branch ?? project.autoDeployBranch;
@@ -905,11 +901,10 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   });
   if (!reset.ok) return [reset];
 
-  const fetchArgs = gitArgs(authHeader, ["fetch", "--all", "--prune"]);
-  const fetch = await run(project.id, action, "git", fetchArgs, {
+  const fetch = await run(project.id, action, "git", ["fetch", "--all", "--prune"], {
     cwd: repoPath,
     timeoutMs: 300_000,
-    publicArgs: publicGitArgs(fetchArgs),
+    env: gitEnv,
   });
   if (!fetch.ok) return [fetch];
 
