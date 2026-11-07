@@ -3,6 +3,7 @@ import * as path from "path";
 import { splitPortSpec } from "./yaml";
 import { relativeInside } from "../../../shared/hostPath";
 import { resolveContainedPath } from "../../../shared/safePath";
+import { STACKPORT_PROXY_NETWORK } from "./networking";
 
 /** StackPort's security/exposure boundary for managed-project compose files: the
  *  Phase 1.3 directives that let a container escape into host/StackPort authority
@@ -277,10 +278,18 @@ function checkResolvedHardening(name: string, service: Record<string, unknown>, 
  *  the `local` driver can bind any host path (`type: none, o: bind, device: /`) and a
  *  plugin driver is code Stackport has not reviewed. Only plain `local` volumes, and
  *  local ones backed by a network or tmpfs filesystem, are allowed (c, S1). */
-function checkTopLevelVolumes(volumes: Record<string, unknown> | null, add: Add): void {
+function checkTopLevelVolumes(volumes: Record<string, unknown> | null, project: string | null, add: Add): void {
   for (const [name, value] of Object.entries(volumes ?? {})) {
     const volume = asRecord(value);
     if (!volume) continue;
+    const resolvedName = typeof volume["name"] === "string" ? volume["name"] : name;
+    // A volume belongs to one project. An external one, or one given another project's name, attaches to
+    // data this project does not own: Compose reuses a volume that already exists under that name.
+    if (volume["external"] === true || volume["external"] === "true") {
+      add(name, "external", `the volume "${resolvedName}" is external, so it is not this project's data.`, "Declare the volume without external: true so the project gets its own.", "volumes");
+    } else if (project !== null && !resolvedName.startsWith(`${project}_`)) {
+      add(name, "name", `the volume name "${resolvedName}" is not this project's (it would attach to an existing volume of that name).`, "Remove the name: line so Compose names the volume after the project.", "volumes");
+    }
     const fix = "Remove driver and driver_opts, or use a plain named volume.";
     const driver = volume["driver"];
     if (typeof driver === "string" && driver !== "local") {
@@ -292,6 +301,31 @@ function checkTopLevelVolumes(volumes: Record<string, unknown> | null, add: Add)
     const options = String(opts["o"] ?? "").toLowerCase().split(",").map((o) => o.trim());
     if (type === "none" || type === "bind" || options.includes("bind") || options.includes("rbind")) {
       add(name, "driver_opts", "this volume bind-mounts a host path, which is not allowed for managed projects.", fix, "volumes");
+    }
+  }
+}
+
+/** Networks. A service can join an existing Docker network by naming it, including Stackport's
+ *  own (`stackport_default`, where the admin API listens) or another project's. Only the shared
+ *  ingress network may be external, and a network that is created must carry the project's name
+ *  and use the bridge driver (other drivers reach the host's network). */
+function checkTopLevelNetworks(networks: Record<string, unknown> | null, project: string | null, add: Add): void {
+  for (const [key, value] of Object.entries(networks ?? {})) {
+    const network = asRecord(value);
+    if (!network) continue;
+    const name = typeof network["name"] === "string" ? network["name"] : key;
+    if (network["external"] === true || network["external"] === "true") {
+      if (name !== STACKPORT_PROXY_NETWORK) {
+        add(key, "external", `joining the existing network "${name}" is not allowed for managed projects.`, `Remove the external network; services reach each other on the project's own network, and Stackport attaches the ingress network (${STACKPORT_PROXY_NETWORK}) itself.`, "networks");
+      }
+      continue;
+    }
+    if (project !== null && !name.startsWith(`${project}_`)) {
+      add(key, "name", `the network name "${name}" is not this project's (it would attach to an existing network of that name).`, "Remove the name: line so Compose names the network after the project.", "networks");
+    }
+    const driver = network["driver"];
+    if (typeof driver === "string" && driver !== "bridge") {
+      add(key, "driver", `network driver "${driver}" is not allowed for managed projects.`, "Use the default bridge driver.", "networks");
     }
   }
 }
@@ -316,7 +350,9 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
     checkResolvedBuild(name, service, context, add);
     checkResolvedSharing(name, service, serviceNames, add);
   }
-  checkTopLevelVolumes(asRecord(asRecord(resolved)?.["volumes"]), add);
+  const projectName = typeof asRecord(resolved)?.["name"] === "string" ? (asRecord(resolved)!["name"] as string) : null;
+  checkTopLevelVolumes(asRecord(asRecord(resolved)?.["volumes"]), projectName, add);
+  checkTopLevelNetworks(asRecord(asRecord(resolved)?.["networks"]), projectName, add);
   checkTopLevelFiles("secrets", asRecord(asRecord(resolved)?.["secrets"]), context, add);
   checkTopLevelFiles("configs", asRecord(asRecord(resolved)?.["configs"]), context, add);
   // The denylist already flags dangerous host paths; keep one violation per mount.

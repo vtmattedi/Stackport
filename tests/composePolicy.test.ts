@@ -218,3 +218,40 @@ test("evaluateResolvedPolicy: violations reject an enforcing project and warn th
   assert.match(legacy.warning ?? "", /would be rejected for/);
   assert.deepEqual(evaluateResolvedPolicy({ ok: true, doc: { services: { web: { image: "x" } } } }, { enforced: true, projectDir: "/srv/p" }), { ok: true, message: "" });
 });
+
+const withTop = (top: Record<string, unknown>, project = "7-shop") => ({ name: project, services: { web: { image: "x" } }, ...top });
+const topKeys = (doc: unknown) => validateResolvedComposePolicy(doc, POSIX).violations.map((v) => `${v.section ?? "services"}.${v.service}.${v.key}`);
+
+test("networks: joining Stackport's own network through external is refused", () => {
+  const doc = withTop({ networks: { default: { name: "stackport_default", external: true } } });
+  assert.deepEqual(topKeys(doc), ["networks.default.external"]);
+  assert.match(validateResolvedComposePolicy(doc, POSIX).violations[0].problem, /stackport_default/);
+});
+
+test("networks: only the shared ingress network may be external", () => {
+  assert.deepEqual(topKeys(withTop({ networks: { "stackport-proxy": { name: "stackport-proxy", external: true } } })), []);
+  assert.deepEqual(topKeys(withTop({ networks: { other: { name: "3-blog_default", external: true } } })), ["networks.other.external"]);
+  assert.deepEqual(topKeys(withTop({ networks: { h: { name: "host", external: true } } })), ["networks.h.external"]);
+});
+
+test("networks: a network that takes another project's or the system's name is refused too", () => {
+  assert.deepEqual(topKeys(withTop({ networks: { default: { name: "stackport_default" } } })), ["networks.default.name"]);
+  assert.deepEqual(topKeys(withTop({ networks: { back: { name: "3-blog_default" } } })), ["networks.back.name"]);
+});
+
+test("networks: the project's own networks, and bridge-driver ones, pass; other drivers do not", () => {
+  assert.deepEqual(topKeys(withTop({ networks: { default: { name: "7-shop_default" }, back: { name: "7-shop_back", driver: "bridge" } } })), []);
+  assert.deepEqual(topKeys(withTop({ networks: { fast: { name: "7-shop_fast", driver: "macvlan" } } })), ["networks.fast.driver"]);
+});
+
+test("volumes: an external named volume is refused, so is a name that is not the project's", () => {
+  assert.deepEqual(topKeys(withTop({ volumes: { data: { name: "3-blog_data", external: true } } })), ["volumes.data.external"]);
+  assert.deepEqual(topKeys(withTop({ volumes: { data: { name: "3-blog_data" } } })), ["volumes.data.name"]);
+  assert.deepEqual(topKeys(withTop({ volumes: { data: { name: "7-shop_data" }, cache: { name: "7-shop_cache", driver: "local" } } })), []);
+});
+
+test("a file with no project name in the resolved config skips only the name checks", () => {
+  const doc = { services: { web: { image: "x" } }, networks: { default: { name: "anything" } }, volumes: { v: { name: "anything" } } };
+  assert.deepEqual(topKeys(doc), []);
+  assert.deepEqual(topKeys({ ...doc, networks: { x: { external: true, name: "stackport_default" } } }), ["networks.x.external"]);
+});

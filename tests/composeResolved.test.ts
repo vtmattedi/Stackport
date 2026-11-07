@@ -107,3 +107,26 @@ test("S1: a file Compose cannot resolve comes back with a reason instead of pass
 test("composeConfigArgs turns every profile on before the subcommand", () => {
   assert.deepEqual(composeConfigArgs(["compose"], "compose.yml"), ["compose", "--profile", "*", "-f", "compose.yml", "config", "--format", "json"]);
 });
+
+test("S1: an ordinary project's networks and volumes pass the policy as real Compose resolves them", { skip }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "7-shop-"));
+  fs.writeFileSync(path.join(dir, "compose.yml"), "services:\n  web:\n    image: alpine\n    volumes: [data:/data]\n    networks: [default, stackport-proxy]\nvolumes:\n  data: {}\nnetworks:\n  stackport-proxy:\n    external: true\n    name: stackport-proxy\n");
+  try {
+    const resolution = await resolveComposeConfigDetailed(dir, "compose.yml");
+    assert.equal(resolution.ok, true);
+    if (!resolution.ok) return;
+    assert.deepEqual(validateResolvedComposePolicy(resolution.doc, { projectDir: dir }).violations.map(formatPolicyViolation), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("S1: joining Stackport's network or another project's volume is refused as real Compose resolves it", { skip }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "7-shop-"));
+  fs.writeFileSync(path.join(dir, "compose.yml"), "services:\n  web:\n    image: alpine\n    volumes: [data:/data]\n    networks: [sys]\nvolumes:\n  data:\n    external: true\n    name: 3-blog_data\nnetworks:\n  sys:\n    external: true\n    name: stackport_default\n");
+  try {
+    const resolution = await resolveComposeConfigDetailed(dir, "compose.yml");
+    assert.equal(resolution.ok, true);
+    if (!resolution.ok) return;
+    const found = validateResolvedComposePolicy(resolution.doc, { projectDir: dir }).violations.map((v) => `${v.section}.${v.service}.${v.key}`);
+    assert.deepEqual(found.sort(), ["networks.sys.external", "volumes.data.external"]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
