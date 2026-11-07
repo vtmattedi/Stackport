@@ -40,7 +40,8 @@ in Stackport's environment would get an empty value. Before enforcing, log every
 lists them), so a breakage is visible.
 
 **Status: done.** `docker compose` now gets only the allowlisted variables
-(`buildDockerEnv`), and a deploy warns by name about each `${VAR}` that Stackport's
+(`buildDockerEnv`: the docker client settings, the Windows basics, and the proxy,
+certificate and `DOCKER_API_VERSION` variables a host behind a proxy needs), and a deploy warns by name about each `${VAR}` that Stackport's
 environment used to supply.
 
 **Also do.** Rotate `JWT_SECRET` (and with it, re-encrypt credentials: see S7) on any
@@ -89,6 +90,11 @@ What the resolved config is held to (`validateResolvedComposePolicy`):
 | f | `build.context` and `additional_contexts` host paths inside the project folder |
 | g | `secrets`/`configs` `file:` inside the project folder |
 | h | `volumes_from`, `network_mode`, `pid`, `ipc` may only name a service of the same project |
+
+The config is resolved once per deploy with every profile on (`docker compose --profile '*'
+config`, so a service behind `profiles:` is checked too), and the same result feeds the
+mount rewrite and the hardening. A project that enforces the policy is refused when the file
+cannot be resolved (error, timeout, output over 32 MB); older projects get a warning.
 
 Not covered: external volumes and networks (they refer to something that already
 exists on the host), and the UI's policy panel still shows only the raw-file check.
@@ -179,7 +185,9 @@ value and get past the login rate limit. Trust only the nginx container's addres
 fix S3 first, after which only nginx can reach the app).
 
 **Status: done.** Loopback and the nginx container's address (looked up by name, every
-15 s; `TRUSTED_PROXY_HOST` overrides the name) are trusted; nothing else is.
+15 s; `TRUSTED_PROXY_HOST` overrides the name) are trusted; nothing else is. The server
+waits for the first lookup (up to 3 s) before it listens, so the first requests already
+see nginx as trusted.
 
 ### S9 — Per-project ingress networks · 🟡 · M · needs S3
 
