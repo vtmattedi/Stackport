@@ -49,7 +49,7 @@ Ordered by criticality, then by how much each item unblocks.
 | S6 | Session lifetime cap, httpOnly cookie | 🟡 | M | — | security |
 | S7 | Separate encryption key, with versioning | 🟡 | M | — | security |
 | S13 | Encrypt managed env values at rest | 🟡 | M | S7 | security |
-| S9 | Per-project ingress networks | 🟡 | M | S3 | security |
+| S9 | Unique aliases on the shared ingress network (per-project networks reverted in 1.3.1) | 🟡 | M | S3 | security |
 | S15 | Network groups: projects that reach each other's chosen services | 🟡 | M | S9 | security |
 | S10 | Block cloud metadata and LAN egress | 🟡 | M | — | security |
 | S12 | `resolveContainedPath` should resolve symlinks | 🟡 | S | — | security |

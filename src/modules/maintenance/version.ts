@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { config } from "../../config/env";
+import { basicAuthHeader, buildGitEnv, gitCredentialProblem, gitUrlScope } from "../../shared/gitAuth";
 
 const exec = promisify(execFile);
 
@@ -76,8 +77,8 @@ function cacheDir(): string {
   return path.join(path.dirname(path.resolve(config.sqlitePath)), "update-cache.git");
 }
 
-async function git(args: string[], timeout = 15_000): Promise<string> {
-  const {stdout} = await exec("git", ["--git-dir", cacheDir(), ...args], {timeout, maxBuffer: 4 * 1024 * 1024});
+async function git(args: string[], timeout = 15_000, env?: NodeJS.ProcessEnv): Promise<string> {
+  const {stdout} = await exec("git", ["--git-dir", cacheDir(), ...args], {timeout, maxBuffer: 4 * 1024 * 1024, ...(env ? {env} : {})});
   return stdout;
 }
 
@@ -139,9 +140,13 @@ async function runCheck(authHeader: string | null): Promise<UpdateCheck> {
     if (!existsSync(cacheDir())) await exec("git", ["init", "--quiet", "--bare", cacheDir()]);
     const refspecs = [...new Set([branch, DEVELOPMENT_BRANCH])].map((b) => `+refs/heads/${b}:refs/remotes/origin/${b}`);
     const token = process.env["STACKPORT_REPO_TOKEN"];
-    const header = authHeader ?? (token ? `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}` : null);
-    await git([...(header ? ["-c", `http.extraHeader=${header}`] : []),
-      "fetch", "--quiet", "--no-tags", "--filter=blob:none", "--prune", url, ...refspecs], 120_000);
+    const header = authHeader ?? (token ? basicAuthHeader("x-access-token", token) : null);
+    if (header) {
+      const problem = await gitCredentialProblem();
+      if (problem) { result.error = problem; return result; }
+    }
+    await git(["fetch", "--quiet", "--no-tags", "--filter=blob:none", "--prune", url, ...refspecs], 120_000,
+      buildGitEnv(process.env, header, gitUrlScope(url)));
   } catch (error) {
     const stderr = String((error as {stderr?: string}).stderr ?? "").trim();
     result.error = stderr.split("\n").pop() || "Cannot reach Stackport's repository.";

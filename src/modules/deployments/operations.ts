@@ -9,6 +9,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { getDatabase } from "../../config/database";
 import { logger } from "../../shared/logger";
+import { basicAuthHeader, buildGitEnv, gitCredentialProblem, gitUrlScope } from "../../shared/gitAuth";
 import { rowToProject, type Project, type ProjectRow } from "../projects/types";
 import { decryptSecret } from "../../shared/crypto";
 import { normalizeRelativePath, resolveContainedPath } from "../../shared/safePath";
@@ -18,7 +19,7 @@ import { loadYamlDoc } from "./compose/yaml";
 import { checkComposeFileReferences } from "./compose/references";
 import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
-import { ensureIngressNetwork } from "../ingress/networks";
+import { ensureSharedIngressNetwork } from "../ingress/networks";
 import { dockerCli, pruneGroupNetworks, syncGroupNetwork } from "./compose/groupNetworks";
 import { seedManagedDirectory } from "./compose/seedVolumes";
 import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networkGroups";
@@ -84,15 +85,24 @@ interface ComposeCommand {
   argsPrefix: string[];
 }
 
-/** At start-up: every routed project gets its ingress network, nginx joins it, and running services
- *  move onto it under their alias. This is also how a project that was routed over the old shared
- *  network switches over without a redeploy. One project failing does not stop the others. */
-export async function reconcileIngressNetworks(): Promise<void> {
+/** At start-up: running services of every routed project go on the shared ingress network under their
+ *  alias (and off a per-project network from 1.3.0), which is how nginx reaches them. This is also how a
+ *  project switches over without a redeploy. One project failing does not stop the others, and each failure
+ *  is printed where `docker logs` shows it. Resolves to the projects that failed. */
+export async function reconcileIngressNetworks(): Promise<number[]> {
   const rows = getDatabase().prepare("SELECT id FROM projects WHERE compose_file IS NOT NULL").all() as { id: number }[];
+  const failed: number[] = [];
   for (const { id } of rows) {
     try { await ensureProjectProxyNetwork(id); }
-    catch (err) { logger.warn({ projectId: id, reason: err instanceof Error ? err.message : String(err) }, "ingress.reconcile.failed"); }
+    catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      failed.push(id);
+      console.error(`[ingress] project ${id} could not be put on the ingress network: ${reason}`);
+      logger.warn({ projectId: id, reason }, "ingress.reconcile.failed");
+    }
   }
+  console.log(`[ingress] ${rows.length - failed.length} of ${rows.length} projects checked, ${failed.length} failed`);
+  return failed;
 }
 
 /** Puts the project's running containers on (or takes them off) its network group's network to match
@@ -132,7 +142,7 @@ export async function ensureProjectProxyNetwork(projectId: number): Promise<void
   if (!project?.composeFile) return;
   const services = listRoutedServiceNames(projectId);
   if (!services.length) return;
-  await ensureIngressNetwork(projectId);
+  await ensureSharedIngressNetwork();
   const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services, projectId);
   if (!result.ok) throw new Error(result.message);
   await connectRunningProxyServices(projectId, expectedComposeProjectName(project), services);
@@ -276,15 +286,6 @@ function githubCloneUrl(repo: string): string {
   return `https://github.com/${repo}.git`;
 }
 
-function gitArgs(authHeader: string | null, args: string[]): string[] {
-  return authHeader ? ["-c", `http.extraHeader=${authHeader}`, ...args] : args;
-}
-
-function publicGitArgs(args: string[]): string[] {
-  if (args[0] === "-c" && args[1]?.startsWith("http.extraHeader=")) return args.slice(2);
-  return args;
-}
-
 function gitAuthHeader(project: Project): string | null {
   const credentialId = project.githubCredentialId;
   const row = getDatabase()
@@ -293,8 +294,7 @@ function gitAuthHeader(project: Project): string | null {
       : "SELECT username, secret_enc FROM credentials WHERE type = 'github' AND is_default = 1 LIMIT 1")
     .get(...(credentialId ? [credentialId] : [])) as { username: string | null; secret_enc: string } | undefined;
   if (!row?.username) return null;
-  const token = decryptSecret(row.secret_enc);
-  return `Authorization: Basic ${Buffer.from(`${row.username}:${token}`).toString("base64")}`;
+  return basicAuthHeader(row.username, decryptSecret(row.secret_enc));
 }
 
 function emit(projectId: number, action: ProjectDeployEvent["action"], stream: ProjectDeployEvent["stream"], message: string, extra: Partial<ProjectDeployEvent> = {}): void {
@@ -306,10 +306,10 @@ function run(
   action: ProjectDeployEvent["action"],
   cmd: string,
   args: string[],
-  options: { cwd?: string; timeoutMs?: number; publicArgs?: string[]; env?: NodeJS.ProcessEnv } = {}
+  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {}
 ): Promise<RunResult> {
   return new Promise((resolve) => {
-    const publicCommand = [cmd, ...(options.publicArgs ?? args)].join(" ");
+    const publicCommand = [cmd, ...args].join(" ");
     const chunks: string[] = [`$ ${publicCommand}\n`];
     const stdoutChunks: string[] = [];
     emit(projectId, action, "status", `$ ${publicCommand}\n`);
@@ -513,7 +513,7 @@ async function runCompose(
     // Phase 1.7 — StackPort-owned augmentation, ephemeral (never committed, same
     // philosophy the old SP:AUTO/port-hiding rewrites used): attaches whichever
     // services this project's domains actually route to onto the project's own
-    // ingress network (stackport-ingress-<id>), so nginx can reach them by a
+    // shared ingress network, so nginx can reach them by a
     // project-unique alias. Re-applied on every runCompose call because git
     // operations (ensureRepo's reset --hard) wipe
     // it back to the plain source file on every fresh pull, same reason SP:AUTO
@@ -521,9 +521,9 @@ async function runCompose(
     const routedServices = listRoutedServiceNames(projectId);
     if (routedServices.length > 0) {
       try {
-        await ensureIngressNetwork(projectId);
+        await ensureSharedIngressNetwork();
       } catch (err) {
-        const message = `Could not prepare the project ingress network: ${err instanceof Error ? err.message : String(err)}\n`;
+        const message = `Could not prepare the ingress network: ${err instanceof Error ? err.message : String(err)}\n`;
         emit(projectId, action, "stderr", message);
         return { ok: false, output: message, stdout: "", command: "ingress network" };
       }
@@ -879,12 +879,17 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
     }];
   }
 
+  // The credential goes to Git in its environment, scoped to github.com, never in its arguments (see shared/gitAuth.ts).
   const authHeader = gitAuthHeader(project);
+  if (authHeader) {
+    const problem = await gitCredentialProblem();
+    if (problem) return [{ ok: false, output: `${problem}\n`, stdout: "", command: "git" }];
+  }
+  const gitEnv = buildGitEnv(process.env, authHeader, gitUrlScope(githubCloneUrl(project.githubRepo)));
   if (!hasCheckout) {
-    const args = gitArgs(authHeader, ["clone", ...(branch ? ["-b", branch] : []), githubCloneUrl(project.githubRepo), repoPath]);
-    const clone = await run(project.id, action, "git", args, {
+    const clone = await run(project.id, action, "git", ["clone", ...(branch ? ["-b", branch] : []), githubCloneUrl(project.githubRepo), repoPath], {
       timeoutMs: 300_000,
-      publicArgs: publicGitArgs(args),
+      env: gitEnv,
     });
     if (!clone.ok || !commitSha) return [clone];
     const pinnedBranch = branch ?? project.autoDeployBranch;
@@ -905,11 +910,10 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   });
   if (!reset.ok) return [reset];
 
-  const fetchArgs = gitArgs(authHeader, ["fetch", "--all", "--prune"]);
-  const fetch = await run(project.id, action, "git", fetchArgs, {
+  const fetch = await run(project.id, action, "git", ["fetch", "--all", "--prune"], {
     cwd: repoPath,
     timeoutMs: 300_000,
-    publicArgs: publicGitArgs(fetchArgs),
+    env: gitEnv,
   });
   if (!fetch.ok) return [fetch];
 

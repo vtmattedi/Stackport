@@ -123,7 +123,7 @@ async function main() {
     const result = await networking.applyStackportProxyNetwork(dir, 'compose.yml', ['web'], 7);
     assert(result.ok);
     const output = yaml.loadYamlDoc(await fs.readFile(file, 'utf8'));
-    if (Array.isArray(networks)) assert.deepEqual(output.services.web.networks, {private: {}, 'stackport-ingress-7': {aliases: ['sp7-web']}});
+    if (Array.isArray(networks)) assert.deepEqual(output.services.web.networks, {private: {}, 'stackport-proxy': {aliases: ['sp7-web']}});
     else assert.deepEqual(output.services.web.networks.private, networks.private);
   }
   console.log('PASS: proxy augmentation preserves custom networks and aliases');
