@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { CheckRow } from "../../components/ui/field";
+import { Disclosure } from "../../components/Disclosure";
 import { Stack } from "../../components/ui/stack";
 import { Hint, Prose } from "../../components/ui/text";
 import { SubShellSectionHeader } from "../../components/SubShell";
@@ -148,8 +149,8 @@ export function NetworksSection() {
         </Stack>
       </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-title">Enlarge the address pool</div>
+      <div className="mb-4">
+        <Disclosure title="Enlarge the address pool" meta={headroom.level === "ok" ? "on the server, not here" : undefined} defaultOpen={headroom.level !== "ok"}>
         <Stack gap={3}>
           <Prose>
             Docker's pools hold {headroom.capacity} networks, and every project and network group takes one. Enlarging them is done on the server, because it changes
@@ -162,6 +163,7 @@ export function NetworksSection() {
           </Hint>
           <Hint>Run <span className="mono">sudo stackport network-pool</span> with no arguments to see where things stand.</Hint>
         </Stack>
+        </Disclosure>
       </div>
 
       <div className="card">

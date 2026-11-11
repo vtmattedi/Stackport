@@ -137,7 +137,7 @@ export default function BrowserPushSection({ onDelivery }: { onDelivery: () => v
       {statusError && <p role="alert">{statusError}</p>}
       {(status?.identityError || saved?.identityError) && <p role="alert" style={{ color: "var(--danger)" }}>{status?.identityError ?? saved?.identityError}</p>}
       {status && <div role="status">
-        <p>Pending: {status.pending} · Retrying: {status.retrying} · In progress: {status.leased} · Permanent failures (24 h): {status.permanentFailures24h}</p>
+        <p className="mb-1 text-[13px]">Pending: {status.pending} · Retrying: {status.retrying} · In progress: {status.leased} · Permanent failures (24 h): {status.permanentFailures24h}</p>
         <p className="hint">Last provider acceptance: {status.lastSuccessfulAcceptanceAt ? formatShortDateTime(status.lastSuccessfulAcceptanceAt) : "Never"}.
           {status.oldestPendingAgeSeconds !== null && ` Oldest queued alert: ${status.oldestPendingAgeSeconds}s.`}
           {status.lastWorkerPollAt && ` Worker last checked: ${formatShortDateTime(status.lastWorkerPollAt)}.`}</p>
