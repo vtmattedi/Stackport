@@ -96,6 +96,16 @@ test("registration: an unknown or wrong-purpose state, a bad code and a code Git
   assert.equal(getApp(), null);
 });
 
+test("registration: the public/private choice made at the start is what is recorded", async () => {
+  for (const isPublic of [true, false]) {
+    resetApp();
+    const start = await startManifest("admin", { modules: [], owner: "", isPublic }, goodDomain, client);
+    assert.equal((start.manifest as { public: boolean }).public, isPublic);
+    const app = await completeManifest(fake.issueCode("manifest"), start.state, goodDomain, client);
+    assert.equal(app.isPublic, isPublic);
+  }
+});
+
 test("registration: a second App is refused, and a state expires after ten minutes", async () => {
   await registerApp();
   await assert.rejects(startManifest("admin", { modules: [], owner: "", isPublic: false }, goodDomain, client), (err: unknown) => err instanceof GithubAppError && err.status === 409);

@@ -91,22 +91,29 @@ const STATE_TTL_MS = 10 * 60 * 1000;
 
 /** A random single-use value tied to who started the round trip. The cookie cannot do this job: it is
  *  SameSite=Strict, so the browser does not send it on the redirect back from github.com. */
-export function createState(purpose: StateRequirement, username: string, now: number = Date.now()): string {
+export function createState(purpose: StateRequirement, username: string, now: number = Date.now(), meta: Record<string, unknown> | null = null): string {
   const db = getDatabase();
   db.prepare("DELETE FROM github_app_states WHERE expires_at < ?").run(new Date(now).toISOString());
   const state = crypto.randomBytes(32).toString("hex");
-  db.prepare("INSERT INTO github_app_states (state, purpose, username, expires_at) VALUES (?, ?, ?, ?)").run(state, purpose, username, new Date(now + STATE_TTL_MS).toISOString());
+  db.prepare("INSERT INTO github_app_states (state, purpose, username, expires_at, meta) VALUES (?, ?, ?, ?, ?)").run(state, purpose, username, new Date(now + STATE_TTL_MS).toISOString(), meta ? JSON.stringify(meta) : null);
   return state;
 }
 
-/** Returns who started it, once. A second use, another purpose or an expired value gives null. */
-export function consumeState(state: unknown, purpose: StateRequirement, now: number = Date.now()): string | null {
+/** Returns who started it and what they chose, once. A second use, another purpose or an expired value gives null. */
+export function consumeStateWithMeta(state: unknown, purpose: StateRequirement, now: number = Date.now()): { username: string; meta: Record<string, unknown> } | null {
   if (typeof state !== "string" || !/^[0-9a-f]{64}$/.test(state)) return null;
   const db = getDatabase();
-  const row = db.prepare("SELECT purpose, username, expires_at FROM github_app_states WHERE state = ?").get(state) as { purpose: string; username: string; expires_at: string } | undefined;
+  const row = db.prepare("SELECT purpose, username, expires_at, meta FROM github_app_states WHERE state = ?").get(state) as { purpose: string; username: string; expires_at: string; meta: string | null } | undefined;
   db.prepare("DELETE FROM github_app_states WHERE state = ?").run(state);
   if (!row || row.purpose !== purpose || Date.parse(row.expires_at) < now) return null;
-  return row.username;
+  let meta: Record<string, unknown> = {};
+  try { const parsed = row.meta ? JSON.parse(row.meta) as unknown : {}; if (parsed && typeof parsed === "object") meta = parsed as Record<string, unknown>; } catch { /* none */ }
+  return { username: row.username, meta };
+}
+
+/** Returns who started it, once. */
+export function consumeState(state: unknown, purpose: StateRequirement, now: number = Date.now()): string | null {
+  return consumeStateWithMeta(state, purpose, now)?.username ?? null;
 }
 
 // ---- installations

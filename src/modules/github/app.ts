@@ -3,7 +3,7 @@ import { defaultGithubClient, GithubClient, GithubError } from "./client";
 import { logger } from "../../shared/logger";
 import { signAppJwt } from "./jwt";
 import {
-  consumeState, createState, getApp, getAppSecrets, getInstallation, replaceRepositories, saveApp, setInstallationStatus, listInstallations, updateAppSecrets, upsertInstallation,
+  consumeState, consumeStateWithMeta, createState, getApp, getAppSecrets, getInstallation, replaceRepositories, saveApp, setInstallationStatus, listInstallations, updateAppSecrets, upsertInstallation,
   type AppRecord, type InstallationRecord, type RepositoryRecord,
 } from "./store";
 
@@ -106,7 +106,7 @@ export async function startManifest(username: string, options: ManifestOptions, 
   if (options.owner && !OWNER_RE.test(options.owner)) throw new GithubAppError("The organization name is not valid.");
   const modules = ALL_MODULES.filter((m) => options.modules.includes(m));
   const manifest = buildManifest(check.origin, { ...options, modules });
-  const state = createState("manifest", username);
+  const state = createState("manifest", username, Date.now(), { isPublic: options.isPublic });
   const base = options.owner ? `${client.webUrl}/organizations/${options.owner}/settings/apps/new` : `${client.webUrl}/settings/apps/new`;
   return {
     registrationUrl: `${base}?state=${state}`,
@@ -125,7 +125,8 @@ interface ManifestConversion {
 /** GitHub redirected back with a code. The state proves this round trip was started here, once, a moment ago. */
 export async function completeManifest(code: unknown, state: unknown, deps: PreflightDeps, client: GithubClient = defaultGithubClient()): Promise<AppRecord> {
   // Spent first: any attempt at the callback, valid or not, uses the state up.
-  if (consumeState(state, "manifest") === null) throw new GithubAppError("This registration link has expired or was already used. Start again from Settings > GitHub.", 410);
+  const started = consumeStateWithMeta(state, "manifest");
+  if (started === null) throw new GithubAppError("This registration link has expired or was already used. Start again from Settings > GitHub.", 410);
   if (typeof code !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(code)) throw new GithubAppError("The code from GitHub is missing or malformed.");
   if (getApp()) throw new GithubAppError("An App is already registered for this instance.", 409);
   const check = await preflight(deps);
@@ -143,7 +144,7 @@ export async function completeManifest(code: unknown, state: unknown, deps: Pref
   const modules = ALL_MODULES.filter((m) => Object.keys(MODULE_GRANTS[m].permissions).every((p) => granted.has(p)) && MODULE_GRANTS[m].events.every((e) => (converted.events ?? []).includes(e)));
   const record: Omit<AppRecord, "createdAt"> = {
     appId: converted.id, slug: converted.slug, name: converted.name, clientId: converted.client_id, ownerLogin: converted.owner.login, ownerType: converted.owner.type,
-    isPublic: false, htmlUrl: converted.html_url, registeredOrigin: check.origin, modules,
+    isPublic: started.meta["isPublic"] === true, htmlUrl: converted.html_url, registeredOrigin: check.origin, modules,
   };
   saveApp(record, { privateKey: converted.pem, webhookSecret: converted.webhook_secret, clientSecret: converted.client_secret });
   return getApp() as AppRecord;
