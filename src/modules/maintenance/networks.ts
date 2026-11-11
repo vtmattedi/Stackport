@@ -40,6 +40,8 @@ export interface DockerNetworkInfo {
   containers: { id: string; name: string }[];
   owner: NetworkOwner;
   createdAt: string | null;
+  /** Made by Compose (it carries a com.docker.compose.project label), so `docker compose up` makes it again. */
+  madeByCompose: boolean;
   /** Why it may not be removed from the page, or null when it may (nothing attached, and not Stackport's or Docker's own). */
   removalBlocker: string | null;
 }
@@ -87,6 +89,7 @@ export function classifyNetwork(raw: RawNetwork, projects: ProjectRef[]): Networ
 export function describeNetwork(raw: RawNetwork, projects: ProjectRef[], pools: AddressPool[]): DockerNetworkInfo {
   const subnets = (raw.IPAM?.Config ?? []).map((c) => c.Subnet ?? "").filter(Boolean);
   const info: Omit<DockerNetworkInfo, "removalBlocker"> = {
+    madeByCompose: typeof raw.Labels?.["com.docker.compose.project"] === "string",
     id: (raw.Id ?? "").slice(0, 12),
     name: raw.Name ?? "",
     driver: raw.Driver ?? "",
@@ -110,11 +113,22 @@ export async function readNetworkOverview(run: DockerRun = dockerRun, projects: 
   const { pools, known } = await readAddressPools(run);
   const ids = (await run(["network", "ls", "--quiet", "--no-trunc"])).split(/\s+/).filter(Boolean);
   const raws: RawNetwork[] = [];
-  if (ids.length) {
-    const out = await run(["network", "inspect", ...ids, "--format", "{{json .}}"]);
+  const parse = (out: string): void => {
     for (const line of out.split(/\r?\n/)) {
       if (!line.trim()) continue;
       try { raws.push(JSON.parse(line) as RawNetwork); } catch { /* a line that is not a network */ }
+    }
+  };
+  if (ids.length) {
+    try {
+      parse(await run(["network", "inspect", ...ids, "--format", "{{json .}}"]));
+    } catch {
+      // One network was removed between the list and the inspect (a Compose project tearing down) and Docker fails the whole call:
+      // read them one at a time and leave out the ones that are gone.
+      raws.length = 0;
+      for (const id of ids) {
+        try { parse(await run(["network", "inspect", id, "--format", "{{json .}}"])); } catch { /* gone */ }
+      }
     }
   }
   const networks = raws.map((raw) => describeNetwork(raw, projects, pools)).sort((a, b) => a.name.localeCompare(b.name));
@@ -123,7 +137,7 @@ export async function readNetworkOverview(run: DockerRun = dockerRun, projects: 
 
 /** Why a network may not be removed from the page, or null when it may. Only networks with nothing attached, and only kinds whose
  *  loss costs nothing that Stackport does not rebuild by itself. */
-export function removalBlocker(network: Pick<DockerNetworkInfo, "owner" | "containers">): string | null {
+export function removalBlocker(network: Pick<DockerNetworkInfo, "owner" | "containers" | "madeByCompose">): string | null {
   switch (network.owner.kind) {
     case "docker": return "Docker's own network.";
     case "stackport": return "Part of Stackport.";
@@ -132,6 +146,8 @@ export function removalBlocker(network: Pick<DockerNetworkInfo, "owner" | "conta
     default: break;
   }
   if (network.containers.length > 0) return `${network.containers.length} ${network.containers.length === 1 ? "container is" : "containers are"} attached.`;
+  // A network somebody made by hand may be named as `external: true` by a stack that is stopped now; nothing would make it again.
+  if (network.owner.kind === "other" && !network.madeByCompose) return "Not made by Compose: a stopped stack may use it as an external network, and nothing would make it again.";
   return null;
 }
 

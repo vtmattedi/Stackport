@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertCircle, Loader, Network, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../../api/client";
-import type { DockerNetworkInfo, NetworkOwnerKind } from "../../api/types";
+import type { DockerNetworkInfo, NetworkOwnerKind, NetworkRemoval } from "../../api/types";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { SubShellSectionHeader } from "../../components/SubShell";
@@ -89,6 +89,8 @@ export function NetworksSection() {
 
   const { networks, headroom } = data;
   const removable = networks.filter((n) => n.removalBlocker === null);
+  const shown = networks.filter((n) => (filter === "all" || n.owner.kind === filter) && (!unusedOnly || (n.containers.length === 0 && n.owner.kind !== "docker")));
+  const shownRemovable = shown.filter((n) => n.removalBlocker === null);
   // A selection survives a refresh only for networks that are still there and still removable.
   const chosen = removable.filter((n) => selected.has(n.name));
 
@@ -96,14 +98,16 @@ export function NetworksSection() {
     const names = chosen.map((n) => n.name);
     const ok = await confirm({
       title: `Remove ${names.length} ${names.length === 1 ? "network" : "networks"}?`,
-      description: `${names.join(", ")}. Nothing is attached to them. A stopped project's network is made again when it starts, and needs a free slice of the address pool then. Each is checked again just before it is removed.`,
+      description: `${names.length > 12 ? `${names.slice(0, 12).join(", ")} and ${names.length - 12} more` : names.join(", ")}. Nothing is attached to them. A stopped project's network is made again when it starts, and needs a free slice of the address pool then. Each is checked again just before it is removed.`,
       confirmLabel: "Remove",
       destructive: true,
     });
     if (!ok) return;
     setRemoving(true);
     try {
-      const { results } = await api.removeNetworks(names);
+      // The server takes at most 50 names in a call; 1.3.0 left one network per project, so there can be more.
+      const results: NetworkRemoval[] = [];
+      for (let at = 0; at < names.length; at += 50) results.push(...(await api.removeNetworks(names.slice(at, at + 50))).results);
       const failed = results.filter((r) => !r.removed);
       if (results.length > failed.length) notify.success(`${results.length - failed.length} ${results.length - failed.length === 1 ? "network" : "networks"} removed.`);
       if (failed.length > 0) notify.error(new Error(failed.map((r) => `${r.name}: ${r.reason ?? "not removed"}`).join("; ")), "Some networks were not removed");
@@ -116,7 +120,6 @@ export function NetworksSection() {
     }
   }
   const counts = (kind: "all" | NetworkOwnerKind) => (kind === "all" ? networks.length : networks.filter((n) => n.owner.kind === kind).length);
-  const shown = networks.filter((n) => (filter === "all" || n.owner.kind === filter) && (!unusedOnly || (n.containers.length === 0 && n.owner.kind !== "docker")));
   const percent = headroom.capacity > 0 ? Math.min(100, Math.round((headroom.used / headroom.capacity) * 100)) : 0;
   const fillClass = headroom.level === "critical" ? styles.meterFillCritical : headroom.level === "warning" ? styles.meterFillWarning : "";
 
@@ -169,7 +172,7 @@ export function NetworksSection() {
         </div>
         {removable.length > 0 && (
           <div className={styles.bar}>
-            <Button type="button" variant="outline" size="sm" disabled={removing} onClick={() => setSelected(new Set(removable.map((n) => n.name)))}>Select all {removable.length} that can be removed</Button>
+            <Button type="button" variant="outline" size="sm" disabled={removing} onClick={() => setSelected(new Set(shownRemovable.map((n) => n.name)))}>Select the {shownRemovable.length} shown that can be removed</Button>
             <Button type="button" variant="destructive" size="sm" disabled={removing || chosen.length === 0} onClick={() => void removeChosen()}>
               {removing ? <Loader size={13} className="spin" /> : <Trash2 size={13} />} Remove {chosen.length || ""} selected
             </Button>
