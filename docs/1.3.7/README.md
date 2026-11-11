@@ -2,7 +2,7 @@
 
 Branch `1.3.7`, from `main` after 1.3.5. Release order: **1.3.1** (done) → **1.3.5** (done) → **1.3.7** → **1.4**. There is no 1.3.6.
 
-1.3.7 was planned as two features, the GitHub App and the domain manager. It now also carries the follow-ups that 1.3.5 listed but did not build (G2 to G4 and P2 to P8 of the [1.3.0 postmortem](../1.3.5/postmortem-1.3.0-ingress-networks.md)). The **domain manager is not built** ([domain-manager.md](domain-manager.md)).
+1.3.7 was planned as two features, the GitHub App and the domain manager. It now also carries the follow-ups that 1.3.5 listed but did not build (G2 to G4 and P2 to P8 of the [1.3.0 postmortem](../1.3.5/postmortem-1.3.0-ingress-networks.md)). The **domain manager** ([domain-manager.md](domain-manager.md)) and the **GitHub App modules M1 to M3, bulk import and the MCP repository tools** are built too.
 
 ## What is built
 
@@ -19,15 +19,19 @@ Branch `1.3.7`, from `main` after 1.3.5. Release order: **1.3.1** (done) → **1
 | P6 | A pull request that touches networks, mounts, nginx or start-up must say it was run on a real host ([../staging-gate.md](../staging-gate.md)) | the script's logic only; the workflow has not run on GitHub yet |
 | P7 | Per-project network isolation, opt-in, with a subnet from Stackport's own range and a switch that checks the new route from inside nginx first ([network-isolation.md](network-isolation.md)) | unit tests and the clean-install run (switch, nginx recreated, switch back) |
 | P8 | The operator runbook ([../runbook.md](../runbook.md)) | read against the code; not exercised |
+| Domain manager D1 to D5 | Base domains with one default, hostnames as a label (or the bare domain, with `www` either way), adoption of existing hostnames, a hostname reserved for each new project and routed when there is one port, a safe rename, DNS checks and the server address, certificates held back until DNS resolves, expiry and renewal-failure notifications, MCP tools ([domain-manager.md](domain-manager.md)) | unit tests with an injected resolver; **not run against real DNS or a real certificate** |
 | GitHub App A to D | Register from a manifest, link installations, installation tokens, repository discovery, the Git credential resolver, the App in the wizard, PAT to App migration, the signed webhook with durable deliveries and replay, credential rotation ([github-app-operations.md](github-app-operations.md)) | tests against an in-process fake of GitHub. **Not run against github.com** |
+
+| GitHub App M1 to M3, import, MCP | Report each deploy to GitHub; deploy after CI passes or on a published release; scan and import repositories; list repositories and create a project from one over MCP ([github-app-operations.md](github-app-operations.md)) | tests against the fake of GitHub. **Not run against github.com** |
 
 P1 (regression report and restore point) and the database backup stay in 1.4 ([../1.4/README.md](../1.4/README.md)).
 
 ## Not done
 
-- **The domain manager** (#389 to #393).
-- **GitHub App modules M1 to M3** beyond requesting their permissions: reporting deploys to GitHub, deploying only after CI, deploying a release or tag. Also bulk import, MCP tools for repositories, and pull-request previews (waits for S11).
-- **A real-GitHub check of the App**, and a **real staging-host pass** of the networking changes. Both are named in the pull request.
+- **Pull-request previews** (GitHub App module M4, waits for S11) and **naming rollbacks by tag**.
+- **Real-world checks**: the GitHub App against github.com, the domain manager against real DNS and a real certificate, and a
+  **staging-host pass** of the networking changes. All are named in the pull request.
+- Whether the new notification types (`certificate_expiring`, `certificate_renewal_failed`) arrive in a browser has not been tried.
 
 ## Before merging
 

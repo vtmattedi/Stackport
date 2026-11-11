@@ -10,11 +10,39 @@ and what is left to a person.
 | Settings > GitHub | Preflight, register from a manifest, install and connect accounts, installations and their repository counts, delivery log with replay, credential rotation, forget the App |
 | New-project wizard | "The GitHub App" as a way to reach a repository: pick from the connected repositories; no token is typed |
 | Project > Settings > GitHub access | Move a project to the App (after a real read of its repository) or back to its token |
-| `/api/hooks/github/app` | The App's one webhook. A push to a bound project's auto-deploy branch deploys it |
+| Project > Settings > GitHub access > Deploy when | A push (default), a push once its checks pass (M2), or a published release (M3) |
+| Settings > GitHub > Import repositories | Scan an installation for repositories with a Compose file, then create projects from the ones ticked |
+| `/api/hooks/github/app` | The App's one webhook: pushes, installation and repository changes, finished checks, releases |
+| MCP | `stackport_list_github_repositories` (read) and `stackport_create_project_from_repository` (two-step, destructive-marked) |
 
-Not built: modules M1 to M3 beyond asking for their permissions (reporting deploys to GitHub, deploying only after CI,
-deploying a release), pull-request previews (M4, waits for S11), bulk import, MCP tools for repositories. The manifest
-requests the M1 to M3 permissions so they can be added without every installation approving again.
+Not built: pull-request previews (M4, waits for S11) and naming rollbacks by tag. The manifest requests the M1 to M3
+permissions, so nothing needs approving again when a module is used.
+
+## The modules
+
+**M1, report deploys.** Each deploy of an App project is sent to GitHub as a deployment of the commit that was checked out: in
+progress when the stack starts, then success (with the project's address) or failure (with a note when it was the health check).
+It runs only when the installation approved `deployments: write`, and GitHub being slow, unreachable or refusing never holds up
+or fails a deploy.
+
+**M2, deploy after CI** (`Deploy when: a pushed commit's checks pass`). A push is held while any check run or commit status is
+running; it deploys when they all pass; it does not deploy when one fails (and the admin gets the usual "deploy blocked"
+notification); and a commit with no checks at all deploys after five minutes, so a repository without CI is not held for ever.
+A newer push replaces the held one. A commit whose checks never finish is dropped after six hours. Held commits are re-read when
+a check suite or workflow run finishes, and once a minute.
+
+**M3, deploy on release** (`Deploy when: a release is published`). Pushes are ignored. A published release (not a draft or
+prerelease) deploys the commit its tag resolves to, as GitHub reports it, not the branch tip.
+
+A mode the App was not registered for, or (for CI) whose permissions the installation has not approved, is refused with the reason.
+
+## Importing
+
+Settings > GitHub > an installation > **Import repositories** looks at the default branch of each repository for a Compose file,
+shows the result, and creates a project for each one ticked: bound by repository id, on the default branch, named after the
+repository (numbered if taken), with a reserved hostname when a default managed domain is set. **Nothing is cloned or deployed.** A
+repository that is already a project, has no Compose file, or has no default branch is skipped with the reason and does not stop the
+others. At most 100 repositories are looked at, and 50 imported, at a time.
 
 ## Before you start
 
@@ -80,6 +108,14 @@ until you move them back, and the webhook address answers 404 (it reads `app` as
 - Installation tokens: memory only, refreshed a minute before they expire.
 - Deliveries: a reduced copy (the fields Stackport uses; never the raw body or anything else in it), handled deliveries for 14 days, failed ones for 30.
 - A webhook body over 5 MB is refused with 413 before it is read in full.
+
+## From an MCP client
+
+`stackport_list_github_repositories` lists what the App can use and which repositories are projects already.
+`stackport_create_project_from_repository` is two-step like the other write tools: the first call describes what would be created
+(and repeats that anyone who can push to the repository controls what runs), the second, with the confirmation id for exactly
+those arguments, creates it. A token limited to a project group creates the project inside that group and cannot choose another.
+It does not deploy anything.
 
 ## What was and was not verified
 

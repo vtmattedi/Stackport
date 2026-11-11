@@ -1,5 +1,22 @@
 # Domain manager (Stackport 1.3.7)
 
+**Status: built (D1 to D5).** What differs from the plan below, and what is unverified:
+
+- **The bare domain and `www`.** The plan left the bare domain out and reserved `www`. Both are handled now. A hostname can be the
+  bare domain (label `@`), and `www` is an ordinary label. For the bare domain the admin chooses the canonical name: `example.com`
+  with `www.example.com` redirecting to it (what nginx already did for any bare domain), or `www.example.com` with the bare domain
+  redirecting to it (new: `project_domains.redirect_apex`). Either way one certificate covers both names, and the DNS check and the
+  certificate gate look at both. A bare domain that another project holds cannot be claimed as the redirecting name. `www` is
+  still never handed out automatically to a project that happens to be called `www`.
+- **Migrations** are 018 (managed domains, label, redirect flag), 019 (per-hostname DNS result), not 015 as written here.
+- **Certificate gating** applies to hostnames on a managed domain, and only when this server's address is known (detected, or entered
+  on the Domains page); unmanaged hostnames behave as before.
+- **Notifications** are two new push event types, `certificate_expiring` (under 14 days, once per certificate and day) and
+  `certificate_renewal_failed`; they ride the renewal sweep, so they are as frequent as it is.
+- **Unverified.** Everything uses an injected resolver in the tests. Not run against real DNS records, and no certificate has been
+  issued for an auto-assigned hostname or for a canonical-`www` pair. The generated nginx config for both directions is tested as text, not
+  loaded into a real nginx.
+
 Decided on 7 November 2026. Today every project types its own hostnames; the certificate list is on another page and Stackport's own domain on a third. The domain manager keeps one list of **base domains Stackport manages**, and a project's hostname is always a label on one of them.
 
 ## 1. What changes for a user

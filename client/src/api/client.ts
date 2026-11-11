@@ -40,6 +40,8 @@ import type {
   GithubInstallation,
   GithubManifestStart,
   GithubDelivery,
+  GithubScanEntry,
+  GithubImportOutcome,
   ManagedDomain,
   HostnameRenameResult,
   ServerAddress,
@@ -455,6 +457,10 @@ export const api = {
     request<{ privateKey: boolean; webhookSecret: boolean }>("/github-app/credentials", { method: "PUT", body: JSON.stringify(input) }),
   setProjectGithubDeployOn: (projectId: number, mode: "push" | "ci" | "release") =>
     request<{ githubDeployOn: "push" | "ci" | "release" }>(`/projects/${projectId}/github-deploy-on`, { method: "PUT", body: JSON.stringify({ mode }) }),
+  scanGithubInstallation: (installationId: number) =>
+    request<{ entries: GithubScanEntry[]; truncated: boolean; warning: string }>("/github-app/import/scan", { method: "POST", body: JSON.stringify({ installationId }) }),
+  importGithubRepositories: (installationId: number, repositoryIds: number[]) =>
+    request<{ outcomes: GithubImportOutcome[] }>("/github-app/import", { method: "POST", body: JSON.stringify({ installationId, repositoryIds }) }),
   getGithubDeliveries: () => request<{ deliveries: GithubDelivery[] }>("/github-app/deliveries"),
   replayGithubDelivery: (deliveryId: string) =>
     request<{ status: string; deliveries: GithubDelivery[] }>(`/github-app/deliveries/${encodeURIComponent(deliveryId)}/replay`, { method: "POST" }),

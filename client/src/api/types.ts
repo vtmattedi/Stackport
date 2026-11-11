@@ -550,6 +550,25 @@ export interface GithubDelivery {
   detail: string | null;
 }
 
+export interface GithubScanEntry {
+  repositoryId: number;
+  fullName: string;
+  defaultBranch: string | null;
+  isPrivate: boolean;
+  archived: boolean;
+  composeFiles: string[];
+  importedAs: { id: number; name: string } | null;
+  note: string | null;
+}
+
+export interface GithubImportOutcome {
+  repositoryId: number;
+  fullName: string | null;
+  status: "created" | "skipped";
+  reason?: string;
+  project?: { id: number; name: string };
+}
+
 export interface GithubManifestStart {
   registrationUrl: string;
   manifest: Record<string, unknown>;

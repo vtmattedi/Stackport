@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { AlertCircle, Loader, RefreshCw } from "lucide-react";
 import { api, ApiError } from "../../api/client";
-import type { GithubDelivery, GithubManifestStart, GithubSettings } from "../../api/types";
+import type { GithubDelivery, GithubImportOutcome, GithubManifestStart, GithubScanEntry, GithubSettings } from "../../api/types";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -36,6 +36,8 @@ export default function GithubSection() {
   const [isPublic, setIsPublic] = useState(false);
   const [modules, setModules] = useState<string[]>([]);
   const [deliveries, setDeliveries] = useState<GithubDelivery[]>([]);
+  const [importing, setImporting] = useState<{ installationId: number; entries: GithubScanEntry[]; truncated: boolean; warning: string; chosen: number[] } | null>(null);
+  const [importResult, setImportResult] = useState<GithubImportOutcome[] | null>(null);
   const [newKey, setNewKey] = useState("");
   const [newSecret, setNewSecret] = useState("");
   const [params, setParams] = useSearchParams();
@@ -161,6 +163,16 @@ export default function GithubSection() {
                 <td>
                   {installation.status === "linked" && (
                     <Button type="button" size="sm" variant="outline" disabled={busy !== ""}
+                      onClick={() => void run(`scan-${installation.installationId}`, async () => {
+                        const scan = await api.scanGithubInstallation(installation.installationId);
+                        setImportResult(null);
+                        setImporting({ installationId: installation.installationId, entries: scan.entries, truncated: scan.truncated, warning: scan.warning, chosen: scan.entries.filter((e) => e.composeFiles.length > 0 && !e.importedAs && !e.archived).map((e) => e.repositoryId) });
+                      })}>
+                      {busy === `scan-${installation.installationId}` ? <Loader size={14} className="spin" /> : null} Import repositories
+                    </Button>
+                  )}
+                  {installation.status === "linked" && (
+                    <Button type="button" size="sm" variant="outline" disabled={busy !== ""}
                       onClick={() => void run(`refresh-${installation.installationId}`, async () => { const result = await api.refreshGithubInstallation(installation.installationId); notify.success(`${result.repositories} repositories.`); })}>
                       {busy === `refresh-${installation.installationId}` ? <Loader size={14} className="spin" /> : <RefreshCw size={14} />} Refresh
                     </Button>
@@ -172,6 +184,53 @@ export default function GithubSection() {
         </table>
       )}
       {preflight.origin && <p className="hint">Webhook address: <code className="mono">{preflight.origin}/api/hooks/github/app</code>. A push to a project's auto-deploy branch deploys it.</p>}
+      {importing && (
+        <div className="card">
+          <h4>Import repositories</h4>
+          <p className="hint">Each ticked repository becomes a project on its default branch. Nothing is cloned or deployed: you decide when. {importing.warning}</p>
+          {importing.truncated && <p className="hint">Only the first 100 repositories were looked at.</p>}
+          <table>
+            <thead><tr><th /><th>Repository</th><th>Compose file</th></tr></thead>
+            <tbody>
+              {importing.entries.map((entry) => {
+                const importable = entry.composeFiles.length > 0 && !entry.importedAs;
+                return (
+                  <tr key={entry.repositoryId}>
+                    <td>
+                      <input type="checkbox" disabled={!importable} aria-label={`Import ${entry.fullName}`}
+                        checked={importing.chosen.includes(entry.repositoryId)}
+                        onChange={(event) => setImporting({ ...importing, chosen: event.target.checked ? [...importing.chosen, entry.repositoryId] : importing.chosen.filter((id) => id !== entry.repositoryId) })} />
+                    </td>
+                    <td className="mono">{entry.fullName}{entry.isPrivate ? " (private)" : ""}{entry.archived ? " (archived)" : ""}</td>
+                    <td>{entry.importedAs ? `already the project "${entry.importedAs.name}"` : entry.composeFiles.length > 0 ? entry.composeFiles.join(", ") : <span className="muted-text">{entry.note}</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button type="button" disabled={busy !== "" || importing.chosen.length === 0}
+              onClick={() => void run("import", async () => { const result = await api.importGithubRepositories(importing.installationId, importing.chosen); setImportResult(result.outcomes); setImporting(null); })}>
+              {busy === "import" ? <Loader size={14} className="spin" /> : null} Import {importing.chosen.length}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setImporting(null)}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {importResult && (
+        <div className="card" role="status">
+          <h4>Imported</h4>
+          <ul>
+            {importResult.map((outcome) => (
+              <li key={outcome.repositoryId}>
+                <span className="mono">{outcome.fullName ?? outcome.repositoryId}</span>: {outcome.status === "created" && outcome.project
+                  ? <>created as <Link to={`/projects/${outcome.project.id}`}>{outcome.project.name}</Link></>
+                  : `skipped. ${outcome.reason ?? ""}`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <h4>Recent deliveries</h4>
       {deliveries.length === 0 ? (
         <p className="hint">Nothing received yet. GitHub sends a delivery when someone pushes, or when an installation changes.</p>
