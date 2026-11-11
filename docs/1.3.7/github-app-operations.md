@@ -121,6 +121,5 @@ It does not deploy anything.
 
 Everything above is tested against an in-process fake of GitHub (`tests/helpers/fakeGithub.ts`): the manifest round trip, the OAuth exchange, JWTs checked with
 the App's public key, installation tokens, repositories, branches and trees, rate limiting, signed deliveries. **It has not been run against github.com.** What
-only a real account can confirm: GitHub accepts this manifest (in particular that it lets an App subscribe to the `installation` and `installation_repositories` events by name, and the
-permission and event pairs for the optional modules), the redirect and callback addresses, the exact shape of the conversion and installation responses,
+only a real account can confirm: GitHub accepts this manifest (the first real registration, in 1.3.8, was refused because the manifest named the `installation` and `installation_repositories` events, which GitHub sends to every App on its own; they were removed in 1.3.9. The permission and event pairs for the optional modules are still unconfirmed), the redirect and callback addresses, the exact shape of the conversion and installation responses,
 and that a real clone with an installation token works with `x-access-token` as the user name.

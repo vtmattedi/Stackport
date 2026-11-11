@@ -65,7 +65,9 @@ export interface ManifestOptions {
 
 export function buildManifest(origin: string, options: ManifestOptions): Record<string, unknown> {
   const permissions: Record<string, string> = { contents: "read" };
-  const events = new Set(["push", "installation", "installation_repositories"]);
+  // `installation` and `installation_repositories` are not listed: GitHub sends them to every App whatever it subscribed to, and
+  // a manifest that names them is refused ("Default events unsupported"). The webhook handler still receives and handles them.
+  const events = new Set(["push"]);
   for (const name of options.modules) {
     Object.assign(permissions, MODULE_GRANTS[name].permissions);
     for (const event of MODULE_GRANTS[name].events) events.add(event);
