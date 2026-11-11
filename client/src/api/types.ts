@@ -449,6 +449,42 @@ export interface DockerDiskUsageEntry {
   reclaimable: string;
 }
 
+/** Settings > GitHub: the App this instance registered, and what it can reach. */
+export interface GithubAppInfo {
+  appId: number;
+  slug: string;
+  name: string;
+  ownerLogin: string;
+  ownerType: string;
+  htmlUrl: string;
+  /** The origin the App's URLs were registered with. */
+  registeredOrigin: string;
+  modules: string[];
+}
+
+export interface GithubInstallation {
+  installationId: number;
+  accountLogin: string;
+  accountType: string;
+  status: "unlinked" | "linked" | "suspended" | "removed";
+  repositoryCount: number;
+}
+
+export interface GithubSettings {
+  preflight: { ok: boolean; origin: string | null; problems: string[] };
+  modules: string[];
+  app: GithubAppInfo | null;
+  /** The saved domain no longer matches the one the App was registered with. */
+  domainDrift: boolean;
+  installations: GithubInstallation[];
+}
+
+export interface GithubManifestStart {
+  registrationUrl: string;
+  manifest: Record<string, unknown>;
+  urls: { origin: string; webhook: string; redirect: string };
+}
+
 /** The outcome of switching a project onto its own network, or back. */
 export interface IngressIsolationResult {
   ok: boolean;

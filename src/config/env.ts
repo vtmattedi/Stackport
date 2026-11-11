@@ -46,6 +46,9 @@ export const config = {
   // of a Let's Encrypt one.
   /** Where isolated projects' networks get their subnets (P7), one /27 each. Must not overlap anything on the host. */
   isolationRange: process.env["STACKPORT_ISOLATION_RANGE"] ?? "10.212.0.0/14",
+  /** GitHub's API and web origins. Environment only, never a setting: a user cannot point Stackport at a server of their choosing. */
+  githubApiUrl: (process.env["GITHUB_API_URL"] ?? "https://api.github.com").replace(/\/+$/, ""),
+  githubWebUrl: (process.env["GITHUB_WEB_URL"] ?? "https://github.com").replace(/\/+$/, ""),
   stackportDomain: process.env["STACKPORT_DOMAIN"] ?? "",
   certbotEmail: process.env["CERTBOT_EMAIL"] ?? "",
   allowedOrigins: (process.env["ALLOWED_ORIGINS"] ?? "").split(",").filter(Boolean),

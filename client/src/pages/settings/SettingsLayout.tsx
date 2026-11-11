@@ -1,11 +1,12 @@
 import { Outlet, useLocation } from "react-router-dom";
-import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, Wrench, HardDrive, KeyRound, ShieldCheck, ArrowRightLeft, Shield, ShieldAlert } from "lucide-react";
+import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, Wrench, HardDrive, KeyRound, ShieldCheck, ArrowRightLeft, Shield, ShieldAlert, Plug } from "lucide-react";
 import SubShell, { SubShellSectionHeader } from "../../components/SubShell";
 
 export const SETTINGS_SECTIONS = [
   { path: "general", label: "General", icon: SlidersHorizontal, description: "Stackport version, updates and the admin password." },
   { path: "deploy-triggers", label: "Deploy triggers", icon: GitBranch, description: "How new commits reach Stackport: the GitHub poller and webhooks." },
   { path: "notifications", label: "Notifications", icon: Bell, description: "Email and browser push alerts, event preferences, registered browsers and delivery history." },
+  { path: "github", label: "GitHub", icon: Plug, description: "The GitHub App this instance registers: deploy from repositories without a personal access token." },
   { path: "credentials", label: "Credentials", icon: ShieldCheck, description: "GitHub tokens, API keys and webhook secrets, stored encrypted." },
   { path: "mcp", label: "MCP", icon: KeyRound, description: "API tokens for the read-only MCP endpoint." },
   { path: "storage", label: "Storage", icon: HardDrive, description: "Docker disk usage, build-cache cleanup and the free-space thresholds that gate builds." },

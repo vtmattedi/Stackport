@@ -36,6 +36,9 @@ import type {
   NetworkHeadroom,
   IngressHealth,
   IngressIsolationResult,
+  GithubSettings,
+  GithubInstallation,
+  GithubManifestStart,
   NetworkGroupView,
   AppVersionInfo,
   NotificationConfig,
@@ -442,6 +445,14 @@ export const api = {
     request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
   setProjectComposePolicyEnforcement: (projectId: number, enforced: boolean) =>
     request<{ composePolicyEnforced: boolean }>(`/projects/${projectId}/compose-policy-enforcement`, { method: "PUT", body: JSON.stringify({ enforced }) }),
+  getGithubSettings: () => request<GithubSettings>("/github-app"),
+  startGithubManifest: (input: { modules: string[]; owner: string; isPublic: boolean }) =>
+    request<GithubManifestStart>("/github-app/manifest/start", { method: "POST", body: JSON.stringify(input) }),
+  startGithubLink: () => request<{ authorizeUrl: string }>("/github-app/link/start", { method: "POST" }),
+  syncGithubInstallations: () => request<{ installations: GithubInstallation[] }>("/github-app/installations/sync", { method: "POST" }),
+  refreshGithubInstallation: (installationId: number) =>
+    request<{ repositories: number }>(`/github-app/installations/${installationId}/refresh`, { method: "POST" }),
+  forgetGithubApp: () => request<void>("/github-app", { method: "DELETE" }),
   setProjectIngressIsolation: (projectId: number, enabled: boolean) =>
     request<IngressIsolationResult>(`/projects/${projectId}/ingress-isolation`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   getProjectIngressHealth: (projectId: number) => request<IngressHealth>(`/projects/${projectId}/ingress-health`),
