@@ -30,9 +30,12 @@ import { ActionSelect, AppSelect } from "../AppSelect";
 import { useConfirm } from "../ConfirmDialog";
 import { EnvManagerDialog } from "../EnvManagerDialog";
 import { GitHubTokenSelect } from "../GitHubTokenSelect";
-import { GithubAppRepositoryPicker } from "./GithubAppRepositoryPicker";
+import { GithubRepositoryField } from "./GithubRepositoryField";
+import { useGithubRepositories } from "./useGithubRepositories";
 import { ProjectGroupField } from "../ProjectGroupField";
 import { ProjectIngressSelect } from "../ProjectIngressSelect";
+import { Field } from "../ui/field";
+import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import styles from "./NewProjectWizard.module.scss";
@@ -252,6 +255,20 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
   // A ref, not state: the SSL step reads it in the same run that the domain step set it.
   const routedDomainRef = useRef<{ id: number; key: string } | null>(null);
   const { project, source } = state;
+  const github = useGithubRepositories();
+  const sourceChoice: "app" | "token" | "upload" = source === "upload" ? "upload" : state.authMode === "app" ? "app" : "token";
+  function pickSource(choice: "app" | "token" | "upload") {
+    if (choice === "upload") set({ source: "upload", error: "" });
+    else if (choice === "app") set({ source: "github", authMode: "app", error: "" });
+    else set({ source: "github", authMode: "token", appRepo: null, error: "" });
+  }
+  // When the GitHub App is set up it is the way in; with nothing typed yet, start there. Resuming a project keeps what it already uses.
+  const startedOnApp = useRef(false);
+  useEffect(() => {
+    if (startedOnApp.current || github.loading) return;
+    startedOnApp.current = true;
+    if (github.appReady) set((s) => (s.project || s.repo || s.source !== "github" ? {} : { authMode: "app" }));
+  }, [github.loading, github.appReady]);
   // A new project can only be routed to a base domain or a subdomain of one, so the hostname is picked from those.
   const [baseDomains, setBaseDomains] = useState<ManagedDomain[] | null>(null);
   const [baseDomainsFailed, setBaseDomainsFailed] = useState(false);
@@ -644,20 +661,21 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
               description="StackPort fetches the files and checks them. Nothing starts until you deploy."
               icon={isGithub ? <GitBranch size={16} /> : <Upload size={16} />}
             >
-              <form onSubmit={(event) => void submitSource(event)} className="wizard-form">
+              <form onSubmit={(event) => void submitSource(event)} className="wizard-form grid gap-5">
                 <div className={styles.sourceChoices} role="radiogroup" aria-label="Project source">
                   {([
-                    { id: "github", icon: <GitBranch size={16} />, title: "GitHub repository", text: "Clone a repo and redeploy it on new commits." },
-                    { id: "upload", icon: <Upload size={16} />, title: "Upload files", text: "A docker-compose.yml and any files it needs." },
+                    { id: "app", icon: <GitBranch size={16} />, title: "GitHub repository", text: github.appReady ? "Pick one of your repositories. Short-lived tokens, no password to paste." : github.loading ? "Checking the GitHub App…" : "Not set up yet: connect the GitHub App in Settings > GitHub.", disabled: !github.appReady },
+                    { id: "token", icon: <GitBranch size={16} />, title: "GitHub link or token", text: "Type owner/repo. Add a token for a private repository.", disabled: false },
+                    { id: "upload", icon: <Upload size={16} />, title: "Upload files", text: "A docker-compose.yml and any files it needs.", disabled: false },
                   ] as const).map((choice) => (
                     <button
                       key={choice.id}
                       type="button"
                       role="radio"
-                      aria-checked={source === choice.id}
-                      className={cn(styles.sourceChoice, source === choice.id && styles.sourceChoiceActive)}
-                      onClick={() => set({ source: choice.id, error: "" })}
-                      disabled={sourceLocked}
+                      aria-checked={sourceChoice === choice.id}
+                      className={cn(styles.sourceChoice, sourceChoice === choice.id && styles.sourceChoiceActive)}
+                      onClick={() => pickSource(choice.id)}
+                      disabled={sourceLocked || choice.disabled}
                     >
                       <span className={styles.sourceChoiceIcon}>{choice.icon}</span>
                       <span>
@@ -668,34 +686,21 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
                   ))}
                 </div>
 
-                {isGithub && !sourceFilesLocked && (
-                  <div className="field field-wide">
-                    <label>How should Stackport reach GitHub?</label>
-                    <div style={{ display: "flex", gap: 16 }}>
-                      <label><input type="radio" name="auth-mode" checked={state.authMode === "token"} onChange={() => set({ authMode: "token", appRepo: null })} /> A token</label>
-                      <label><input type="radio" name="auth-mode" checked={state.authMode === "app"} onChange={() => set({ authMode: "app" })} /> The GitHub App</label>
-                    </div>
-                  </div>
+                {sourceChoice === "app" && (
+                  <GithubRepositoryField
+                    github={github}
+                    projects={projects}
+                    value={state.appRepo}
+                    disabled={sourceFilesLocked}
+                    onChange={(choice) => set((s) => ({ appRepo: choice ? { installationId: choice.installationId, repositoryId: choice.repositoryId } : null, repo: choice?.fullName ?? "", name: choice && !s.nameEdited ? nameFromRepo(choice.fullName) : s.name }))}
+                  />
                 )}
 
-                {isGithub && state.authMode === "app" && (
-                  <div className="form-row">
-                    <div className="field field-wide">
-                      <label>Repository <span className="hint mono">(from the GitHub App)</span></label>
-                      <GithubAppRepositoryPicker
-                        value={state.appRepo}
-                        disabled={sourceFilesLocked}
-                        onChange={(choice) => set((s) => ({ appRepo: choice ? { installationId: choice.installationId, repositoryId: choice.repositoryId } : null, repo: choice?.fullName ?? "", name: choice && !s.nameEdited ? nameFromRepo(choice.fullName) : s.name }))}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {isGithub && state.authMode === "token" && (
-                  <div className="form-row">
-                    <div className="field field-wide">
-                      <label>GitHub repo <span className="hint mono">(owner/repo or link)</span></label>
-                      <input
+                {sourceChoice === "token" && (
+                  <div className="grid gap-4 sm:grid-cols-[1fr_16rem]">
+                    <Field label="GitHub repository" htmlFor="wizard-repo" hint="owner/repo, or a github.com link">
+                      <Input
+                        id="wizard-repo"
                         type="text"
                         placeholder="owner/repo"
                         value={state.repo}
@@ -704,69 +709,68 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
                         required
                         autoFocus
                       />
-                    </div>
-                    <div className="field">
-                      <label>GitHub token <span className="hint mono">(private repos)</span></label>
+                    </Field>
+                    <Field label="GitHub token" hint="Only for private repositories">
                       <GitHubTokenSelect
                         credentials={credentials}
                         value={state.credentialId}
                         onValueChange={(credentialId) => set({ credentialId })}
                         disabled={sourceFilesLocked}
                       />
-                    </div>
+                    </Field>
                   </div>
                 )}
 
-                {!isGithub && (
+                {sourceChoice === "upload" && (
                   <>
-                    <div className="field field-wide">
-                      <label><FileText size={12} />docker-compose.yml</label>
+                    <Field label={<><FileText size={12} className="self-center" />docker-compose.yml</>} hint={state.composeUpload ? `${state.composeUpload.name} (${Math.ceil(state.composeUpload.size / 1024)} KB)` : undefined}>
                       <input type="file" accept=".yml,.yaml" disabled={sourceFilesLocked} onChange={(e) => set({ composeUpload: e.target.files?.[0] ?? null })} />
-                      {state.composeUpload && <div className="muted-text">{state.composeUpload.name} ({Math.ceil(state.composeUpload.size / 1024)} KB)</div>}
-                    </div>
-                    <div className="field field-wide">
-                      <label>Support files <span className="hint mono">(optional: configs, Dockerfiles, ...)</span></label>
-                      {state.supportFiles.map((supportFile, index) => (
-                        <div key={index} className={styles.supportFileRow}>
-                          <input
-                            type="file"
-                            disabled={sourceFilesLocked}
-                            onChange={(e) => {
-                              const file = e.target.files?.[0] ?? null;
-                              set((s) => ({ supportFiles: s.supportFiles.map((f, i) => i === index ? { file, path: f.path || file?.name || "" } : f) }));
-                            }}
-                          />
-                          <input
-                            type="text"
-                            placeholder="relative path, e.g. nginx/nginx.conf"
-                            value={supportFile.path}
-                            disabled={sourceFilesLocked}
-                            onChange={(e) => set((s) => ({ supportFiles: s.supportFiles.map((f, i) => i === index ? { ...f, path: e.target.value } : f) }))}
-                          />
-                          <button
-                            type="button"
-                            className="btn-icon"
-                            onClick={() => set((s) => ({ supportFiles: s.supportFiles.filter((_, i) => i !== index) }))}
-                            disabled={sourceFilesLocked}
-                            aria-label="Remove file"
-                          >
-                            <X size={14} />
+                    </Field>
+                    <Field label="Support files" optional hint="Configs, Dockerfiles and anything else the Compose file refers to.">
+                      <div className="grid gap-2">
+                        {state.supportFiles.map((supportFile, index) => (
+                          <div key={index} className={styles.supportFileRow}>
+                            <input
+                              type="file"
+                              disabled={sourceFilesLocked}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0] ?? null;
+                                set((s) => ({ supportFiles: s.supportFiles.map((f, i) => i === index ? { file, path: f.path || file?.name || "" } : f) }));
+                              }}
+                            />
+                            <Input
+                              type="text"
+                              placeholder="relative path, e.g. nginx/nginx.conf"
+                              value={supportFile.path}
+                              disabled={sourceFilesLocked}
+                              onChange={(e) => set((s) => ({ supportFiles: s.supportFiles.map((f, i) => i === index ? { ...f, path: e.target.value } : f) }))}
+                            />
+                            <button
+                              type="button"
+                              className="btn-icon"
+                              onClick={() => set((s) => ({ supportFiles: s.supportFiles.filter((_, i) => i !== index) }))}
+                              disabled={sourceFilesLocked}
+                              aria-label="Remove file"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))}
+                        <div>
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={() => set((s) => ({ supportFiles: [...s.supportFiles, { file: null, path: "" }] }))} disabled={sourceFilesLocked}>
+                            <Plus size={13} />
+                            Add support file
                           </button>
                         </div>
-                      ))}
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => set((s) => ({ supportFiles: [...s.supportFiles, { file: null, path: "" }] }))} disabled={sourceFilesLocked}>
-                        <Plus size={13} />
-                        Add support file
-                      </button>
-                    </div>
+                      </div>
+                    </Field>
                   </>
                 )}
 
-                <div className="form-row">
-                  <div className="field field-wide">
-                    <label>Name</label>
-                    <input type="text" placeholder="My API" value={state.name} onChange={(e) => set({ name: e.target.value, nameEdited: true })} disabled={sourceLocked} required />
-                  </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Name" htmlFor="wizard-name" hint={sourceChoice !== "upload" ? "Filled in from the repository; change it if you like." : undefined}>
+                    <Input id="wizard-name" type="text" placeholder="My API" value={state.name} onChange={(e) => set({ name: e.target.value, nameEdited: true })} disabled={sourceLocked} required />
+                  </Field>
                   <ProjectGroupField value={state.groupName} onValueChange={(groupName) => set({ groupName })} projects={projects} disabled={sourceLocked} />
                 </div>
 

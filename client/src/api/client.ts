@@ -44,6 +44,7 @@ import type {
   GithubInstallation,
   GithubManifestStart,
   GithubDelivery,
+  GithubRepositoryInspection,
   GithubScanEntry,
   GithubImportOutcome,
   ManagedDomain,
@@ -471,6 +472,8 @@ export const api = {
     request<{ status: string; deliveries: GithubDelivery[] }>(`/github-app/deliveries/${encodeURIComponent(deliveryId)}/replay`, { method: "POST" }),
   getGithubRepositories: () =>
     request<{ repositories: { repositoryId: number; installationId: number; fullName: string; defaultBranch: string | null; isPrivate: boolean }[] }>("/github-app/repositories"),
+  inspectGithubRepository: (installationId: number, repositoryId: number, branch: string) =>
+    request<GithubRepositoryInspection>(`/github-app/repositories/${repositoryId}/inspect?installationId=${installationId}&branch=${encodeURIComponent(branch)}`),
   setProjectGithubAuth: (projectId: number, input: { mode: "app" | "token"; installationId?: number; repositoryId?: number }) =>
     request<{ githubAuthMode: "app" | null }>(`/projects/${projectId}/github-auth`, { method: "PUT", body: JSON.stringify(input) }),
   renameProjectHostname: (projectId: number, domainId: number, input: { managedDomainId: number; label: string; canonical?: "apex" | "www" }) =>

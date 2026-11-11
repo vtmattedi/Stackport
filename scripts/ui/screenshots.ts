@@ -9,7 +9,7 @@ import { HARNESS_PASSWORD, HARNESS_USER, startHarness } from "./harness";
  *
  *   npm run ui:shots                                  every default page at 1440, 1024 and 390 px
  *   npm run ui:shots -- --pages /settings/mcp          only these (comma separated)
- *   npm run ui:shots -- --pages "projects>Add new project>The GitHub App"   click through: each `>` clicks the button, link, tab or radio of that name
+ *   npm run ui:shots -- --pages "projects>Add new project>The GitHub App"   click through: each `>` clicks the button, link, tab, radio, combobox or option whose name contains that text (`=Name` for the whole name)
  *   npm run ui:shots -- --widths 1280 --out some/dir   other widths, other folder (default: ui-shots/)
  *   npm run ui:shots -- --wait 5000                    wait longer for slow pages (default 1200 ms after load)
  *   npm run ui:shots -- --url http://localhost:3000    an already running Stackport (logs in with --user and --password)
@@ -59,6 +59,10 @@ async function main(): Promise<void> {
   let wide = 0;
   try {
     const context = await browser.newContext({ viewport: { width: widths[0], height: 900 } });
+    // What github.com would answer (the harness has no network): the wizard looks inside a repository before cloning it.
+    if (!external) {
+      await context.route("**/api/github-app/repositories/*/inspect**", (route) => route.fulfill({ json: { composeFiles: ["docker-compose.yml", "deploy/compose.prod.yml"], envVariableNames: ["DATABASE_URL", "SECRET_KEY", "PORT"], truncated: false } }));
+    }
     const page = await context.newPage();
     const problems: string[] = [];
     page.on("pageerror", (err) => problems.push(`page error: ${err.message}`));
@@ -87,8 +91,12 @@ async function main(): Promise<void> {
         const { path: route, clicks } = splitTarget(target);
         await page.goto(`${base}${route}`, { waitUntil: "load" });
         await page.waitForTimeout(wait); // data arrives over the socket and fetches after load
-        for (const name of clicks) {
-          await page.getByRole("button", { name }).or(page.getByRole("link", { name })).or(page.getByRole("radio", { name })).or(page.getByRole("tab", { name })).first().click({ timeout: 5_000 });
+        for (const click of clicks) {
+          // A leading = asks for the whole name; without it any name that contains the text matches.
+          const exact = click.startsWith("=");
+          const name = exact ? click.slice(1) : click;
+          const opts = { name, exact };
+          await page.getByRole("button", opts).or(page.getByRole("link", opts)).or(page.getByRole("radio", opts)).or(page.getByRole("tab", opts)).or(page.getByRole("combobox", opts)).or(page.getByRole("option", opts)).first().click({ timeout: 5_000 });
           await page.waitForTimeout(600);
         }
         const file = path.join(out, `${slug(target)}-${width}.png`);

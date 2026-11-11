@@ -535,6 +535,15 @@ export interface GithubSettings {
   installations: GithubInstallation[];
 }
 
+/** What a branch of a repository holds before it is cloned (GET /github-app/repositories/:id/inspect). */
+export interface GithubRepositoryInspection {
+  composeFiles: string[];
+  /** Names only, from .env.example; values are never read. */
+  envVariableNames: string[];
+  /** GitHub cut the file list short, so more Compose files may exist than are listed. */
+  truncated: boolean;
+}
+
 export interface GithubDelivery {
   deliveryId: string;
   event: string;
