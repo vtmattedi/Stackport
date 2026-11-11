@@ -50,3 +50,6 @@ coverage/
 
 # Local review notes and working artifacts
 .local/
+
+# Screenshots from npm run ui:shots
+ui-shots/
