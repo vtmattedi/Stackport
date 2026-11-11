@@ -40,6 +40,8 @@ import type {
   GithubInstallation,
   GithubManifestStart,
   GithubDelivery,
+  ManagedDomain,
+  HostnameOverview,
   NetworkGroupView,
   AppVersionInfo,
   NotificationConfig,
@@ -456,6 +458,15 @@ export const api = {
     request<{ repositories: { repositoryId: number; installationId: number; fullName: string; defaultBranch: string | null; isPrivate: boolean }[] }>("/github-app/repositories"),
   setProjectGithubAuth: (projectId: number, input: { mode: "app" | "token"; installationId?: number; repositoryId?: number }) =>
     request<{ githubAuthMode: "app" | null }>(`/projects/${projectId}/github-auth`, { method: "PUT", body: JSON.stringify(input) }),
+  getManagedDomains: () => request<{ domains: ManagedDomain[] }>("/domains"),
+  getHostnames: () => request<{ hostnames: HostnameOverview[] }>("/domains/hostnames"),
+  addManagedDomain: (name: string, isDefault = false) =>
+    request<{ domain: ManagedDomain; domains: ManagedDomain[] }>("/domains", { method: "POST", body: JSON.stringify({ name, isDefault }) }),
+  setDefaultManagedDomain: (id: number) =>
+    request<{ domains: ManagedDomain[] }>(`/domains/${id}`, { method: "PATCH", body: JSON.stringify({ isDefault: true }) }),
+  removeManagedDomain: (id: number) => request<{ domains: ManagedDomain[] }>(`/domains/${id}`, { method: "DELETE" }),
+  addManagedProjectDomain: (projectId: number, input: { managedDomainId: number; label: string; canonical?: "apex" | "www"; service: string; containerPort: number }) =>
+    request<ProjectDomain>(`/projects/${projectId}/domains`, { method: "POST", body: JSON.stringify(input) }),
   getGithubSettings: () => request<GithubSettings>("/github-app"),
   startGithubManifest: (input: { modules: string[]; owner: string; isPublic: boolean }) =>
     request<GithubManifestStart>("/github-app/manifest/start", { method: "POST", body: JSON.stringify(input) }),

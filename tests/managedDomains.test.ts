@@ -223,6 +223,30 @@ test("the base domain API needs a login, and validates", async () => {
   assert.equal((await call("DELETE", `/domains/${id}`)).status, 404);
 });
 
+test("the hostname overview shows every hostname with its project, route and which other name redirects to it", async () => {
+  reset();
+  const apex = addManagedDomain("example.com");
+  const a = project("overview-a");
+  const b = project("overview-b");
+  addManagedProjectDomain(a, apex.id, "@", "web", 3000);
+  addManagedProjectDomain(b, apex.id, "shop", "api", 8080);
+  addProjectDomain(b, "other.org");
+  const res = await call("GET", "/domains/hostnames");
+  assert.equal(res.status, 200);
+  const { hostnames } = (await res.json()) as { hostnames: { domain: string; projectName: string; baseDomain: string | null; alsoAnswers: string | null; service: string; containerPort: number | null; certificate: unknown }[] };
+  const by = Object.fromEntries(hostnames.map((h) => [h.domain, h]));
+  assert.deepEqual([by["example.com"].projectName, by["example.com"].baseDomain, by["example.com"].alsoAnswers], ["overview-a", "example.com", "www.example.com"]);
+  assert.deepEqual([by["shop.example.com"].alsoAnswers, by["shop.example.com"].service, by["shop.example.com"].containerPort], [null, "api", 8080]);
+  assert.deepEqual([by["other.org"].baseDomain, by["other.org"].alsoAnswers], [null, null]);
+
+  reset();
+  const www = addManagedDomain("example.com");
+  addManagedProjectDomain(project("overview-c"), www.id, "@", "web", 3000, "www");
+  const canonical = ((await (await call("GET", "/domains/hostnames")).json()) as { hostnames: { domain: string; alsoAnswers: string | null }[] }).hostnames;
+  assert.deepEqual(canonical.map((h) => [h.domain, h.alsoAnswers]), [["www.example.com", "example.com"]]);
+  assert.equal((await call("GET", "/domains/hostnames", undefined, false)).status, 401);
+});
+
 test("over HTTP a hostname's base domain and label are checked before its route, so the error is the right one", async () => {
   reset();
   const domain = ((await (await call("POST", "/domains", { name: "example.com" })).json()) as { domain: { id: number } }).domain;

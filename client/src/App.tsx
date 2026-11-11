@@ -26,6 +26,7 @@ const NotificationsSection = lazy(() => import("./pages/settings/NotificationsSe
 const StorageSection = lazy(() => import("./pages/settings/StorageSection"));
 const HardeningSection = lazy(() => import("./pages/settings/HardeningSection"));
 const EnforcementSection = lazy(() => import("./pages/settings/EnforcementSection"));
+const DomainsSection = lazy(() => import("./pages/settings/DomainsSection"));
 const GithubSection = lazy(() => import("./pages/settings/GithubSection"));
 const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
 const MigrationsSection = lazy(() => import("./pages/settings/migrations/MigrationsSection")); // TEMPORARY
@@ -98,6 +99,7 @@ export default function App() {
               <Route path="storage" element={<StorageSection />} />
               <Route path="hardening" element={<HardeningSection />} />
               <Route path="enforcement" element={<EnforcementSection />} />
+              <Route path="domains" element={<DomainsSection />} />
               <Route path="github" element={<GithubSection />} />
               <Route path="maintenance" element={<MaintenanceSection />} />
               <Route path="migrations" element={<MigrationsSection />} /> {/* TEMPORARY */}

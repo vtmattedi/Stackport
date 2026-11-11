@@ -195,3 +195,40 @@ export function addManagedProjectDomain(projectId: number, managedDomainId: unkn
   }
   return addProjectDomain(projectId, hostnameFor(label, base.name), false, service, containerPort, { managedDomainId: base.id, label });
 }
+
+// ---- the overview
+
+export interface HostnameOverview {
+  id: number;
+  projectId: number;
+  projectName: string;
+  domain: string;
+  /** The base domain it was made from, or null for an unmanaged hostname. */
+  baseDomain: string | null;
+  label: string | null;
+  /** The bare domain (or www) that redirects to this hostname, when there is one. */
+  alsoAnswers: string | null;
+  service: string;
+  containerPort: number | null;
+  useSsl: boolean;
+}
+
+/** Every hostname with its project and route, for the central Domains page. */
+export function listHostnames(): HostnameOverview[] {
+  const rows = getDatabase().prepare(
+    `SELECT p.id, p.project_id, pr.name AS project_name, p.domain, p.label, p.redirect_apex, p.service, p.container_port, p.use_ssl, d.name AS base_name
+       FROM project_domains p JOIN projects pr ON pr.id = p.project_id LEFT JOIN managed_domains d ON d.id = p.managed_domain_id
+      ORDER BY lower(p.domain)`,
+  ).all() as { id: number; project_id: number; project_name: string; domain: string; label: string | null; redirect_apex: number; service: string; container_port: number | null; use_ssl: number; base_name: string | null }[];
+  const all = new Set(rows.map((r) => r.domain.toLowerCase()));
+  return rows.map((r) => {
+    const host = r.domain.toLowerCase();
+    // nginx answers the other name with a redirect: www in front of a bare domain, or the bare domain behind a canonical www.
+    const alsoAnswers = r.redirect_apex === 1 && host.startsWith("www.") ? host.slice(4)
+      : !host.startsWith("www.") && !all.has(`www.${host}`) && r.label === APEX_LABEL ? `www.${host}` : null;
+    return {
+      id: r.id, projectId: r.project_id, projectName: r.project_name, domain: r.domain, baseDomain: r.base_name, label: r.label, alsoAnswers,
+      service: r.service, containerPort: r.container_port, useSsl: r.use_ssl === 1,
+    };
+  });
+}

@@ -459,6 +459,33 @@ export interface DockerDiskUsageEntry {
   reclaimable: string;
 }
 
+/** A base domain Stackport manages. Hostnames are a label on one of them, or the bare domain itself. */
+export interface ManagedDomain {
+  id: number;
+  name: string;
+  isDefault: boolean;
+  dnsStatus: "unknown" | "ok" | "not-resolving" | "points-elsewhere";
+  dnsCheckedAt: string | null;
+  dnsDetail: string | null;
+  hostnameCount: number;
+  createdAt: string;
+}
+
+export interface HostnameOverview {
+  id: number;
+  projectId: number;
+  projectName: string;
+  domain: string;
+  baseDomain: string | null;
+  label: string | null;
+  /** The other name that redirects to this hostname (www for a bare domain, or the bare domain behind a canonical www). */
+  alsoAnswers: string | null;
+  service: string;
+  containerPort: number | null;
+  useSsl: boolean;
+  certificate: { status: string; expiresAt: string | null } | null;
+}
+
 /** Settings > GitHub: the App this instance registered, and what it can reach. */
 export interface GithubAppInfo {
   appId: number;

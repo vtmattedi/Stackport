@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, Globe, Loader, Plus } from "lucide-react";
 import { api, ApiError } from "../../api/client";
-import type { ActionRecord, Project, ProjectDomain, TcpExposure } from "../../api/types";
+import type { ActionRecord, ManagedDomain, Project, ProjectDomain, TcpExposure } from "../../api/types";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { ExpandableCard } from "../../components/ExpandableCard";
 import { NumberInput } from "../../components/NumberInput";
@@ -28,6 +28,22 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
   const { certbotAction, issueProjectDomainSsl } = useSystemActions();
   const [tcpExposures, setTcpExposures] = useProjectTcpExposures(project.id, true);
   const [newDomainInput, setNewDomainInput] = useState("");
+  // Base domains the admin manages (Settings > Domains): a new hostname is a label on one of them. With none, or when
+  // "other hostname" is chosen, the full hostname is typed as before.
+  const [managed, setManaged] = useState<ManagedDomain[]>([]);
+  const [baseId, setBaseId] = useState<number | null>(null);
+  const [label, setLabel] = useState("");
+  const [canonical, setCanonical] = useState<"apex" | "www">("apex");
+  const [typeFull, setTypeFull] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api.getManagedDomains().then(({ domains: list }) => { if (live) { setManaged(list); setBaseId((current) => current ?? list.find((d) => d.isDefault)?.id ?? list[0]?.id ?? null); } }).catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+  const useManaged = managed.length > 0 && !typeFull && baseId !== null;
+  const chosenBase = managed.find((d) => d.id === baseId) ?? null;
+  const bareDomain = label.trim() === "@";
+  const previewHostname = !chosenBase || !label.trim() ? "" : bareDomain ? (canonical === "www" ? `www.${chosenBase.name}` : chosenBase.name) : `${label.trim().toLowerCase()}.${chosenBase.name}`;
   const [newDomainService, setNewDomainService] = useState("");
   const [newDomainPort, setNewDomainPort] = useState("");
   const [addingDomain, setAddingDomain] = useState(false);
@@ -56,16 +72,20 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
 
   async function addDomain() {
     const port = Number(newDomainPort);
-    if (!project || !newDomainInput.trim() || !newDomainService.trim() || !Number.isInteger(port) || port <= 0) return;
+    const hostnameReady = useManaged ? label.trim() !== "" : newDomainInput.trim() !== "";
+    if (!project || !hostnameReady || !newDomainService.trim() || !Number.isInteger(port) || port <= 0) return;
     setAddingDomain(true);
     setDomainError("");
     try {
-      const created = await api.addProjectDomain(project.id, newDomainInput.trim(), newDomainService.trim(), port);
+      const created = useManaged && baseId !== null
+        ? await api.addManagedProjectDomain(project.id, { managedDomainId: baseId, label: label.trim(), canonical: bareDomain ? canonical : undefined, service: newDomainService.trim(), containerPort: port })
+        : await api.addProjectDomain(project.id, newDomainInput.trim(), newDomainService.trim(), port);
       setDomains((current) => [...current, created]);
       if (project.healthCheckDomainId === null) {
         setProject((current) => current ? { ...current, healthCheckDomainId: created.id } : current);
       }
       setNewDomainInput("");
+      setLabel("");
       setNewDomainService("");
       setNewDomainPort("");
     } catch (err) {
@@ -179,13 +199,29 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
           <div className={styles.historyHeading}>Domains</div>
           <p className="muted-text">Each domain routes to a compose service and container port over the shared ingress network.</p>
           <div className="row-actions">
-            <Input
-              type="text"
-              placeholder="myapp.example.com"
-              value={newDomainInput}
-              onChange={(e) => setNewDomainInput(e.target.value)}
-              className={styles.domainInput}
-            />
+            {useManaged ? (
+              <>
+                <Input
+                  type="text"
+                  placeholder="label, or @ for the bare domain"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  className={styles.domainInput}
+                  aria-label="Hostname label"
+                />
+                <select value={baseId ?? ""} onChange={(e) => setBaseId(Number(e.target.value))} aria-label="Base domain">
+                  {managed.map((d) => <option key={d.id} value={d.id}>.{d.name}</option>)}
+                </select>
+              </>
+            ) : (
+              <Input
+                type="text"
+                placeholder="myapp.example.com"
+                value={newDomainInput}
+                onChange={(e) => setNewDomainInput(e.target.value)}
+                className={styles.domainInput}
+              />
+            )}
             <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
               refreshKey={project.updatedAt} disabled={addingDomain}
               value={newDomainService && newDomainPort ? `${newDomainService}:${newDomainPort}` : ""}
@@ -195,13 +231,26 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
               variant="outline"
               size="default"
               onClick={() => void addDomain()}
-              disabled={addingDomain || !newDomainInput.trim() || !newDomainService.trim() || !newDomainPort.trim()}
-              title={!newDomainInput.trim() ? "Type a domain first" : !newDomainService.trim() ? "Pick the service and port it should reach" : undefined}
+              disabled={addingDomain || (useManaged ? !label.trim() : !newDomainInput.trim()) || !newDomainService.trim() || !newDomainPort.trim()}
+              title={(useManaged ? !label.trim() : !newDomainInput.trim()) ? "Type a domain first" : !newDomainService.trim() ? "Pick the service and port it should reach" : undefined}
             >
               {addingDomain ? <Loader size={12} className="spin" /> : <Plus size={12} />}
               Add domain
             </Button>
           </div>
+          {managed.length > 0 && (
+            <div className="muted-text" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+              {previewHostname && <span>Hostname: <code className="mono">{previewHostname}</code></span>}
+              {useManaged && bareDomain && chosenBase && (
+                <span>
+                  Canonical name:{" "}
+                  <label><input type="radio" name="canonical" checked={canonical === "apex"} onChange={() => setCanonical("apex")} /> {chosenBase.name} (www redirects to it)</label>{" "}
+                  <label><input type="radio" name="canonical" checked={canonical === "www"} onChange={() => setCanonical("www")} /> www.{chosenBase.name} ({chosenBase.name} redirects to it)</label>
+                </span>
+              )}
+              <label><input type="checkbox" checked={typeFull} onChange={(e) => setTypeFull(e.target.checked)} /> other hostname</label>
+            </div>
+          )}
           {domainError && <div className={styles.inlineError}>{domainError}</div>}
           {domains.length === 0 ? (
             <div className="muted-text">No domains routed to this project.</div>

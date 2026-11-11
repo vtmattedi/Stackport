@@ -2,7 +2,8 @@ import { Router, Request, Response } from "express";
 import { requireAuth } from "../../modules/identity/middleware/session";
 import { auditLog } from "../../shared/logger";
 import { ProjectDomainError } from "../../modules/ingress/domains";
-import { addManagedDomain, listManagedDomains, removeManagedDomain, setDefaultManagedDomain } from "../../modules/ingress/managedDomains";
+import { getCertbotStatus } from "../../modules/ingress/certificates/operations";
+import { addManagedDomain, listHostnames, listManagedDomains, removeManagedDomain, setDefaultManagedDomain } from "../../modules/ingress/managedDomains";
 
 /** The base domains Stackport manages. Only an admin session reaches these: an API token cannot add, remove or default one. */
 const router = Router();
@@ -14,6 +15,17 @@ function fail(res: Response, err: unknown): void {
 
 router.get("/", requireAuth, (_req: Request, res: Response): void => {
   res.json({ domains: listManagedDomains() });
+});
+
+/** Every hostname with its project, route, SSL state and certificate: the one place to see them all. */
+router.get("/hostnames", requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  const certificates = await getCertbotStatus().then((s) => s.entries).catch(() => []);
+  res.json({
+    hostnames: listHostnames().map((h) => {
+      const cert = certificates.find((c) => c.domain === h.domain);
+      return { ...h, certificate: cert ? { status: cert.status, expiresAt: cert.expiresAt } : null };
+    }),
+  });
 });
 
 router.post("/", requireAuth, (req: Request, res: Response): void => {
