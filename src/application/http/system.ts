@@ -35,6 +35,7 @@ import { isSystemComposeProject } from "../../integrations/docker/systemResource
 import { getHardeningDefaults, setHardeningDefaults } from "../../modules/deployments/compose/hardening";
 import { listProjectEnforcement } from "../../modules/deployments/compose/enforcement";
 import { getNetworkHeadroom } from "../../modules/maintenance/networkHeadroom";
+import { getNetworkOverview } from "../../modules/maintenance/networks";
 import { getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../../modules/maintenance/storage/operations";
 
 import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../../modules/maintenance/selfUpdate";
@@ -221,6 +222,12 @@ router.put("/docker/storage-thresholds", requireAuth, (req: Request, res: Respon
 /** How many more Docker networks fit in the daemon's address pools (P3). */
 router.get("/network-headroom", requireAuth, async (_req: Request, res: Response): Promise<void> => {
   try { res.json(await getNetworkHeadroom()); }
+  catch (err) { res.status(503).json({ error: err instanceof Error ? err.message : "Docker could not be read" }); }
+});
+
+/** Every Docker network with its owner and the address space it takes, and the pool headroom (Host > Networks). */
+router.get("/networks", requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  try { res.json(await getNetworkOverview()); }
   catch (err) { res.status(503).json({ error: err instanceof Error ? err.message : "Docker could not be read" }); }
 });
 

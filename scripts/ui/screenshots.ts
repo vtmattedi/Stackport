@@ -10,6 +10,7 @@ import { HARNESS_PASSWORD, HARNESS_USER, startHarness } from "./harness";
  *   npm run ui:shots                                  every default page at 1440, 1024 and 390 px
  *   npm run ui:shots -- --pages /settings/mcp          only these (comma separated)
  *   npm run ui:shots -- --widths 1280 --out some/dir   other widths, other folder (default: ui-shots/)
+ *   npm run ui:shots -- --wait 5000                    wait longer for slow pages (default 1200 ms after load)
  *   npm run ui:shots -- --url http://localhost:3000    an already running Stackport (logs in with --user and --password)
  *
  * It needs the built client: `npm --prefix client run build:dry`.
@@ -33,6 +34,7 @@ async function main(): Promise<void> {
   const pages = (option("pages") ?? DEFAULT_PAGES.join(",")).split(",").map((p) => p.trim()).filter(Boolean).map((p) => (p.startsWith("/") ? p : `/${p}`));
   const widths = (option("widths") ?? "1440,1024,390").split(",").map((w) => Number(w.trim())).filter((w) => w > 0);
   const out = path.resolve(option("out") ?? "ui-shots");
+  const wait = Number(option("wait") ?? 1200);
   const user = option("user") ?? HARNESS_USER;
   const password = option("password") ?? HARNESS_PASSWORD;
 
@@ -71,7 +73,7 @@ async function main(): Promise<void> {
         problems.length = 0;
         await page.setViewportSize({ width, height: 900 });
         await page.goto(`${base}${target}`, { waitUntil: "load" });
-        await page.waitForTimeout(1200); // data arrives over the socket and fetches after load
+        await page.waitForTimeout(wait); // data arrives over the socket and fetches after load
         const file = path.join(out, `${slug(target)}-${width}.png`);
         await page.screenshot({ path: file, fullPage: true });
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

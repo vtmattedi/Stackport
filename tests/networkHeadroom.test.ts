@@ -53,7 +53,7 @@ test("it reads the daemon's pools and the subnets of every network", async () =>
 test("with no custom pools the stock ones apply, and when the daemon cannot be asked that is said", async () => {
   const stock = await readNetworkHeadroom(async (args) => (args[0] === "info" ? "null" : args[1] === "ls" ? "" : ""));
   assert.equal(stock.capacity, 31);
-  assert.equal(stock.poolsKnown, false);
+  assert.equal(stock.poolsKnown, true, "null from a daemon that answered means no custom pools, so the stock ones are not a guess");
   const broken = await readNetworkHeadroom(async (args) => { if (args[0] === "info") throw new Error("boom"); return ""; });
   assert.equal(broken.capacity, 31);
   assert.equal(broken.poolsKnown, false);

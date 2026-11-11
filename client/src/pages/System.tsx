@@ -33,6 +33,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { notify } from "../lib/notify";
 import { StackPortWordmark } from "../logo/StackPortBrand";
 import { NetworkHeadroomNotice } from "./system/NetworkHeadroomNotice";
+import { NetworksSection } from "./system/NetworksSection";
 import MaintenanceSection from "./settings/MaintenanceSection";
 import StorageSection from "./settings/StorageSection";
 import { HOST_SECTIONS, isHostTab, type HostTab } from "../lib/hostSections";
@@ -1246,7 +1247,7 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
         status: tab === "nginx" ? sectionStatus(nginxSelectorOk) : tab === "docker" ? sectionStatus(dockerSelectorOk) : tab === "certbot" ? sectionStatus(certbotSelectorOk) : undefined,
       }))}
       // Hardware has its own data and Refresh; this one reloads the system snapshot.
-      actions={activeTab === "hardware" ? undefined : (
+      actions={activeTab === "hardware" || activeTab === "networks" ? undefined : (
         <Button type="button" variant="outline" size="xs" onClick={refresh} disabled={loading}>
           <RefreshCw size={13} />
           Refresh
@@ -1256,6 +1257,8 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
       {activeTab === "hardware" ? (
         // Its own data and header; it doesn't wait for the system snapshot.
         <HardwareSection />
+      ) : activeTab === "networks" ? (
+        <NetworksSection />
       ) : (
         <>
           {headers[activeTab]}

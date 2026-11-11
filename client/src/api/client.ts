@@ -34,6 +34,7 @@ import type {
   HardeningDefaults,
   ProjectEnforcement,
   NetworkHeadroom,
+  NetworkOverview,
   IngressHealth,
   IngressIsolationResult,
   GithubSettings,
@@ -492,6 +493,7 @@ export const api = {
     request<IngressIsolationResult>(`/projects/${projectId}/ingress-isolation`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   getProjectIngressHealth: (projectId: number) => request<IngressHealth>(`/projects/${projectId}/ingress-health`),
   getNetworkHeadroom: () => request<NetworkHeadroom>("/system/network-headroom"),
+  getNetworks: () => request<NetworkOverview>("/system/networks"),
   getProjectEnforcement: () => request<{ projects: ProjectEnforcement[] }>("/system/project-enforcement"),
   getProjectNetworkGroup: (projectId: number) => request<NetworkGroupView>(`/projects/${projectId}/network-group`),
   setProjectNetworkGroup: (projectId: number, group: string, services: string[]) =>
