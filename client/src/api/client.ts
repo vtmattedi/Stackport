@@ -39,6 +39,7 @@ import type {
   GithubSettings,
   GithubInstallation,
   GithubManifestStart,
+  GithubDelivery,
   NetworkGroupView,
   AppVersionInfo,
   NotificationConfig,
@@ -446,6 +447,9 @@ export const api = {
     request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
   setProjectComposePolicyEnforcement: (projectId: number, enforced: boolean) =>
     request<{ composePolicyEnforced: boolean }>(`/projects/${projectId}/compose-policy-enforcement`, { method: "PUT", body: JSON.stringify({ enforced }) }),
+  getGithubDeliveries: () => request<{ deliveries: GithubDelivery[] }>("/github-app/deliveries"),
+  replayGithubDelivery: (deliveryId: string) =>
+    request<{ status: string; deliveries: GithubDelivery[] }>(`/github-app/deliveries/${encodeURIComponent(deliveryId)}/replay`, { method: "POST" }),
   getGithubRepositories: () =>
     request<{ repositories: { repositoryId: number; installationId: number; fullName: string; defaultBranch: string | null; isPrivate: boolean }[] }>("/github-app/repositories"),
   setProjectGithubAuth: (projectId: number, input: { mode: "app" | "token"; installationId?: number; repositoryId?: number }) =>

@@ -483,6 +483,19 @@ export interface GithubSettings {
   installations: GithubInstallation[];
 }
 
+export interface GithubDelivery {
+  deliveryId: string;
+  event: string;
+  action: string | null;
+  installationId: number | null;
+  status: "received" | "processed" | "ignored" | "failed";
+  attempts: number;
+  receivedAt: string;
+  processedAt: string | null;
+  /** What was done, or why it was ignored or failed. */
+  detail: string | null;
+}
+
 export interface GithubManifestStart {
   registrationUrl: string;
   manifest: Record<string, unknown>;

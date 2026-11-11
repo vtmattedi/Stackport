@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import { auditLog } from "../../../shared/logger";
 import { findProjectByHookId, hasDelivery, recordDelivery, verifySignature } from "../githubWebhooks";
 import { requestAutoDeploy } from "../autoDeploy";
+import { processDelivery, receiveAppDelivery } from "../../github/webhook";
 
 const router = Router();
 
@@ -25,6 +26,25 @@ interface PushPayload {
 }
 
 const ZERO_SHA = /^0+$/;
+
+// POST /api/hooks/github/app — the GitHub App's one webhook. Authenticated by the App's HMAC secret and registered
+// before the per-project route below, whose `:publicId` would otherwise take "app" for a project. The delivery is
+// stored before GitHub is answered; it is handled after, and again at start-up if Stackport stopped in between.
+router.post(
+  "/github/app",
+  hookLimiter,
+  express.raw({ type: "*/*", limit: "5mb" }),
+  (req: Request, res: Response): void => {
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const { result, deliveryId } = receiveAppDelivery(rawBody, {
+      signature: req.header("x-hub-signature-256") ?? undefined,
+      deliveryId: req.header("x-github-delivery") ?? undefined,
+      event: req.header("x-github-event") ?? undefined,
+    });
+    res.status(result.status).json(result.body);
+    if (deliveryId) setImmediate(() => { processDelivery(deliveryId); });
+  },
+);
 
 // POST /api/hooks/github/:publicId — no login; authenticated by the per-project HMAC secret.
 // Mounted before the global JSON parser: push payloads are far larger than its 10 KB

@@ -11,6 +11,7 @@ import {
 import { GithubError } from "../../modules/github/client";
 import { getApp, getInstallation, listInstallations, listRepositories } from "../../modules/github/store";
 import { inspectRepository, listRepositoryBranches, resolveAppRepository } from "../../modules/github/binding";
+import { listDeliveries, replayDelivery } from "../../modules/github/webhook";
 
 /**
  * Settings > GitHub. The three browser callbacks (`/manifest/callback`, `/oauth/callback`, `/setup`) are the only
@@ -127,6 +128,18 @@ router.get("/repositories/:id/inspect", requireAuth, async (req: Request<{ id: s
   if (!branch || branch.length > 255) { res.status(400).json({ error: "Choose a branch." }); return; }
   try { res.json(await inspectRepository(repositoryFromRequest(req), branch)); }
   catch (err) { fail(res, err); }
+});
+
+router.get("/deliveries", requireAuth, (req: Request, res: Response): void => {
+  res.json({ deliveries: listDeliveries(Number(req.query["limit"]) || 50) });
+});
+
+/** Handles a stored delivery again, for one that failed or was ignored for a reason that has since been fixed. */
+router.post("/deliveries/:id/replay", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const status = replayDelivery(req.params.id);
+  if (status === null) { res.status(404).json({ error: "Delivery not found" }); return; }
+  auditLog(req.user ?? "unknown", "github-app.replay", req.params.id, status === "failed" ? "fail" : "ok", { status });
+  res.json({ status, deliveries: listDeliveries(20) });
 });
 
 router.post("/installations/:id/refresh", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {

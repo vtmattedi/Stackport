@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AlertCircle, Loader, RefreshCw } from "lucide-react";
 import { api, ApiError } from "../../api/client";
-import type { GithubManifestStart, GithubSettings } from "../../api/types";
+import type { GithubDelivery, GithubManifestStart, GithubSettings } from "../../api/types";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -35,6 +35,7 @@ export default function GithubSection() {
   const [owner, setOwner] = useState("");
   const [isPublic, setIsPublic] = useState(false);
   const [modules, setModules] = useState<string[]>([]);
+  const [deliveries, setDeliveries] = useState<GithubDelivery[]>([]);
   const [params, setParams] = useSearchParams();
   const announced = useRef(false);
 
@@ -43,6 +44,7 @@ export default function GithubSection() {
       const next = await api.getGithubSettings();
       setSettings(next);
       setModules((current) => (current.length ? current : next.modules));
+      if (next.app) setDeliveries((await api.getGithubDeliveries()).deliveries);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load the GitHub settings");
     }
@@ -161,6 +163,30 @@ export default function GithubSection() {
                       {busy === `refresh-${installation.installationId}` ? <Loader size={14} className="spin" /> : <RefreshCw size={14} />} Refresh
                     </Button>
                   )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {preflight.origin && <p className="hint">Webhook address: <code className="mono">{preflight.origin}/api/hooks/github/app</code>. A push to a project's auto-deploy branch deploys it.</p>}
+      <h4>Recent deliveries</h4>
+      {deliveries.length === 0 ? (
+        <p className="hint">Nothing received yet. GitHub sends a delivery when someone pushes, or when an installation changes.</p>
+      ) : (
+        <table>
+          <thead><tr><th>Received</th><th>Event</th><th>Result</th><th /></tr></thead>
+          <tbody>
+            {deliveries.slice(0, 20).map((delivery) => (
+              <tr key={delivery.deliveryId}>
+                <td className="mono">{delivery.receivedAt}</td>
+                <td>{delivery.event}{delivery.action ? ` / ${delivery.action}` : ""}</td>
+                <td><strong>{delivery.status}</strong>{delivery.detail ? `: ${delivery.detail}` : ""}{delivery.attempts > 1 ? ` (${delivery.attempts} attempts)` : ""}</td>
+                <td>
+                  <Button type="button" size="sm" variant="outline" disabled={busy !== ""}
+                    onClick={() => void run(`replay-${delivery.deliveryId}`, async () => { const result = await api.replayGithubDelivery(delivery.deliveryId); setDeliveries(result.deliveries); notify.success(`Replayed: ${result.status}.`); })}>
+                    Replay
+                  </Button>
                 </td>
               </tr>
             ))}
