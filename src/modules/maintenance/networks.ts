@@ -40,6 +40,8 @@ export interface DockerNetworkInfo {
   containers: { id: string; name: string }[];
   owner: NetworkOwner;
   createdAt: string | null;
+  /** Why it may not be removed from the page, or null when it may (nothing attached, and not Stackport's or Docker's own). */
+  removalBlocker: string | null;
 }
 
 export interface NetworkOverview {
@@ -84,7 +86,7 @@ export function classifyNetwork(raw: RawNetwork, projects: ProjectRef[]): Networ
 
 export function describeNetwork(raw: RawNetwork, projects: ProjectRef[], pools: AddressPool[]): DockerNetworkInfo {
   const subnets = (raw.IPAM?.Config ?? []).map((c) => c.Subnet ?? "").filter(Boolean);
-  return {
+  const info: Omit<DockerNetworkInfo, "removalBlocker"> = {
     id: (raw.Id ?? "").slice(0, 12),
     name: raw.Name ?? "",
     driver: raw.Driver ?? "",
@@ -96,6 +98,7 @@ export function describeNetwork(raw: RawNetwork, projects: ProjectRef[], pools: 
     owner: classifyNetwork(raw, projects),
     createdAt: raw.Created ?? null,
   };
+  return { ...info, removalBlocker: removalBlocker(info) };
 }
 
 function listProjectRefs(): ProjectRef[] {
@@ -116,6 +119,50 @@ export async function readNetworkOverview(run: DockerRun = dockerRun, projects: 
   }
   const networks = raws.map((raw) => describeNetwork(raw, projects, pools)).sort((a, b) => a.name.localeCompare(b.name));
   return { networks, headroom: computeHeadroom(pools, networks.flatMap((n) => n.subnets), known) };
+}
+
+/** Why a network may not be removed from the page, or null when it may. Only networks with nothing attached, and only kinds whose
+ *  loss costs nothing that Stackport does not rebuild by itself. */
+export function removalBlocker(network: Pick<DockerNetworkInfo, "owner" | "containers">): string | null {
+  switch (network.owner.kind) {
+    case "docker": return "Docker's own network.";
+    case "stackport": return "Part of Stackport.";
+    case "group": return "A network group: Stackport removes it itself once nothing uses it.";
+    case "isolated": return "A project's isolated network: switch isolation off on the project instead.";
+    default: break;
+  }
+  if (network.containers.length > 0) return `${network.containers.length} ${network.containers.length === 1 ? "container is" : "containers are"} attached.`;
+  return null;
+}
+
+export interface NetworkRemoval { name: string; removed: boolean; reason: string | null }
+
+export const MAX_REMOVALS = 50;
+
+/**
+ * Removes the named networks, each only if it is still removable when this runs: the page may be minutes old, and a container can
+ * have joined since. Names are looked up in a fresh read, never passed through unchecked.
+ */
+export async function removeNetworks(names: string[], run: DockerRun = dockerRun, projects: ProjectRef[] = listProjectRefs()): Promise<NetworkRemoval[]> {
+  const wanted = [...new Set(names)].slice(0, MAX_REMOVALS);
+  const { networks } = await readNetworkOverview(run, projects);
+  const results: NetworkRemoval[] = [];
+  for (const name of wanted) {
+    const network = networks.find((n) => n.name === name);
+    if (!network) { results.push({ name, removed: false, reason: "No such network." }); continue; }
+    const blocker = removalBlocker(network);
+    if (blocker) { results.push({ name, removed: false, reason: blocker }); continue; }
+    // By name, which is unambiguous; a name that could be read as an option is not one Docker would have made.
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(network.name)) { results.push({ name, removed: false, reason: "The name is not one Docker would create." }); continue; }
+    try {
+      await run(["network", "rm", network.name]);
+      results.push({ name, removed: true, reason: null });
+    } catch (err) {
+      results.push({ name, removed: false, reason: err instanceof Error ? err.message.split("\n")[0].slice(0, 200) : "Docker refused." });
+    }
+  }
+  overviewCache.invalidate();
+  return results;
 }
 
 const overviewCache = new SingleFlightCache<NetworkOverview>(() => readNetworkOverview(), 10_000);

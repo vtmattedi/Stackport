@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyNetwork, describeNetwork, readNetworkOverview, type RawNetwork } from "../src/modules/maintenance/networks";
+import { classifyNetwork, describeNetwork, readNetworkOverview, removalBlocker, removeNetworks, type RawNetwork } from "../src/modules/maintenance/networks";
 import { DEFAULT_ADDRESS_POOLS } from "../src/modules/maintenance/networkHeadroom";
 
 const projects = [{ id: 7, name: "Shop API" }, { id: 8, name: "blog" }];
@@ -44,4 +44,41 @@ test("the overview is read from docker's own output, with the headroom computed 
   assert.equal(overview.headroom.used, 3);
   assert.equal(overview.headroom.capacity, 31);
   assert.ok(calls.every((c) => c[0] === "info" || (c[0] === "network" && (c[1] === "ls" || c[1] === "inspect"))), "only reads: info, network ls, network inspect");
+});
+
+test("only networks with nothing attached, and of a kind Stackport does not rebuild itself, may be removed", () => {
+  const info = (raw: RawNetwork) => describeNetwork(raw, projects, DEFAULT_ADDRESS_POOLS);
+  assert.equal(removalBlocker(info(net("old_default", { Labels: { "com.docker.compose.project": "old" } }))), null);
+  assert.equal(removalBlocker(info(net("stackport-ingress-3"))), null);
+  assert.equal(removalBlocker(info(net("my-own-net"))), null);
+  assert.equal(removalBlocker(info(net("7-shop-api_default", { Labels: { "com.docker.compose.project": "7-shop-api" } }))), null, "a stopped project's network comes back when it starts");
+  assert.match(removalBlocker(info(net("busy_default", { Containers: { c1: { Name: "web-1" }, c2: { Name: "db-1" } } }))) ?? "", /2 containers are attached/);
+  assert.match(removalBlocker(info(net("bridge"))) ?? "", /Docker's own/);
+  assert.match(removalBlocker(info(net("stackport-proxy"))) ?? "", /Part of Stackport/);
+  assert.match(removalBlocker(info(net("stackport-group-payments"))) ?? "", /network group/);
+  assert.match(removalBlocker(info(net("stackport-iso-8"))) ?? "", /isolation off/);
+});
+
+test("removal re-reads the networks and removes only what is still removable; a name that is not a network is refused", async () => {
+  const removed: string[] = [];
+  const lines = [
+    net("bridge"), net("stackport-proxy", { Containers: { n: { Name: "stackport-nginx" } } }), net("old_default"), net("stackport-ingress-3"),
+    net("busy_default", { Containers: { c1: { Name: "web-1" } } }), net("stackport-group-payments"), net("stubborn"),
+  ].map((n) => JSON.stringify(n)).join("\n");
+  const run = async (args: string[]): Promise<string> => {
+    if (args[0] === "info") return "null";
+    if (args[1] === "ls") return "x\n";
+    if (args[1] === "inspect") return lines;
+    if (args[1] === "rm") {
+      if (args[2] === "stubborn") throw new Error("Error response from daemon: network stubborn has active endpoints\nsecond line");
+      removed.push(args[2]);
+      return "";
+    }
+    throw new Error(`unexpected ${args.join(" ")}`);
+  };
+  const results = await removeNetworks(["bridge", "stackport-proxy", "old_default", "stackport-ingress-3", "busy_default", "stackport-group-payments", "stubborn", "nope", "old_default"], run, projects);
+  assert.deepEqual(removed, ["old_default", "stackport-ingress-3"], "removed by name");
+  assert.deepEqual(results.map((r) => [r.name, r.removed]), [["bridge", false], ["stackport-proxy", false], ["old_default", true], ["stackport-ingress-3", true], ["busy_default", false], ["stackport-group-payments", false], ["stubborn", false], ["nope", false]], "a repeated name is handled once");
+  assert.match(results.find((r) => r.name === "stubborn")?.reason ?? "", /active endpoints$/, "only the first line of Docker's error");
+  assert.equal(results.find((r) => r.name === "nope")?.reason, "No such network.");
 });

@@ -644,7 +644,11 @@ export interface DockerNetworkInfo {
   containers: { id: string; name: string }[];
   owner: { kind: NetworkOwnerKind; label: string; projectId: number | null };
   createdAt: string | null;
+  /** Why it cannot be removed from the page, or null when it can. */
+  removalBlocker: string | null;
 }
+
+export interface NetworkRemoval { name: string; removed: boolean; reason: string | null }
 
 export interface NetworkOverview {
   networks: DockerNetworkInfo[];

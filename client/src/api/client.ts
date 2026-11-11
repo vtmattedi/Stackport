@@ -35,6 +35,7 @@ import type {
   ProjectEnforcement,
   NetworkHeadroom,
   NetworkOverview,
+  NetworkRemoval,
   PowerPreflight,
   PowerState,
   IngressHealth,
@@ -496,6 +497,8 @@ export const api = {
   getProjectIngressHealth: (projectId: number) => request<IngressHealth>(`/projects/${projectId}/ingress-health`),
   getNetworkHeadroom: () => request<NetworkHeadroom>("/system/network-headroom"),
   getNetworks: () => request<NetworkOverview>("/system/networks"),
+  removeNetworks: (names: string[]) =>
+    request<{ results: NetworkRemoval[] }>("/system/networks/remove", { method: "POST", body: JSON.stringify({ names }) }),
   getPower: () => request<{ state: PowerState; preflight: PowerPreflight }>("/system/power"),
   rebootHost: (input: { delayMinutes: number; confirm: string; interruptActions: boolean }) =>
     request<{ state: PowerState; preflight: PowerPreflight }>("/system/power/reboot", { method: "POST", body: JSON.stringify(input) }),

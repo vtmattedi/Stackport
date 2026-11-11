@@ -35,7 +35,7 @@ import { isSystemComposeProject } from "../../integrations/docker/systemResource
 import { getHardeningDefaults, setHardeningDefaults } from "../../modules/deployments/compose/hardening";
 import { listProjectEnforcement } from "../../modules/deployments/compose/enforcement";
 import { getNetworkHeadroom } from "../../modules/maintenance/networkHeadroom";
-import { getNetworkOverview } from "../../modules/maintenance/networks";
+import { getNetworkOverview, MAX_REMOVALS, removeNetworks } from "../../modules/maintenance/networks";
 import { PowerError, readPowerPreflight, readPowerState, requestCancel, requestReboot } from "../../modules/maintenance/power";
 import { getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../../modules/maintenance/storage/operations";
 
@@ -230,6 +230,23 @@ router.get("/network-headroom", requireAuth, async (_req: Request, res: Response
 router.get("/networks", requireAuth, async (_req: Request, res: Response): Promise<void> => {
   try { res.json(await getNetworkOverview()); }
   catch (err) { res.status(503).json({ error: err instanceof Error ? err.message : "Docker could not be read" }); }
+});
+
+/** Removes networks with nothing attached (Host > Networks). Each is checked again right before it goes. */
+router.post("/networks/remove", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const names: unknown = req.body?.names;
+  if (!Array.isArray(names) || names.length === 0 || names.length > MAX_REMOVALS || !names.every((n) => typeof n === "string" && n.length > 0 && n.length < 200)) {
+    res.status(400).json({ error: `names must list 1 to ${MAX_REMOVALS} network names` });
+    return;
+  }
+  const user = req.user ?? "unknown";
+  try {
+    const results = await removeNetworks(names as string[]);
+    for (const result of results) auditLog(user, "docker.network-remove", result.name, result.removed ? "ok" : "fail", { reason: result.reason });
+    res.json({ results });
+  } catch (err) {
+    res.status(503).json({ error: err instanceof Error ? err.message : "Docker could not be read" });
+  }
 });
 
 /** Host > Power: whether the host side is set up, what happened to the last request, and what a reboot would cut off. */

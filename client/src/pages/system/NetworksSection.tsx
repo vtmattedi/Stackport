@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, Loader, Network, RefreshCw } from "lucide-react";
+import { AlertCircle, Loader, Network, RefreshCw, Trash2 } from "lucide-react";
 import { api } from "../../api/client";
 import type { DockerNetworkInfo, NetworkOwnerKind } from "../../api/types";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { SubShellSectionHeader } from "../../components/SubShell";
+import { useConfirm } from "../../components/ConfirmDialog";
+import { notify } from "../../lib/notify";
 import styles from "./NetworksSection.module.scss";
 
 const KIND_LABEL: Record<NetworkOwnerKind, string> = {
@@ -64,6 +66,9 @@ export function NetworksSection() {
   });
   const [filter, setFilter] = useState<"all" | NetworkOwnerKind>("all");
   const [unusedOnly, setUnusedOnly] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [removing, setRemoving] = useState(false);
+  const confirm = useConfirm();
 
   const header = (
     <SubShellSectionHeader
@@ -83,6 +88,33 @@ export function NetworksSection() {
   if (!data) return <>{header}<Loader size={14} className="spin" /></>;
 
   const { networks, headroom } = data;
+  const removable = networks.filter((n) => n.removalBlocker === null);
+  // A selection survives a refresh only for networks that are still there and still removable.
+  const chosen = removable.filter((n) => selected.has(n.name));
+
+  async function removeChosen() {
+    const names = chosen.map((n) => n.name);
+    const ok = await confirm({
+      title: `Remove ${names.length} ${names.length === 1 ? "network" : "networks"}?`,
+      description: `${names.join(", ")}. Nothing is attached to them. A stopped project's network is made again when it starts, and needs a free slice of the address pool then. Each is checked again just before it is removed.`,
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!ok) return;
+    setRemoving(true);
+    try {
+      const { results } = await api.removeNetworks(names);
+      const failed = results.filter((r) => !r.removed);
+      if (results.length > failed.length) notify.success(`${results.length - failed.length} ${results.length - failed.length === 1 ? "network" : "networks"} removed.`);
+      if (failed.length > 0) notify.error(new Error(failed.map((r) => `${r.name}: ${r.reason ?? "not removed"}`).join("; ")), "Some networks were not removed");
+      setSelected(new Set());
+      await refetch();
+    } catch (err) {
+      notify.error(err, "Could not remove the networks");
+    } finally {
+      setRemoving(false);
+    }
+  }
   const counts = (kind: "all" | NetworkOwnerKind) => (kind === "all" ? networks.length : networks.filter((n) => n.owner.kind === kind).length);
   const shown = networks.filter((n) => (filter === "all" || n.owner.kind === filter) && (!unusedOnly || (n.containers.length === 0 && n.owner.kind !== "docker")));
   const percent = headroom.capacity > 0 ? Math.min(100, Math.round((headroom.used / headroom.capacity) * 100)) : 0;
@@ -121,15 +153,35 @@ export function NetworksSection() {
             <input type="checkbox" checked={unusedOnly} onChange={(e) => setUnusedOnly(e.target.checked)} /> No containers attached
           </label>
         </div>
+        {removable.length > 0 && (
+          <div className={styles.bar}>
+            <Button type="button" variant="outline" size="sm" disabled={removing} onClick={() => setSelected(new Set(removable.map((n) => n.name)))}>Select all {removable.length} that can be removed</Button>
+            <Button type="button" variant="destructive" size="sm" disabled={removing || chosen.length === 0} onClick={() => void removeChosen()}>
+              {removing ? <Loader size={13} className="spin" /> : <Trash2 size={13} />} Remove {chosen.length || ""} selected
+            </Button>
+            <span className={styles.muted}>Only networks with nothing attached can be removed, and never Docker's or Stackport's own.</span>
+          </div>
+        )}
         {shown.length === 0 ? (
           <div className={styles.empty}>No network matches.</div>
         ) : (
           <div className={styles.tableWrap}>
             <table className={styles.table}>
-              <thead><tr><th>Name</th><th>Owner</th><th>Subnet</th><th>Slices</th><th>Containers</th></tr></thead>
+              <thead><tr><th aria-label="Select" />
+<th>Name</th><th>Owner</th><th>Subnet</th><th>Slices</th><th>Containers</th></tr></thead>
               <tbody>
                 {shown.map((network) => (
                   <tr key={network.id || network.name}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${network.name}`}
+                        disabled={network.removalBlocker !== null || removing}
+                        title={network.removalBlocker ?? "Nothing is attached: it can be removed"}
+                        checked={selected.has(network.name) && network.removalBlocker === null}
+                        onChange={(e) => setSelected((current) => { const next = new Set(current); if (e.target.checked) next.add(network.name); else next.delete(network.name); return next; })}
+                      />
+                    </td>
                     <td className={styles.name}>
                       {network.name}
                       {network.internal && <span className={styles.muted}> (internal)</span>}
