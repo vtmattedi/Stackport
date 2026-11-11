@@ -5,6 +5,7 @@ import * as os from "os";
 import { requireAuth } from "../../identity/middleware/session";
 import { getDatabase } from "../../../config/database";
 import { HEALTH_CHECK_USER_AGENT } from "../../deployments/health";
+import { plainRecord } from "../../../shared/plainRecord";
 
 const router = Router();
 router.use(requireAuth);
@@ -209,7 +210,7 @@ interface DomainAgg {
 /** One time-series bucket. `errors` counts every 4xx/5xx; `serverErrors` is the 5xx share of it. */
 interface TsBucket { count: number; errors: number; serverErrors: number }
 
-function parseNginxContent(
+export function parseNginxContent(
   content: string,
   isPartial: boolean,
   periodHours: number,
@@ -224,11 +225,11 @@ function parseNginxContent(
   const periodStart = now - periodMs;
   const granularity: "hour" | "day" = periodHours <= 24 ? "hour" : "day";
 
-  const statusCodes: Record<string, number> = {};
-  const pathCounts: Record<string, number> = {};
-  const tsStats: Record<string, TsBucket> = {};
+  const statusCodes = plainRecord<number>();
+  const pathCounts = plainRecord<number>();
+  const tsStats = plainRecord<TsBucket>();
   const domainMap = new Map<string, DomainAgg>();
-  const methodCounts: Record<string, number> = {};
+  const methodCounts = plainRecord<number>();
   const uniqueIps = new Set<string>();
   let totalRequests = 0;
   let totalBytes = 0;
@@ -294,7 +295,7 @@ function parseNginxContent(
     if (entry.host) {
       let ds = domainMap.get(entry.host);
       if (!ds) {
-        ds = { requests: 0, errors: 0, bytes: 0, rts: [], statusCodes: {}, pathCounts: {}, methodCounts: {}, tsStats: {}, ips: new Set(), botRequests: 0 };
+        ds = { requests: 0, errors: 0, bytes: 0, rts: [], statusCodes: plainRecord<number>(), pathCounts: plainRecord<number>(), methodCounts: plainRecord<number>(), tsStats: plainRecord<TsBucket>(), ips: new Set(), botRequests: 0 };
         domainMap.set(entry.host, ds);
       }
       ds.requests++;

@@ -1,5 +1,6 @@
 import { getDatabase } from "../../../config/database";
 import { dumpYamlDoc } from "./yaml";
+import { plainRecord } from "../../../shared/plainRecord";
 
 /**
  * Hardened defaults for managed services (S8).
@@ -82,7 +83,7 @@ function hasPidsLimit(service: Json): boolean {
  *  own, so the project's other options (which S1 limits) are kept. */
 export function buildHardeningOverride(resolved: unknown, defaults: HardeningDefaults): string | null {
   const services = asRecord(asRecord(resolved)?.["services"]);
-  const override: Record<string, Json> = {};
+  const override = plainRecord<Json>();
   for (const [name, value] of Object.entries(services ?? {})) {
     const service = asRecord(value);
     if (!service) continue;

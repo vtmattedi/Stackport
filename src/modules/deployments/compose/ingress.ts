@@ -1,5 +1,6 @@
 import { splitPortSpec } from "./yaml";
 import { normalizeRelativePath } from "../../../shared/safePath";
+import { plainRecord } from "../../../shared/plainRecord";
 
 export interface ComposeIngressTarget {
   service: string;
@@ -55,7 +56,7 @@ export function extractRawComposeIngressTargets(doc: unknown): ComposeIngressTar
   if (!doc || typeof doc !== "object") return [];
   const services = (doc as Record<string, unknown>)["services"];
   if (!services || typeof services !== "object") return [];
-  const normalized: Record<string, unknown> = {};
+  const normalized = plainRecord<unknown>();
   for (const [service, raw] of Object.entries(services)) {
     if (!raw || typeof raw !== "object") continue;
     const definition = raw as Record<string, unknown>;
