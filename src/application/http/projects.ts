@@ -40,6 +40,7 @@ import {
   stopAndPurgeProject,
   validateComposeFileChoice,
 } from "../../modules/deployments/operations";
+import { setComposePolicyEnforced } from "../../modules/deployments/compose/enforcement";
 import { getProjectBranches } from "../../modules/automation/githubPolling";
 import { runCertbotAction } from "../../modules/ingress/certificates/operations";
 import { actionRegistry, DEPLOY_KINDS_SQL, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../../modules/actions/registry";
@@ -667,6 +668,18 @@ router.get("/:id/compose-policy", requireAuth, async (req: Request<{ id: string 
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   try { res.json(await getProjectComposePolicy(id)); }
   catch { res.json({ composeFile: null, violations: [] }); }
+});
+
+/** Rejects (true) or only warns about (false) resolved-config policy violations (S1) for one
+ *  project; applies on its next deploy. Older projects start with it off. */
+router.put("/:id/compose-policy-enforcement", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const enforced: unknown = req.body?.enforced;
+  if (typeof enforced !== "boolean") { res.status(400).json({ error: "enforced must be true or false" }); return; }
+  if (!setComposePolicyEnforced(id, enforced)) { res.status(404).json({ error: "Project not found" }); return; }
+  auditLog(req.user ?? "unknown", "project.compose-policy-enforcement", String(id), "ok", { enforced });
+  res.json({ composePolicyEnforced: enforced });
 });
 
 /** Turns the hardened container defaults (S8) on or off for one project; they take

@@ -20,6 +20,10 @@ export interface Project {
   autoRollbackUnhealthy: boolean;
   /** Services get Stackport's hardened defaults: no-new-privileges and default limits (S8). */
   hardenedDefaults: boolean;
+  /** Resolved-config policy violations (S1) reject a deploy; off, they only warn (G2). */
+  composePolicyEnforced: boolean;
+  /** Bind mounts live in Stackport-owned directories (S2). Off until the migration copies the data. */
+  volumesManaged: boolean;
   /** Network group: projects in the same one reach each other's chosen services (separate from groupName). */
   networkGroup: string | null;
   lastStatus: "up" | "down" | "unknown";
@@ -104,6 +108,8 @@ export interface ProjectRow {
   deploy_health_grace_s?: number | null;
   auto_rollback_unhealthy?: number | null;
   hardened_defaults?: number | null;
+  compose_policy_enforced?: number | null;
+  volumes_managed?: number | null;
   network_group?: string | null;
   pending_deploy_sha?: string | null;
   github_checked_at?: string | null;
@@ -135,6 +141,8 @@ export function rowToProject(row: ProjectRow): Project {
     deployHealthGraceS: row.deploy_health_grace_s ?? 60,
     autoRollbackUnhealthy: !!row.auto_rollback_unhealthy,
     hardenedDefaults: row.hardened_defaults !== 0,
+    composePolicyEnforced: row.compose_policy_enforced !== 0,
+    volumesManaged: row.volumes_managed !== 0,
     networkGroup: row.network_group ?? null,
     lastStatus: (validStatus.includes(row.last_status) ? row.last_status : "unknown") as
       | "up"

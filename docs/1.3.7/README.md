@@ -12,6 +12,12 @@ Plan: [github-app.md](github-app.md). Security reference it builds on: [../1.3/g
 |---|---|---|
 | G1 | The Git token is out of process arguments (environment-scoped to the origin; a PAT stays an explicit mode, no silent fallback). The App plan relies on it. | 1.3.5 branch, [../1.3/security.md](../1.3/security.md) |
 
+| G2 | A per-project switch for the Compose policy (project Settings tab) and a Settings > Project protections list of projects still missing the policy, managed volumes or hardened defaults. Managed volumes have no plain switch on purpose: turning them on without copying the data would start the project on an empty directory, so Migrations stays the way. | 1.3.7 branch |
+
+## Order of work
+
+G2 (done), then G3 (resolved-config results in the policy panel), G4 (lint warnings, then fail CI on warnings), then the GitHub App phases A to D.
+
 ## To build
 
 Phases A to D from the plan: registration through the App Manifest flow, secrets with the keyring, installation tokens and linking, repository discovery; the Git credential resolver and the App source in the new-project wizard, with PAT to App migration; the signed webhook receiver with a durable delivery table; hardening and rollback tests. The modules chosen so far are M1 (report deploys to GitHub), M2 (deploy only after CI passes) and M3 (deploy on release); the owner of the App is chosen at registration.

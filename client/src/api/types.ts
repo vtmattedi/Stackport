@@ -44,6 +44,10 @@ export interface Project {
   autoRollbackUnhealthy: boolean;
   /** Services get Stackport's hardened defaults: no-new-privileges and default limits. */
   hardenedDefaults: boolean;
+  /** Resolved-config policy violations reject a deploy; off, they only warn. */
+  composePolicyEnforced: boolean;
+  /** Bind mounts live in Stackport-owned directories. */
+  volumesManaged: boolean;
   /** Projects in the same network group reach each other's chosen services. */
   networkGroup: string | null;
   lastStatus: "up" | "down" | "unknown";
@@ -443,11 +447,13 @@ export interface DockerDiskUsageEntry {
   reclaimable: string;
 }
 
-export interface HardeningDefaults {
-  /** Process limit per service; 0 means no default. */
-  pidsLimit: number;
-  /** Memory limit per service in megabytes; 0 means no default. */
-  memoryMb: number;
+/** Which 1.3 protections a project has; the Settings view lists the ones missing any. */
+export interface ProjectEnforcement {
+  id: number;
+  name: string;
+  composePolicyEnforced: boolean;
+  volumesManaged: boolean;
+  hardenedDefaults: boolean;
 }
 
 export interface HardeningDefaults {

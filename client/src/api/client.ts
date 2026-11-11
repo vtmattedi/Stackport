@@ -32,6 +32,7 @@ import type {
   SystemUpdateConfig,
   DockerStorageThresholds,
   HardeningDefaults,
+  ProjectEnforcement,
   NetworkGroupView,
   AppVersionInfo,
   NotificationConfig,
@@ -436,6 +437,9 @@ export const api = {
   getHardeningDefaults: () => request<HardeningDefaults>("/system/hardening-defaults"),
   updateHardeningDefaults: (values: HardeningDefaults) =>
     request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
+  setProjectComposePolicyEnforcement: (projectId: number, enforced: boolean) =>
+    request<{ composePolicyEnforced: boolean }>(`/projects/${projectId}/compose-policy-enforcement`, { method: "PUT", body: JSON.stringify({ enforced }) }),
+  getProjectEnforcement: () => request<{ projects: ProjectEnforcement[] }>("/system/project-enforcement"),
   getProjectNetworkGroup: (projectId: number) => request<NetworkGroupView>(`/projects/${projectId}/network-group`),
   setProjectNetworkGroup: (projectId: number, group: string, services: string[]) =>
     request<NetworkGroupView>(`/projects/${projectId}/network-group`, { method: "PUT", body: JSON.stringify({ group, services }) }),

@@ -33,6 +33,7 @@ import {
 } from "../../integrations/docker/statusCache";
 import { isSystemComposeProject } from "../../integrations/docker/systemResources";
 import { getHardeningDefaults, setHardeningDefaults } from "../../modules/deployments/compose/hardening";
+import { listProjectEnforcement } from "../../modules/deployments/compose/enforcement";
 import { getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../../modules/maintenance/storage/operations";
 
 import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../../modules/maintenance/selfUpdate";
@@ -214,6 +215,11 @@ router.put("/docker/storage-thresholds", requireAuth, (req: Request, res: Respon
   setStorageThresholds(thresholds);
   auditLog(req.user ?? "unknown", "system.docker-storage-thresholds", "app_meta", "ok", { ...thresholds });
   res.json(thresholds);
+});
+
+/** Which 1.3 protections each project has, unprotected ones first (G2). */
+router.get("/project-enforcement", requireAuth, (_req: Request, res: Response): void => {
+  res.json({ projects: listProjectEnforcement() });
 });
 
 router.get("/hardening-defaults", requireAuth, (_req: Request, res: Response): void => {
