@@ -3,7 +3,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { loadYamlDoc, dumpYamlDoc } from "./yaml";
 import { dockerCli, type GroupDocker } from "./groupNetworks";
-import { INGRESS_NETWORK, ingressAlias, LEGACY_INGRESS_PREFIX } from "../../../shared/ingressNames";
+import { INGRESS_NETWORK, ingressAlias, isolatedAlias, isolatedNetworkName, LEGACY_INGRESS_PREFIX } from "../../../shared/ingressNames";
 
 /** The network nginx and every routed service share. Declared by the system stack, so nginx is always on it. */
 export const STACKPORT_PROXY_NETWORK = INGRESS_NETWORK;
@@ -64,13 +64,19 @@ const isLegacy = (name: string): boolean => name.startsWith(LEGACY_INGRESS_PREFI
  *  *replaces* Compose's implicit default-network attachment rather than adding to it, so "default"
  *  is added alongside when networking was implicit; dropping it would cut the service off from
  *  its own project's other containers (e.g. its own database). A per-project network that 1.3.0 wrote into
- *  the file is removed. */
+ *  the file is removed.
+ *
+ *  An isolated project (P7) is attached to its own network under `iso<id>-<service>` instead, and the shared
+ *  one is dropped from the file; the reverse switch puts it back. */
 export async function applyStackportProxyNetwork(
   repoPath: string,
   composeFile: string,
   services: string[],
-  projectId: number
+  projectId: number,
+  isolated = false
 ): Promise<{ ok: boolean; message: string }> {
+  const wantedNetwork = isolated ? isolatedNetworkName(projectId) : INGRESS_NETWORK;
+  const otherNetwork = isolated ? INGRESS_NETWORK : isolatedNetworkName(projectId);
   const filePath = path.join(repoPath, composeFile);
   let raw: string;
   try {
@@ -118,11 +124,12 @@ export async function applyStackportProxyNetwork(
     if (!service || typeof service !== "object") continue; // policy/existence validation is the caller's job, not this rewrite's
     const serviceObj = service as Record<string, unknown>;
     const attached = networksAsObject(serviceObj["networks"]) ?? { default: {} };
-    const wanted = { aliases: [ingressAlias(projectId, name)] };
-    if (JSON.stringify(attached[INGRESS_NETWORK]) !== JSON.stringify(wanted)) {
-      attached[INGRESS_NETWORK] = wanted;
+    const wanted = { aliases: [isolated ? isolatedAlias(projectId, name) : ingressAlias(projectId, name)] };
+    if (JSON.stringify(attached[wantedNetwork]) !== JSON.stringify(wanted)) {
+      attached[wantedNetwork] = wanted;
       changed = true;
     }
+    if (otherNetwork in attached) { delete attached[otherNetwork]; changed = true; }
     // Compose treats `networks` as a list only when no entry carries options; keep one shape.
     if (!(serviceObj["networks"] && typeof serviceObj["networks"] === "object" && !Array.isArray(serviceObj["networks"]))) changed = true;
     serviceObj["networks"] = attached;
@@ -130,13 +137,14 @@ export async function applyStackportProxyNetwork(
 
   const topNetworks = (root["networks"] && typeof root["networks"] === "object") ? { ...(root["networks"] as Record<string, unknown>) } : {};
   for (const name of Object.keys(topNetworks).filter(isLegacy)) { delete topNetworks[name]; changed = true; }
+  if (otherNetwork in topNetworks) { delete topNetworks[otherNetwork]; changed = true; }
   if (services.length > 0) {
-    const existing = topNetworks[INGRESS_NETWORK];
+    const existing = topNetworks[wantedNetwork];
     const declared = !!existing && typeof existing === "object"
       && (existing as Record<string, unknown>)["external"] === true
-      && (existing as Record<string, unknown>)["name"] === INGRESS_NETWORK;
+      && (existing as Record<string, unknown>)["name"] === wantedNetwork;
     if (!declared) {
-      topNetworks[INGRESS_NETWORK] = { external: true, name: INGRESS_NETWORK };
+      topNetworks[wantedNetwork] = { external: true, name: wantedNetwork };
       changed = true;
     }
   }

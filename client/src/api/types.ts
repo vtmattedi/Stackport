@@ -44,6 +44,8 @@ export interface Project {
   autoRollbackUnhealthy: boolean;
   /** Services get Stackport's hardened defaults: no-new-privileges and default limits. */
   hardenedDefaults: boolean;
+  /** Routed services sit on a network of this project's own instead of the shared ingress network. */
+  ingressIsolated: boolean;
   /** Resolved-config policy violations reject a deploy; off, they only warn. */
   composePolicyEnforced: boolean;
   /** Bind mounts live in Stackport-owned directories. */
@@ -447,11 +449,23 @@ export interface DockerDiskUsageEntry {
   reclaimable: string;
 }
 
+/** The outcome of switching a project onto its own network, or back. */
+export interface IngressIsolationResult {
+  ok: boolean;
+  isolated: boolean;
+  /** What was done, in order. */
+  steps: string[];
+  /** Why it stopped, when it did. */
+  reason?: string;
+}
+
 /** Whether nginx can reach a project's routed services. */
 export interface IngressHealth {
   projectId: number;
   status: "ok" | "degraded" | "down" | "no-routes" | "nginx-unavailable";
   summary: string;
+  /** The project has a network of its own instead of the shared ingress network. */
+  isolated: boolean;
   nginx: { running: boolean; onSharedNetwork: boolean };
   routes: { domain: string; service: string; port: number; alias: string; reachable: boolean; failure: string | null; detail: string }[];
 }

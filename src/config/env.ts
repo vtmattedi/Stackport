@@ -44,6 +44,8 @@ export const config = {
   // stackport.sh into stackport.env. Blank domain means a raw-IP install; see
   // modules/ingress/bootstrap.ts for how that's resolved into a self-signed cert instead
   // of a Let's Encrypt one.
+  /** Where isolated projects' networks get their subnets (P7), one /27 each. Must not overlap anything on the host. */
+  isolationRange: process.env["STACKPORT_ISOLATION_RANGE"] ?? "10.212.0.0/14",
   stackportDomain: process.env["STACKPORT_DOMAIN"] ?? "",
   certbotEmail: process.env["CERTBOT_EMAIL"] ?? "",
   allowedOrigins: (process.env["ALLOWED_ORIGINS"] ?? "").split(",").filter(Boolean),

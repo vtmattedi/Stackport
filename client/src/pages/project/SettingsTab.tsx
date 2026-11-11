@@ -18,6 +18,7 @@ import styles from "../ProjectDetails.module.scss";
 import { DetailRow } from "./shared";
 import { HardeningCard } from "./HardeningCard";
 import { PolicyCard } from "./PolicyCard";
+import { IsolationCard } from "./IsolationCard";
 import { NetworkGroupCard } from "./NetworkGroupCard";
 
 const INTERVALS = [
@@ -389,6 +390,7 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
 
         <PolicyCard project={project} setProject={setProject} />
         <HardeningCard project={project} setProject={setProject} />
+        <IsolationCard project={project} setProject={setProject} />
 
         <NetworkGroupCard project={project} />
 

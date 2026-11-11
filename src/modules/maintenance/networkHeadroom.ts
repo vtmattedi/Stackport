@@ -1,4 +1,5 @@
 import { dockerRun, type DockerRun } from "../ingress/networks";
+import { cidrEnd, parseCidr } from "../../shared/cidr";
 
 /**
  * How many more Docker networks fit (P3).
@@ -44,21 +45,6 @@ export interface NetworkHeadroom {
 const WARNING_FREE = 6;
 const CRITICAL_FREE = 2;
 
-interface Cidr { start: number; prefix: number }
-
-function parseCidr(text: string): Cidr | null {
-  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(text.trim());
-  if (!match) return null;
-  const octets = match.slice(1, 5).map(Number);
-  const prefix = Number(match[5]);
-  if (octets.some((o) => o > 255) || prefix > 32) return null;
-  const address = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  return { start: (address & mask) >>> 0, prefix };
-}
-
-const end = (c: Cidr): number => c.start + 2 ** (32 - c.prefix) - 1;
-
 /** How many networks of the pool's `size` fit in its base range. */
 export function poolCapacity(pool: AddressPool): number {
   const base = parseCidr(pool.base);
@@ -74,7 +60,7 @@ export function slotsTaken(subnet: string, pools: AddressPool[]): number {
   for (const pool of pools) {
     const base = parseCidr(pool.base);
     if (!base) continue;
-    if (net.start < base.start || end(net) > end(base)) continue;
+    if (net.start < base.start || cidrEnd(net) > cidrEnd(base)) continue;
     return net.prefix >= pool.size ? 1 : 2 ** (pool.size - net.prefix);
   }
   return 0;

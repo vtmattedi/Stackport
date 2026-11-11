@@ -73,6 +73,8 @@ import {
   TcpExposureError,
 } from "../../modules/ingress/tcp";
 import { removeIngressNetwork } from "../../modules/ingress/networks";
+import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared } from "../../modules/ingress/isolation";
+import { isIngressIsolated } from "../../modules/ingress/isolationState";
 import { assignNetworkGroup, getNetworkGroupView, NetworkGroupError } from "../../modules/deployments/networkGroupAssignment";
 import multer from "multer";
 
@@ -679,6 +681,37 @@ router.get("/:id/ingress-health", requireAuth, async (req: Request<{ id: string 
   if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   res.json(await checkProjectIngress(id));
+});
+
+const isolationSwitches = new Set<number>();
+
+/** Moves a project onto a network of its own, or back onto the shared one (P7). The switch checks that the new
+ *  route works from inside nginx before it changes anything nginx uses, and puts everything back if it cannot.
+ *  Runs while the request waits, and refuses while a deploy or another switch is running. */
+router.put("/:id/ingress-isolation", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  const enabled: unknown = req.body?.enabled;
+  if (typeof enabled !== "boolean") { res.status(400).json({ error: "enabled must be true or false" }); return; }
+  if (isolationSwitches.has(id) || actionRegistry.get(projectRepoKey(id))?.status === "running") {
+    res.status(409).json({ ok: false, error: "A deploy or another network change is running for this project. Try again when it has finished." });
+    return;
+  }
+  if (isIngressIsolated(id) === enabled) { res.json({ ok: true, isolated: enabled, steps: ["Already in that state."] }); return; }
+  isolationSwitches.add(id);
+  try {
+    const deps = await defaultIsolationDeps();
+    const result = enabled ? await switchToIsolated(id, deps) : await switchToShared(id, deps);
+    auditLog(req.user ?? "unknown", "project.ingress-isolation", String(id), result.ok ? "ok" : "fail", { enabled, reason: result.reason });
+    // A switch that could not be done safely is an answer, not an error: the steps and the reason are what the page shows.
+    res.json({ ...result, isolated: isIngressIsolated(id) });
+  } catch (err) {
+    auditLog(req.user ?? "unknown", "project.ingress-isolation", String(id), "fail", { enabled });
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "The network change failed" });
+  } finally {
+    isolationSwitches.delete(id);
+  }
 });
 
 /** Rejects (true) or only warns about (false) resolved-config policy violations (S1) for one
@@ -1311,6 +1344,7 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   healthChecker.unschedule(id);
   void removeIngressNetwork(id);
+  void removeIsolatedNetworkQuietly(id);
 
   auditLog(req.user ?? "unknown", "project.delete", row.name, "ok");
   res.status(204).send();

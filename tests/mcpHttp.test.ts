@@ -119,7 +119,7 @@ test("get_project returns exactly the allowlisted fields", async () => {
 test("ingress health returns exactly the allowlisted fields, and an unknown project is a tool error", async () => {
   const client = await connect(token);
   const health = payload(await client.callTool({ name: "stackport_get_project_ingress_health", arguments: { projectId } }));
-  assert.deepEqual(Object.keys(health).sort(), ["nginx", "projectId", "routes", "status", "summary"]);
+  assert.deepEqual(Object.keys(health).sort(), ["isolated", "nginx", "projectId", "routes", "status", "summary"]);
   assert.deepEqual(Object.keys(health.nginx as object).sort(), ["onSharedNetwork", "running"]);
   assert.equal((await client.callTool({ name: "stackport_get_project_ingress_health", arguments: { projectId: 999999 } })).isError, true);
   await client.close();

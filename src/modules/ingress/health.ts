@@ -1,5 +1,6 @@
 import { execFile } from "child_process";
-import { INGRESS_NETWORK, ingressAlias, NGINX_CONTAINER } from "../../shared/ingressNames";
+import { INGRESS_NETWORK, isolatedNetworkName, NGINX_CONTAINER, upstreamAlias } from "../../shared/ingressNames";
+import { isIngressIsolated } from "./isolationState";
 import { listProjectDomains } from "./domains";
 
 /**
@@ -41,8 +42,10 @@ export type IngressStatus = "ok" | "degraded" | "down" | "no-routes" | "nginx-un
 
 export interface IngressHealth {
   projectId: number;
-  /** nginx's container is running and attached to the shared network. */
+  /** nginx's container is running and attached to the network this project's services are reached on. */
   nginx: { running: boolean; onSharedNetwork: boolean };
+  /** The project has a network of its own (P7), and that is the network `onSharedNetwork` refers to. */
+  isolated: boolean;
   routes: RouteHealth[];
   status: IngressStatus;
   /** One line saying what to look at, when something is wrong. */
@@ -82,36 +85,38 @@ export async function probeRoute(alias: string, port: number, exec: DockerExec =
   return classifyProbe(result);
 }
 
-async function nginxState(exec: DockerExec): Promise<{ running: boolean; onSharedNetwork: boolean }> {
+async function nginxState(exec: DockerExec, network: string): Promise<{ running: boolean; onSharedNetwork: boolean }> {
   const result = await exec(["inspect", NGINX_CONTAINER, "--format", "{{.State.Running}} {{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}"]);
   if (result.code !== 0) return { running: false, onSharedNetwork: false };
   const [running, ...networks] = result.stdout.trim().split(/\s+/);
-  return { running: running === "true", onSharedNetwork: networks.includes(INGRESS_NETWORK) };
+  return { running: running === "true", onSharedNetwork: networks.includes(network) };
 }
 
-export function summarize(nginx: IngressHealth["nginx"], routes: RouteHealth[]): { status: IngressStatus; summary: string } {
+export function summarize(nginx: IngressHealth["nginx"], routes: RouteHealth[], network: string = INGRESS_NETWORK): { status: IngressStatus; summary: string } {
   if (!nginx.running) return { status: "nginx-unavailable", summary: "The nginx container is not running, so no route can be reached." };
-  if (!nginx.onSharedNetwork) return { status: "nginx-unavailable", summary: `nginx is not on the ${INGRESS_NETWORK} network, so none of its upstreams can resolve. Restart Stackport to reconcile the network.` };
+  if (!nginx.onSharedNetwork) return { status: "nginx-unavailable", summary: `nginx is not on the ${network} network, so none of its upstreams can resolve. Restart Stackport to reconcile the network.` };
   if (!routes.length) return { status: "no-routes", summary: "This project has no routed domain." };
   const failed = routes.filter((r) => !r.reachable);
   if (!failed.length) return { status: "ok", summary: "Every route reaches its service." };
   const unresolved = failed.filter((r) => r.failure === "name-does-not-resolve");
   const lead = unresolved.length
-    ? `${unresolved.map((r) => r.service).join(", ")} is not on the ${INGRESS_NETWORK} network under its alias: the service is not running, or was started before it was attached. Redeploy the project or restart Stackport.`
+    ? `${unresolved.map((r) => r.service).join(", ")} is not on the ${network} network under its alias: the service is not running, or was started before it was attached. Redeploy the project or restart Stackport.`
     : `${failed.map((r) => `${r.domain} (${r.failure})`).join(", ")}: the name resolves but the port does not answer. Check the service's logs and its container port.`;
   return { status: failed.length === routes.length ? "down" : "degraded", summary: lead };
 }
 
 export async function checkProjectIngress(projectId: number, exec: DockerExec = dockerExec): Promise<IngressHealth> {
-  const nginx = await nginxState(exec);
+  const isolated = isIngressIsolated(projectId);
+  const network = isolated ? isolatedNetworkName(projectId) : INGRESS_NETWORK;
+  const nginx = await nginxState(exec, network);
   const targets = listProjectDomains(projectId).filter((d) => d.service && d.containerPort);
   const routes: RouteHealth[] = [];
   if (nginx.running && nginx.onSharedNetwork) {
     for (const domain of targets) {
-      const alias = ingressAlias(projectId, domain.service);
+      const alias = upstreamAlias(projectId, domain.service, isolated);
       const outcome = await probeRoute(alias, domain.containerPort as number, exec);
       routes.push({ domain: domain.domain, service: domain.service, port: domain.containerPort as number, alias, reachable: outcome.failure === null, failure: outcome.failure, detail: outcome.detail });
     }
   }
-  return { projectId, nginx, routes, ...summarize(nginx, routes) };
+  return { projectId, nginx, isolated, routes, ...summarize(nginx, routes, network) };
 }

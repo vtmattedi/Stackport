@@ -24,6 +24,8 @@ export interface Project {
   composePolicyEnforced: boolean;
   /** Bind mounts live in Stackport-owned directories (S2). Off until the migration copies the data. */
   volumesManaged: boolean;
+  /** Routed services sit on a network of this project's own instead of the shared ingress network (P7). */
+  ingressIsolated: boolean;
   /** Network group: projects in the same one reach each other's chosen services (separate from groupName). */
   networkGroup: string | null;
   lastStatus: "up" | "down" | "unknown";
@@ -109,6 +111,7 @@ export interface ProjectRow {
   auto_rollback_unhealthy?: number | null;
   hardened_defaults?: number | null;
   compose_policy_enforced?: number | null;
+  ingress_isolated?: number | null;
   volumes_managed?: number | null;
   network_group?: string | null;
   pending_deploy_sha?: string | null;
@@ -141,6 +144,7 @@ export function rowToProject(row: ProjectRow): Project {
     deployHealthGraceS: row.deploy_health_grace_s ?? 60,
     autoRollbackUnhealthy: !!row.auto_rollback_unhealthy,
     hardenedDefaults: row.hardened_defaults !== 0,
+    ingressIsolated: row.ingress_isolated === 1,
     composePolicyEnforced: row.compose_policy_enforced !== 0,
     volumesManaged: row.volumes_managed !== 0,
     networkGroup: row.network_group ?? null,

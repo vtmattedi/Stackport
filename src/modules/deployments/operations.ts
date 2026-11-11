@@ -20,7 +20,9 @@ import { loadYamlDoc } from "./compose/yaml";
 import { checkComposeFileReferences } from "./compose/references";
 import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, validateResolvedComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
-import { ensureSharedIngressNetwork } from "../ingress/networks";
+import { dockerRun, ensureSharedIngressNetwork } from "../ingress/networks";
+import { isIngressIsolated } from "../ingress/isolationState";
+import { connectNginx, defaultIsolationDeps, ensureIsolatedNetwork, reconcileIsolatedProject } from "../ingress/isolation";
 import { dockerCli, pruneGroupNetworks, syncGroupNetwork } from "./compose/groupNetworks";
 import { seedManagedDirectory } from "./compose/seedVolumes";
 import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networkGroups";
@@ -143,6 +145,15 @@ export async function ensureProjectProxyNetwork(projectId: number): Promise<void
   if (!project?.composeFile) return;
   const services = listRoutedServiceNames(projectId);
   if (!services.length) return;
+  if (isIngressIsolated(projectId)) {
+    // An isolated project (P7) has a network of its own: make sure it exists, nginx is on it and the services are.
+    const isolatedResult = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services, projectId, true);
+    if (!isolatedResult.ok) throw new Error(isolatedResult.message);
+    const reconciled = await reconcileIsolatedProject(projectId, await defaultIsolationDeps());
+    if (!reconciled.ok) throw new Error(reconciled.reason);
+    invalidateContainers();
+    return;
+  }
   await ensureSharedIngressNetwork();
   const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services, projectId);
   if (!result.ok) throw new Error(result.message);
@@ -547,14 +558,21 @@ async function runCompose(
     // needed re-substitution before every invocation.
     const routedServices = listRoutedServiceNames(projectId);
     if (routedServices.length > 0) {
+      const isolated = isIngressIsolated(projectId);
       try {
-        await ensureSharedIngressNetwork();
+        if (isolated) {
+          // The network is declared external in the file, so it must exist before `up`, and nginx must be on it.
+          await ensureIsolatedNetwork(projectId, dockerRun);
+          await connectNginx(projectId, dockerRun);
+        } else {
+          await ensureSharedIngressNetwork();
+        }
       } catch (err) {
         const message = `Could not prepare the ingress network: ${err instanceof Error ? err.message : String(err)}\n`;
         emit(projectId, action, "stderr", message);
         return { ok: false, output: message, stdout: "", command: "ingress network" };
       }
-      const network = await applyStackportProxyNetwork(repoPath, composeFile, routedServices, projectId);
+      const network = await applyStackportProxyNetwork(repoPath, composeFile, routedServices, projectId, isolated);
       if (!network.ok) {
         emit(projectId, action, "stderr", network.message);
         return { ok: false, output: network.message, stdout: "", command: "ingress network attachment" };

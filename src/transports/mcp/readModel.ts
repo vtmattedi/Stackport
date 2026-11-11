@@ -184,6 +184,8 @@ export interface IngressHealthView {
   projectId: number;
   status: IngressStatus;
   summary: string;
+  /** The project has a network of its own instead of the shared ingress network. */
+  isolated: boolean;
   nginx: { running: boolean; onSharedNetwork: boolean };
   routes: { domain: string; service: string; port: number; reachable: boolean; failure: string | null }[];
 }
@@ -196,6 +198,7 @@ export async function getProjectIngressHealthView(id: number): Promise<IngressHe
     projectId: id,
     status: health.status,
     summary: health.summary,
+    isolated: health.isolated,
     nginx: { running: health.nginx.running, onSharedNetwork: health.nginx.onSharedNetwork },
     routes: health.routes.map((r) => ({ domain: r.domain, service: r.service, port: r.port, reachable: r.reachable, failure: r.failure })),
   };

@@ -10,7 +10,8 @@ import { getDatabase } from "../../../config/database";
 import { rowToProject, type Project, type ProjectRow } from "../../projects/types";
 import { listAllRoutableProjectDomains, type ProjectDomain } from "../domains";
 import { invalidateNginxActiveStatus } from "./statusCache";
-import { ingressAlias, NGINX_CONTAINER } from "../../../shared/ingressNames";
+import { NGINX_CONTAINER, upstreamAlias } from "../../../shared/ingressNames";
+import { isIngressIsolated } from "../isolationState";
 import { SELF_SIGNED_CERT_PATH, SELF_SIGNED_KEY_PATH } from "./selfSignedCert";
 
 const TEMPLATE_DIR = "templates";
@@ -323,9 +324,10 @@ function renderExtraBlocks(target: NginxTarget): string {
   return indentExtraBlocks(substituted);
 }
 
-/** The host nginx proxies to for a target. */
+/** The host nginx proxies to for a target: the alias on the shared network, or on the project's own network once
+ *  the project is isolated (P7). */
 function upstreamHost(target: NginxTarget): string {
-  return target.projectId === undefined ? target.service : ingressAlias(target.projectId, target.service);
+  return target.projectId === undefined ? target.service : upstreamAlias(target.projectId, target.service, isIngressIsolated(target.projectId));
 }
 
 function locationBlock(target: NginxTarget): string {

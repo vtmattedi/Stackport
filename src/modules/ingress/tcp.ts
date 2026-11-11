@@ -3,8 +3,9 @@ import { promisify } from "util";
 import { getDatabase } from "../../config/database";
 import { config } from "../../config/env";
 import { logger } from "../../shared/logger";
-import { INGRESS_NETWORK, ingressAlias } from "../../shared/ingressNames";
+import { INGRESS_NETWORK, isolatedNetworkName, upstreamAlias } from "../../shared/ingressNames";
 import { ensureSharedIngressNetwork } from "./networks";
+import { isIngressIsolated } from "./isolationState";
 
 const execFileAsync = promisify(execFile);
 const PROXY_IMAGE = "alpine/socat:1.8.0.3";
@@ -142,14 +143,19 @@ async function removeProxyContainer(id: number): Promise<void> {
   }
 }
 
-/** Where the proxy connects: the service's alias on the shared ingress network. */
+/** Where the proxy connects: the service's alias on the network its project is reached on. */
 function tcpTarget(exposure: TcpExposure): string {
-  return `${ingressAlias(exposure.projectId, exposure.service)}:${exposure.containerPort}`;
+  return `${upstreamAlias(exposure.projectId, exposure.service, isIngressIsolated(exposure.projectId))}:${exposure.containerPort}`;
 }
 
-/** A proxy 1.3.0 started sits on a per-project network instead; it is recreated on the shared one. */
-export function tcpProxyIsOnSharedNetwork(networks: Record<string, unknown> | undefined): boolean {
-  return networks !== undefined && INGRESS_NETWORK in networks;
+/** The network the proxy sits on: the shared ingress network, or the project's own once it is isolated (P7). */
+function proxyNetwork(exposure: TcpExposure): string {
+  return isIngressIsolated(exposure.projectId) ? isolatedNetworkName(exposure.projectId) : INGRESS_NETWORK;
+}
+
+/** A proxy 1.3.0 started sits on a per-project network instead; it is recreated on the right one. */
+export function tcpProxyIsOnNetwork(networks: Record<string, unknown> | undefined, network: string = INGRESS_NETWORK): boolean {
+  return networks !== undefined && Object.prototype.hasOwnProperty.call(networks, network);
 }
 
 async function proxyIsCurrent(exposure: TcpExposure): Promise<boolean> {
@@ -164,7 +170,7 @@ async function proxyIsCurrent(exposure: TcpExposure): Promise<boolean> {
     const labels = info.Config?.Labels ?? {};
     const binding = info.HostConfig?.PortBindings?.[`${exposure.publicPort}/tcp`];
     return info.State?.Running === true
-      && tcpProxyIsOnSharedNetwork(info.NetworkSettings?.Networks)
+      && tcpProxyIsOnNetwork(info.NetworkSettings?.Networks, proxyNetwork(exposure))
       && labels["com.stackport.managed"] === "tcp-exposure"
       && labels["com.stackport.tcp-exposure-id"] === String(exposure.id)
       && labels["com.stackport.project-id"] === String(exposure.projectId)
@@ -191,11 +197,12 @@ export async function reconcileTcpExposure(exposure: TcpExposure): Promise<void>
 
   await removeProxyContainer(exposure.id);
   try {
-    await ensureSharedIngressNetwork();
+    // An isolated project's network is made by the switch (and re-made at start-up); here it only has to exist.
+    if (!isIngressIsolated(exposure.projectId)) await ensureSharedIngressNetwork();
     await docker([
       "run", "-d", "--name", name, "--restart", "unless-stopped",
       "--read-only", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "64m",
-      "--network", INGRESS_NETWORK, "-p", `${exposure.publicPort}:${exposure.publicPort}/tcp`,
+      "--network", proxyNetwork(exposure), "-p", `${exposure.publicPort}:${exposure.publicPort}/tcp`,
       "--label", "com.stackport.managed=tcp-exposure",
       "--label", `com.stackport.tcp-exposure-id=${exposure.id}`,
       "--label", `com.stackport.project-id=${exposure.projectId}`,

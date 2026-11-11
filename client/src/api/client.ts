@@ -35,6 +35,7 @@ import type {
   ProjectEnforcement,
   NetworkHeadroom,
   IngressHealth,
+  IngressIsolationResult,
   NetworkGroupView,
   AppVersionInfo,
   NotificationConfig,
@@ -441,6 +442,8 @@ export const api = {
     request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
   setProjectComposePolicyEnforcement: (projectId: number, enforced: boolean) =>
     request<{ composePolicyEnforced: boolean }>(`/projects/${projectId}/compose-policy-enforcement`, { method: "PUT", body: JSON.stringify({ enforced }) }),
+  setProjectIngressIsolation: (projectId: number, enabled: boolean) =>
+    request<IngressIsolationResult>(`/projects/${projectId}/ingress-isolation`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   getProjectIngressHealth: (projectId: number) => request<IngressHealth>(`/projects/${projectId}/ingress-health`),
   getNetworkHeadroom: () => request<NetworkHeadroom>("/system/network-headroom"),
   getProjectEnforcement: () => request<{ projects: ProjectEnforcement[] }>("/system/project-enforcement"),
