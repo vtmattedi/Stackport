@@ -40,6 +40,16 @@ export interface FakeGithub {
   grantedUserTokens: Set<string>;
   /** More public keys the fake accepts a JWT from, for key rotation. */
   extraPublicKeys: string[];
+  /** Deployments and statuses the App reported (module M1). */
+  deployments: { repo: string; id: number; body: Record<string, unknown> }[];
+  deploymentStatuses: { repo: string; id: number; body: Record<string, unknown> }[];
+  /** Check runs and the combined status per `owner/repo@sha` (module M2). */
+  checkRuns: Record<string, { status: string; conclusion: string | null }[]>;
+  combinedStatus: Record<string, { state: string; total_count: number }>;
+  /** What a tag or branch name resolves to, per `owner/repo@name` (module M3). */
+  refs: Record<string, string>;
+  /** When set, creating a deployment answers with this status (to test that GitHub refusing never breaks a deploy). */
+  deploymentFailure: number | null;
   close(): Promise<void>;
 }
 
@@ -48,7 +58,7 @@ export async function startFakeGithub(): Promise<FakeGithub> {
   const fake: FakeGithub = {
     apiUrl: "", webUrl: "", appId: 4242, clientId: "Iv1.fakeclient", clientSecret: "fake-client-secret", webhookSecret: "fake-webhook-secret", publicKey,
     installations: [], requests: [], rateLimit: null, tokenLifetimeMs: 60 * 60 * 1000, maxConcurrent: 0, holdMs: 0, conversions: 0, tokensIssued: 0,
-    grantedUserTokens: new Set(), extraPublicKeys: [], close: async () => undefined,
+    grantedUserTokens: new Set(), extraPublicKeys: [], deployments: [], deploymentStatuses: [], checkRuns: {}, combinedStatus: {}, refs: {}, deploymentFailure: null, close: async () => undefined,
   };
   const usedCodes = new Set<string>();
   const codes = new Map<string, "manifest" | "oauth">();
@@ -158,6 +168,24 @@ export async function startFakeGithub(): Promise<FakeGithub> {
       return json(res, 200, { total_count: installation.repositories.length, repositories: installation.repositories.slice((page - 1) * 100, page * 100) });
     }
     const repoRoute = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(url.pathname);
+    if (req.method === "POST" && repoRoute) {
+      const granted = installationTokens.get(auth);
+      if (!granted || granted.expiresAt < Date.now()) return json(res, 401, { message: "Bad credentials" });
+      const installation = fake.installations.find((i) => i.id === granted.installationId)!;
+      const fullName = `${repoRoute[1]}/${repoRoute[2]}`;
+      if (!installation.repositories.some((r) => r.full_name === fullName)) return json(res, 404, { message: "Not Found" });
+      const rest = repoRoute[3] ?? "";
+      let parsed: Record<string, unknown> = {};
+      try { parsed = JSON.parse(body) as Record<string, unknown>; } catch { /* empty body */ }
+      if (rest === "/deployments") {
+        if (fake.deploymentFailure) return json(res, fake.deploymentFailure, { message: "refused" });
+        const id = 9000 + fake.deployments.length + 1;
+        fake.deployments.push({ repo: fullName, id, body: parsed });
+        return json(res, 201, { id });
+      }
+      const status = /^\/deployments\/(\d+)\/statuses$/.exec(rest);
+      if (status) { fake.deploymentStatuses.push({ repo: fullName, id: Number(status[1]), body: parsed }); return json(res, 201, { id: 1 }); }
+    }
     if (req.method === "GET" && repoRoute) {
       const granted = installationTokens.get(auth);
       if (!granted || granted.expiresAt < Date.now()) return json(res, 401, { message: "Bad credentials" });
@@ -166,6 +194,12 @@ export async function startFakeGithub(): Promise<FakeGithub> {
       if (!installation.repositories.some((r) => r.full_name === fullName)) return json(res, 404, { message: "Not Found" });
       const rest = repoRoute[3] ?? "";
       if (rest === "") return json(res, 200, { full_name: fullName });
+      const checks = /^\/commits\/([^/]+)\/check-runs$/.exec(rest);
+      if (checks) { const runs = fake.checkRuns[`${fullName}@${decodeURIComponent(checks[1])}`] ?? []; return json(res, 200, { total_count: runs.length, check_runs: runs }); }
+      const combined = /^\/commits\/([^/]+)\/status$/.exec(rest);
+      if (combined) { const c = fake.combinedStatus[`${fullName}@${decodeURIComponent(combined[1])}`] ?? { state: "pending", total_count: 0 }; return json(res, 200, c); }
+      const commit = /^\/commits\/([^/]+)$/.exec(rest);
+      if (commit) { const name = decodeURIComponent(commit[1]); const sha = fake.refs[`${fullName}@${name}`]; return sha ? json(res, 200, { sha }) : json(res, 404, { message: "No commit found" }); }
       if (rest === "/branches") return json(res, 200, (installation.branches?.[fullName] ?? ["main"]).map((name) => ({ name, commit: { sha: crypto.createHash("sha1").update(name).digest("hex") } })));
       if (rest.startsWith("/git/trees/")) return json(res, 200, { truncated: false, tree: Object.keys(installation.files?.[fullName] ?? {}).map((path) => ({ path, type: "blob" })) });
       if (rest.startsWith("/contents/")) {

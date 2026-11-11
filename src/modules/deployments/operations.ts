@@ -30,6 +30,7 @@ import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
 import { listRoutedServiceNames } from "../ingress/domains";
 import { findUnroutedManagedHostname, routeReservedHostname } from "../ingress/managedDomains";
+import { beginDeployReport, finishDeployReport } from "../github/reporting";
 import { writeNginxConfig } from "../ingress/nginx/configWriter";
 import { ensureBuildCapacity } from "../maintenance/storage/operations";
 import { getActiveDeployment, markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./history";
@@ -1245,6 +1246,8 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
     : action === "recreate"
       ? ["up", "-d", ...(options.build === false ? ["--no-build"] : ["--build"]), "--force-recreate"]
       : ["up", "-d", "--build"];
+  // Module M1: tell GitHub a deploy of this commit has started (never holds the deploy up, never fails it).
+  const deployReport = composeArgs[0] === "up" ? await beginDeployReport(project, commitSha) : null;
   const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, MAX_BUILD_TIME_MS );
   output.push(compose.output);
   let healthy = true;
@@ -1267,6 +1270,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
     }
   }
   const ok = compose.ok && healthy;
+  await finishDeployReport(deployReport, { ok, healthy });
   emit(projectId, action, "status", `${action} ${ok ? "completed" : "failed"}\n`, { ok, done: true });
 
   return {
