@@ -42,14 +42,14 @@ async function connect(options: { token?: ApiToken; projects: Record<number, Pro
   return { call, started, close: () => client.close() };
 }
 
-test("the managed-domain list shows each domain, its default, how many hostnames use it and the last DNS result, and nothing else", () => {
+test("the managed-domain list shows each domain, its default and how many hostnames use it, and nothing else", () => {
   reset();
   const a = addManagedDomain("example.com");
   addManagedDomain("apps.example.com");
   addManagedProjectDomain(createProject({ name: "mcp-d1", sourceType: "upload" }).id, a.id, "shop");
   const view = listManagedDomainsView();
-  assert.deepEqual(view.domains.map((d) => [d.name, d.isDefault, d.hostnameCount, d.dnsStatus]), [["example.com", true, 1, "unknown"], ["apps.example.com", false, 0, "unknown"]]);
-  for (const d of view.domains) assert.deepEqual(Object.keys(d).sort(), ["dnsCheckedAt", "dnsStatus", "hostnameCount", "isDefault", "name"]);
+  assert.deepEqual(view.domains.map((d) => [d.name, d.isDefault, d.hostnameCount]), [["example.com", true, 1], ["apps.example.com", false, 0]]);
+  for (const d of view.domains) assert.deepEqual(Object.keys(d).sort(), ["hostnameCount", "isDefault", "name"]);
 });
 
 test("a first call only describes the rename; the confirmed call runs exactly that, once", async () => {

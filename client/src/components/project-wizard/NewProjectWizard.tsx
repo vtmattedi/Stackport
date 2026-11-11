@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, type ComponentType, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
@@ -20,7 +20,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { api, ApiError } from "../../api/client";
-import type { ComposeEnvFileRef, Credential, DeployTrigger, GitHubBranch, Project, ProjectEnvFile } from "../../api/types";
+import type { ComposeEnvFileRef, Credential, DeployTrigger, GitHubBranch, ManagedDomain, Project, ProjectEnvFile } from "../../api/types";
 import { useSystem } from "../../context/SystemContext";
 import { useRunningActionRecords, waitForActionResult } from "../../context/ActionTracker";
 import { useActionOutput } from "../../hooks/useActionOutput";
@@ -95,7 +95,9 @@ interface WizardState {
   envFiles: ProjectEnvFile[];
   envRefs: ComposeEnvFileRef[];
   envEditorPath: string | null | undefined;
-  domain: string;
+  /** The hostname is a label on a base domain (Settings > Domains), or `@` for the bare domain. */
+  domainLabel: string;
+  domainBaseId: number | null;
   ingress: string;
   useSsl: boolean;
   sslReady: boolean;
@@ -133,7 +135,8 @@ const INITIAL: WizardState = {
   envFiles: [],
   envRefs: [],
   envEditorPath: null,
-  domain: "",
+  domainLabel: "",
+  domainBaseId: null,
   ingress: "",
   useSsl: false,
   sslReady: false,
@@ -249,6 +252,18 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
   // A ref, not state: the SSL step reads it in the same run that the domain step set it.
   const routedDomainRef = useRef<{ id: number; key: string } | null>(null);
   const { project, source } = state;
+  // A new project can only be routed to a base domain or a subdomain of one, so the hostname is picked from those.
+  const [baseDomains, setBaseDomains] = useState<ManagedDomain[] | null>(null);
+  const [baseDomainsFailed, setBaseDomainsFailed] = useState(false);
+  const [baseDomainsTry, setBaseDomainsTry] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setBaseDomainsFailed(false);
+    api.getManagedDomains()
+      .then(({ domains }) => { if (live) { setBaseDomains(domains); set((s) => ({ domainBaseId: s.domainBaseId ?? domains.find((d) => d.isDefault)?.id ?? domains[0]?.id ?? null })); } })
+      .catch(() => { if (live) setBaseDomainsFailed(true); });
+    return () => { live = false; };
+  }, [baseDomainsTry]);
 
   const busy = state.fetchStatus === "running" || state.loadingBranches || Object.values(state.steps).includes("running");
   const isGithub = source === "github";
@@ -446,11 +461,15 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
   const missingEnvRefs = state.envRefs.filter((ref) => !ref.existsInSource && !managedEnvPaths.has(ref.path));
   const blockingEnvRefs = missingEnvRefs.filter((ref) => ref.required);
   const [ingressService = "", ingressPort = ""] = state.ingress.split(":");
-  const routingIncomplete = !!state.domain.trim() && !state.ingress;
+  const chosenBase = baseDomains?.find((d) => d.id === state.domainBaseId) ?? null;
+  const label = state.domainLabel.trim().toLowerCase();
+  // One label, or @ for the bare domain: the same rule the server applies, so a full hostname is caught before anything is deployed.
+  const labelInvalid = label !== "" && label !== "@" && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label);
+  const domain = chosenBase && label && !labelInvalid ? (label === "@" ? chosenBase.name : `${label}.${chosenBase.name}`) : "";
+  const routingIncomplete = (!!domain && !state.ingress) || labelInvalid;
 
   // ── Deploy ────────────────────────────────────────────────────────────────
 
-  const domain = state.domain.trim();
   const deploySteps: { id: DeployStepId; label: string }[] = [
     ...(isGithub ? [{ id: "checkout" as const, label: state.branch ? `Check out ${state.branch}` : "Check out the repository" }] : []),
     { id: "settings", label: "Save settings" },
@@ -518,11 +537,12 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
         return final?.ok ? { ok: true } : { ok: false, error: "Docker Compose failed. Fix the env files or compose file in Configure, then deploy again." };
       }
       case "domain": {
+        if (!chosenBase) return { ok: false, error: "Choose a base domain for the hostname." };
         const key = `${domain}|${state.ingress}`;
         if (routedDomainRef.current?.key === key) return { ok: true, log: `${domain} is already routed.` };
         // Retrying after the domain or route changed in Configure: replace the one this wizard added.
         if (routedDomainRef.current) await api.removeProjectDomain(current.id, routedDomainRef.current.id).catch(() => undefined);
-        const added = await api.addProjectDomain(current.id, domain, ingressService, Number(ingressPort));
+        const added = await api.addManagedProjectDomain(current.id, { managedDomainId: chosenBase.id, label, service: ingressService, containerPort: Number(ingressPort) });
         routedDomainRef.current = { id: added.id, key };
         return { ok: true, log: `Routed ${domain} to ${ingressService}:${ingressPort}. Nginx rebuild queued.` };
       }
@@ -884,8 +904,24 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
               <Section title="Routing" icon={<Globe size={12} />} aside={<span className="muted-text">Optional</span>}>
                 <div className="form-row">
                   <div className="field field-wide">
-                    <label>Domain</label>
-                    <input type="text" placeholder="myapp.example.com" value={state.domain} onChange={(e) => set({ domain: e.target.value })} disabled={busy} />
+                    <label>Hostname</label>
+                    {baseDomainsFailed ? (
+                      <p className="muted-text">The base domains could not be loaded. <button type="button" className="btn btn-ghost" onClick={() => setBaseDomainsTry((n) => n + 1)}>Retry</button></p>
+                    ) : baseDomains !== null && baseDomains.length === 0 ? (
+                      <p className="muted-text">Add a base domain in Settings &gt; Domains to route this project: it can only be routed to a base domain or a subdomain of one.</p>
+                    ) : (
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <input type="text" placeholder="label, or @ for the bare domain" value={state.domainLabel} onChange={(e) => set({ domainLabel: e.target.value })} disabled={busy || baseDomains === null} aria-label="Hostname label" />
+                        <AppSelect
+                          value={state.domainBaseId === null ? "" : String(state.domainBaseId)}
+                          onValueChange={(value) => set({ domainBaseId: Number(value) })}
+                          options={(baseDomains ?? []).map((d) => ({ value: String(d.id), label: `.${d.name}` }))}
+                          disabled={busy || baseDomains === null}
+                        />
+                      </div>
+                    )}
+                    {labelInvalid && <p className="muted-text">Enter one label, such as shop (letters, digits and hyphens, no dots), or @ for the bare domain. The base domain is chosen next to it.</p>}
+                    {domain && <p className="muted-text">{label === "@" ? `${domain}, with www.${domain} redirecting to it.` : domain}</p>}
                   </div>
                   <div className="field field-wide">
                     <label>Service and container port</label>
@@ -912,7 +948,7 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
                 <button type="button" className="btn btn-ghost" onClick={() => void requestClose()} disabled={busy}>
                   {resumeProject ? "Close" : "Cancel"}
                 </button>
-                <button type="button" className="btn btn-primary" onClick={startDeploy} disabled={busy || routingIncomplete || !state.composeFile || (isGithub && !state.branch)} title={routingIncomplete ? "Pick the service and port the domain should reach" : undefined}>
+                <button type="button" className="btn btn-primary" onClick={startDeploy} disabled={busy || routingIncomplete || !state.composeFile || (isGithub && !state.branch)} title={labelInvalid ? "The hostname label is not valid" : routingIncomplete ? "Pick the service and port the domain should reach" : undefined}>
                   <Rocket size={14} />
                   Deploy
                 </button>

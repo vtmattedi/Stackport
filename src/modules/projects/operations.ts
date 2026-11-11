@@ -3,7 +3,8 @@ import { getDatabase } from "../../config/database";
 import { rowToCredential, type Credential, type CredentialRow } from "../credentials/types";
 import { rowToProject, type Project, type ProjectRow } from "./types";
 import { getNginxAppConfig } from "../ingress/nginx/appConfig";
-import { addProjectDomain, getProjectDomain } from "../ingress/domains";
+import { addProjectDomain, getProjectDomain, ProjectDomainError } from "../ingress/domains";
+import { resolveBaseHostname } from "../ingress/managedDomains";
 import { resetGithubTrackingIfChanged } from "../automation/githubPolling";
 import { moveWebhookIfRepoChanged } from "../automation/githubWebhooks";
 
@@ -118,8 +119,15 @@ export function createProject(input: CreateProjectInput): Project {
 
     const projectId = Number(result.lastInsertRowid);
     // The initial domain and its project must either both persist or both roll back.
+    // A new project is only routed to a base domain or to a subdomain of one (Settings > Domains).
     if (input.domain !== undefined && input.domain !== null && input.domain !== "") {
-      addProjectDomain(projectId, input.domain);
+      try {
+        const target = resolveBaseHostname(input.domain);
+        addProjectDomain(projectId, target.hostname, false, "", null, { managedDomainId: target.managedDomainId, label: target.label });
+      } catch (err) {
+        if (err instanceof ProjectDomainError) throw new ProjectAdminError(err.statusCode, err.message);
+        throw err;
+      }
     }
     return getProjectOrThrow(projectId);
   }).immediate();

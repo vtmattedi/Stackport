@@ -126,7 +126,7 @@ export function buildMcpServer(token: ApiToken): McpServer {
     "stackport_list_managed_domains",
     {
       title: "List managed domains",
-      description: "The base domains Stackport manages (a project's hostname is a label on one, or the bare domain itself), which is the default, how many hostnames use each, and the result of the last DNS check. Use it to choose a managedDomain for stackport_set_project_hostname.",
+      description: "The base domains Stackport manages (a project's hostname is a label on one, or the bare domain itself), which is the default, and how many hostnames use each. Use it to choose a managedDomain for stackport_set_project_hostname.",
       annotations: READ_ONLY,
     },
     () => {

@@ -6,7 +6,8 @@ function hasColumn(db: Parameters<Migration["up"]>[0], table: string, column: st
 
 /** The domain manager (1.3.7): the base domains Stackport manages, and for each project hostname which base domain and
  *  label it was made from. `project_domains.domain` stays the full hostname, so nginx, Certbot and the health checker are
- *  unchanged; a row with no `managed_domain_id` is unmanaged. Additive only. */
+ *  unchanged; a row with no `managed_domain_id` is unmanaged. Additive only.
+ *  `managed_domains.dns_*` belong to the DNS check, which was removed before release: they are created and never used. */
 const migration: Migration = {
   id: 18,
   name: "managed_domains",

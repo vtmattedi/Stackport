@@ -4,7 +4,9 @@ function hasColumn(db: Parameters<Migration["up"]>[0], table: string, column: st
   return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((c) => c.name === column);
 }
 
-/** The result of the last DNS check of each hostname (domain manager). Additive only. */
+/** The result of the last DNS check of each hostname (domain manager). Additive only.
+ *  The DNS check was removed before release: these columns are created but nothing reads or writes them. They stay because
+ *  migrations only add. */
 const migration: Migration = {
   id: 19,
   name: "hostname_dns",

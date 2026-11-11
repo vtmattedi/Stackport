@@ -208,12 +208,12 @@ export async function getProjectIngressHealthView(id: number): Promise<IngressHe
 }
 
 export interface ManagedDomainsView {
-  domains: { name: string; isDefault: boolean; hostnameCount: number; dnsStatus: string; dnsCheckedAt: string | null }[];
+  domains: { name: string; isDefault: boolean; hostnameCount: number }[];
 }
 
 /** The base domains Stackport manages, picked field by field. */
 export function listManagedDomainsView(): ManagedDomainsView {
-  return { domains: listManagedDomains().map((d) => ({ name: d.name, isDefault: d.isDefault, hostnameCount: d.hostnameCount, dnsStatus: d.dnsStatus, dnsCheckedAt: d.dnsCheckedAt })) };
+  return { domains: listManagedDomains().map((d) => ({ name: d.name, isDefault: d.isDefault, hostnameCount: d.hostnameCount })) };
 }
 
 export interface GithubRepositoriesView {

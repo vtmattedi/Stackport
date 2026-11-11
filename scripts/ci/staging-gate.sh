@@ -11,7 +11,7 @@ changed="$1"
 body="$2"
 
 # Paths whose behaviour depends on a real Docker daemon, nginx or the host.
-GATED='^(src/index\.ts|stackport\.sh|docker-compose\.system\.yml|Dockerfile|docker-entrypoint\.sh|src/modules/ingress/(networks|bootstrap|health|isolation|isolationState|tcp|hostnameOps|dnsCheck)\.ts|src/modules/ingress/certificates/|src/modules/ingress/nginx/|src/modules/deployments/compose/(networking|managedVolumes|seedVolumes|groupNetworks)\.ts|src/modules/deployments/networkGroupAssignment\.ts|src/modules/maintenance/(networkHeadroom\.ts|migrations/)|src/shared/ingressNames\.ts)'
+GATED='^(src/index\.ts|stackport\.sh|docker-compose\.system\.yml|Dockerfile|docker-entrypoint\.sh|src/modules/ingress/(networks|bootstrap|health|isolation|isolationState|tcp|hostnameOps)\.ts|src/modules/ingress/certificates/|src/modules/ingress/nginx/|src/modules/deployments/compose/(networking|managedVolumes|seedVolumes|groupNetworks)\.ts|src/modules/deployments/networkGroupAssignment\.ts|src/modules/maintenance/(networkHeadroom\.ts|migrations/)|src/shared/ingressNames\.ts)'
 
 hits="$(grep -E "$GATED" "$changed" || true)"
 if [[ -z "$hits" ]]; then

@@ -19,7 +19,7 @@ Branch `1.3.7`, from `main` after 1.3.5. Release order: **1.3.1** (done) → **1
 | P6 | A pull request that touches networks, mounts, nginx or start-up must say it was run on a real host ([../staging-gate.md](../staging-gate.md)) | the script's logic only; the workflow has not run on GitHub yet |
 | P7 | Per-project network isolation, opt-in, with a subnet from Stackport's own range and a switch that checks the new route from inside nginx first ([network-isolation.md](network-isolation.md)) | unit tests and the clean-install run (switch, nginx recreated, switch back) |
 | P8 | The operator runbook ([../runbook.md](../runbook.md)) | read against the code; not exercised |
-| Domain manager D1 to D5 | Base domains with one default, hostnames as a label (or the bare domain, with `www` either way), adoption of existing hostnames, a hostname reserved for each new project and routed when there is one port, a safe rename, DNS checks and the server address, certificates held back until DNS resolves, expiry and renewal-failure notifications, MCP tools ([domain-manager.md](domain-manager.md)) | unit tests with an injected resolver; **not run against real DNS or a real certificate** |
+| Domain manager D1 to D5 | Base domains with one default, hostnames as a label (or the bare domain, with `www` either way), adoption of existing hostnames, a hostname reserved for each new project and routed when there is one port, a safe rename, a new project routed only to a base domain or a subdomain of one, expiry and renewal-failure notifications, MCP tools (no DNS checks: they were removed) ([domain-manager.md](domain-manager.md)) | unit tests; **no certificate issued for an auto-assigned hostname** |
 | GitHub App A to D | Register from a manifest, link installations, installation tokens, repository discovery, the Git credential resolver, the App in the wizard, PAT to App migration, the signed webhook with durable deliveries and replay, credential rotation ([github-app-operations.md](github-app-operations.md)) | tests against an in-process fake of GitHub. **Not run against github.com** |
 
 | GitHub App M1 to M3, import, MCP | Report each deploy to GitHub; deploy after CI passes or on a published release; scan and import repositories; list repositories and create a project from one over MCP ([github-app-operations.md](github-app-operations.md)) | tests against the fake of GitHub. **Not run against github.com** |
@@ -29,7 +29,7 @@ P1 (regression report and restore point) and the database backup stay in 1.4 ([.
 ## Not done
 
 - **Pull-request previews** (GitHub App module M4, waits for S11) and **naming rollbacks by tag**.
-- **Real-world checks**: the GitHub App against github.com, the domain manager against real DNS and a real certificate, and a
+- **Real-world checks**: the GitHub App against github.com, the domain manager with a real certificate, and a
   **staging-host pass** of the networking changes. All are named in the pull request.
 - Whether the new notification types (`certificate_expiring`, `certificate_renewal_failed`) arrive in a browser has not been tried.
 

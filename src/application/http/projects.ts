@@ -75,7 +75,6 @@ import {
 import { removeIngressNetwork } from "../../modules/ingress/networks";
 import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
-import { dnsGate } from "../../modules/ingress/dnsCheck";
 import { modeAvailable } from "../../modules/github/ci";
 import { realRenameDeps } from "../../modules/ingress/hostnameOps";
 import { addManagedProjectDomain, getManagedDomain, renameProjectHostname, reserveHostnameForProject, validateLabel } from "../../modules/ingress/managedDomains";
@@ -1058,12 +1057,6 @@ router.post("/:id/domains/:domainId/ssl/issue", requireAuth, (req: Request<{ id:
   const user = req.user ?? "unknown";
   const key = projectSslKey(id, domainId);
   const started = actionRegistry.tryStart(key, "ssl-issue", { projectId: id, domainId, domain: domainRow.domain }, async () => {
-    // A hostname on a managed domain has to resolve here before a certificate is asked for (see dnsCheck.ts).
-    const gate = await dnsGate(domainRow.domain);
-    if (!gate.ok) {
-      auditLog(user, "project.ssl-issue", `${project.name}:${domainRow.domain}`, "fail", { reason: "dns" });
-      return { ok: false, output: gate.reason ?? "DNS does not point here yet." };
-    }
     const flowId = nginxFlowId("project.ssl-issue", id);
     emitNginxFlow({
       id: flowId,

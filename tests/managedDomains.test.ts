@@ -9,7 +9,7 @@ import { rowToProject } from "../src/modules/projects/types";
 import { addProjectDomain, listProjectDomains, ProjectDomainError } from "../src/modules/ingress/domains";
 import {
   addManagedDomain, addManagedProjectDomain, adoptHostnames, getDefaultManagedDomain, getManagedDomain, hostnameFor, listManagedDomains, removeManagedDomain,
-  reserveLabel, setDefaultManagedDomain, slugify, validateLabel,
+  reserveLabel, resolveBaseHostname, setDefaultManagedDomain, slugify, validateLabel,
 } from "../src/modules/ingress/managedDomains";
 import { certificateAlias } from "../src/modules/ingress/certificates/operations";
 import app from "../src/app";
@@ -43,6 +43,20 @@ test("a label is one DNS label; @ means the bare domain; www is allowed", () => 
   assert.equal(validateLabel("  App  ", "example.com"), "app");
   assert.equal(hostnameFor("@", "example.com"), "example.com");
   assert.equal(hostnameFor("shop", "example.com"), "shop.example.com");
+});
+
+test("a hostname for a new project is the base domain or one label in front of it, on the longest matching base", () => {
+  reset();
+  const a = addManagedDomain("example.com");
+  const apps = addManagedDomain("apps.example.com");
+  assert.deepEqual(resolveBaseHostname(" Example.COM "), { managedDomainId: a.id, label: "@", hostname: "example.com" });
+  assert.deepEqual(resolveBaseHostname("shop.example.com"), { managedDomainId: a.id, label: "shop", hostname: "shop.example.com" });
+  assert.deepEqual(resolveBaseHostname("www.example.com"), { managedDomainId: a.id, label: "www", hostname: "www.example.com" });
+  assert.deepEqual(resolveBaseHostname("shop.apps.example.com"), { managedDomainId: apps.id, label: "shop", hostname: "shop.apps.example.com" }, "the longest base wins");
+  assert.deepEqual(resolveBaseHostname("apps.example.com"), { managedDomainId: apps.id, label: "@", hostname: "apps.example.com" });
+  for (const bad of ["other.org", "notexample.com", "a.b.example.com", "", 5, null]) assert.equal(statusOf(() => resolveBaseHostname(bad)), 400, String(bad));
+  reset();
+  assert.equal(statusOf(() => resolveBaseHostname("shop.example.com")), 400, "no base domain at all");
 });
 
 test("a label cannot become Stackport's own address", () => {

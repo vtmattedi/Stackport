@@ -4,10 +4,12 @@ import { initializeDatabase, getDatabase } from "../src/config/database";
 import { config } from "../src/config/env";
 import { getNginxAppConfig, setNginxAppConfig } from "../src/modules/ingress/nginx/appConfig";
 import { createProject } from "../src/modules/projects/operations";
+import { addManagedDomain } from "../src/modules/ingress/managedDomains";
 
 beforeEach(() => {
   initializeDatabase();
-  getDatabase().exec("DELETE FROM projects; DELETE FROM app_meta WHERE key IN ('nginx_app_enabled','nginx_app_domain','nginx_app_use_ssl')");
+  getDatabase().exec("DELETE FROM projects; DELETE FROM managed_domains; DELETE FROM app_meta WHERE key IN ('nginx_app_enabled','nginx_app_domain','nginx_app_use_ssl')");
+  addManagedDomain("example.com");
 });
 
 test("app ingress preserves defaults, normalized domains and persisted keys", () => {

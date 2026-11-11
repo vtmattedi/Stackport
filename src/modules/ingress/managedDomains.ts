@@ -8,30 +8,24 @@ import { addProjectDomain, ensureDomainAvailable, getProjectDomain, listProjectD
  * of them. `project_domains.domain` stays the full hostname, so nginx, Certbot and the health checker do not change.
  */
 
-export type DnsStatus = "unknown" | "ok" | "not-resolving" | "points-elsewhere";
-
 export interface ManagedDomain {
   id: number;
   name: string;
   isDefault: boolean;
-  dnsStatus: DnsStatus;
-  dnsCheckedAt: string | null;
-  dnsDetail: string | null;
   /** Hostnames made from it. */
   hostnameCount: number;
   createdAt: string;
 }
 
 interface DomainRow {
-  id: number; name: string; is_default: number; dns_status: string; dns_checked_at: string | null; dns_detail: string | null; created_at: string; hostname_count: number;
+  id: number; name: string; is_default: number; created_at: string; hostname_count: number;
 }
 
-const SELECT = `SELECT d.id, d.name, d.is_default, d.dns_status, d.dns_checked_at, d.dns_detail, d.created_at,
+const SELECT = `SELECT d.id, d.name, d.is_default, d.created_at,
   (SELECT COUNT(*) FROM project_domains p WHERE p.managed_domain_id = d.id) AS hostname_count FROM managed_domains d`;
 
 function toDomain(row: DomainRow): ManagedDomain {
-  const dnsStatus = (["unknown", "ok", "not-resolving", "points-elsewhere"] as const).find((s) => s === row.dns_status) ?? "unknown";
-  return { id: row.id, name: row.name, isDefault: row.is_default === 1, dnsStatus, dnsCheckedAt: row.dns_checked_at, dnsDetail: row.dns_detail, hostnameCount: row.hostname_count, createdAt: row.created_at };
+  return { id: row.id, name: row.name, isDefault: row.is_default === 1, hostnameCount: row.hostname_count, createdAt: row.created_at };
 }
 
 export function listManagedDomains(): ManagedDomain[] {
@@ -126,31 +120,33 @@ export function removeManagedDomain(id: number): boolean {
   return getDatabase().prepare("DELETE FROM managed_domains WHERE id = ?").run(id).changes > 0;
 }
 
-export function recordDnsResult(id: number, status: DnsStatus, detail: string | null): void {
-  getDatabase().prepare("UPDATE managed_domains SET dns_status = ?, dns_detail = ?, dns_checked_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, detail, new Date().toISOString(), id);
-}
-
 // ---- adoption
+
+/** Splits a hostname on the longest base domain it is on: `@` when it is the base domain itself, otherwise everything in
+ *  front of it (which may not be one valid label). Null when it is not on any base. */
+function splitOnBase<B extends { name: string }>(host: string, bases: B[]): { base: B; label: string } | null {
+  const sorted = [...bases].sort((a, b) => b.name.length - a.name.length);
+  const bare = sorted.find((b) => b.name === host);
+  if (bare) return { base: bare, label: APEX_LABEL };
+  const base = sorted.find((b) => host.endsWith(`.${b.name}`));
+  return base ? { base, label: host.slice(0, host.length - base.name.length - 1) } : null;
+}
 
 /** Links existing hostnames to a managed base domain: the bare domain itself (`@`), or a hostname with exactly one label in
  *  front of it (`www` included), to the longest matching base domain. Everything else stays unmanaged and keeps working.
  *  No hostname is changed. */
 export function adoptHostnames(): number {
   const db = getDatabase();
-  const bases = (db.prepare("SELECT id, name FROM managed_domains").all() as { id: number; name: string }[]).sort((a, b) => b.name.length - a.name.length);
+  const bases = db.prepare("SELECT id, name FROM managed_domains").all() as { id: number; name: string }[];
   if (bases.length === 0) return 0;
   const rows = db.prepare("SELECT id, domain FROM project_domains WHERE managed_domain_id IS NULL").all() as { id: number; domain: string }[];
   let adopted = 0;
   const update = db.prepare("UPDATE project_domains SET managed_domain_id = ?, label = ? WHERE id = ?");
   for (const row of rows) {
     const host = row.domain.toLowerCase();
-    const bare = bases.find((b) => b.name === host);
-    if (bare) { update.run(bare.id, APEX_LABEL, row.id); adopted += 1; continue; }
-    const base = bases.find((b) => host.endsWith(`.${b.name}`));
-    if (!base) continue;
-    const label = host.slice(0, host.length - base.name.length - 1);
-    if (!LABEL_RE.test(label)) continue; // more than one label, or not a valid one: stays unmanaged
-    update.run(base.id, label, row.id);
+    const split = splitOnBase(host, bases);
+    if (!split || (split.label !== APEX_LABEL && !LABEL_RE.test(split.label))) continue; // not on a base, or more than one label: stays unmanaged
+    update.run(split.base.id, split.label, row.id);
     adopted += 1;
   }
   return adopted;
@@ -196,6 +192,22 @@ export function addManagedProjectDomain(projectId: number, managedDomainId: unkn
   return addProjectDomain(projectId, hostnameFor(label, base.name), false, service, containerPort, { managedDomainId: base.id, label });
 }
 
+/**
+ * A new project may only be routed to a base domain or to a subdomain of one: the bare base domain (label `@`), or one label in
+ * front of it. Anything else is refused with the base domains that are available. Returns what the hostname is made of.
+ */
+export function resolveBaseHostname(input: unknown): { managedDomainId: number; label: string; hostname: string } {
+  const host = typeof input === "string" ? input.trim().toLowerCase() : "";
+  const bases = listManagedDomains();
+  if (bases.length === 0) throw new ProjectDomainError(400, "Add a base domain in Settings > Domains first: a new project can only be routed to a base domain or a subdomain of one.");
+  const split = splitOnBase(host, bases);
+  if (!split) throw new ProjectDomainError(400, `"${host}" is not on a base domain. A new project can only be routed to a base domain or a subdomain of one (${bases.map((b) => b.name).join(", ")}).`);
+  const { base, label } = split;
+  if (label !== APEX_LABEL && !LABEL_RE.test(label)) throw new ProjectDomainError(400, `"${host}" has more than one label in front of ${base.name}. Use one label, such as shop.${base.name}.`);
+  validateLabel(label, base.name); // also keeps Stackport's own address out of reach, for the bare domain too
+  return { managedDomainId: base.id, label, hostname: host };
+}
+
 // ---- the overview
 
 export interface HostnameOverview {
@@ -211,18 +223,15 @@ export interface HostnameOverview {
   service: string;
   containerPort: number | null;
   useSsl: boolean;
-  dnsStatus: DnsStatus;
-  dnsCheckedAt: string | null;
-  dnsDetail: string | null;
 }
 
 /** Every hostname with its project and route, for the central Domains page. */
 export function listHostnames(): HostnameOverview[] {
   const rows = getDatabase().prepare(
-    `SELECT p.id, p.project_id, pr.name AS project_name, p.domain, p.label, p.redirect_apex, p.service, p.container_port, p.use_ssl, p.dns_status, p.dns_checked_at, p.dns_detail, d.name AS base_name
+    `SELECT p.id, p.project_id, pr.name AS project_name, p.domain, p.label, p.redirect_apex, p.service, p.container_port, p.use_ssl, d.name AS base_name
        FROM project_domains p JOIN projects pr ON pr.id = p.project_id LEFT JOIN managed_domains d ON d.id = p.managed_domain_id
       ORDER BY lower(p.domain)`,
-  ).all() as { id: number; project_id: number; project_name: string; domain: string; label: string | null; redirect_apex: number; service: string; container_port: number | null; use_ssl: number; dns_status: string; dns_checked_at: string | null; dns_detail: string | null; base_name: string | null }[];
+  ).all() as { id: number; project_id: number; project_name: string; domain: string; label: string | null; redirect_apex: number; service: string; container_port: number | null; use_ssl: number; base_name: string | null }[];
   const all = new Set(rows.map((r) => r.domain.toLowerCase()));
   return rows.map((r) => {
     const host = r.domain.toLowerCase();
@@ -232,7 +241,6 @@ export function listHostnames(): HostnameOverview[] {
     return {
       id: r.id, projectId: r.project_id, projectName: r.project_name, domain: r.domain, baseDomain: r.base_name, label: r.label, alsoAnswers,
       service: r.service, containerPort: r.container_port, useSsl: r.use_ssl === 1,
-      dnsStatus: (["unknown", "ok", "not-resolving", "points-elsewhere"] as const).find((s) => s === r.dns_status) ?? "unknown", dnsCheckedAt: r.dns_checked_at, dnsDetail: r.dns_detail,
     };
   });
 }

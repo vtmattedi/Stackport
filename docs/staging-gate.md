@@ -14,7 +14,7 @@ A pull request that changes any of these needs a result from a real host:
   `src/shared/ingressNames.ts`, `src/modules/deployments/compose/networking.ts`, `groupNetworks.ts`,
   `src/modules/deployments/networkGroupAssignment.ts`
 - Mounts and data: `managedVolumes.ts`, `seedVolumes.ts`, `src/modules/maintenance/migrations/`
-- nginx and certificates: `src/modules/ingress/nginx/`, `src/modules/ingress/certificates/`, `hostnameOps.ts`, `dnsCheck.ts` (a hostname change applies nginx and asks for a certificate)
+- nginx and certificates: `src/modules/ingress/nginx/`, `src/modules/ingress/certificates/`, `hostnameOps.ts` (a hostname change applies nginx and asks for a certificate)
 - Start-up order: `src/index.ts`
 - The host: `stackport.sh`, `docker-compose.system.yml`, `Dockerfile`, `docker-entrypoint.sh`
 
