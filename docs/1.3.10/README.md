@@ -24,6 +24,11 @@ Started 11 November 2026, from 1.3.9. A UI and UX release: no server behaviour c
     (it did not); the email form is a notice only while no email is set. Certificates are issued when a hostname is routed and renewed in the background, and the page says so.
   - **Docker:** Stackport's projects (stacks named `<id>-<slug>`) first, linking to the project instead of repeating its Compose buttons; other stacks keep Up, Down and Build;
     every stack starts collapsed; disk use, storage pressure and the repo scan are their own tab.
+- **Nginx, Docker and Certbot can be searched and filtered** (one shared `ListFilter`: a search box and chips with counts).
+  - **Certbot:** All, Needs attention, No certificate, Valid; one button renews every certificate that needs it and another issues every missing one, one after the other, after a confirmation that names them.
+  - **Nginx:** routes search by hostname, project or service and filter by certificate state; each hostname opens in a new tab, the project links to its Domains tab, and the certificate badge links to Certbot.
+  - **Docker:** search matches a stack, its project, and every container name, service and image, and opens the stacks it matches; filter by All, Running, Partly running, Stopped.
+  - Not added: restarting a single container. There is no endpoint for it, and it was not made up here.
 - **The new-project wizard lists the repositories the GitHub App can use.** The Source stage has three cards: GitHub repository (the App, the starting choice when it is set up),
   GitHub link or token, Upload files. The App's repositories are a searchable list grouped by account, with private marks and whether one is already a project. Picking one reads its default
   branch from GitHub (the existing `/inspect` endpoint) and says which Compose files it has and how many variables its `.env.example` lists, or that it has no Compose file, before anything is cloned.

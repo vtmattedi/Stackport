@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Box, ChevronDown, ChevronRight, FileText, Hammer, Layers, Loader, Play, Radio, Square, SquareTerminal } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { ComposeStack, ContainerInfo, Project } from "../../api/types";
+import { ListFilter } from "../../components/ListFilter";
 import { ServiceError } from "../../components/ServiceError";
 import { StatusChip } from "../../components/StatusChip";
 import { SubShellSectionHeader } from "../../components/SubShell";
@@ -43,6 +44,14 @@ function readExpanded(): Record<string, boolean> {
 function projectOfStack(stack: ComposeStack, projects: Project[]): Project | null {
   const id = /^(\d+)-/.exec(stack.name)?.[1];
   return id === undefined ? null : projects.find((project) => project.id === Number(id)) ?? null;
+}
+
+type StackState = "running" | "partial" | "stopped";
+
+/** Every container up, some up, or none. */
+function stackState(stack: ComposeStack): StackState {
+  const running = stack.containers.filter((c) => c.state === "running").length;
+  return running === 0 ? "stopped" : running === stack.containers.length ? "running" : "partial";
 }
 
 function StateBadge({ state }: { state: string }) {
@@ -192,6 +201,8 @@ export function DockerSection() {
   const { system: data, projects, refreshSystem: refresh } = useSystem();
   const docker = data?.docker;
   const [tab, setTab] = useState<"containers" | "disk">("containers");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | StackState>("all");
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => readExpanded());
   const [ops, setOps] = useState<Record<string, { op: ComposeOp | null; result: Result | null }>>({});
 
@@ -218,8 +229,17 @@ export function DockerSection() {
   const stacks = docker?.stacks ?? [];
   const standalone = docker?.standalone ?? [];
   const known = projects ?? [];
-  const mine = stacks.filter((stack) => projectOfStack(stack, known));
-  const others = stacks.filter((stack) => !projectOfStack(stack, known));
+
+  // Search looks at the stack and project name and at every container's name, service and image; the state filter is about the stack as a whole.
+  const needle = query.trim().toLowerCase();
+  const matches = (stack: ComposeStack): boolean => !needle || [stack.name, projectOfStack(stack, known)?.name ?? '', ...stack.containers.flatMap((c) => [c.name, c.service ?? '', c.image])].some((text) => text.toLowerCase().includes(needle));
+  const containerMatches = (c: ContainerInfo): boolean => !needle || [c.name, c.service ?? '', c.image].some((text) => text.toLowerCase().includes(needle));
+  const stateFilter = (state: StackState): boolean => filter === 'all' || filter === state;
+  const shownStacks = stacks.filter((stack) => matches(stack) && stateFilter(stackState(stack)));
+  const mine = shownStacks.filter((stack) => projectOfStack(stack, known));
+  const others = shownStacks.filter((stack) => !projectOfStack(stack, known));
+  const shownStandalone = standalone.filter((c) => containerMatches(c) && (filter === 'all' || (filter === 'running' ? c.state === 'running' : filter === 'stopped' ? c.state !== 'running' : false)));
+  const stateCount = (state: StackState) => stacks.filter((stack) => stackState(stack) === state).length;
   const allContainers = [...stacks.flatMap((stack) => stack.containers), ...standalone];
   const running = allContainers.filter((c) => c.state === "running").length;
 
@@ -232,7 +252,7 @@ export function DockerSection() {
       activeOp={ops[stack.name]?.op ?? null}
       result={ops[stack.name]?.result ?? null}
       onDismissResult={() => setOps((prev) => ({ ...prev, [stack.name]: { op: null, result: null } }))}
-      open={!!expanded[stack.name]}
+      open={!!expanded[stack.name] || (!!needle && stack.containers.some(containerMatches))}
       onToggle={() => setExpanded((prev) => ({ ...prev, [stack.name]: !prev[stack.name] }))}
     />
   );
@@ -268,6 +288,23 @@ export function DockerSection() {
               <NetworkHeadroomNotice />
               <Hint>{stacks.length} {stacks.length === 1 ? "stack" : "stacks"}, {standalone.length} standalone · {running} of {allContainers.length} containers running</Hint>
               {stacks.length === 0 && standalone.length === 0 && <div className="empty">No containers found.</div>}
+              {(stacks.length > 0 || standalone.length > 0) && (
+                <ListFilter
+                  label="stacks and containers"
+                  query={query}
+                  onQueryChange={setQuery}
+                  placeholder="Search stack, project, container, service or image"
+                  value={filter}
+                  onValueChange={setFilter}
+                  options={[
+                    { value: "all", label: "All", count: stacks.length },
+                    { value: "running", label: "Running", count: stateCount("running") },
+                    { value: "partial", label: "Partly running", count: stateCount("partial") },
+                    { value: "stopped", label: "Stopped", count: stateCount("stopped") },
+                  ]}
+                />
+              )}
+              {(stacks.length > 0 || standalone.length > 0) && mine.length === 0 && others.length === 0 && shownStandalone.length === 0 && <Hint>Nothing matches.</Hint>}
               {mine.length > 0 && (
                 <Stack gap={2}>
                   <div className={cn(styles.sectionTitle, styles.subsectionTitle)}><Box size={12} />Stackport projects</div>
@@ -280,10 +317,10 @@ export function DockerSection() {
                   {others.map(row)}
                 </Stack>
               )}
-              {standalone.length > 0 && (
+              {shownStandalone.length > 0 && (
                 <Stack gap={2}>
                   <div className={cn(styles.sectionTitle, styles.subsectionTitle)}><Layers size={12} />Standalone containers</div>
-                  <ContainerTable containers={standalone} />
+                  <ContainerTable containers={shownStandalone} />
                 </Stack>
               )}
             </>

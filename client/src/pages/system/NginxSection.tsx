@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, Eye, FileText, Layers, Loader, RefreshCw, RotateCw, Save, Settings } from "lucide-react";
+import { AlertCircle, ExternalLink, Eye, FileText, Layers, Loader, RefreshCw, RotateCw, Save, Settings } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { NginxDocument, NginxDocumentKind } from "../../api/types";
 import { Disclosure } from "../../components/Disclosure";
+import { ListFilter } from "../../components/ListFilter";
 import NginxCode from "../../components/NginxCode";
 import { ServiceError } from "../../components/ServiceError";
 import { StatusChip } from "../../components/StatusChip";
@@ -35,7 +36,9 @@ function readDocumentKind(): NginxDocumentKind {
 
 /** Host > Nginx: what is published through it, whether the last config applied, and (folded away) the files. */
 export function NginxSection() {
-  const { system: data, refreshSystem: refresh, applyNginx } = useSystem();
+  const { system: data, projects, refreshSystem: refresh, applyNginx } = useSystem();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "attention" | "none">("all");
   const nginx = data?.nginx;
   const layer = nginx?.layer;
 
@@ -142,6 +145,18 @@ export function NginxSection() {
   const applied = !!layer?.lastOperation;
   const routes = layer?.routes ?? [];
 
+  // A route's certificate comes from Certbot's list: valid, one that needs attention (expired or about to), or none.
+  const certificates = new Map((data?.certbot.entries ?? []).map((entry) => [entry.domain, entry]));
+  const certificateOf = (domain: string): "valid" | "attention" | "none" => {
+    const entry = certificates.get(domain);
+    if (!entry || !entry.hasCertificate) return "none";
+    return entry.status === "expired" || entry.status === "expiring" ? "attention" : "valid";
+  };
+  const needle = query.trim().toLowerCase();
+  const shownRoutes = routes.filter((route) =>
+    (filter === "all" || certificateOf(route.domain) === filter)
+    && (!needle || `${route.domain} ${route.project} ${route.service}`.toLowerCase().includes(needle)));
+
   return (
     <>
       <SubShellSectionHeader
@@ -181,20 +196,54 @@ export function NginxSection() {
                 {routes.length === 0 ? (
                   <Hint>No hostname is routed to a project yet. Add one on a project's Domains tab.</Hint>
                 ) : (
-                  <div className="table-wrap">
-                    <table>
-                      <thead><tr><th>Hostname</th><th>Project</th><th>Goes to</th></tr></thead>
-                      <tbody>
-                        {routes.map((route) => (
-                          <tr key={`${route.project}:${route.domain}:${route.port}`}>
-                            <td className="mono">{route.domain}</td>
-                            <td>{route.project}</td>
-                            <td className="mono">{route.service}:{route.port}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <>
+                    <ListFilter
+                      label="routes"
+                      query={query}
+                      onQueryChange={setQuery}
+                      placeholder="Search hostname, project or service"
+                      value={filter}
+                      onValueChange={setFilter}
+                      options={[
+                        { value: "all", label: "All", count: routes.length },
+                        { value: "attention", label: "Certificate needs attention", count: routes.filter((route) => certificateOf(route.domain) === "attention").length },
+                        { value: "none", label: "No certificate", count: routes.filter((route) => certificateOf(route.domain) === "none").length },
+                      ]}
+                    />
+                    {shownRoutes.length === 0 ? (
+                      <Hint>No route matches.</Hint>
+                    ) : (
+                      <div className="table-wrap">
+                        <table>
+                          <thead><tr><th>Hostname</th><th>Project</th><th>Goes to</th><th>Certificate</th></tr></thead>
+                          <tbody>
+                            {shownRoutes.map((route) => {
+                              const project = (projects ?? []).find((candidate) => candidate.name === route.project);
+                              const cert = certificateOf(route.domain);
+                              return (
+                                <tr key={`${route.project}:${route.domain}:${route.port}`}>
+                                  <td className="mono">
+                                    <a href={`${cert === "valid" ? "https" : "http"}://${route.domain}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1" title="Open this hostname in a new tab">
+                                      {route.domain}<ExternalLink size={11} />
+                                    </a>
+                                  </td>
+                                  <td>{project ? <Link to={`/projects/${project.id}/domains`} title="Open the project's Domains tab">{route.project}</Link> : route.project}</td>
+                                  <td className="mono">{route.service}:{route.port}</td>
+                                  <td>
+                                    <Link to="/host/certbot" title="See it on Host > Certbot">
+                                      <Badge variant="outline" className={cert === "valid" ? "border-[var(--success)] text-[var(--success)]" : cert === "attention" ? "border-[var(--warning,#d29922)] text-[var(--warning,#d29922)]" : "text-[var(--dim)]"}>
+                                        {cert === "valid" ? "valid" : cert === "attention" ? "needs attention" : "none"}
+                                      </Badge>
+                                    </Link>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
                 )}
                 <Hint>
                   {layer.app.enabled && layer.app.domain

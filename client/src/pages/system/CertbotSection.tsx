@@ -3,6 +3,7 @@ import { KeyRound, Loader, Mail, RotateCw, Save, ShieldCheck, Trash2 } from "luc
 import { api, ApiError } from "../../api/client";
 import type { CertbotEntry } from "../../api/types";
 import { useConfirm } from "../../components/ConfirmDialog";
+import { ListFilter } from "../../components/ListFilter";
 import { Disclosure } from "../../components/Disclosure";
 import { ServiceError } from "../../components/ServiceError";
 import { StatusChip } from "../../components/StatusChip";
@@ -13,7 +14,7 @@ import { Button } from "../../components/ui/button";
 import { Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { Stack } from "../../components/ui/stack";
-import { Hint, Prose } from "../../components/ui/text";
+import { Hint } from "../../components/ui/text";
 import { useSystem } from "../../context/SystemContext";
 import { formatShortDateTime } from "../../lib/format";
 import { notify } from "../../lib/notify";
@@ -72,6 +73,42 @@ export function CertbotSection() {
     [certbot?.entries],
   );
   const counts = entries.reduce<Record<State, number>>((acc, entry) => { acc[stateOf(entry)] += 1; return acc; }, { expired: 0, expiring: 0, missing: 0, unknown: 0, valid: 0 });
+
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "attention" | "missing" | "valid">("all");
+  const needsHand = entries.filter((entry) => stateOf(entry) === "expired" || stateOf(entry) === "expiring");
+  const missing = entries.filter((entry) => stateOf(entry) === "missing");
+  const needle = query.trim().toLowerCase();
+  const shown = entries.filter((entry) => {
+    const state = stateOf(entry);
+    const inFilter = filter === "all" || (filter === "attention" && (state === "expired" || state === "expiring")) || (filter === "missing" && state === "missing") || (filter === "valid" && state === "valid");
+    return inFilter && (!needle || entry.domain.toLowerCase().includes(needle));
+  });
+  const [bulk, setBulk] = useState<Op | null>(null);
+
+  /** One certificate after another (Let's Encrypt rate-limits, and each run is a Docker container), then one summary. */
+  async function runAll(op: "renew" | "issue", targets: CertbotEntry[]) {
+    const ok = await confirm({
+      title: op === "renew" ? `Renew ${targets.length} ${targets.length === 1 ? "certificate" : "certificates"}?` : `Issue ${targets.length} ${targets.length === 1 ? "certificate" : "certificates"}?`,
+      description: `${targets.map((entry) => entry.domain).join(", ")}. They run one after the other.`,
+      confirmLabel: op === "renew" ? "Renew" : "Issue",
+    });
+    if (!ok) return;
+    setBulk(op);
+    let worked = 0;
+    const failed: string[] = [];
+    for (const entry of targets) {
+      setOps((prev) => ({ ...prev, [entry.domain]: { op, result: null } }));
+      const final = await certbotAction(entry.domain, op);
+      const result = final ? { ok: final.ok ?? false, output: final.log } : { ok: false, output: "Certbot action failed" };
+      setOps((prev) => ({ ...prev, [entry.domain]: { op: null, result } }));
+      if (result.ok) worked += 1; else failed.push(entry.domain);
+    }
+    setBulk(null);
+    refresh();
+    if (worked > 0) notify.success(`${worked} ${worked === 1 ? "certificate" : "certificates"} ${op === "renew" ? "renewed" : "issued"}.`);
+    if (failed.length > 0) notify.error(new Error(failed.join(", ")), `${failed.length} could not be ${op === "renew" ? "renewed" : "issued"}`);
+  }
 
   async function run(domain: string, op: Op) {
     if (op === "delete") {
@@ -145,16 +182,41 @@ export function CertbotSection() {
           ) : (
             <div className="card mb-0!">
               <Stack gap={3}>
-                <Prose>
-                  {entries.length} {entries.length === 1 ? "hostname" : "hostnames"}
-                  {(["valid", "expiring", "expired", "missing"] as const).filter((state) => counts[state] > 0).map((state) => ` · ${counts[state]} ${state}`).join("")}
-                </Prose>
+                <ListFilter
+                  label="hostnames"
+                  query={query}
+                  onQueryChange={setQuery}
+                  placeholder="Search hostnames"
+                  value={filter}
+                  onValueChange={setFilter}
+                  options={[
+                    { value: "all", label: "All", count: entries.length },
+                    { value: "attention", label: "Needs attention", count: needsHand.length },
+                    { value: "missing", label: "No certificate", count: missing.length },
+                    { value: "valid", label: "Valid", count: counts.valid },
+                  ]}
+                />
+                {(needsHand.length > 0 || (missing.length > 0 && certbot.emailConfigured)) && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {needsHand.length > 0 && (
+                      <Button type="button" size="sm" disabled={bulk !== null} onClick={() => void runAll("renew", needsHand)}>
+                        {bulk === "renew" ? <Loader size={13} className="spin" /> : <RotateCw size={13} />} Renew the {needsHand.length} that {needsHand.length === 1 ? "needs" : "need"} it
+                      </Button>
+                    )}
+                    {missing.length > 0 && certbot.emailConfigured && (
+                      <Button type="button" size="sm" variant="outline" disabled={bulk !== null} onClick={() => void runAll("issue", missing)}>
+                        {bulk === "issue" ? <Loader size={13} className="spin" /> : <KeyRound size={13} />} Issue the {missing.length} without a certificate
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {shown.length === 0 && <Hint>No hostname matches.</Hint>}
                 <ul>
-                  {entries.map((entry) => {
+                  {shown.map((entry) => {
                     const state = stateOf(entry);
                     const current = ops[entry.domain] ?? { op: null, result: null };
                     const busy = current.op !== null;
-                    const needsHand = state === "expired" || state === "expiring";
+                    const urgent = state === "expired" || state === "expiring";
                     return (
                       <li key={entry.domain} className="border-b border-border py-3 last:border-b-0">
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -175,7 +237,7 @@ export function CertbotSection() {
                               </Button>
                             ) : (
                               <>
-                                <Button type="button" size="xs" variant={needsHand ? "default" : "outline"} disabled={busy} onClick={() => void run(entry.domain, "renew")}>
+                                <Button type="button" size="xs" variant={urgent ? "default" : "outline"} disabled={busy} onClick={() => void run(entry.domain, "renew")}>
                                   {current.op === "renew" ? <Loader size={12} className="spin" /> : <RotateCw size={12} />} Renew
                                 </Button>
                                 <Button type="button" size="icon-xs" variant="ghost" disabled={busy} title="Delete the certificate" aria-label={`Delete the certificate for ${entry.domain}`} onClick={() => void run(entry.domain, "delete")}>
