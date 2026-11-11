@@ -1,0 +1,130 @@
+import { dockerRun, type DockerRun } from "../ingress/networks";
+
+/**
+ * How many more Docker networks fit (P3).
+ *
+ * Docker hands every network a slice of an address pool. With the stock settings that is
+ * about 31 networks for the whole host, however many projects there are. When it runs out
+ * `docker network create` fails, and so does the next deploy or start-up that needs a
+ * network; in the 1.3.0 incident that took routed projects down. The fix is a larger pool
+ * in `/etc/docker/daemon.json`, so this tells an admin how close they are.
+ */
+
+export interface AddressPool {
+  /** CIDR, for example `172.17.0.0/16`. */
+  base: string;
+  /** Prefix length of each network carved out of it. */
+  size: number;
+}
+
+/** What the daemon uses when `default-address-pools` is not set. */
+export const DEFAULT_ADDRESS_POOLS: AddressPool[] = [
+  // 172.17.0.0/16 to 172.31.0.0/16, one network each (172.16 is skipped), then 192.168.0.0/16 in /20 slices: 31 in all.
+  ...Array.from({ length: 15 }, (_, i) => ({ base: `172.${17 + i}.0.0/16`, size: 16 })),
+  { base: "192.168.0.0/16", size: 20 },
+];
+
+export type HeadroomLevel = "ok" | "warning" | "critical";
+
+export interface NetworkHeadroom {
+  /** Networks the pools can hold. */
+  capacity: number;
+  /** Slices in use. */
+  used: number;
+  free: number;
+  level: HeadroomLevel;
+  /** False when the daemon's own pools could not be read and the stock ones were assumed. */
+  poolsKnown: boolean;
+  pools: AddressPool[];
+  /** What to do, present when the level is not ok. */
+  advice: string | null;
+}
+
+/** Warn when this few remain, or when more than this share is used. */
+const WARNING_FREE = 6;
+const CRITICAL_FREE = 2;
+
+interface Cidr { start: number; prefix: number }
+
+function parseCidr(text: string): Cidr | null {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(text.trim());
+  if (!match) return null;
+  const octets = match.slice(1, 5).map(Number);
+  const prefix = Number(match[5]);
+  if (octets.some((o) => o > 255) || prefix > 32) return null;
+  const address = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return { start: (address & mask) >>> 0, prefix };
+}
+
+const end = (c: Cidr): number => c.start + 2 ** (32 - c.prefix) - 1;
+
+/** How many networks of the pool's `size` fit in its base range. */
+export function poolCapacity(pool: AddressPool): number {
+  const base = parseCidr(pool.base);
+  if (!base || pool.size < base.prefix || pool.size > 32) return 0;
+  return 2 ** (pool.size - base.prefix);
+}
+
+/** Slices a subnet takes from the pools: none when it lies outside them (a network with its own
+ *  range costs the pool nothing), otherwise one per pool-sized block it covers. */
+export function slotsTaken(subnet: string, pools: AddressPool[]): number {
+  const net = parseCidr(subnet);
+  if (!net) return 0;
+  for (const pool of pools) {
+    const base = parseCidr(pool.base);
+    if (!base) continue;
+    if (net.start < base.start || end(net) > end(base)) continue;
+    return net.prefix >= pool.size ? 1 : 2 ** (pool.size - net.prefix);
+  }
+  return 0;
+}
+
+export function computeHeadroom(pools: AddressPool[], subnets: string[], poolsKnown: boolean): NetworkHeadroom {
+  const capacity = pools.reduce((sum, pool) => sum + poolCapacity(pool), 0);
+  const used = Math.min(capacity, subnets.reduce((sum, subnet) => sum + slotsTaken(subnet, pools), 0));
+  const free = capacity - used;
+  const level: HeadroomLevel = free <= CRITICAL_FREE ? "critical" : free <= WARNING_FREE ? "warning" : "ok";
+  return { capacity, used, free, level, poolsKnown, pools, advice: level === "ok" ? null : ADVICE };
+}
+
+const ADVICE = [
+  "Docker gives every network a slice of a small default address pool, and a new network fails once it is used up.",
+  'Enlarge it in /etc/docker/daemon.json, for example {"default-address-pools":[{"base":"10.20.0.0/14","size":24}]}',
+  "(that holds 1024 networks), then restart Docker. Pick a base that does not overlap your own networks. Existing networks keep their ranges.",
+].join(" ");
+
+interface DockerInfoPool { Base?: string; Size?: number }
+
+import { SingleFlightCache } from "../../shared/singleFlightCache";
+
+const headroomCache = new SingleFlightCache<NetworkHeadroom>(() => readNetworkHeadroom(), 30_000);
+
+/** Cached for 30 seconds: a page that polls should not run `docker network inspect` on every request. */
+export function getNetworkHeadroom(): Promise<NetworkHeadroom> {
+  return headroomCache.get();
+}
+
+/** The subnets of every network and the daemon's pools, as Docker reports them. */
+export async function readNetworkHeadroom(run: DockerRun = dockerRun): Promise<NetworkHeadroom> {
+  let pools = DEFAULT_ADDRESS_POOLS;
+  let poolsKnown = false;
+  try {
+    const parsed = JSON.parse(await run(["info", "--format", "{{json .DefaultAddressPools}}"])) as DockerInfoPool[] | null;
+    if (parsed && parsed.length) {
+      pools = parsed.filter((p): p is { Base: string; Size: number } => typeof p.Base === "string" && typeof p.Size === "number").map((p) => ({ base: p.Base, size: p.Size }));
+      poolsKnown = pools.length > 0;
+    } else if (Array.isArray(parsed)) {
+      poolsKnown = true; // the daemon answered, and it has no custom pools, so the stock ones apply
+    }
+  } catch { /* keep the stock pools; poolsKnown says they are an assumption */ }
+  if (!pools.length) { pools = DEFAULT_ADDRESS_POOLS; poolsKnown = false; }
+
+  const ids = (await run(["network", "ls", "--quiet"])).split(/\s+/).filter(Boolean);
+  const subnets: string[] = [];
+  if (ids.length) {
+    const out = await run(["network", "inspect", ...ids, "--format", "{{range .IPAM.Config}}{{.Subnet}}\n{{end}}"]);
+    for (const line of out.split(/\r?\n/)) if (line.trim()) subnets.push(line.trim());
+  }
+  return computeHeadroom(pools, subnets, poolsKnown);
+}

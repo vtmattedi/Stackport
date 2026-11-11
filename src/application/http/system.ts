@@ -34,6 +34,7 @@ import {
 import { isSystemComposeProject } from "../../integrations/docker/systemResources";
 import { getHardeningDefaults, setHardeningDefaults } from "../../modules/deployments/compose/hardening";
 import { listProjectEnforcement } from "../../modules/deployments/compose/enforcement";
+import { getNetworkHeadroom } from "../../modules/maintenance/networkHeadroom";
 import { getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../../modules/maintenance/storage/operations";
 
 import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../../modules/maintenance/selfUpdate";
@@ -215,6 +216,12 @@ router.put("/docker/storage-thresholds", requireAuth, (req: Request, res: Respon
   setStorageThresholds(thresholds);
   auditLog(req.user ?? "unknown", "system.docker-storage-thresholds", "app_meta", "ok", { ...thresholds });
   res.json(thresholds);
+});
+
+/** How many more Docker networks fit in the daemon's address pools (P3). */
+router.get("/network-headroom", requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  try { res.json(await getNetworkHeadroom()); }
+  catch (err) { res.status(503).json({ error: err instanceof Error ? err.message : "Docker could not be read" }); }
 });
 
 /** Which 1.3 protections each project has, unprotected ones first (G2). */

@@ -35,6 +35,7 @@ import { Switch } from "../components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { notify } from "../lib/notify";
 import { StackPortWordmark } from "../logo/StackPortBrand";
+import { NetworkHeadroomNotice } from "./system/NetworkHeadroomNotice";
 
 // ── Shared UI helpers ─────────────────────────────────────────────────────────
 
@@ -691,6 +692,7 @@ function SystemPage({ activeTab }: { activeTab: SystemTab }) {
         <ServiceError service="Docker" reason={docker?.reason} className={styles.softAlert} />
       ) : (
         <>
+          <NetworkHeadroomNotice />
           {dockerStacks.length === 0 && standaloneContainers.length === 0 && (
             <div className="empty">No containers found.</div>
           )}

@@ -447,6 +447,17 @@ export interface DockerDiskUsageEntry {
   reclaimable: string;
 }
 
+/** How many more Docker networks fit in the daemon's address pools. */
+export interface NetworkHeadroom {
+  capacity: number;
+  used: number;
+  free: number;
+  level: "ok" | "warning" | "critical";
+  /** False when the daemon's pools could not be read and Docker's stock ones were assumed. */
+  poolsKnown: boolean;
+  advice: string | null;
+}
+
 /** Which 1.3 protections a project has; the Settings view lists the ones missing any. */
 export interface ProjectEnforcement {
   id: number;

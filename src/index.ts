@@ -21,6 +21,7 @@ import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./mod
 import { getPushConfig } from "./modules/notifications/push/transport";
 import { pushDeliveryWorker } from "./modules/notifications/push/worker";
 import { logger } from "./shared/logger";
+import { getNetworkHeadroom } from "./modules/maintenance/networkHeadroom";
 
 /** In this order: services on the shared network first (nginx's config names them by alias), then the config,
  *  then the TCP proxies, then the per-project networks 1.3.0 left behind. */
@@ -31,6 +32,15 @@ async function startIngress(): Promise<void> {
   await removeLegacyIngressNetworks();
 }
 
+/** The address pool is a host-wide limit, so say so in the log while there is still room (P3). */
+async function warnIfNetworkPoolIsNearlyFull(): Promise<void> {
+  const headroom = await getNetworkHeadroom().catch(() => null);
+  if (!headroom || headroom.level === "ok") return;
+  const message = `Docker has room for ${headroom.free} more networks (${headroom.used} of ${headroom.capacity} address-pool slices used). ${headroom.advice ?? ""}`;
+  if (headroom.level === "critical") logger.error({ ...headroom }, message);
+  else logger.warn({ ...headroom }, message);
+}
+
 try {
   initializeDatabase();
   try { getPushConfig(); } catch { logger.error("push.identity.bootstrap-failed"); }
@@ -38,6 +48,7 @@ try {
   markInterruptedActions();
   ensureBootstrapCredential();
   void startIngress();
+  void warnIfNetworkPoolIsNearlyFull();
   void reconcileNetworkGroups();
   healthChecker.start();
   resetPendingAutoDeploys();

@@ -33,6 +33,7 @@ import type {
   DockerStorageThresholds,
   HardeningDefaults,
   ProjectEnforcement,
+  NetworkHeadroom,
   NetworkGroupView,
   AppVersionInfo,
   NotificationConfig,
@@ -439,6 +440,7 @@ export const api = {
     request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
   setProjectComposePolicyEnforcement: (projectId: number, enforced: boolean) =>
     request<{ composePolicyEnforced: boolean }>(`/projects/${projectId}/compose-policy-enforcement`, { method: "PUT", body: JSON.stringify({ enforced }) }),
+  getNetworkHeadroom: () => request<NetworkHeadroom>("/system/network-headroom"),
   getProjectEnforcement: () => request<{ projects: ProjectEnforcement[] }>("/system/project-enforcement"),
   getProjectNetworkGroup: (projectId: number) => request<NetworkGroupView>(`/projects/${projectId}/network-group`),
   setProjectNetworkGroup: (projectId: number, group: string, services: string[]) =>
