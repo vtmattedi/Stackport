@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- paths come from Stackport's own configuration (environment and data directories), never from request input. */
 import fs from "fs";
 import path from "path";
 import { config } from "../config/env";

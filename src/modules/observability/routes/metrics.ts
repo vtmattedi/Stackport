@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- keys are month names, status codes, time buckets, methods and paths from a log line, held in prototype-free records (plainRecord), or a period that periodKeyOf has checked. */
 import { Router } from "express";
 import { DEPLOY_KINDS_SQL } from "../../actions/registry";
 import { execFile } from "child_process";
@@ -5,6 +6,7 @@ import * as os from "os";
 import { requireAuth } from "../../identity/middleware/session";
 import { getDatabase } from "../../../config/database";
 import { HEALTH_CHECK_USER_AGENT } from "../../deployments/health";
+import { plainRecord } from "../../../shared/plainRecord";
 
 const router = Router();
 router.use(requireAuth);
@@ -172,6 +174,11 @@ function parseNginxLine(line: string) {
 const PERIOD_HOURS: Record<string, number> = { "24h": 24, "7d": 168, "30d": 720 };
 const TAIL_BYTES: Record<string, number> = { "24h": 2_000_000, "7d": 10_000_000, "30d": 30_000_000 };
 
+/** The requested period when it is one of ours. `in` would also accept inherited names such as `constructor`. */
+export function periodKeyOf(value: unknown): string {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(PERIOD_HOURS, value) ? value : "24h";
+}
+
 function getServerIps(): Set<string> {
   const ips = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
   for (const iface of Object.values(os.networkInterfaces())) {
@@ -209,7 +216,7 @@ interface DomainAgg {
 /** One time-series bucket. `errors` counts every 4xx/5xx; `serverErrors` is the 5xx share of it. */
 interface TsBucket { count: number; errors: number; serverErrors: number }
 
-function parseNginxContent(
+function buildNginxStats(
   content: string,
   isPartial: boolean,
   periodHours: number,
@@ -224,11 +231,11 @@ function parseNginxContent(
   const periodStart = now - periodMs;
   const granularity: "hour" | "day" = periodHours <= 24 ? "hour" : "day";
 
-  const statusCodes: Record<string, number> = {};
-  const pathCounts: Record<string, number> = {};
-  const tsStats: Record<string, TsBucket> = {};
+  const statusCodes = plainRecord<number>();
+  const pathCounts = plainRecord<number>();
+  const tsStats = plainRecord<TsBucket>();
   const domainMap = new Map<string, DomainAgg>();
-  const methodCounts: Record<string, number> = {};
+  const methodCounts = plainRecord<number>();
   const uniqueIps = new Set<string>();
   let totalRequests = 0;
   let totalBytes = 0;
@@ -294,7 +301,7 @@ function parseNginxContent(
     if (entry.host) {
       let ds = domainMap.get(entry.host);
       if (!ds) {
-        ds = { requests: 0, errors: 0, bytes: 0, rts: [], statusCodes: {}, pathCounts: {}, methodCounts: {}, tsStats: {}, ips: new Set(), botRequests: 0 };
+        ds = { requests: 0, errors: 0, bytes: 0, rts: [], statusCodes: plainRecord<number>(), pathCounts: plainRecord<number>(), methodCounts: plainRecord<number>(), tsStats: plainRecord<TsBucket>(), ips: new Set(), botRequests: 0 };
         domainMap.set(entry.host, ds);
       }
       ds.requests++;
@@ -370,6 +377,13 @@ function parseNginxContent(
   };
 }
 
+export type NginxStats = ReturnType<typeof buildNginxStats>;
+
+/** Counts one nginx access-log chunk: totals, status codes, methods, top paths, per-domain and time-series. */
+export function parseNginxContent(content: string, isPartial: boolean, periodHours: number, excludeIps: Set<string>, excludeSelf: boolean): NginxStats {
+  return buildNginxStats(content, isPartial, periodHours, excludeIps, excludeSelf);
+}
+
 /** What the traffic numbers actually cover: the oldest log entry read, whether the read
  *  was cut short by the line or byte cap (so older traffic in the period is missing),
  *  and the Clear cutoff if one applies. */
@@ -410,9 +424,7 @@ function readNginxLog(periodHours: number, bytes: number, cb: (err: Error | null
 }
 
 router.get("/nginx", (req, res) => {
-  const periodKey = typeof req.query.period === "string" && req.query.period in PERIOD_HOURS
-    ? req.query.period
-    : "24h";
+  const periodKey = periodKeyOf(req.query.period);
   const periodHours = PERIOD_HOURS[periodKey]!;
   const tailBytes = TAIL_BYTES[periodKey]!;
   const serverIps = getServerIps();
@@ -498,9 +510,7 @@ function extractNginxEntries(
 }
 
 router.get("/nginx/requests", (req, res) => {
-  const periodKey = typeof req.query.period === "string" && req.query.period in PERIOD_HOURS
-    ? req.query.period
-    : "24h";
+  const periodKey = periodKeyOf(req.query.period);
   const periodHours = PERIOD_HOURS[periodKey]!;
   const tailBytes = TAIL_BYTES[periodKey]!;
   const serverIps = getServerIps();

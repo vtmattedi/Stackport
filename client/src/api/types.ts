@@ -44,6 +44,18 @@ export interface Project {
   autoRollbackUnhealthy: boolean;
   /** Services get Stackport's hardened defaults: no-new-privileges and default limits. */
   hardenedDefaults: boolean;
+  /** How this project reaches GitHub: through the GitHub App, or (null) with a token. */
+  githubAuthMode: "app" | null;
+  githubRepositoryId: number | null;
+  githubInstallationId: number | null;
+  /** What makes an App project deploy: a push (default), a push once its checks pass, or a published release. */
+  githubDeployOn: "push" | "ci" | "release";
+  /** Routed services sit on a network of this project's own instead of the shared ingress network. */
+  ingressIsolated: boolean;
+  /** Resolved-config policy violations reject a deploy; off, they only warn. */
+  composePolicyEnforced: boolean;
+  /** Bind mounts live in Stackport-owned directories. */
+  volumesManaged: boolean;
   /** Projects in the same network group reach each other's chosen services. */
   networkGroup: string | null;
   lastStatus: "up" | "down" | "unknown";
@@ -87,6 +99,12 @@ export interface ProjectDomain {
   useSsl: boolean;
   service: string;
   containerPort: number | null;
+  /** The managed base domain and label this hostname was made from; null for an unmanaged hostname. */
+  managedDomainId: number | null;
+  /** `@` for the bare domain, otherwise the label in front of the base domain. */
+  label: string | null;
+  /** A `www.` hostname that is the canonical name: the bare domain redirects to it. */
+  redirectApex: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -443,11 +461,145 @@ export interface DockerDiskUsageEntry {
   reclaimable: string;
 }
 
-export interface HardeningDefaults {
-  /** Process limit per service; 0 means no default. */
-  pidsLimit: number;
-  /** Memory limit per service in megabytes; 0 means no default. */
-  memoryMb: number;
+/** A base domain Stackport manages. Hostnames are a label on one of them, or the bare domain itself. */
+export interface ManagedDomain {
+  id: number;
+  name: string;
+  isDefault: boolean;
+  hostnameCount: number;
+  createdAt: string;
+}
+
+export interface HostnameOverview {
+  id: number;
+  projectId: number;
+  projectName: string;
+  domain: string;
+  baseDomain: string | null;
+  label: string | null;
+  /** The other name that redirects to this hostname (www for a bare domain, or the bare domain behind a canonical www). */
+  alsoAnswers: string | null;
+  service: string;
+  containerPort: number | null;
+  useSsl: boolean;
+  certificate: { status: string; expiresAt: string | null } | null;
+}
+
+/** The outcome of renaming a hostname. */
+export interface HostnameRenameResult {
+  ok: boolean;
+  steps: string[];
+  reason?: string;
+  hostname?: ProjectDomain;
+}
+
+/** Settings > GitHub: the App this instance registered, and what it can reach. */
+export interface GithubAppInfo {
+  appId: number;
+  slug: string;
+  name: string;
+  ownerLogin: string;
+  ownerType: string;
+  htmlUrl: string;
+  /** The origin the App's URLs were registered with. */
+  registeredOrigin: string;
+  modules: string[];
+}
+
+export interface GithubInstallation {
+  installationId: number;
+  accountLogin: string;
+  accountType: string;
+  status: "unlinked" | "linked" | "suspended" | "removed";
+  repositoryCount: number;
+}
+
+export interface GithubSettings {
+  preflight: { ok: boolean; origin: string | null; problems: string[] };
+  modules: string[];
+  app: GithubAppInfo | null;
+  /** The saved domain no longer matches the one the App was registered with. */
+  domainDrift: boolean;
+  installations: GithubInstallation[];
+}
+
+export interface GithubDelivery {
+  deliveryId: string;
+  event: string;
+  action: string | null;
+  installationId: number | null;
+  status: "received" | "processed" | "ignored" | "failed";
+  attempts: number;
+  receivedAt: string;
+  processedAt: string | null;
+  /** What was done, or why it was ignored or failed. */
+  detail: string | null;
+}
+
+export interface GithubScanEntry {
+  repositoryId: number;
+  fullName: string;
+  defaultBranch: string | null;
+  isPrivate: boolean;
+  archived: boolean;
+  composeFiles: string[];
+  importedAs: { id: number; name: string } | null;
+  note: string | null;
+}
+
+export interface GithubImportOutcome {
+  repositoryId: number;
+  fullName: string | null;
+  status: "created" | "skipped";
+  reason?: string;
+  project?: { id: number; name: string };
+}
+
+export interface GithubManifestStart {
+  registrationUrl: string;
+  manifest: Record<string, unknown>;
+  urls: { origin: string; webhook: string; redirect: string };
+}
+
+/** The outcome of switching a project onto its own network, or back. */
+export interface IngressIsolationResult {
+  ok: boolean;
+  isolated: boolean;
+  /** What was done, in order. */
+  steps: string[];
+  /** Why it stopped, when it did. */
+  reason?: string;
+}
+
+/** Whether nginx can reach a project's routed services. */
+export interface IngressHealth {
+  projectId: number;
+  status: "ok" | "degraded" | "down" | "no-routes" | "nginx-unavailable";
+  summary: string;
+  /** The project has a network of its own instead of the shared ingress network. */
+  isolated: boolean;
+  nginx: { running: boolean; onSharedNetwork: boolean };
+  routes: { domain: string; service: string; port: number; alias: string; reachable: boolean; failure: string | null; detail: string }[];
+}
+
+/** How many more Docker networks fit in the daemon's address pools. */
+export interface NetworkHeadroom {
+  capacity: number;
+  used: number;
+  free: number;
+  level: "ok" | "warning" | "critical";
+  /** False when the daemon's pools could not be read and Docker's stock ones were assumed. */
+  poolsKnown: boolean;
+  advice: string | null;
+}
+
+/** Which 1.3 protections a project has; the Settings view lists the ones missing any. */
+export interface ProjectEnforcement {
+  id: number;
+  name: string;
+  composePolicyEnforced: boolean;
+  volumesManaged: boolean;
+  hardenedDefaults: boolean;
 }
 
 export interface HardeningDefaults {
@@ -611,7 +763,7 @@ export interface NotificationConfig {
   updatedAt: string | null;
 }
 
-export type PushEventType = "health_check" | "deploy_blocked" | "deploy_unhealthy" | "rollback_failed" | "rollback_recovered" | "system_update_failed";
+export type PushEventType = "health_check" | "deploy_blocked" | "deploy_unhealthy" | "rollback_failed" | "rollback_recovered" | "system_update_failed" | "certificate_expiring" | "certificate_renewal_failed";
 export interface PushConfig {
   identityError?: string | null;
   supported: boolean;
@@ -1021,7 +1173,12 @@ export interface PolicyViolation {
 export interface ComposePolicyResult {
   /** Null when there is no checkout or no Compose file selected yet. */
   composeFile: string | null;
+  /** Problems in the file as written; every project is checked for these. */
   violations: PolicyViolation[];
+  /** What Compose will actually run. `checked` is false when the file could not be resolved. */
+  resolved: { checked: boolean; reason?: string; violations: PolicyViolation[] };
+  /** Whether a deploy rejects the resolved problems or only warns about them. */
+  enforced: boolean;
 }
 
 export interface NetworkGroupHostname { service: string; hostname: string }

@@ -174,11 +174,13 @@ function defaultDeps(): VolumeMigrationDeps {
         repoPath: projectRepoDir(project), composeProject: expectedComposeProjectName(project),
       })),
     resolve: (project) => resolveComposeConfig(project.repoPath, project.composeFile),
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- the path is a managed directory under Stackport's data directory, or a mount source from the project's own Compose file that is only inspected.
     isFile: (source) => statSync(source, { throwIfNoEntry: false })?.isFile() ?? false,
     helperImage: async () => {
       const result = await docker(["inspect", "--format", "{{.Config.Image}}", "stackport"]);
       return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : "alpine:3";
     },
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- the path is a managed directory under Stackport's data directory, or a mount source from the project's own Compose file that is only inspected.
     mkdir: async (target) => { await fs.mkdir(target, { recursive: true }); },
     markManaged: (projectId) => { getDatabase().prepare("UPDATE projects SET volumes_managed = 1 WHERE id = ?").run(projectId); },
     recordCopied: (projectId, sourcePath, name) => {

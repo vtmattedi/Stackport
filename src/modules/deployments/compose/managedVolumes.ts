@@ -3,6 +3,7 @@ import * as path from "path";
 import { dumpYamlDoc } from "./yaml";
 import { config } from "../../../config/env";
 import { relativeInside, rebasePath } from "../../../shared/hostPath";
+import { plainRecord } from "../../../shared/plainRecord";
 
 /**
  * Stackport-owned mount directories (S2).
@@ -140,7 +141,7 @@ export function planManagedVolumes(resolved: unknown, options: PlanOptions): Mou
  *  an override's `volumes` with the base file by container path, so only the sources
  *  change. Returns null when there is nothing to override. */
 export function buildVolumesOverride(plan: MountPlanEntry[]): string | null {
-  const services: Record<string, { volumes: unknown[] }> = {};
+  const services = plainRecord<{ volumes: unknown[] }>();
   for (const entry of plan) {
     (services[entry.service] ??= { volumes: [] }).volumes.push({
       type: "bind",

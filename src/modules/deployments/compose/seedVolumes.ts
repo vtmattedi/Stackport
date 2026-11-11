@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- paths are a managed directory under Stackport's data directory and the repository folder of the same name (S2). */
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -40,6 +41,7 @@ export async function seedManagedDirectory(source: string, target: string): Prom
   try {
     await fs.cp(source, staging, { recursive: true, dereference: false, verbatimSymlinks: true, preserveTimestamps: true });
     const [wanted, copied] = await Promise.all([manifest(source), manifest(staging)]);
+    // eslint-disable-next-line security/detect-object-injection -- array index.
     if (wanted.length !== copied.length || wanted.some((line, i) => line !== copied[i])) {
       throw new Error(`the copy of ${source} does not match the original`);
     }

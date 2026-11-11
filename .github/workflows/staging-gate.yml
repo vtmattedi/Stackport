@@ -1,0 +1,29 @@
+name: Staging gate
+
+# A pull request that touches Docker networks, mounts or start-up order has to say it was run on a real host
+# (docs/staging-gate.md). The rules live in scripts/ci/staging-gate.sh.
+on:
+  pull_request:
+    branches: [main]
+    # `edited` so adding the result to the description re-runs the check.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the pull request description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed.txt"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/body.txt"
+          bash scripts/ci/staging-gate.sh "$RUNNER_TEMP/changed.txt" "$RUNNER_TEMP/body.txt"

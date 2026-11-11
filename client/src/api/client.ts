@@ -32,6 +32,19 @@ import type {
   SystemUpdateConfig,
   DockerStorageThresholds,
   HardeningDefaults,
+  ProjectEnforcement,
+  NetworkHeadroom,
+  IngressHealth,
+  IngressIsolationResult,
+  GithubSettings,
+  GithubInstallation,
+  GithubManifestStart,
+  GithubDelivery,
+  GithubScanEntry,
+  GithubImportOutcome,
+  ManagedDomain,
+  HostnameRenameResult,
+  HostnameOverview,
   NetworkGroupView,
   AppVersionInfo,
   NotificationConfig,
@@ -278,7 +291,8 @@ export const api = {
   renameRepoFolder: (projectId: number, folder: string) =>
     request<{ ok: boolean; message: string }>("/projects/repo-folder-scan/rename", { method: "POST", body: JSON.stringify({ projectId, folder }), headers: { "Content-Type": "application/json" } }),
   getProject: (id: number) => request<Project>(`/projects/${id}`),
-  createProject: (data: Omit<Partial<Project>, "id" | "createdAt" | "updatedAt" | "lastStatus" | "lastResponseMs" | "lastCheckedAt">) =>
+  /** `githubApp` creates the project from a repository the GitHub App can use, bound by id, with no token. */
+  createProject: (data: Omit<Partial<Project>, "id" | "createdAt" | "updatedAt" | "lastStatus" | "lastResponseMs" | "lastCheckedAt"> & { githubApp?: { installationId: number; repositoryId: number } }) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(data) }),
   updateProject: (id: number, data: Partial<Pick<Project, "name" | "groupName" | "internalPort" | "healthCheckEndpoint" | "healthCheckDomainId" | "healthCheckIntervalS" | "deployHealthGraceS" | "autoRollbackUnhealthy" | "githubRepo" | "credentialId" | "githubCredentialId" | "autoDeployBranch" | "nginxExtraConfig" | "nginxExtraBlocks">>) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
@@ -436,6 +450,47 @@ export const api = {
   getHardeningDefaults: () => request<HardeningDefaults>("/system/hardening-defaults"),
   updateHardeningDefaults: (values: HardeningDefaults) =>
     request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
+  setProjectComposePolicyEnforcement: (projectId: number, enforced: boolean) =>
+    request<{ composePolicyEnforced: boolean }>(`/projects/${projectId}/compose-policy-enforcement`, { method: "PUT", body: JSON.stringify({ enforced }) }),
+  rotateGithubCredentials: (input: { privateKey?: string; webhookSecret?: string }) =>
+    request<{ privateKey: boolean; webhookSecret: boolean }>("/github-app/credentials", { method: "PUT", body: JSON.stringify(input) }),
+  setProjectGithubDeployOn: (projectId: number, mode: "push" | "ci" | "release") =>
+    request<{ githubDeployOn: "push" | "ci" | "release" }>(`/projects/${projectId}/github-deploy-on`, { method: "PUT", body: JSON.stringify({ mode }) }),
+  scanGithubInstallation: (installationId: number) =>
+    request<{ entries: GithubScanEntry[]; truncated: boolean; warning: string }>("/github-app/import/scan", { method: "POST", body: JSON.stringify({ installationId }) }),
+  importGithubRepositories: (installationId: number, repositoryIds: number[]) =>
+    request<{ outcomes: GithubImportOutcome[] }>("/github-app/import", { method: "POST", body: JSON.stringify({ installationId, repositoryIds }) }),
+  getGithubDeliveries: () => request<{ deliveries: GithubDelivery[] }>("/github-app/deliveries"),
+  replayGithubDelivery: (deliveryId: string) =>
+    request<{ status: string; deliveries: GithubDelivery[] }>(`/github-app/deliveries/${encodeURIComponent(deliveryId)}/replay`, { method: "POST" }),
+  getGithubRepositories: () =>
+    request<{ repositories: { repositoryId: number; installationId: number; fullName: string; defaultBranch: string | null; isPrivate: boolean }[] }>("/github-app/repositories"),
+  setProjectGithubAuth: (projectId: number, input: { mode: "app" | "token"; installationId?: number; repositoryId?: number }) =>
+    request<{ githubAuthMode: "app" | null }>(`/projects/${projectId}/github-auth`, { method: "PUT", body: JSON.stringify(input) }),
+  renameProjectHostname: (projectId: number, domainId: number, input: { managedDomainId: number; label: string; canonical?: "apex" | "www" }) =>
+    request<HostnameRenameResult>(`/projects/${projectId}/domains/${domainId}/rename`, { method: "POST", body: JSON.stringify(input) }),
+  getManagedDomains: () => request<{ domains: ManagedDomain[] }>("/domains"),
+  getHostnames: () => request<{ hostnames: HostnameOverview[] }>("/domains/hostnames"),
+  addManagedDomain: (name: string, isDefault = false) =>
+    request<{ domain: ManagedDomain; domains: ManagedDomain[] }>("/domains", { method: "POST", body: JSON.stringify({ name, isDefault }) }),
+  setDefaultManagedDomain: (id: number) =>
+    request<{ domains: ManagedDomain[] }>(`/domains/${id}`, { method: "PATCH", body: JSON.stringify({ isDefault: true }) }),
+  removeManagedDomain: (id: number) => request<{ domains: ManagedDomain[] }>(`/domains/${id}`, { method: "DELETE" }),
+  addManagedProjectDomain: (projectId: number, input: { managedDomainId: number; label: string; canonical?: "apex" | "www"; service: string; containerPort: number }) =>
+    request<ProjectDomain>(`/projects/${projectId}/domains`, { method: "POST", body: JSON.stringify(input) }),
+  getGithubSettings: () => request<GithubSettings>("/github-app"),
+  startGithubManifest: (input: { modules: string[]; owner: string; isPublic: boolean }) =>
+    request<GithubManifestStart>("/github-app/manifest/start", { method: "POST", body: JSON.stringify(input) }),
+  startGithubLink: () => request<{ authorizeUrl: string }>("/github-app/link/start", { method: "POST" }),
+  syncGithubInstallations: () => request<{ installations: GithubInstallation[] }>("/github-app/installations/sync", { method: "POST" }),
+  refreshGithubInstallation: (installationId: number) =>
+    request<{ repositories: number }>(`/github-app/installations/${installationId}/refresh`, { method: "POST" }),
+  forgetGithubApp: () => request<void>("/github-app", { method: "DELETE" }),
+  setProjectIngressIsolation: (projectId: number, enabled: boolean) =>
+    request<IngressIsolationResult>(`/projects/${projectId}/ingress-isolation`, { method: "PUT", body: JSON.stringify({ enabled }) }),
+  getProjectIngressHealth: (projectId: number) => request<IngressHealth>(`/projects/${projectId}/ingress-health`),
+  getNetworkHeadroom: () => request<NetworkHeadroom>("/system/network-headroom"),
+  getProjectEnforcement: () => request<{ projects: ProjectEnforcement[] }>("/system/project-enforcement"),
   getProjectNetworkGroup: (projectId: number) => request<NetworkGroupView>(`/projects/${projectId}/network-group`),
   setProjectNetworkGroup: (projectId: number, group: string, services: string[]) =>
     request<NetworkGroupView>(`/projects/${projectId}/network-group`, { method: "PUT", body: JSON.stringify({ group, services }) }),

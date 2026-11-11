@@ -41,6 +41,7 @@ const DEVELOPMENT_BRANCH = "main";
 
 export function packageVersion(): string {
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- the paths are Stackport's own package.json and its update cache directory.
     const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "../../../package.json"), "utf8")) as { version?: string };
     return pkg.version ?? "0.0.0";
   } catch {
@@ -137,6 +138,7 @@ async function runCheck(authHeader: string | null): Promise<UpdateCheck> {
   }
 
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- the paths are Stackport's own package.json and its update cache directory.
     if (!existsSync(cacheDir())) await exec("git", ["init", "--quiet", "--bare", cacheDir()]);
     const refspecs = [...new Set([branch, DEVELOPMENT_BRANCH])].map((b) => `+refs/heads/${b}:refs/remotes/origin/${b}`);
     const token = process.env["STACKPORT_REPO_TOKEN"];

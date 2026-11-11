@@ -146,9 +146,17 @@ function projectToken(project: Project, globalCredentialId: number | null): stri
   return resolveToken(globalCredentialId);
 }
 
-/** The token used for GitHub API calls on this project's repo (project credential, else the poller's). */
+/** The token used for GitHub API calls on this project's repo (project credential, else the poller's). A project that
+ *  deploys through the App has none of these: use `apiTokenForProject`. */
 export function tokenForProject(project: Project): string | null {
-  return projectToken(project, globalCredentialId());
+  return project.githubAuthMode === "app" ? null : projectToken(project, globalCredentialId());
+}
+
+/** The token for GitHub API calls on a project's repository, whichever way it reaches GitHub. For an App project it
+ *  is a short-lived installation token, and it throws when the App no longer has access (no silent fallback). */
+export async function apiTokenForProject(project: Project, globalCredential: number | null = globalCredentialId()): Promise<string | null> {
+  if (project.githubAuthMode === "app") return (await import("../github/binding")).appTokenForProject(project.id);
+  return projectToken(project, globalCredential);
 }
 
 function globalCredentialId(): number | null {
@@ -223,7 +231,7 @@ function emitProjectRow(projectId: number): void {
 /** Fetches the branch list from GitHub, stores it on the project, and pushes it to subscribed clients. */
 export async function refreshProjectBranches(project: Project): Promise<GitHubBranch[]> {
   if (!project.githubRepo) return [];
-  const token = projectToken(project, globalCredentialId());
+  const token = await apiTokenForProject(project);
   const branches = await fetchBranchList(project.githubRepo, token, project.branches);
   storeBranchList(project.id, branches);
   emitProjectRow(project.id);
@@ -377,7 +385,7 @@ class GitHubPoller {
         if (!project.githubRepo) continue;
         const prefix = `  [${project.name}]`;
         try {
-          const token = projectToken(project, cfg.credentialId);
+          const token = await apiTokenForProject(project, cfg.credentialId);
           const branchList = await fetchBranchList(project.githubRepo, token, project.branches);
           storeBranchList(project.id, branchList);
           outputLines.push(`${prefix} ${branchList.length} branch(es) found`);

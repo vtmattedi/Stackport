@@ -20,6 +20,19 @@ export interface Project {
   autoRollbackUnhealthy: boolean;
   /** Services get Stackport's hardened defaults: no-new-privileges and default limits (S8). */
   hardenedDefaults: boolean;
+  /** Resolved-config policy violations (S1) reject a deploy; off, they only warn (G2). */
+  composePolicyEnforced: boolean;
+  /** Bind mounts live in Stackport-owned directories (S2). Off until the migration copies the data. */
+  volumesManaged: boolean;
+  /** How this project reaches GitHub: through the GitHub App, or (null) with a token as before. */
+  githubAuthMode: "app" | null;
+  /** The repository and installation the App serves it through, when githubAuthMode is "app". */
+  githubRepositoryId: number | null;
+  githubInstallationId: number | null;
+  /** What makes an App project deploy: a push (default), a push once its checks pass, or a published release. */
+  githubDeployOn: "push" | "ci" | "release";
+  /** Routed services sit on a network of this project's own instead of the shared ingress network (P7). */
+  ingressIsolated: boolean;
   /** Network group: projects in the same one reach each other's chosen services (separate from groupName). */
   networkGroup: string | null;
   lastStatus: "up" | "down" | "unknown";
@@ -104,6 +117,13 @@ export interface ProjectRow {
   deploy_health_grace_s?: number | null;
   auto_rollback_unhealthy?: number | null;
   hardened_defaults?: number | null;
+  compose_policy_enforced?: number | null;
+  ingress_isolated?: number | null;
+  github_auth_mode?: string | null;
+  github_repository_id?: number | null;
+  github_installation_id?: number | null;
+  github_deploy_on?: string | null;
+  volumes_managed?: number | null;
   network_group?: string | null;
   pending_deploy_sha?: string | null;
   github_checked_at?: string | null;
@@ -135,6 +155,13 @@ export function rowToProject(row: ProjectRow): Project {
     deployHealthGraceS: row.deploy_health_grace_s ?? 60,
     autoRollbackUnhealthy: !!row.auto_rollback_unhealthy,
     hardenedDefaults: row.hardened_defaults !== 0,
+    githubAuthMode: row.github_auth_mode === "app" ? "app" : null,
+    githubRepositoryId: row.github_repository_id ?? null,
+    githubInstallationId: row.github_installation_id ?? null,
+    githubDeployOn: row.github_deploy_on === "ci" || row.github_deploy_on === "release" ? row.github_deploy_on : "push",
+    ingressIsolated: row.ingress_isolated === 1,
+    composePolicyEnforced: row.compose_policy_enforced !== 0,
+    volumesManaged: row.volumes_managed !== 0,
     networkGroup: row.network_group ?? null,
     lastStatus: (validStatus.includes(row.last_status) ? row.last_status : "unknown") as
       | "up"

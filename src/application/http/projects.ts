@@ -4,7 +4,7 @@ import { previewDeploy, previewRollback } from "../../modules/deployments/previe
 import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../../config/database";
 import { requireAuth } from "../../modules/identity/middleware/session";
-import { auditLog } from "../../shared/logger";
+import { auditLog, logger } from "../../shared/logger";
 import { rowToProject, DEPLOY_TRIGGERS, type DeployTrigger, type ProjectRow } from "../../modules/projects/types";
 import { clearPendingAutoDeploy } from "../../modules/automation/autoDeploy";
 import { disableWebhook, enableWebhook, getWebhookDetails, pingWebhook, reinstallWebhook, webhookBaseUrl } from "../../modules/automation/githubWebhooks";
@@ -40,6 +40,8 @@ import {
   stopAndPurgeProject,
   validateComposeFileChoice,
 } from "../../modules/deployments/operations";
+import { setComposePolicyEnforced } from "../../modules/deployments/compose/enforcement";
+import { checkProjectIngress } from "../../modules/ingress/health";
 import { getProjectBranches } from "../../modules/automation/githubPolling";
 import { runCertbotAction } from "../../modules/ingress/certificates/operations";
 import { actionRegistry, DEPLOY_KINDS_SQL, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../../modules/actions/registry";
@@ -71,6 +73,13 @@ import {
   TcpExposureError,
 } from "../../modules/ingress/tcp";
 import { removeIngressNetwork } from "../../modules/ingress/networks";
+import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
+import { isIngressIsolated } from "../../modules/ingress/isolationState";
+import { modeAvailable } from "../../modules/github/ci";
+import { realRenameDeps } from "../../modules/ingress/hostnameOps";
+import { addManagedProjectDomain, getManagedDomain, renameProjectHostname, reserveHostnameForProject, validateLabel } from "../../modules/ingress/managedDomains";
+import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
+import { GithubAppError } from "../../modules/github/app";
 import { assignNetworkGroup, getNetworkGroupView, NetworkGroupError } from "../../modules/deployments/networkGroupAssignment";
 import multer from "multer";
 
@@ -426,6 +435,7 @@ router.post("/:id/upload", requireAuth, handleUpload, (req: Request<{ id: string
     const result = await stageAndApplyUpload(
       id,
       { relativePath: composeFiles[0].originalname, buffer: composeFiles[0].buffer },
+      // eslint-disable-next-line security/detect-object-injection -- index into a parallel array from the same .map.
       supportFiles.map((file, index) => ({ relativePath: supportPaths[index], buffer: file.buffer })),
       { deploy },
     );
@@ -666,7 +676,130 @@ router.get("/:id/compose-policy", requireAuth, async (req: Request<{ id: string 
   if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   try { res.json(await getProjectComposePolicy(id)); }
-  catch { res.json({ composeFile: null, violations: [] }); }
+  catch { res.json({ composeFile: null, violations: [], resolved: { checked: false, violations: [] }, enforced: true }); }
+});
+
+/** Whether nginx can reach each of the project's routed services right now (P2): the name resolves on the
+ *  shared network and the port accepts a connection, asked from inside the nginx container. */
+router.get("/:id/ingress-health", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  res.json(await checkProjectIngress(id));
+});
+
+/** What makes a project that deploys through the GitHub App deploy: a push (default), a push once its checks pass (M2), or a
+ *  published release (M3). A mode the App was not registered for, or whose permissions the installation has not approved, is
+ *  refused with the reason. Changing the mode drops a commit that was waiting for checks. */
+router.put("/:id/github-deploy-on", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  const mode: unknown = req.body?.mode;
+  if (mode !== "push" && mode !== "ci" && mode !== "release") { res.status(400).json({ error: 'mode must be "push", "ci" or "release"' }); return; }
+  if (project.githubAuthMode !== "app") { res.status(409).json({ error: "This project does not deploy through the GitHub App." }); return; }
+  const problem = modeAvailable(mode, project.githubInstallationId);
+  if (problem) { res.status(409).json({ error: problem }); return; }
+  getDatabase().prepare("UPDATE projects SET github_deploy_on = ?, github_pending_ci_sha = NULL, github_pending_ci_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(mode === "push" ? null : mode, id);
+  auditLog(req.user ?? "unknown", "project.github-deploy-on", String(id), "ok", { mode });
+  res.json({ githubDeployOn: mode });
+});
+
+/** Moves a project between a token and the GitHub App (Phase B). Moving to the App first proves, with a real call, that
+ *  the App can read the repository; the token is kept on the project, so moving back loses nothing. */
+router.put("/:id/github-auth", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  if (actionRegistry.get(projectRepoKey(id))?.status === "running") { res.status(409).json({ error: "An action is running for this project. Try again when it has finished." }); return; }
+  const mode: unknown = req.body?.mode;
+  try {
+    if (mode === "token") {
+      unbindProjectFromApp(id);
+      auditLog(req.user ?? "unknown", "project.github-auth", String(id), "ok", { mode: "token" });
+      res.json({ githubAuthMode: null });
+      return;
+    }
+    if (mode !== "app") { res.status(400).json({ error: "mode must be \"app\" or \"token\"" }); return; }
+    if (!project.githubRepo) { res.status(400).json({ error: "This project has no GitHub repository." }); return; }
+    let installationId: unknown = req.body?.installationId;
+    let repositoryId: unknown = req.body?.repositoryId;
+    if (installationId === undefined || repositoryId === undefined) {
+      const matches = candidatesForRepo(project.githubRepo);
+      if (matches.length === 0) { res.status(404).json({ error: `No connected installation can use ${project.githubRepo}. Install the App on its owner and connect the account in Settings > GitHub.` }); return; }
+      if (matches.length > 1) { res.status(409).json({ error: `More than one installation can use ${project.githubRepo}. Choose one.`, candidates: matches.map((m) => ({ installationId: m.installationId, repositoryId: m.repositoryId })) }); return; }
+      installationId = matches[0].installationId;
+      repositoryId = matches[0].repositoryId;
+    }
+    const repository = resolveAppRepository(installationId, repositoryId);
+    if (repository.fullName.toLowerCase() !== project.githubRepo.toLowerCase()) { res.status(400).json({ error: `That repository is ${repository.fullName}, not ${project.githubRepo}.` }); return; }
+    await verifyRepositoryAccess(repository);
+    bindProjectToApp(id, repository);
+    auditLog(req.user ?? "unknown", "project.github-auth", String(id), "ok", { mode: "app", installationId: repository.installationId });
+    res.json({ githubAuthMode: "app", githubInstallationId: repository.installationId, githubRepositoryId: repository.repositoryId });
+  } catch (err) {
+    if (err instanceof GithubAppError) { res.status(err.status).json({ error: err.message }); return; }
+    throw err;
+  }
+});
+
+/** Moves a project onto a network of its own, or back onto the shared one (P7). The switch checks that the new
+ *  route works from inside nginx before it changes anything nginx uses, and puts everything back if it cannot.
+ *  It runs in the project's own action slot, the one deploys use: it cannot start while a deploy is running, and a
+ *  deploy, a poll or a webhook that arrives while it runs waits for it (an auto-deploy is queued and starts after).
+ *  The request waits for the result. */
+router.put("/:id/ingress-isolation", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  const enabled: unknown = req.body?.enabled;
+  if (typeof enabled !== "boolean") { res.status(400).json({ error: "enabled must be true or false" }); return; }
+  if (isIngressIsolated(id) === enabled && actionRegistry.get(projectRepoKey(id))?.status !== "running") { res.json({ ok: true, isolated: enabled, steps: ["Already in that state."] }); return; }
+
+  let outcome: IsolationResult | null = null;
+  let failure: unknown = null;
+  let finished!: () => void;
+  const done = new Promise<void>((resolve) => { finished = resolve; });
+  const started = actionRegistry.tryStart(projectRepoKey(id), "network", { projectId: id, triggeredBy: "manual" }, async () => {
+    try {
+      const deps = await defaultIsolationDeps();
+      outcome = enabled ? await switchToIsolated(id, deps) : await switchToShared(id, deps);
+      return { ok: outcome.ok, output: [...outcome.steps, ...(outcome.reason ? [outcome.reason] : [])].join("\n") };
+    } catch (err) {
+      failure = err;
+      throw err;
+    } finally {
+      finished();
+    }
+  });
+  if (started === null) {
+    res.status(409).json({ ok: false, error: "A deploy or another network change is running for this project. Try again when it has finished." });
+    return;
+  }
+  await done;
+  if (failure !== null || outcome === null) {
+    auditLog(req.user ?? "unknown", "project.ingress-isolation", String(id), "fail", { enabled });
+    res.status(500).json({ ok: false, error: failure instanceof Error ? failure.message : "The network change failed" });
+    return;
+  }
+  const result: IsolationResult = outcome;
+  auditLog(req.user ?? "unknown", "project.ingress-isolation", String(id), result.ok ? "ok" : "fail", { enabled, reason: result.reason });
+  // A switch that could not be done safely is an answer, not an error: the steps and the reason are what the page shows.
+  res.json({ ...result, isolated: isIngressIsolated(id) });
+});
+
+/** Rejects (true) or only warns about (false) resolved-config policy violations (S1) for one
+ *  project; applies on its next deploy. Older projects start with it off. */
+router.put("/:id/compose-policy-enforcement", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const enforced: unknown = req.body?.enforced;
+  if (typeof enforced !== "boolean") { res.status(400).json({ error: "enforced must be true or false" }); return; }
+  if (!setComposePolicyEnforced(id, enforced)) { res.status(404).json({ error: "Project not found" }); return; }
+  auditLog(req.user ?? "unknown", "project.compose-policy-enforcement", String(id), "ok", { enforced });
+  res.json({ composePolicyEnforced: enforced });
 });
 
 /** Turns the hardened container defaults (S8) on or off for one project; they take
@@ -798,13 +931,23 @@ router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, re
   const project = getProjectById(id);
   if (!project) { res.status(404).json({ error: "Project not found" }); return; }
 
-  const { domain, service, containerPort } = req.body as Record<string, unknown>;
+  const { domain, service, containerPort, managedDomainId, label, canonical } = req.body as Record<string, unknown>;
+  if (managedDomainId !== undefined) {
+    // The name is checked first, so a bad label is reported as one rather than as a missing service.
+    const chosen = typeof managedDomainId === "number" ? getManagedDomain(managedDomainId) : null;
+    if (!chosen) { res.status(400).json({ error: "Choose one of the managed domains." }); return; }
+    try { validateLabel(label, chosen.name); }
+    catch (err) { if (err instanceof ProjectDomainError) { res.status(err.statusCode).json({ error: err.message }); return; } throw err; }
+  }
   const route = await validateDomainRoute(project, service, containerPort);
   if (!route.ok) { res.status(400).json({ error: route.error }); return; }
 
   let created;
   try {
-    created = addProjectDomain(id, domain, false, route.service, route.containerPort);
+    // A hostname is a label (or @, the bare domain) on a managed base domain; a full hostname is for what is not on one.
+    created = managedDomainId !== undefined
+      ? addManagedProjectDomain(id, managedDomainId, label, route.service, route.containerPort, canonical === "www" ? "www" : "apex")
+      : addProjectDomain(id, domain, false, route.service, route.containerPort);
   } catch (err) {
     if (err instanceof ProjectDomainError) { res.status(err.statusCode).json({ error: err.message }); return; }
     throw err;
@@ -814,6 +957,34 @@ router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, re
   healthChecker.schedule(project);
   res.json(created);
   void runProjectNginxFlow("project.domain-add", project);
+});
+
+/** Renames a managed hostname: the new one is added, routed and (if the old one had SSL) certified first, and only then is
+ *  the old one removed, which stops answering at once with no redirect. Runs in the project's action slot. */
+router.post("/:id/domains/:domainId/rename", requireAuth, async (req: Request<{ id: string; domainId: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  const domainId = Number(req.params.domainId);
+  if (!Number.isInteger(id) || id < 1 || !Number.isInteger(domainId) || domainId < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  if (!getProjectDomain(id, domainId)) { res.status(404).json({ error: "Domain not found" }); return; }
+  const { managedDomainId, label, canonical } = req.body as Record<string, unknown>;
+
+  let outcome: Awaited<ReturnType<typeof renameProjectHostname>> | null = null;
+  let finished!: () => void;
+  const done = new Promise<void>((resolve) => { finished = resolve; });
+  const started = actionRegistry.tryStart(projectRepoKey(id), "domain-rename", { projectId: id, triggeredBy: "manual" }, async () => {
+    try {
+      outcome = await renameProjectHostname(id, domainId, { managedDomainId, label, canonical: canonical === "www" ? "www" : "apex" }, realRenameDeps(id));
+      return { ok: outcome.ok, output: [...outcome.steps, ...(outcome.reason ? [outcome.reason] : [])].join("\n") };
+    } finally { finished(); }
+  });
+  if (started === null) { res.status(409).json({ ok: false, error: "An action is running for this project. Try again when it has finished." }); return; }
+  await done;
+  const result = outcome as Awaited<ReturnType<typeof renameProjectHostname>> | null;
+  auditLog(req.user ?? "unknown", "project.domain-rename", project.name, result?.ok ? "ok" : "fail", { reason: result?.reason });
+  healthChecker.schedule(project);
+  res.json(result ?? { ok: false, steps: [], reason: "The rename did not finish." });
 });
 
 router.patch("/:id/domains/:domainId/route", requireAuth, async (req: Request<{ id: string; domainId: string }>, res: Response): Promise<void> => {
@@ -1146,16 +1317,28 @@ router.post("/:id/actions/cancel", requireAuth, (req: Request<{ id: string }>, r
 router.post("/", requireAuth, (req: Request, res: Response): void => {
   let project;
   try {
-    project = adminCreateProject(req.body as Record<string, unknown>);
+    const input = { ...(req.body as Record<string, unknown>) };
+    // A project that deploys through the GitHub App is created from a repository the App can use, never a typed name.
+    const app = input["githubApp"] as { installationId?: unknown; repositoryId?: unknown } | undefined;
+    delete input["githubApp"];
+    const repository = app ? resolveAppRepository(app.installationId, app.repositoryId) : null;
+    if (repository) { input["githubRepo"] = repository.fullName; delete input["githubCredentialId"]; }
+    project = adminCreateProject(input);
+    if (repository) { bindProjectToApp(project.id, repository); project = getProjectById(project.id) ?? project; }
   } catch (err) {
     if (err instanceof ProjectAdminError) {
       res.status(err.statusCode).json({ error: err.message });
       return;
     }
+    if (err instanceof GithubAppError) { res.status(err.status).json({ error: err.message }); return; }
     throw err;
   }
 
   healthChecker.schedule(project);
+  // With a default base domain, the project reserves <name>.<domain> at once. It has no route until the Compose file says
+  // where it goes. A failure here never fails the creation: the hostname can be added by hand.
+  try { reserveHostnameForProject(project.id, project.name); }
+  catch (err) { logger.warn({ err, projectId: project.id }, "domains: could not reserve a hostname for the new project"); }
   auditLog(req.user ?? "unknown", "project.create", project.name, "ok");
   res.status(201).json(project);
   void runProjectNginxFlow("project.create", project);
@@ -1280,13 +1463,14 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   }
   if (row.github_hook_id != null) {
     const warning = await disableWebhook(id);
-    if (warning) console.warn(`[webhooks] ${row.name}: ${warning}`);
+    if (warning) logger.warn({ project: row.name, warning }, "webhook");
   }
   // Action rows go with the project (ON DELETE CASCADE); their log files don't.
   deleteProjectActionLogs(id);
   db.prepare("DELETE FROM projects WHERE id = ?").run(id);
   healthChecker.unschedule(id);
   void removeIngressNetwork(id);
+  void removeIsolatedNetworkQuietly(id);
 
   auditLog(req.user ?? "unknown", "project.delete", row.name, "ok");
   res.status(204).send();
@@ -1353,7 +1537,7 @@ function setProjectPaused(req: Request<{ id: string }>, res: Response, paused: b
     clearPendingAutoDeploy(id);
   } else {
     healthChecker.schedule(project);
-    healthChecker.check(id).catch(console.error);
+    healthChecker.check(id).catch((err: unknown) => logger.error({ err, projectId: id }, "health check failed"));
   }
   auditLog(req.user ?? "unknown", paused ? "project.pause" : "project.resume", project.name, "ok");
   res.json(project);

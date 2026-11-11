@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- array indexes and positions from a Map of known buckets. */
 import { getDatabase } from "../../../config/database";
 
 interface SampleRow {
@@ -49,7 +50,7 @@ function rowToSample(r: SampleRow) {
 
 // Latest sample plus 5-minute bucketed history for a single project's docker compose stack,
 // plus its deploy-directory disk size (sampled far less often — see projectResourceSampler.ts).
-export function getProjectResourceSnapshot(projectId: number, hours = 24) {
+function buildProjectResourceSnapshot(projectId: number, hours = 24) {
   const db = getDatabase();
   const clamped = clampHours(hours);
 
@@ -100,6 +101,12 @@ export function getProjectResourceSnapshot(projectId: number, hours = 24) {
       history: folderSizeHistory.map((h) => ({ ts: h.sampled_at, sizeBytes: h.size_bytes })),
     },
   };
+}
+
+export type ProjectResourceSnapshot = ReturnType<typeof buildProjectResourceSnapshot>;
+
+export function getProjectResourceSnapshot(projectId: number, hours = 24): ProjectResourceSnapshot {
+  return buildProjectResourceSnapshot(projectId, hours);
 }
 
 export interface ProjectResourceSummaryItem {

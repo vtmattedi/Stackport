@@ -27,7 +27,9 @@ module.exports = [
       "@typescript-eslint/no-unused-vars": ["error", { ignoreRestSiblings: true }],
       // `declare global { namespace Express { ... } }` is the only way to augment Express's types.
       "@typescript-eslint/no-namespace": ["error", { allowDeclarations: true }],
-      "@typescript-eslint/explicit-function-return-type": "warn",
+      // Return types are required where a function is part of a module's API. A callback inside an object
+      // literal is typed by its context, so annotating each one would only add noise.
+      "@typescript-eslint/explicit-module-boundary-types": "warn",
     },
   },
 ];

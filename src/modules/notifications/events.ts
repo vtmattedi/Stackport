@@ -38,6 +38,20 @@ export function rollbackRecoveredEvent(name: string, projectId: number, operatio
     url: `/projects/${projectId}`, createdAt: new Date().toISOString() };
 }
 
+/** `domain` is in the key with its dots as underscores (event keys allow only letters, digits, `:`, `_` and `-`), and `day`
+ *  makes it once per certificate and day. */
+export function certificateExpiringEvent(domain: string, daysLeft: number, day: string): StackportNotification {
+  const key = domain.toLowerCase().replace(/[^a-z0-9-]/g, "_").slice(0, 150);
+  return { eventKey: `certificate_expiring:${key}:${day}`, type: "certificate_expiring", severity: daysLeft <= 3 ? "error" : "warning",
+    title: `The certificate for ${domain} expires ${daysLeft <= 0 ? "now" : `in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`}`,
+    body: "It has not been renewed yet. Open Domains to check it.", url: "/settings/domains", createdAt: new Date().toISOString() };
+}
+
+export function certificateRenewalFailedEvent(day: string): StackportNotification {
+  return { eventKey: `certificate_renewal_failed:${day}`, type: "certificate_renewal_failed", severity: "error", title: "Certificate renewal failed",
+    body: "Stackport could not renew its certificates. Open Domains to see which are due.", url: "/settings/domains", createdAt: new Date().toISOString() };
+}
+
 export function systemUpdateFailedEvent(operationId: string, outcome: "failed" | "rolled-back"): StackportNotification {
   return { eventKey: `system_update_failed:${operationId}:${outcome}`, type: "system_update_failed", severity: "error", title: "Stackport update failed",
     body: outcome === "rolled-back" ? "The new version failed verification and was rolled back. Open Settings for details." : "The update could not complete. Open Settings for details.",

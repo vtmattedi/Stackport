@@ -12,6 +12,12 @@ export interface ProjectDomain {
    *  string means this row predates the migration and hasn't been reconfigured yet. */
   service: string;
   containerPort: number | null;
+  /** The managed base domain and label this hostname was made from; null for an unmanaged hostname. */
+  managedDomainId: number | null;
+  /** `@` for the bare domain, otherwise the label in front of the base domain. */
+  label: string | null;
+  /** A `www.` hostname that is the canonical name: the bare domain redirects to it. */
+  redirectApex: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -23,6 +29,9 @@ interface ProjectDomainRow {
   use_ssl: number;
   service: string;
   container_port: number | null;
+  managed_domain_id?: number | null;
+  label?: string | null;
+  redirect_apex?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -42,6 +51,9 @@ function rowToProjectDomain(row: ProjectDomainRow): ProjectDomain {
     useSsl: !!row.use_ssl,
     service: row.service,
     containerPort: row.container_port,
+    managedDomainId: row.managed_domain_id ?? null,
+    label: row.label ?? null,
+    redirectApex: row.redirect_apex === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -133,6 +145,10 @@ export function ensureDomainAvailable(domain: string, exceptDomainId?: number): 
     : db.prepare("SELECT project_id FROM project_domains WHERE lower(domain) = lower(?) AND id <> ?").get(domain, exceptDomainId);
   if (existing) throw new ProjectDomainError(409, "domain is already used by another project");
 
+  // The bare domain of a hostname that is canonical on www is already answered (by a redirect).
+  const redirected = db.prepare("SELECT domain FROM project_domains WHERE redirect_apex = 1 AND lower(domain) = lower(?) AND id <> ?").get(`www.${domain}`, exceptDomainId ?? -1) as { domain: string } | undefined;
+  if (redirected) throw new ProjectDomainError(409, `${domain} redirects to ${redirected.domain}, which another project uses as its canonical name.`);
+
   const appNginx = getNginxAppConfig();
   if (appNginx.enabled && appNginx.domain && domain.toLowerCase() === appNginx.domain.toLowerCase()) {
     throw new ProjectDomainError(409, "domain is reserved for StackPort app publishing");
@@ -160,7 +176,8 @@ export function addProjectDomain(
   domainInput: unknown,
   useSsl = false,
   service = "",
-  containerPort: number | null = null
+  containerPort: number | null = null,
+  managed?: { managedDomainId: number; label: string; redirectApex?: boolean }
 ): ProjectDomain {
   const domain = parseDomainName(domainInput);
   if (!domain) throw new ProjectDomainError(400, "domain must be a valid hostname (e.g. myapp.example.com)");
@@ -169,8 +186,8 @@ export function addProjectDomain(
   const db = getDatabase();
   const now = new Date().toISOString();
   const result = db.prepare(
-    "INSERT INTO project_domains (project_id, domain, use_ssl, service, container_port, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(projectId, domain, useSsl ? 1 : 0, service, containerPort, now, now);
+    "INSERT INTO project_domains (project_id, domain, use_ssl, service, container_port, managed_domain_id, label, redirect_apex, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(projectId, domain, useSsl ? 1 : 0, service, containerPort, managed?.managedDomainId ?? null, managed?.label ?? null, managed?.redirectApex ? 1 : 0, now, now);
   const row = db.prepare("SELECT * FROM project_domains WHERE id = ?").get(result.lastInsertRowid) as ProjectDomainRow;
   db.prepare("UPDATE projects SET health_check_domain_id = COALESCE(health_check_domain_id, ?), updated_at = ? WHERE id = ?")
     .run(row.id, now, projectId);

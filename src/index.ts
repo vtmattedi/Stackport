@@ -21,14 +21,26 @@ import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./mod
 import { getPushConfig } from "./modules/notifications/push/transport";
 import { pushDeliveryWorker } from "./modules/notifications/push/worker";
 import { logger } from "./shared/logger";
+import { getNetworkHeadroom } from "./modules/maintenance/networkHeadroom";
+import { pruneDeliveries, resumeAllDeliveries } from "./modules/github/webhook";
+import { sweepHeldCommits } from "./modules/github/ci";
 
 /** In this order: services on the shared network first (nginx's config names them by alias), then the config,
  *  then the TCP proxies, then the per-project networks 1.3.0 left behind. */
 async function startIngress(): Promise<void> {
   await reconcileIngressNetworks();
-  await ensureAppIngress().catch((err: unknown) => console.error("[ingress] nginx config at start-up failed:", err));
-  await reconcileAllTcpExposures().catch((err: unknown) => console.error("[ingress] TCP exposures at start-up failed:", err));
+  await ensureAppIngress().catch((err: unknown) => logger.error({ err }, "ingress: nginx config at start-up failed"));
+  await reconcileAllTcpExposures().catch((err: unknown) => logger.error({ err }, "ingress: TCP exposures at start-up failed"));
   await removeLegacyIngressNetworks();
+}
+
+/** The address pool is a host-wide limit, so say so in the log while there is still room (P3). */
+async function warnIfNetworkPoolIsNearlyFull(): Promise<void> {
+  const headroom = await getNetworkHeadroom().catch(() => null);
+  if (!headroom || headroom.level === "ok") return;
+  const message = `Docker has room for ${headroom.free} more networks (${headroom.used} of ${headroom.capacity} address-pool slices used). ${headroom.advice ?? ""}`;
+  if (headroom.level === "critical") logger.error({ ...headroom }, message);
+  else logger.warn({ ...headroom }, message);
 }
 
 try {
@@ -38,6 +50,13 @@ try {
   markInterruptedActions();
   ensureBootstrapCredential();
   void startIngress();
+  // Deliveries stored but not handled before the last stop (a crash between intake and handling), and old ones to drop.
+  try { pruneDeliveries(); } catch (err) { logger.warn({ err }, "github-app: pruning deliveries failed"); }
+  void resumeAllDeliveries().catch((err: unknown) => logger.warn({ err }, "github-app: resuming deliveries failed"));
+  // Commits held for their checks: a repository with no checks never sends an event, so they are looked at on a timer.
+  setInterval(() => { void sweepHeldCommits().catch((err: unknown) => logger.warn({ err }, "github-app: sweeping held commits failed")); }, 60_000).unref();
+  setInterval(() => { try { pruneDeliveries(); } catch { /* retried tomorrow */ } }, 24 * 60 * 60 * 1000).unref();
+  void warnIfNetworkPoolIsNearlyFull();
   void reconcileNetworkGroups();
   healthChecker.start();
   resetPendingAutoDeploys();
@@ -79,7 +98,7 @@ try {
       process.exit(0);
     }); });
     setTimeout(() => {
-      console.error("[server] shutdown timeout - forcing exit");
+      logger.error("shutdown timeout, forcing exit");
       process.exit(1);
     }, 10_000).unref();
   }
@@ -96,6 +115,6 @@ try {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT",  () => shutdown("SIGINT"));
 } catch (err: unknown) {
-  console.error("[db] failed to initialize:", err);
+  logger.error({ err }, "database failed to initialize");
   process.exit(1);
 }

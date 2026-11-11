@@ -79,11 +79,13 @@ export async function syncGroupNetwork(sync: GroupSync, docker: GroupDocker = do
     const joins = wanted !== null && sync.services.includes(container.service);
     const alias = groupAlias(sync.projectId, container.service);
     for (const network of Object.keys(container.networks).filter((n) => n.startsWith(GROUP_NETWORK_PREFIX))) {
+      // eslint-disable-next-line security/detect-object-injection -- keys are Docker network names; the lookups only read.
       if (joins && network === wanted && container.networks[network]?.Aliases?.includes(alias)) continue;
       try { await docker(["network", "disconnect", network, container.id]); }
       catch (err) { if (!missing(err)) throw err; }
     }
     if (joins && wanted) {
+      // eslint-disable-next-line security/detect-object-injection -- keys are Docker network names; the lookups only read.
       if (container.networks[wanted]?.Aliases?.includes(alias)) continue;
       await ensureNetwork(docker, wanted);
       try { await docker(["network", "connect", "--alias", alias, wanted, container.id]); }

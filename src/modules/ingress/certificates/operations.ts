@@ -230,6 +230,17 @@ function shouldIssueWwwAlias(domain: string, type: CertbotDomainType): boolean {
   return type === "domain" && !domain.startsWith("www.") && domain !== getNginxAppConfig().domain;
 }
 
+/** The second name a certificate has to cover: `www.` for a bare domain, or the bare domain for a hostname that is
+ *  canonical on `www.` and has the bare domain redirecting to it (domain manager). */
+export function certificateAlias(domain: string, type: CertbotDomainType): string | null {
+  if (shouldIssueWwwAlias(domain, type)) return `www.${domain}`;
+  if (domain.startsWith("www.")) {
+    const canonical = getDatabase().prepare("SELECT 1 FROM project_domains WHERE redirect_apex = 1 AND lower(domain) = lower(?)").get(domain);
+    if (canonical) return domain.slice(4);
+  }
+  return null;
+}
+
 export async function getCertbotStatus(): Promise<CertbotStatus> {
   const lists = await routedDomains();
   const [existence, expiry, version] = await Promise.all([
@@ -287,7 +298,8 @@ async function containerAction(
       return { ok: false, mode: "real", domain, action, output: "CERTBOT_EMAIL is required for certbot issue actions." };
     }
     args = ["certonly", "--webroot", "-w", "/var/www/certbot", "-d", domain];
-    if (shouldIssueWwwAlias(domain, type)) args.push("-d", `www.${domain}`);
+    const alias = certificateAlias(domain, type);
+    if (alias) args.push("-d", alias);
     args.push("--non-interactive", "--agree-tos", "-m", email);
     if (opts.staging) args.push("--staging");
   } else if (action === "renew") {

@@ -21,6 +21,7 @@ export interface PushLease {
 
 function pushEnabled(db: Database.Database, type: NotificationEventType): boolean {
   const row = db.prepare("SELECT enabled, events_json FROM push_config WHERE id = 1").get() as { enabled: number; events_json: string } | undefined;
+  // eslint-disable-next-line security/detect-object-injection -- the key is an event type from the module's fixed list.
   const preference = row && (JSON.parse(row.events_json) as Record<string, unknown>)[type];
   return !!row?.enabled && (typeof preference === "boolean" ? preference : type !== "rollback_recovered");
 }
@@ -30,7 +31,8 @@ export function enqueuePushEventTx(db: Database.Database, event: DurablePushEven
   if (event.eventKey.length > 220 || !/^[a-z_]+:[A-Za-z0-9:_-]{1,200}$/.test(event.eventKey)
     || !PUSH_EVENT_TYPES.includes(event.type) || !event.eventKey.startsWith(`${event.type}:`)) throw new Error("Invalid push event identity");
   if (!["info", "warning", "error"].includes(event.severity)) throw new Error("Invalid push severity");
-  if (!/^\/(?:projects(?:\/[1-9]\d*(?:\/[a-z-]+)?)?|settings\/(?:general|notifications))$/.test(event.url)) throw new Error("Invalid push navigation path");
+  // eslint-disable-next-line security/detect-unsafe-regex -- measured: stays linear on a 200 000 character adversarial input (under 1 ms).
+  if (!/^\/(?:projects(?:\/[1-9]\d*(?:\/[a-z-]+)?)?|settings\/(?:general|notifications|domains))$/.test(event.url)) throw new Error("Invalid push navigation path");
   if (event.projectId !== undefined && (!Number.isSafeInteger(event.projectId) || event.projectId <= 0)) throw new Error("Invalid push project ID");
   const created = Date.parse(event.createdAt);
   const expires = Math.min(created + PUSH_LIFETIME_MS[event.type], event.expiresAt ? Date.parse(event.expiresAt) : Infinity);

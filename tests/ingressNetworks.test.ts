@@ -8,7 +8,7 @@ import { applyStackportProxyNetwork, connectRunningProxyServices } from "../src/
 import { dumpYamlDoc, loadYamlDoc } from "../src/modules/deployments/compose/yaml";
 import { validateResolvedComposePolicy, type PolicyViolation } from "../src/modules/deployments/compose/policy";
 import { ensureSharedIngressNetwork, removeIngressNetwork, removeLegacyIngressNetworks, type DockerRun } from "../src/modules/ingress/networks";
-import { tcpProxyIsOnSharedNetwork } from "../src/modules/ingress/tcp";
+import { tcpProxyIsOnNetwork } from "../src/modules/ingress/tcp";
 
 const POSIX = { projectDir: "/srv/stackport/7-app", projectId: 7 };
 
@@ -201,9 +201,9 @@ test("clean-up for a deleted project touches only that project's network", async
 });
 
 test("a TCP proxy from 1.3.0 is not on the shared network, so it is recreated", () => {
-  assert.equal(tcpProxyIsOnSharedNetwork({ "stackport-ingress-7": {} }), false);
-  assert.equal(tcpProxyIsOnSharedNetwork({ "stackport-proxy": {} }), true);
-  assert.equal(tcpProxyIsOnSharedNetwork(undefined), false);
+  assert.equal(tcpProxyIsOnNetwork({ "stackport-ingress-7": {} }), false);
+  assert.equal(tcpProxyIsOnNetwork({ "stackport-proxy": {} }), true);
+  assert.equal(tcpProxyIsOnNetwork(undefined), false);
 });
 
 // ---- policy

@@ -10,6 +10,14 @@ import { auditLog } from "../../shared/logger";
 import { listNetworkGroups } from "../../modules/projects/networkGroups";
 import { assignNetworkGroup, NetworkGroupError, validateNetworkGroupAssignment } from "../../modules/deployments/networkGroupAssignment";
 import { groupAlias } from "../../shared/networkGroups";
+import { ensureDomainAvailable, listProjectDomains, ProjectDomainError } from "../../modules/ingress/domains";
+import { realRenameDeps } from "../../modules/ingress/hostnameOps";
+import { addManagedProjectDomain, hostnameFor, listManagedDomains, renameProjectHostname, validateLabel, type Canonical } from "../../modules/ingress/managedDomains";
+import { GithubAppError } from "../../modules/github/app";
+import type { AppRepository } from "../../modules/github/binding";
+import { createAppProject, IMPORT_WARNING, projectForRepository, uniqueProjectName } from "../../modules/github/importer";
+import { getInstallation, listRepositories } from "../../modules/github/store";
+import { parseProjectGroupName } from "../../modules/projects/operations";
 
 /**
  * Write tools for the HTTP MCP endpoint (S5): deploy, roll back, restart and stop. A token
@@ -20,7 +28,7 @@ import { groupAlias } from "../../shared/networkGroups";
  * act on a first call. Every call is audited, with the token as the actor.
  */
 
-export type WriteKind = "deploy" | "rollback" | "restart" | "stop" | "network_group";
+export type WriteKind = "deploy" | "rollback" | "restart" | "stop" | "network_group" | "hostname" | "repository";
 
 export interface ProjectLike { id: number; name: string; groupName: string | null; lastStatus: string; autoDeployBranch: string | null }
 
@@ -34,7 +42,7 @@ export interface WriteDeps {
   now(): number;
 }
 
-export interface WriteParams { branch?: string; deploymentId?: number; networkGroup?: string | null; networkServices?: string[] }
+export interface WriteParams { branch?: string; deploymentId?: number; networkGroup?: string | null; networkServices?: string[]; hostname?: string }
 
 export const CONFIRMATION_TTL_MS = 5 * 60_000;
 
@@ -71,6 +79,7 @@ function canonical(params: WriteParams): string {
   return JSON.stringify({
     branch: params.branch ?? null, deploymentId: params.deploymentId ?? null,
     networkGroup: params.networkGroup ?? null, networkServices: params.networkServices ? [...params.networkServices].sort() : null,
+    hostname: params.hostname ?? null,
   });
 }
 
@@ -276,15 +285,230 @@ function registerNetworkGroupTool(server: McpServer, token: ApiToken, deps: Writ
   );
 }
 
+// ---- hostname (domain manager)
+
+export interface HostnamePlan {
+  projectId: number;
+  /** The hostname being changed, or null when a new one is added. */
+  replaces: { id: number; domain: string; useSsl: boolean } | null;
+  managedDomainId: number;
+  label: string;
+  canonical: Canonical;
+  newHostname: string;
+}
+
+export interface HostnameInput { hostname?: string; managedDomain: string; label: string; canonical?: Canonical }
+
+/** What the hostname tool needs from the rest of Stackport (replaceable in tests). */
+export interface HostnameDeps {
+  /** Validates the request and says what it would do. Throws ProjectDomainError with a reason. */
+  preview(projectId: number, input: HostnameInput): HostnamePlan;
+  /** Runs it in the project's action slot, in the background; null when another action holds the slot. */
+  start(plan: HostnamePlan, actor: string): { id: string } | null;
+}
+
+export function defaultHostnameDeps(): HostnameDeps {
+  return {
+    preview: (projectId, input) => {
+      const base = listManagedDomains().find((d) => d.name === input.managedDomain.trim().toLowerCase());
+      if (!base) throw new ProjectDomainError(400, `"${input.managedDomain}" is not a managed domain. Managed domains: ${listManagedDomains().map((d) => d.name).join(", ") || "none"}.`);
+      const label = validateLabel(input.label, base.name);
+      const canonical: Canonical = input.canonical === "www" ? "www" : "apex";
+      const newHostname = label === "@" && canonical === "www" ? `www.${base.name}` : hostnameFor(label, base.name);
+      const existing = listProjectDomains(projectId);
+      let replaces: HostnamePlan["replaces"] = null;
+      if (input.hostname !== undefined) {
+        const found = existing.find((d) => d.domain.toLowerCase() === input.hostname?.trim().toLowerCase());
+        if (!found) throw new ProjectDomainError(404, `This project has no hostname "${input.hostname}". Its hostnames: ${existing.map((d) => d.domain).join(", ") || "none"}.`);
+        replaces = { id: found.id, domain: found.domain, useSsl: found.useSsl };
+      } else if (existing.length === 1) {
+        replaces = { id: existing[0].id, domain: existing[0].domain, useSsl: existing[0].useSsl };
+      } else if (existing.length > 1) {
+        throw new ProjectDomainError(400, `This project has several hostnames (${existing.map((d) => d.domain).join(", ")}). Say which one to change with "hostname".`);
+      }
+      if (replaces && replaces.domain.toLowerCase() === newHostname.toLowerCase()) throw new ProjectDomainError(400, "That is already this hostname.");
+      ensureDomainAvailable(newHostname);
+      if (label === "@" && canonical === "www") ensureDomainAvailable(base.name);
+      return { projectId, replaces, managedDomainId: base.id, label, canonical, newHostname };
+    },
+    start: (plan, actor) => {
+      const kind = plan.replaces ? "domain-rename" : "domain-add";
+      return actionRegistry.tryStart(projectRepoKey(plan.projectId), kind, { projectId: plan.projectId, triggeredBy: MCP_TRIGGER }, async () => {
+        const deps = realRenameDeps(plan.projectId);
+        if (plan.replaces) {
+          const result = await renameProjectHostname(plan.projectId, plan.replaces.id, { managedDomainId: plan.managedDomainId, label: plan.label, canonical: plan.canonical }, deps);
+          auditLog(actor, "mcp.write.hostname.finished", String(plan.projectId), result.ok ? "ok" : "fail", { hostname: plan.newHostname, reason: result.reason });
+          return { ok: result.ok, output: [...result.steps, ...(result.reason ? [result.reason] : [])].join("\n") };
+        }
+        addManagedProjectDomain(plan.projectId, plan.managedDomainId, plan.label, "", null, plan.canonical);
+        const applied = await deps.applyNginx();
+        auditLog(actor, "mcp.write.hostname.finished", String(plan.projectId), applied.ok ? "ok" : "fail", { hostname: plan.newHostname });
+        return { ok: applied.ok, output: `Added ${plan.newHostname} (not routed yet: pick a service).` };
+      });
+    },
+  };
+}
+
+function registerHostnameTool(server: McpServer, token: ApiToken, deps: WriteDeps, hosts: HostnameDeps, store: ConfirmationStore): void {
+  const actor = `token:${token.name}#${token.id}`;
+  const tool = "stackport_set_project_hostname";
+  server.registerTool(
+    tool,
+    {
+      title: "Set project hostname (destructive)",
+      description: "DESTRUCTIVE: changes where traffic for this project goes. Renames one of the project's hostnames (or adds one when it has none) to a label on a managed domain, or to the bare domain with label \"@\". The new hostname is added, routed and, if the old one had SSL, given a certificate first; then the old hostname stops answering at once, with no redirect, so anyone using it gets an error. For the bare domain, canonical chooses which name is served: \"apex\" (www redirects to it) or \"www\" (the bare domain redirects to www). Adding or removing a managed domain is not available here. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to run it.",
+      inputSchema: {
+        projectId: z.number().int().positive(),
+        managedDomain: z.string().min(3).max(253).describe("One of the managed domains, as listed by stackport_list_managed_domains."),
+        label: z.string().min(1).max(63).describe("The label in front of the managed domain, or @ for the bare domain."),
+        hostname: z.string().min(3).max(253).optional().describe("The hostname to change. Optional when the project has exactly one."),
+        canonical: z.enum(["apex", "www"]).optional().describe("With label @: which name is served, the other redirects to it. Default apex."),
+        confirmationId: z.string().uuid().optional(),
+      },
+      annotations: DESTRUCTIVE,
+    },
+    async (input: { projectId: number; managedDomain: string; label: string; hostname?: string; canonical?: Canonical; confirmationId?: string }) => {
+      const { projectId, confirmationId } = input;
+      const refuse = (reason: string, message: string): CallToolResult => {
+        auditLog(actor, "mcp.write", tool, "fail", { tokenId: token.id, projectId, reason });
+        return text(message, true);
+      };
+      const project = deps.getProject(projectId);
+      if (!project) return refuse("not-found", `No project with id ${projectId}.`);
+      if (!mayActOn(token, project)) return refuse("outside-group", `This token may only act on projects in the group "${token.projectGroup}". Project ${projectId} is not in it.`);
+
+      let plan: HostnamePlan;
+      try { plan = hosts.preview(projectId, { hostname: input.hostname, managedDomain: input.managedDomain, label: input.label, canonical: input.canonical }); }
+      catch (err) {
+        if (err instanceof ProjectDomainError) return refuse("invalid", err.message);
+        throw err;
+      }
+      // The confirmation is for exactly this change: the hostname it replaces and the one it creates.
+      const params: WriteParams = { hostname: `${plan.replaces?.domain ?? "-"}>${plan.newHostname}` };
+      if (!confirmationId) {
+        const redirect = plan.label === "@" ? ` ${plan.canonical === "www" ? `The bare domain redirects to ${plan.newHostname}.` : "www redirects to it."}` : "";
+        const summary = plan.replaces
+          ? `Rename the hostname ${plan.replaces.domain} of "${project.name}" to ${plan.newHostname}. The new hostname is added and routed first${plan.replaces.useSsl ? ", and a certificate is issued for it" : ""}; then ${plan.replaces.domain} stops answering at once, with no redirect.${redirect}`
+          : `Add the hostname ${plan.newHostname} to "${project.name}". It is not routed to a service yet.${redirect}`;
+        const { id, expiresAt } = store.issue(token.id, "hostname", projectId, params);
+        auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, projectId, from: plan.replaces?.domain ?? null, to: plan.newHostname });
+        return data({ requiresConfirmation: true, summary, confirmationId: id, expiresAt: new Date(expiresAt).toISOString(), next: `Nothing has changed. To proceed, call ${tool} again with the same arguments and this confirmationId.` });
+      }
+      if (!store.consume(confirmationId, token.id, "hostname", projectId, params)) {
+        return refuse("bad-confirmation", "That confirmationId is unknown, expired, already used, or was issued for different arguments. Call the tool without it to get a new one.");
+      }
+      const started = hosts.start(plan, actor);
+      if (!started) return refuse("busy", `Another action is already running for project ${projectId}. Try again when it has finished.`);
+      auditLog(actor, "mcp.write", tool, "ok", { tokenId: token.id, projectId, actionId: started.id, to: plan.newHostname });
+      return data({ started: true, actionId: started.id, projectId, newHostname: plan.newHostname, note: "The change runs in the background; check stackport_get_project for its state." });
+    },
+  );
+}
+
+// ---- create a project from a GitHub App repository
+
+export interface RepositoryPlan { repository: AppRepository; name: string; groupName: string | null }
+
+export interface RepositoryInput { repository: string; name?: string; group?: string }
+
+/** What the repository tool needs from the rest of Stackport (replaceable in tests). */
+export interface RepositoryDeps {
+  /** Validates the request against what the App can use. Throws GithubAppError with a reason. */
+  preview(input: RepositoryInput, token: Pick<ApiToken, "projectGroup">): RepositoryPlan;
+  create(plan: RepositoryPlan): { projectId: number; name: string; hostname: string | null };
+}
+
+export function defaultRepositoryDeps(): RepositoryDeps {
+  return {
+    preview: (input, token) => {
+      const wanted = input.repository.trim().toLowerCase();
+      const match = listRepositories().find((r) => r.fullName.toLowerCase() === wanted && getInstallation(r.installationId)?.status === "linked");
+      if (!match) {
+        const some = listRepositories().slice(0, 15).map((r) => r.fullName).join(", ");
+        throw new GithubAppError(`"${input.repository}" is not a repository the GitHub App can use.${some ? ` Some that it can: ${some}.` : " No account is connected."}`, 404);
+      }
+      const existing = projectForRepository(match.repositoryId);
+      if (existing) throw new GithubAppError(`${match.fullName} already deploys as the project "${existing.name}" (id ${existing.id}).`, 409);
+      let groupName: string | null = input.group?.trim() || null;
+      if (token.projectGroup !== null) {
+        // A token limited to a group creates projects inside it, so the project stays within what the token may act on.
+        if (groupName !== null && groupName !== token.projectGroup) throw new GithubAppError(`This token may only create projects in the group "${token.projectGroup}".`, 403);
+        groupName = token.projectGroup;
+      }
+      try { parseProjectGroupName(groupName); } catch (err) { throw new GithubAppError(err instanceof Error ? err.message : "Invalid group.", 400); }
+      return { repository: { installationId: match.installationId, repositoryId: match.repositoryId, fullName: match.fullName, defaultBranch: match.defaultBranch }, name: uniqueProjectName(input.name?.trim() || match.fullName.split("/")[1] || match.fullName), groupName };
+    },
+    create: (plan) => {
+      const project = createAppProject(plan.repository, { name: plan.name, groupName: plan.groupName });
+      const host = listProjectDomains(project.id)[0];
+      return { projectId: project.id, name: project.name, hostname: host?.domain ?? null };
+    },
+  };
+}
+
+function registerRepositoryTool(server: McpServer, token: ApiToken, repos: RepositoryDeps, store: ConfirmationStore): void {
+  const actor = `token:${token.name}#${token.id}`;
+  const tool = "stackport_create_project_from_repository";
+  server.registerTool(
+    tool,
+    {
+      title: "Create project from a GitHub repository (destructive)",
+      description: "DESTRUCTIVE: creates a project that pulls code from a repository the GitHub App can use and, once someone deploys it, runs that code on this host. Anyone who can push to the repository controls what runs. The project is bound to the repository, on its default branch, and reserves a hostname when a default domain is set; nothing is cloned or deployed by this call. Use stackport_list_github_repositories to see what is available. A token limited to a project group creates the project inside that group. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to create it.",
+      inputSchema: {
+        repository: z.string().min(3).max(200).describe("owner/name, as listed by stackport_list_github_repositories."),
+        name: z.string().min(1).max(100).optional().describe("The project's name. Default: the repository's name."),
+        group: z.string().max(100).optional().describe("The project group. A token limited to a group always uses its own."),
+        confirmationId: z.string().uuid().optional(),
+      },
+      annotations: DESTRUCTIVE,
+    },
+    async (input: { repository: string; name?: string; group?: string; confirmationId?: string }) => {
+      const refuse = (reason: string, message: string): CallToolResult => {
+        auditLog(actor, "mcp.write", tool, "fail", { tokenId: token.id, repository: input.repository, reason });
+        return text(message, true);
+      };
+      let plan: RepositoryPlan;
+      try { plan = repos.preview({ repository: input.repository, name: input.name, group: input.group }, token); }
+      catch (err) {
+        if (err instanceof GithubAppError) return refuse("invalid", err.message);
+        throw err;
+      }
+      // The confirmation is for exactly this repository, name and group.
+      const params: WriteParams = { hostname: `${plan.repository.repositoryId}|${plan.name}|${plan.groupName ?? ""}` };
+      if (!input.confirmationId) {
+        const { id, expiresAt } = store.issue(token.id, "repository", plan.repository.repositoryId, params);
+        auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, repository: plan.repository.fullName });
+        return data({
+          requiresConfirmation: true,
+          summary: `Create the project "${plan.name}"${plan.groupName ? ` in the group "${plan.groupName}"` : ""} from ${plan.repository.fullName}${plan.repository.defaultBranch ? ` (branch ${plan.repository.defaultBranch})` : ""}. Nothing is cloned or deployed yet. ${IMPORT_WARNING}`,
+          confirmationId: id,
+          expiresAt: new Date(expiresAt).toISOString(),
+          next: `Nothing has been created. To proceed, call ${tool} again with the same arguments and this confirmationId.`,
+        });
+      }
+      if (!store.consume(input.confirmationId, token.id, "repository", plan.repository.repositoryId, params)) {
+        return refuse("bad-confirmation", "That confirmationId is unknown, expired, already used, or was issued for different arguments. Call the tool without it to get a new one.");
+      }
+      const created = repos.create(plan);
+      auditLog(actor, "mcp.write", tool, "ok", { tokenId: token.id, repository: plan.repository.fullName, projectId: created.projectId });
+      return data({ created: true, projectId: created.projectId, name: created.name, hostname: created.hostname, note: "The project exists but has not been deployed. Deploy it with stackport_deploy_project." });
+    },
+  );
+}
+
 export function registerWriteTools(
   server: McpServer,
   token: ApiToken,
   deps: WriteDeps = defaultWriteDeps(),
   store: ConfirmationStore = confirmations,
   net: NetworkDeps = defaultNetworkDeps(),
+  hosts: HostnameDeps = defaultHostnameDeps(),
+  repos: RepositoryDeps = defaultRepositoryDeps(),
 ): void {
   const actor = `token:${token.name}#${token.id}`;
   registerNetworkGroupTool(server, token, deps, net, store);
+  registerHostnameTool(server, token, deps, hosts, store);
+  registerRepositoryTool(server, token, repos, store);
 
   for (const spec of SPECS) {
     server.registerTool(

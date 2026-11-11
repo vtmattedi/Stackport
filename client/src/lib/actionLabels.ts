@@ -12,6 +12,7 @@ export const ACTION_LABEL: Record<string, string> = {
   "stop-purge": "Stop and delete data",
   "redeploy-service": "Service redeploy",
   "drop-volumes": "Drop volumes",
+  network: "Network change",
   "ssl-issue": "SSL issuance",
   "nginx-apply": "Nginx apply",
   "nginx-app": "Stackport domain update",

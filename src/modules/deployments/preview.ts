@@ -1,5 +1,5 @@
 import type { Project } from "../projects/types";
-import { githubApiGet, tokenForProject } from "../automation/githubPolling";
+import { apiTokenForProject, githubApiGet } from "../automation/githubPolling";
 import { getActiveDeployment, resolveRollbackTarget } from "./history";
 import { diffLines, type LineDiff } from "../../shared/textDiff";
 
@@ -88,7 +88,7 @@ function refPath(ref: string): string {
 async function compare(deps: PreviewDeps, project: Project, base: string, head: string): Promise<GitHubCompare> {
   const body = await deps.get(
     `/repos/${project.githubRepo}/compare/${refPath(base)}...${refPath(head)}`,
-    tokenForProject(project),
+    await apiTokenForProject(project),
   ) as GitHubCompare;
   if (!body || !Array.isArray(body.commits)) throw new Error("Unexpected response from GitHub");
   return body;
@@ -112,7 +112,7 @@ interface GitHubContent { type?: string; encoding?: string; content?: string }
 async function fetchFileAt(deps: PreviewDeps, project: Project, file: string, ref: string): Promise<string> {
   const body = await deps.get(
     `/repos/${project.githubRepo}/contents/${refPath(file)}?ref=${encodeURIComponent(ref)}`,
-    tokenForProject(project),
+    await apiTokenForProject(project),
   ) as GitHubContent;
   if (body?.type !== "file" || body.encoding !== "base64" || typeof body.content !== "string") {
     throw new Error(`${file} isn't a regular file on ${ref}`);

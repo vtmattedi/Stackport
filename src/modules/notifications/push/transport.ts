@@ -50,6 +50,7 @@ export function getPushConfig(): PushConfig {
     supported: true,
     enabled: !!row.enabled,
     subject: row.subject,
+    // eslint-disable-next-line security/detect-object-injection -- the key is an event type from the module's fixed list.
     events: Object.fromEntries(PUSH_EVENT_TYPES.map((type) => [type, saved[type] ?? type !== "rollback_recovered"])) as Record<NotificationEventType, boolean>,
     vapidPublicKey: row.vapid_public_key,
   };

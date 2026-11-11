@@ -5,10 +5,14 @@ import { getAppVersion } from "../../modules/maintenance/version";
 import { getContainerListCached } from "../../integrations/docker/statusCache";
 import { listProjectDeployments } from "../../modules/deployments/history";
 import { listProjectDomains } from "../../modules/ingress/domains";
+import { listManagedDomains } from "../../modules/ingress/managedDomains";
+import { listInstallations, listRepositories as listGithubAppRepositories } from "../../modules/github/store";
+import { projectForRepository } from "../../modules/github/importer";
 import { expectedComposeProjectName } from "../../modules/projects/workspace";
 import { listNetworkGroups } from "../../modules/projects/networkGroups";
 import { getNetworkGroupView, type NetworkGroupView } from "../../modules/deployments/networkGroupAssignment";
 import { groupAlias } from "../../shared/networkGroups";
+import { checkProjectIngress, type IngressStatus } from "../../modules/ingress/health";
 
 /**
  * What the read-only MCP tools return. Every field is picked by name here, never by
@@ -177,6 +181,53 @@ export function listNetworkGroupsView(): NetworkGroupsView {
 export async function getProjectNetworkView(id: number): Promise<(NetworkGroupView & { projectId: number }) | null> {
   if (!loadProject(id)) return null;
   return { projectId: id, ...(await getNetworkGroupView(id)) };
+}
+
+export interface IngressHealthView {
+  projectId: number;
+  status: IngressStatus;
+  summary: string;
+  /** The project has a network of its own instead of the shared ingress network. */
+  isolated: boolean;
+  nginx: { running: boolean; onSharedNetwork: boolean };
+  routes: { domain: string; service: string; port: number; reachable: boolean; failure: string | null }[];
+}
+
+/** Whether nginx can reach each routed service of a project, picked field by field. */
+export async function getProjectIngressHealthView(id: number): Promise<IngressHealthView | null> {
+  if (!loadProject(id)) return null;
+  const health = await checkProjectIngress(id);
+  return {
+    projectId: id,
+    status: health.status,
+    summary: health.summary,
+    isolated: health.isolated,
+    nginx: { running: health.nginx.running, onSharedNetwork: health.nginx.onSharedNetwork },
+    routes: health.routes.map((r) => ({ domain: r.domain, service: r.service, port: r.port, reachable: r.reachable, failure: r.failure })),
+  };
+}
+
+export interface ManagedDomainsView {
+  domains: { name: string; isDefault: boolean; hostnameCount: number }[];
+}
+
+/** The base domains Stackport manages, picked field by field. */
+export function listManagedDomainsView(): ManagedDomainsView {
+  return { domains: listManagedDomains().map((d) => ({ name: d.name, isDefault: d.isDefault, hostnameCount: d.hostnameCount })) };
+}
+
+export interface GithubRepositoriesView {
+  repositories: { fullName: string; account: string; private: boolean; archived: boolean; defaultBranch: string | null; project: { id: number; name: string } | null }[];
+}
+
+/** The repositories the GitHub App can use, and which are projects already, picked field by field. */
+export function listGithubRepositoriesView(): GithubRepositoriesView {
+  const accounts = new Map(listInstallations().map((i) => [i.installationId, i]));
+  return {
+    repositories: listGithubAppRepositories()
+      .filter((r) => accounts.get(r.installationId)?.status === "linked")
+      .map((r) => ({ fullName: r.fullName, account: accounts.get(r.installationId)?.accountLogin ?? "", private: r.isPrivate, archived: r.archived, defaultBranch: r.defaultBranch, project: projectForRepository(r.repositoryId) })),
+  };
 }
 
 export interface StatusView {

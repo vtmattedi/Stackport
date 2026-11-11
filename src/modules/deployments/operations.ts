@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- paths are inside a project's checkout: its directory plus a Compose file name picked from the files found there; any path a project supplies goes through resolveContainedPath first. */
 import { listProjectEnvFiles, normalizeEnvRelativePath, type ProjectEnvFile } from "../projects/envFiles";
 export { listProjectEnvFiles, createProjectEnvFile, updateProjectEnvFile, deleteProjectEnvFile, normalizeEnvRelativePath, parseEnvVariables, type EnvVariable, type ProjectEnvFile, type ProjectEnvFileRow } from "../projects/envFiles";
 import { deployRoot, projectRepoDir, slugify, expectedComposeProjectName } from "../projects/workspace";
@@ -17,15 +18,20 @@ import { emitProjectDeploy, type ProjectDeployEvent } from "../../application/re
 import { actionRegistry, projectRepoKey } from "../actions/registry";
 import { loadYamlDoc } from "./compose/yaml";
 import { checkComposeFileReferences } from "./compose/references";
-import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
+import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, validateResolvedComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
-import { ensureSharedIngressNetwork } from "../ingress/networks";
+import { dockerRun, ensureSharedIngressNetwork } from "../ingress/networks";
+import { isIngressIsolated } from "../ingress/isolationState";
+import { connectNginx, defaultIsolationDeps, ensureIsolatedNetwork, reconcileIsolatedProject } from "../ingress/isolation";
 import { dockerCli, pruneGroupNetworks, syncGroupNetwork } from "./compose/groupNetworks";
 import { seedManagedDirectory } from "./compose/seedVolumes";
 import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networkGroups";
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
 import { listRoutedServiceNames } from "../ingress/domains";
+import { findUnroutedManagedHostname, routeReservedHostname } from "../ingress/managedDomains";
+import { beginDeployReport, finishDeployReport } from "../github/reporting";
+import { writeNginxConfig } from "../ingress/nginx/configWriter";
 import { ensureBuildCapacity } from "../maintenance/storage/operations";
 import { getActiveDeployment, markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./history";
 import { healthCheckUrl, probeHealth, type HealthProbe } from "./health";
@@ -97,11 +103,11 @@ export async function reconcileIngressNetworks(): Promise<number[]> {
     catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       failed.push(id);
-      console.error(`[ingress] project ${id} could not be put on the ingress network: ${reason}`);
       logger.warn({ projectId: id, reason }, "ingress.reconcile.failed");
     }
   }
-  console.log(`[ingress] ${rows.length - failed.length} of ${rows.length} projects checked, ${failed.length} failed`);
+  logger.info({ checked: rows.length, failed: failed.length }, "ingress.reconcile.done");
+  if (failed.length) logger.warn({ projectIds: failed }, `ingress: ${failed.length} of ${rows.length} projects could not be put on the ingress network`);
   return failed;
 }
 
@@ -142,6 +148,15 @@ export async function ensureProjectProxyNetwork(projectId: number): Promise<void
   if (!project?.composeFile) return;
   const services = listRoutedServiceNames(projectId);
   if (!services.length) return;
+  if (isIngressIsolated(projectId)) {
+    // An isolated project (P7) has a network of its own: make sure it exists, nginx is on it and the services are.
+    const isolatedResult = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services, projectId, true);
+    if (!isolatedResult.ok) throw new Error(isolatedResult.message);
+    const reconciled = await reconcileIsolatedProject(projectId, await defaultIsolationDeps());
+    if (!reconciled.ok) throw new Error(reconciled.reason);
+    invalidateContainers();
+    return;
+  }
   await ensureSharedIngressNetwork();
   const result = await applyStackportProxyNetwork(projectRepoDir(project), project.composeFile, services, projectId);
   if (!result.ok) throw new Error(result.message);
@@ -197,9 +212,33 @@ export async function getProjectComposeEnvFiles(projectId: number, selectedFile?
 /** The selected Compose file in the checkout, checked against the policy a deploy
  *  enforces, so violations show before anyone deploys. A file that doesn't parse has
  *  none here: the deploy leaves that to docker compose too. */
-export async function getProjectComposePolicy(projectId: number): Promise<{ composeFile: string; violations: PolicyViolation[] }> {
+export interface ProjectComposePolicy {
+  composeFile: string;
+  /** Problems in the file as written (and the files it points at). Every project is checked for these. */
+  violations: PolicyViolation[];
+  /** What Compose will actually run, which is where S1's allowlist rules apply (G3). */
+  resolved: {
+    /** False when the file could not be resolved, so nothing below was checked. */
+    checked: boolean;
+    /** Why it could not be resolved. */
+    reason?: string;
+    /** Problems found only after resolving; the ones already in `violations` are left out. */
+    violations: PolicyViolation[];
+  };
+  /** Whether a deploy rejects the resolved problems (true) or only warns about them (false). */
+  enforced: boolean;
+}
+
+export async function getProjectComposePolicy(projectId: number): Promise<ProjectComposePolicy> {
   const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
-  return { composeFile, violations: [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)] };
+  const violations = [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)];
+  const enforced = isComposePolicyEnforced(projectId);
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+  if (!resolution.ok) return { composeFile, violations, resolved: { checked: false, reason: resolution.reason, violations: [] }, enforced };
+  const fingerprint = (v: PolicyViolation): string => JSON.stringify([v.section ?? "services", v.service, v.key, v.problem]);
+  const known = new Set(violations.map(fingerprint));
+  const resolvedOnly = validateResolvedComposePolicy(resolution.doc, { projectDir: repoPath, projectId }).violations.filter((v) => !known.has(fingerprint(v)));
+  return { composeFile, violations, resolved: { checked: true, violations: resolvedOnly }, enforced };
 }
 
 export interface ComposeVariableStatus extends ComposeVariableRef {
@@ -221,7 +260,7 @@ export async function getProjectComposeVariables(projectId: number, selectedFile
   );
   const repoEnvPath = resolveContainedPath(repoPath, ".env");
   // A path resolveContainedPath kept inside the checkout.
-  // eslint-disable-next-line security/detect-non-literal-fs-filename
+   
   const repoText = repoEnvPath ? await fs.readFile(repoEnvPath, "utf8").catch(() => "") : "";
   const repository = dotenvKeys(repoText);
   return refs.map((ref) => ({
@@ -251,6 +290,7 @@ export function buildDockerEnv(source: NodeJS.ProcessEnv, defaultConfigDir: stri
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
     // Windows env names are case-insensitive ("Path"); keep the original spelling.
+    // eslint-disable-next-line security/detect-object-injection -- the keys are environment variable names that pass an allowlist, or names read from the same object.
     if (value !== undefined && DOCKER_ENV_ALLOWLIST.has(key.toUpperCase())) env[key] = value;
   }
   env["DOCKER_CONFIG"] ??= defaultConfigDir;
@@ -271,6 +311,7 @@ async function warnUnresolvedStackportVariables(projectId: number, action: Proje
       refs,
       new Set(refs.filter((ref) => ref.definedIn !== null).map((ref) => ref.name)),
       process.env,
+      // eslint-disable-next-line security/detect-object-injection -- the keys are environment variable names that pass an allowlist, or names read from the same object.
       (name) => passed[name] !== undefined,
     );
     if (missing.length) {
@@ -520,14 +561,21 @@ async function runCompose(
     // needed re-substitution before every invocation.
     const routedServices = listRoutedServiceNames(projectId);
     if (routedServices.length > 0) {
+      const isolated = isIngressIsolated(projectId);
       try {
-        await ensureSharedIngressNetwork();
+        if (isolated) {
+          // The network is declared external in the file, so it must exist before `up`, and nginx must be on it.
+          await ensureIsolatedNetwork(projectId, dockerRun);
+          await connectNginx(projectId, dockerRun);
+        } else {
+          await ensureSharedIngressNetwork();
+        }
       } catch (err) {
         const message = `Could not prepare the ingress network: ${err instanceof Error ? err.message : String(err)}\n`;
         emit(projectId, action, "stderr", message);
         return { ok: false, output: message, stdout: "", command: "ingress network" };
       }
-      const network = await applyStackportProxyNetwork(repoPath, composeFile, routedServices, projectId);
+      const network = await applyStackportProxyNetwork(repoPath, composeFile, routedServices, projectId, isolated);
       if (!network.ok) {
         emit(projectId, action, "stderr", network.message);
         return { ok: false, output: network.message, stdout: "", command: "ingress network attachment" };
@@ -596,8 +644,24 @@ async function runCompose(
     try { await applyProjectNetworkGroup(projectId); }
     catch (err) { emit(projectId, action, "stderr", `Warning — could not join the network group: ${err instanceof Error ? err.message : String(err)}
 `); }
+    // A hostname reserved at creation has no route until the Compose file says where it goes.
+    try { await routeReservedHostnameAfterUp(projectId); }
+    catch (err) { emit(projectId, action, "stderr", `Warning — could not route the reserved hostname: ${err instanceof Error ? err.message : String(err)}
+`); }
   }
   return result;
+}
+
+/** Routes the hostname reserved for a project (domain manager) once the stack is up and its Compose file declares exactly one
+ *  routable port. With several ports it is left for a person: guessing is how traffic reaches the wrong service. */
+async function routeReservedHostnameAfterUp(projectId: number): Promise<void> {
+  if (!findUnroutedManagedHostname(projectId)) return; // the cheap check first: most projects have nothing to route
+  const targets = await getProjectIngressTargets(projectId).catch(() => []);
+  const routed = routeReservedHostname(projectId, targets);
+  if (!routed) return;
+  await ensureProjectProxyNetwork(projectId);
+  await writeNginxConfig();
+  logger.info({ projectId, hostname: routed.domain, service: routed.service, port: routed.containerPort }, "domains: reserved hostname routed");
 }
 
 const COMPOSE_FILE_EXT_RE = /\.(ya?ml)$/i;
@@ -880,7 +944,16 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   }
 
   // The credential goes to Git in its environment, scoped to github.com, never in its arguments (see shared/gitAuth.ts).
-  const authHeader = gitAuthHeader(project);
+  let authHeader: string | null;
+  try {
+    authHeader = project.githubAuthMode === "app"
+      ? basicAuthHeader("x-access-token", await (await import("../github/binding")).appTokenForProject(project.id))
+      : gitAuthHeader(project);
+  } catch (err) {
+    // An App project never falls back to a token: say what is wrong with the App.
+    return [{ ok: false, output: `${err instanceof Error ? err.message : String(err)}
+`, stdout: "", command: "github app" }];
+  }
   if (authHeader) {
     const problem = await gitCredentialProblem();
     if (problem) return [{ ok: false, output: `${problem}\n`, stdout: "", command: "git" }];
@@ -1173,6 +1246,8 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
     : action === "recreate"
       ? ["up", "-d", ...(options.build === false ? ["--no-build"] : ["--build"]), "--force-recreate"]
       : ["up", "-d", "--build"];
+  // Module M1: tell GitHub a deploy of this commit has started (never holds the deploy up, never fails it).
+  const deployReport = composeArgs[0] === "up" ? await beginDeployReport(project, commitSha) : null;
   const compose = await runCompose(projectId, action, repoPath, composeFile, composeArgs, MAX_BUILD_TIME_MS );
   output.push(compose.output);
   let healthy = true;
@@ -1195,6 +1270,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
     }
   }
   const ok = compose.ok && healthy;
+  await finishDeployReport(deployReport, { ok, healthy });
   emit(projectId, action, "status", `${action} ${ok ? "completed" : "failed"}\n`, { ok, done: true });
 
   return {

@@ -52,7 +52,7 @@ function clampHours(value: unknown): number {
 }
 
 /** Latest sample, bucketed history, and the host facts the UI shows next to them. */
-export async function getHardwareSnapshot(hours = 24) {
+async function buildHardwareSnapshot(hours = 24) {
   const db = getDatabase();
   const clamped = clampHours(hours);
 
@@ -97,6 +97,12 @@ export async function getHardwareSnapshot(hours = 24) {
       diskUsedPct: h.disk_avg,
     })),
   };
+}
+
+export type HardwareSnapshot = Awaited<ReturnType<typeof buildHardwareSnapshot>>;
+
+export function getHardwareSnapshot(hours = 24): Promise<HardwareSnapshot> {
+  return buildHardwareSnapshot(hours);
 }
 
 

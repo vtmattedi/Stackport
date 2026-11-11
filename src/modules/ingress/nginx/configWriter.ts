@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- paths come from Stackport's own configuration (environment and data directories), never from request input. */
 import { getNginxAppConfig, type NginxAppConfig } from "./appConfig";
 export { getNginxAppConfig, setNginxAppConfig, type NginxAppConfig } from "./appConfig";
 export { DOMAIN_RE } from "../domainName";
@@ -9,7 +10,8 @@ import { getDatabase } from "../../../config/database";
 import { rowToProject, type Project, type ProjectRow } from "../../projects/types";
 import { listAllRoutableProjectDomains, type ProjectDomain } from "../domains";
 import { invalidateNginxActiveStatus } from "./statusCache";
-import { ingressAlias, NGINX_CONTAINER } from "../../../shared/ingressNames";
+import { NGINX_CONTAINER, upstreamAlias } from "../../../shared/ingressNames";
+import { isIngressIsolated } from "../isolationState";
 import { SELF_SIGNED_CERT_PATH, SELF_SIGNED_KEY_PATH } from "./selfSignedCert";
 
 const TEMPLATE_DIR = "templates";
@@ -209,6 +211,8 @@ interface NginxTarget {
   containerPort: number;
   useSsl: boolean;
   includeWwwRedirect: boolean;
+  /** This is a `www.` hostname and the bare domain redirects to it (domain manager: www is the canonical name). */
+  redirectApex?: boolean;
   /** Raw directives appended inside the proxying `location /` block — e.g. client_max_body_size, proxy_read_timeout. */
   extraConfig: string;
   /** Raw server-level blocks (e.g. additional `location` blocks) appended after `location /`, HTTPS server only. Supports `{{PORT}}`, substituted with containerPort. */
@@ -322,9 +326,10 @@ function renderExtraBlocks(target: NginxTarget): string {
   return indentExtraBlocks(substituted);
 }
 
-/** The host nginx proxies to for a target. */
+/** The host nginx proxies to for a target: the alias on the shared network, or on the project's own network once
+ *  the project is isolated (P7). */
 function upstreamHost(target: NginxTarget): string {
-  return target.projectId === undefined ? target.service : ingressAlias(target.projectId, target.service);
+  return target.projectId === undefined ? target.service : upstreamAlias(target.projectId, target.service, isIngressIsolated(target.projectId));
 }
 
 function locationBlock(target: NginxTarget): string {
@@ -384,7 +389,10 @@ ${body}
 }`;
 }
 
+/** The other name that redirects to this hostname: `www.` in front of a bare domain, or the bare domain behind a canonical
+ *  `www.` hostname. Both use the same redirect blocks and the same certificate, which has to list both names. */
 function wwwDomain(target: NginxTarget): string | null {
+  if (target.redirectApex && target.domain.startsWith("www.")) return target.domain.slice(4);
   if (!target.includeWwwRedirect || target.domain.startsWith("www.")) return null;
   return `www.${target.domain}`;
 }
@@ -496,7 +504,7 @@ function wwwHttpsRedirectBlock(target: NginxTarget): string {
 async function renderDomainBlock(template: string, target: NginxTarget): Promise<string> {
   const domain = target.domain;
   const hasCertificate = target.useSsl && domain ? await certificateExists(domain) : false;
-  const wwwRedirect = target.includeWwwRedirect ? wwwDomain(target) ?? "" : "";
+  const wwwRedirect = wwwDomain(target) ?? "";
   const upstreamUrl = `http://${upstreamHost(target)}:${target.containerPort}`;
   const values: Record<string, string> = {
     name: target.name,
@@ -516,6 +524,7 @@ async function renderDomainBlock(template: string, target: NginxTarget): Promise
     includeWwwRedirect: target.includeWwwRedirect ? "true" : "false",
   };
 
+  // eslint-disable-next-line security/detect-object-injection -- the key is one of the placeholder names the regular expression is limited to.
   return template.replace(/\{\{(name|domain|wwwDomain|service|containerPort|upstreamUrl|url|certBase|locationBlock|wwwHttpRedirectBlock|httpServerBlock|httpsServerBlock|wwwHttpsRedirectBlock|hasCertificate|includeWwwRedirect)\}\}/g, (_match, key: string) => values[key] ?? "");
 }
 
@@ -565,7 +574,8 @@ function projectRouteTargets(projects: Project[], domainsByProject: Map<number, 
       service: pd.service,
       containerPort: pd.containerPort,
       useSsl: pd.useSsl,
-      includeWwwRedirect: apexDomains.has(pd.domain) && !allDomains.includes(`www.${pd.domain}`),
+      includeWwwRedirect: !pd.redirectApex && apexDomains.has(pd.domain) && !allDomains.includes(`www.${pd.domain}`),
+      redirectApex: pd.redirectApex && pd.domain.startsWith("www.") && !allDomains.includes(pd.domain.slice(4)),
       extraConfig: project.nginxExtraConfig ?? "",
       extraBlocks: project.nginxExtraBlocks ?? "",
     }))

@@ -1,8 +1,10 @@
+/* eslint-disable security/detect-object-injection -- keys come from a fixed list of project fields. */
 import { getDatabase } from "../../config/database";
 import { rowToCredential, type Credential, type CredentialRow } from "../credentials/types";
 import { rowToProject, type Project, type ProjectRow } from "./types";
 import { getNginxAppConfig } from "../ingress/nginx/appConfig";
-import { addProjectDomain, getProjectDomain } from "../ingress/domains";
+import { addProjectDomain, getProjectDomain, ProjectDomainError } from "../ingress/domains";
+import { resolveBaseHostname } from "../ingress/managedDomains";
 import { resetGithubTrackingIfChanged } from "../automation/githubPolling";
 import { moveWebhookIfRepoChanged } from "../automation/githubWebhooks";
 
@@ -117,8 +119,15 @@ export function createProject(input: CreateProjectInput): Project {
 
     const projectId = Number(result.lastInsertRowid);
     // The initial domain and its project must either both persist or both roll back.
+    // A new project is only routed to a base domain or to a subdomain of one (Settings > Domains).
     if (input.domain !== undefined && input.domain !== null && input.domain !== "") {
-      addProjectDomain(projectId, input.domain);
+      try {
+        const target = resolveBaseHostname(input.domain);
+        addProjectDomain(projectId, target.hostname, false, "", null, { managedDomainId: target.managedDomainId, label: target.label });
+      } catch (err) {
+        if (err instanceof ProjectDomainError) throw new ProjectAdminError(err.statusCode, err.message);
+        throw err;
+      }
     }
     return getProjectOrThrow(projectId);
   }).immediate();
@@ -171,6 +180,12 @@ export function updateProject(projectId: number, input: UpdateProjectInput, opti
   const nginxExtraBlocks = input.nginxExtraBlocks !== undefined
     ? parseNginxExtraBlocks(input.nginxExtraBlocks)
     : existing.nginx_extra_blocks ?? null;
+
+  // A project bound to the App is bound to a repository id, so a new name here would leave the binding pointing at the
+  // old repository: clones and webhooks would go to different places. It moves back to a token first.
+  if (existing.github_auth_mode === "app" && (githubRepo ?? "").toLowerCase() !== (existing.github_repo ?? "").toLowerCase()) {
+    throw new ProjectAdminError(409, "This project deploys through the GitHub App, which is bound to its repository. Move it back to a token (Project > Settings > GitHub access) before changing the repository.");
+  }
 
   ensureCredentialExists(credentialId);
   ensureGithubCredentialExists(githubCredentialId);

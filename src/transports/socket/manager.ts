@@ -183,6 +183,7 @@ export class SocketManager {
       return;
     }
     void this.pushToRoom(channel);
+    // eslint-disable-next-line security/detect-object-injection -- the key is a channel name from a fixed union type.
     const timer = setInterval(() => void this.pushToRoom(channel), INTERVALS_MS[channel]);
     this.timers.set(channel, timer);
   }

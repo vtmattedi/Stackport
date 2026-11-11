@@ -1,5 +1,6 @@
 import { getDatabase } from "../../../config/database";
 import { dumpYamlDoc } from "./yaml";
+import { plainRecord } from "../../../shared/plainRecord";
 
 /**
  * Hardened defaults for managed services (S8).
@@ -47,6 +48,7 @@ export function getHardeningDefaults(): HardeningDefaults {
 export function setHardeningDefaults(values: unknown): HardeningDefaults {
   const input = (values ?? {}) as Partial<Record<keyof HardeningDefaults, unknown>>;
   for (const [key, max] of [["pidsLimit", 4_194_304], ["memoryMb", 16_777_216]] as const) {
+    // eslint-disable-next-line security/detect-object-injection -- keys come from a fixed list, or are service names written into a prototype-free record.
     const value = input[key];
     if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max) {
       throw new Error(`${key} must be a whole number between 0 and ${max} (0 turns the default off)`);
@@ -82,13 +84,14 @@ function hasPidsLimit(service: Json): boolean {
  *  own, so the project's other options (which S1 limits) are kept. */
 export function buildHardeningOverride(resolved: unknown, defaults: HardeningDefaults): string | null {
   const services = asRecord(asRecord(resolved)?.["services"]);
-  const override: Record<string, Json> = {};
+  const override = plainRecord<Json>();
   for (const [name, value] of Object.entries(services ?? {})) {
     const service = asRecord(value);
     if (!service) continue;
     const entry: Json = { security_opt: ["no-new-privileges:true"] };
     if (defaults.memoryMb > 0 && !hasMemoryLimit(service)) entry["mem_limit"] = `${defaults.memoryMb}m`;
     if (defaults.pidsLimit > 0 && !hasPidsLimit(service)) entry["pids_limit"] = defaults.pidsLimit;
+    // eslint-disable-next-line security/detect-object-injection -- keys come from a fixed list, or are service names written into a prototype-free record.
     override[name] = entry;
   }
   return Object.keys(override).length ? dumpYamlDoc({ services: override }) : null;

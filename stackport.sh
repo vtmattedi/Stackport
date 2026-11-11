@@ -727,6 +727,7 @@ update_stackport() {
   fi
 
   log "updating StackPort: ${current:0:7} -> ${target:0:7}"
+  print_network_headroom
   if ! stage_update "$target"; then
     cleanup_staging
     state_set lastUpdate failed
@@ -852,6 +853,43 @@ strip_bootstrap_secret_if_consumed() {
   fi
 }
 
+# ── network headroom (P3) ─────────────────────────────────────────────────────
+
+# Docker gives every network a slice of an address pool, and a new network fails once it is
+# used up (the 1.3.0 incident). Prints "<used> <capacity> <known>" where known is "daemon" when
+# the pools were read from the daemon and "stock" when Docker's defaults (31 slices) are assumed.
+# Counts bridge networks, so a network with a range of its own is counted too: it can only
+# overstate the use. The application computes the exact figure (src/modules/maintenance/networkHeadroom.ts).
+network_headroom() {
+  command -v docker >/dev/null 2>&1 || return 1
+  local pools capacity=0 known=daemon base size prefix used
+  pools="$(docker info --format '{{range .DefaultAddressPools}}{{.Base}} {{.Size}}{{"\n"}}{{end}}' 2>/dev/null)" || return 1
+  if [[ -z "${pools//[[:space:]]/}" ]]; then
+    capacity=31
+    known=stock
+  else
+    while read -r base size; do
+      [[ -n "$base" && -n "$size" ]] || continue
+      prefix="${base##*/}"
+      if (( size >= prefix )); then capacity=$(( capacity + (1 << (size - prefix)) )); fi
+    done <<< "$pools"
+  fi
+  used="$(docker network ls --filter driver=bridge --quiet 2>/dev/null | wc -l | tr -d '[:space:]')"
+  echo "$used $capacity $known"
+}
+
+# One line for `status`; warns when 6 or fewer remain (critical at 2), the same thresholds as the application.
+print_network_headroom() {
+  local used capacity known free
+  read -r used capacity known < <(network_headroom) || { echo "networks:     unknown (docker not readable)"; return 0; }
+  free=$(( capacity - used ))
+  if (( free < 0 )); then free=0; fi
+  echo "networks:     $used of $capacity address-pool slices used, $free free$([[ "$known" == stock ]] && echo " (Docker's default pools)")"
+  if (( free <= 6 )); then
+    warn "Docker has room for only $free more networks. Enlarge the pool in /etc/docker/daemon.json, e.g. {\"default-address-pools\":[{\"base\":\"10.20.0.0/14\",\"size\":24}]}, then restart Docker."
+  fi
+}
+
 status_stackport() {
   echo "StackPort status"
   echo "----------------"
@@ -876,6 +914,7 @@ status_stackport() {
     echo "health:       unreachable"
   fi
   echo "network:      $(docker network inspect stackport-proxy >/dev/null 2>&1 && echo present || echo missing)"
+  print_network_headroom
   echo "letsencrypt:  $([[ -d /etc/letsencrypt/live ]] && echo "$(find /etc/letsencrypt/live -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l) domain(s)" || echo none)"
   echo "directories:  $([[ -d "$ETC_DIR" && -d "$VAR_DIR" ]] && echo ok || echo missing)"
   if command -v ufw >/dev/null 2>&1; then

@@ -17,6 +17,8 @@ const EVENTS: { type: PushEventType; label: string }[] = [
   { type: "rollback_failed", label: "Automatic rollback failed" },
   { type: "rollback_recovered", label: "Automatic rollback restored service" },
   { type: "system_update_failed", label: "Stackport update failed" },
+  { type: "certificate_expiring", label: "A certificate is about to expire" },
+  { type: "certificate_renewal_failed", label: "Certificate renewal failed" },
 ];
 
 export default function BrowserPushSection({ onDelivery }: { onDelivery: () => void }) {

@@ -39,6 +39,7 @@ export function basicAuthHeader(username: string, secret: string): string {
 export function buildGitEnv(source: NodeJS.ProcessEnv, header: string | null, scope: string | null): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0" };
   for (const [key, value] of Object.entries(source)) {
+    // eslint-disable-next-line security/detect-object-injection -- the keys are environment variable names that pass an allowlist.
     if (value !== undefined && PASSTHROUGH.has(key)) env[key] = value;
   }
   if (header !== null && scope !== null) {

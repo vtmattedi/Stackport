@@ -9,6 +9,7 @@ function positiveNumber(value: string | undefined, fallback: number): number {
 }
 
 function require_env(key: string): string {
+  // eslint-disable-next-line security/detect-object-injection -- the key is a variable name chosen in code.
   const value = process.env[key];
   if (!value) {
     throw new Error(`Missing required environment variable: ${key}`);
@@ -43,6 +44,11 @@ export const config = {
   // stackport.sh into stackport.env. Blank domain means a raw-IP install; see
   // modules/ingress/bootstrap.ts for how that's resolved into a self-signed cert instead
   // of a Let's Encrypt one.
+  /** Where isolated projects' networks get their subnets (P7), one /27 each. Must not overlap anything on the host. */
+  isolationRange: process.env["STACKPORT_ISOLATION_RANGE"] ?? "10.212.0.0/14",
+  /** GitHub's API and web origins. Environment only, never a setting: a user cannot point Stackport at a server of their choosing. */
+  githubApiUrl: (process.env["GITHUB_API_URL"] ?? "https://api.github.com").replace(/\/+$/, ""),
+  githubWebUrl: (process.env["GITHUB_WEB_URL"] ?? "https://github.com").replace(/\/+$/, ""),
   stackportDomain: process.env["STACKPORT_DOMAIN"] ?? "",
   certbotEmail: process.env["CERTBOT_EMAIL"] ?? "",
   allowedOrigins: (process.env["ALLOWED_ORIGINS"] ?? "").split(",").filter(Boolean),

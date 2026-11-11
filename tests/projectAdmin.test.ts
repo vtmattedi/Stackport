@@ -2,8 +2,9 @@ import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeDatabase, getDatabase } from "../src/config/database";
 import { createProject } from "../src/modules/projects/operations";
+import { addManagedDomain } from "../src/modules/ingress/managedDomains";
 
-before(() => { initializeDatabase(); });
+before(() => { initializeDatabase(); addManagedDomain("example.com"); });
 
 test("invalid or conflicting initial domain rolls back project creation", () => {
   createProject({ name: "domain-owner", sourceType: "upload", domain: "owner.example.com" });

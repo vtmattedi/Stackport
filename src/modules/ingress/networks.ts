@@ -70,8 +70,9 @@ export async function removeLegacyIngressNetworks(run: DockerRun = dockerRun, on
   }
   if (result.removed.length || result.kept.length) {
     const line = `[ingress] legacy per-project networks: removed ${result.removed.length}, kept ${result.kept.length}${result.kept.length ? ` (${result.kept.map((k) => `${k.name}: ${k.reason}`).join("; ")})` : ""}`;
-    console.log(line);
-    logger.info({ removed: result.removed, kept: result.kept }, "ingress.legacy-cleanup");
+    // Kept ones are the ones an admin may need to act on; the plain line is for anyone reading docker logs.
+    if (result.kept.length) logger.warn({ removed: result.removed, kept: result.kept }, line);
+    else logger.info({ removed: result.removed }, line);
   }
   return result;
 }

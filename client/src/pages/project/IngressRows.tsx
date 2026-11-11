@@ -7,7 +7,7 @@ import { cn } from "../../lib/utils";
 import styles from "../ProjectDetails.module.scss";
 
 /** One routed domain: where it points, its certificate, SSL toggle and cert actions. */
-export function DomainRow({ domain, cert, certRecord, certbotAvailable, onToggleSsl, onIssue, onCertAction, onRemove }: {
+export function DomainRow({ domain, cert, certRecord, certbotAvailable, onToggleSsl, onIssue, onCertAction, onRemove, onRename }: {
   domain: ProjectDomain;
   cert: CertbotEntry | null;
   certRecord: ActionRecord | null;
@@ -16,6 +16,8 @@ export function DomainRow({ domain, cert, certRecord, certbotAvailable, onToggle
   onIssue: () => void;
   onCertAction: (action: "renew" | "delete") => void;
   onRemove: () => void;
+  /** Shown for a hostname on a managed domain. */
+  onRename?: () => void;
 }) {
   const acting = certRecord?.status === "running";
   const needsCert = !cert || cert.status === "missing" || cert.status === "expired";
@@ -57,6 +59,11 @@ export function DomainRow({ domain, cert, certRecord, certbotAvailable, onToggle
           <Button type="button" variant="outline" size="xs" className={styles.dangerAction} onClick={() => onCertAction("delete")} disabled={acting}>
             <Trash2 size={12} />
             Remove cert
+          </Button>
+        )}
+        {onRename && (
+          <Button type="button" variant="outline" size="xs" onClick={onRename}>
+            Rename
           </Button>
         )}
         <Button type="button" variant="outline" size="xs" className={styles.dangerAction} onClick={onRemove}>

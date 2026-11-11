@@ -65,7 +65,7 @@ app.get("/health", (_req, res) => {
 app.get("/health/ready", async (_req, res) => {
   const readiness = await getReadiness();
   const failed = Object.entries(readiness.checks).filter(([, c]) => !c.ok);
-  for (const [name, c] of failed) console.warn(`[ready] ${name} failed: ${c.detail ?? "no detail"}`);
+  for (const [name, c] of failed) logger.warn({ check: name, detail: c.detail ?? "no detail" }, "readiness check failed");
   res.status(readiness.ok ? 200 : 503).json({
     status: readiness.ok ? "ready" : "not-ready",
     checks: Object.fromEntries(Object.entries(readiness.checks).map(([name, c]) => [name, c.ok])),

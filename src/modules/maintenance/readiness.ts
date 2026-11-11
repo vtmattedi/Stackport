@@ -49,6 +49,7 @@ export async function getReadiness(options: ReadinessOptions = defaultOptions())
   if (options.requireBundle) {
     checks["bundle"] = await check(() => {
       const index = options.bundleIndex ?? path.join(__dirname, "../../../client/dist/index.html");
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- the path is built from the build directory, not from input.
       if (!fs.existsSync(index)) throw new Error(`missing ${index}`);
     });
   }

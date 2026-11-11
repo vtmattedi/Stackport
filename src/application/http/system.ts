@@ -7,7 +7,7 @@ import { Router, Request, Response } from "express";
 import { execFile } from "child_process";
 import { getDatabase } from "../../config/database";
 import { requireAuth } from "../../modules/identity/middleware/session";
-import { auditLog } from "../../shared/logger";
+import { auditLog, logger } from "../../shared/logger";
 import { decryptSecret } from "../../shared/crypto";
 import { emitGlobalEvent } from "../realtime";
 import {
@@ -33,6 +33,8 @@ import {
 } from "../../integrations/docker/statusCache";
 import { isSystemComposeProject } from "../../integrations/docker/systemResources";
 import { getHardeningDefaults, setHardeningDefaults } from "../../modules/deployments/compose/hardening";
+import { listProjectEnforcement } from "../../modules/deployments/compose/enforcement";
+import { getNetworkHeadroom } from "../../modules/maintenance/networkHeadroom";
 import { getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../../modules/maintenance/storage/operations";
 
 import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../../modules/maintenance/selfUpdate";
@@ -216,6 +218,17 @@ router.put("/docker/storage-thresholds", requireAuth, (req: Request, res: Respon
   res.json(thresholds);
 });
 
+/** How many more Docker networks fit in the daemon's address pools (P3). */
+router.get("/network-headroom", requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  try { res.json(await getNetworkHeadroom()); }
+  catch (err) { res.status(503).json({ error: err instanceof Error ? err.message : "Docker could not be read" }); }
+});
+
+/** Which 1.3 protections each project has, unprotected ones first (G2). */
+router.get("/project-enforcement", requireAuth, (_req: Request, res: Response): void => {
+  res.json({ projects: listProjectEnforcement() });
+});
+
 router.get("/hardening-defaults", requireAuth, (_req: Request, res: Response): void => {
   res.json(getHardeningDefaults());
 });
@@ -246,7 +259,7 @@ router.post("/update", requireAuth, async (req: Request, res: Response): Promise
     res.json(result);
   } catch (error) {
     const busy = error instanceof SelfUpdateBusyError;
-    if (!busy) console.error("[selfUpdate] launch failed:", error instanceof Error ? error.message : "unknown error");
+    if (!busy) logger.error({ reason: error instanceof Error ? error.message : "unknown error" }, "self-update launch failed");
     res.status(busy ? 409 : 500).json({error: busy ? error.message : "Cannot start the Stackport updater. Check Docker access and the installed host CLI."});
   }
 });
