@@ -57,6 +57,7 @@ Usage:
   stackport selfcheck
   stackport repair
   stackport reboot [--in <minutes>] [--yes]
+  stackport network-pool [show | set --base <cidr> --size <n> [--no-restart] [--yes]]
   stackport admin-recovery
   stackport uninstall
   stackport uninstall --purge
@@ -74,6 +75,13 @@ reboot:   schedule a reboot of this machine (now, or in a number of minutes, up
           to 60) after listing the containers that will not come back by
           themselves. Host > Power in the UI asks for the same thing through a
           signed request file and a systemd path unit that install and repair set up.
+network-pool: show Docker's address pools, or enlarge them. `set` writes
+          default-address-pools into /etc/docker/daemon.json after checking the
+          range against this host's routes, keeps a backup, restarts Docker
+          unless --no-restart (which stops every container unless live-restore is
+          on), and puts the old file back if Docker does not come up. The default
+          is 10.20.0.0/14 in /24 slices: 1024 networks. Existing networks keep
+          their ranges.
 admin-recovery: root+interactive only — generates a temporary credential to reset
           StackPort's administrator password.
 uninstall: remove StackPort's runtime, preserving /etc/stackport and
@@ -895,7 +903,7 @@ print_network_headroom() {
   if (( free < 0 )); then free=0; fi
   echo "networks:     $used of $capacity address-pool slices used, $free free$([[ "$known" == stock ]] && echo " (Docker's default pools)")"
   if (( free <= 6 )); then
-    warn "Docker has room for only $free more networks. Enlarge the pool in /etc/docker/daemon.json, e.g. {\"default-address-pools\":[{\"base\":\"10.20.0.0/14\",\"size\":24}]}, then restart Docker."
+    warn "Docker has room for only $free more networks. Enlarge the pool: sudo stackport network-pool set --base 10.20.0.0/14 --size 24 (it checks the range against this host first and asks before restarting Docker); or edit /etc/docker/daemon.json by hand: {\"default-address-pools\":[{\"base\":\"10.20.0.0/14\",\"size\":24}]}, then restart Docker."
   fi
 }
 
@@ -1258,6 +1266,208 @@ remove_power_units() {
   if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
 }
 
+# ── network-pool (enlarge Docker's address pool) ───────────────────────────────
+# Every Docker network takes a slice of the daemon's address pools, and the stock pools hold 31. This sets `default-address-pools` in
+# /etc/docker/daemon.json to a larger range after checking it against the host's own routes and interfaces, keeps a backup, restarts
+# Docker only when asked, and puts the old file back if Docker does not come up. Existing networks keep their ranges.
+
+DAEMON_JSON="${DAEMON_JSON:-/etc/docker/daemon.json}"
+POOL_DEFAULT_BASE="10.20.0.0/14"
+POOL_DEFAULT_SIZE=24
+
+# "a.b.c.d/n" -> "start end" as integers. Fails on anything that is not a valid IPv4 CIDR (a bare address is a /32).
+cidr_range() {
+  local cidr="$1" ip prefix a b c d
+  ip="${cidr%%/*}"
+  if [[ "$cidr" == */* ]]; then prefix="${cidr#*/}"; else prefix=32; fi
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  a="${BASH_REMATCH[1]}"; b="${BASH_REMATCH[2]}"; c="${BASH_REMATCH[3]}"; d="${BASH_REMATCH[4]}"
+  (( a <= 255 && b <= 255 && c <= 255 && d <= 255 )) || return 1
+  [[ "$prefix" =~ ^[0-9]{1,2}$ ]] && (( prefix <= 32 )) || return 1
+  local value=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  local size=$(( 1 << (32 - prefix) ))
+  local start=$(( value - (value % size) ))
+  printf '%s %s\n' "$start" "$(( start + size - 1 ))"
+}
+
+cidr_overlaps() {
+  local one two
+  one="$(cidr_range "$1")" || return 1
+  two="$(cidr_range "$2")" || return 1
+  local s1 e1 s2 e2
+  read -r s1 e1 <<< "$one"
+  read -r s2 e2 <<< "$two"
+  (( s1 <= e2 && s2 <= e1 ))
+}
+
+# The IPv4 ranges the host itself uses, one per line: routes and interface addresses, except Docker's own bridges and loopback.
+host_ranges() {
+  {
+    ip -4 -o route show 2>/dev/null | awk '$1 != "default" && $0 !~ /dev (docker0|br-|veth|lo)/ { print $1 }'
+    ip -4 -o addr show 2>/dev/null | awk '$2 !~ /^(docker0|br-|veth|lo)/ { for (i = 1; i <= NF; i++) if ($i == "inet") print $(i + 1) }'
+  } | sort -u
+}
+
+# Prints the daemon.json text with default-address-pools set, keeping every other key. Needs python3 or jq.
+daemon_json_with_pool() {
+  local base="$1" size="$2" file="$3"
+  local py=""
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import json' >/dev/null 2>&1; then py="$candidate"; break; fi
+  done
+  if [[ -n "$py" ]]; then
+    "$py" - "$file" "$base" "$size" <<'PY'
+import json, sys
+path, base, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    with open(path) as f:
+        text = f.read().strip()
+    data = json.loads(text) if text else {}
+except FileNotFoundError:
+    data = {}
+if not isinstance(data, dict):
+    sys.exit("daemon.json is not a JSON object")
+data["default-address-pools"] = [{"base": base, "size": size}]
+print(json.dumps(data, indent=2))
+PY
+  elif command -v jq >/dev/null 2>&1; then
+    if [[ -s "$file" ]]; then jq --arg base "$base" --argjson size "$size" '."default-address-pools" = [{"base": $base, "size": $size}]' "$file"
+    else jq -n --arg base "$base" --argjson size "$size" '{"default-address-pools": [{"base": $base, "size": $size}]}'; fi
+  else
+    return 2
+  fi
+}
+
+# The pools the daemon reports, e.g. "10.20.0.0/14 /24" per line; the stock pools when none are set.
+docker_pools() {
+  local out
+  out="$(docker info --format '{{range .DefaultAddressPools}}{{.Base}} {{.Size}}{{"\n"}}{{end}}' 2>/dev/null || true)"
+  if [[ -z "${out//[[:space:]]/}" ]]; then echo "stock (172.17.0.0/16 to 172.31.0.0/16, then 192.168.0.0/16 in /20 slices): 31 networks"; else printf '%s\n' "$out"; fi
+}
+
+# stackport network-pool [show]
+network_pool_show() {
+  log "Docker's address pools:"
+  docker_pools | sed 's/^/  /'
+  print_network_headroom
+  if [[ -f "$DAEMON_JSON" ]]; then log "$DAEMON_JSON exists"; else log "$DAEMON_JSON does not exist (Docker's defaults apply)"; fi
+  log "to enlarge: sudo stackport network-pool set --base $POOL_DEFAULT_BASE --size $POOL_DEFAULT_SIZE"
+}
+
+# stackport network-pool set --base <cidr> --size <n> [--no-restart] [--yes]
+network_pool_set() {
+  local base="$POOL_DEFAULT_BASE" size="$POOL_DEFAULT_SIZE" restart=1 assume_yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base) shift; base="${1:-}" ;;
+      --base=*) base="${1#--base=}" ;;
+      --size) shift; size="${1:-}" ;;
+      --size=*) size="${1#--size=}" ;;
+      --no-restart) restart=0 ;;
+      --yes) assume_yes=1 ;;
+      *) error "unknown option: $1"; exit 1 ;;
+    esac
+    shift
+  done
+
+  local prefix
+  cidr_range "$base" >/dev/null || { error "--base must be an IPv4 range such as $POOL_DEFAULT_BASE"; exit 1; }
+  [[ "$base" == */* ]] || { error "--base needs a prefix length, such as $POOL_DEFAULT_BASE"; exit 1; }
+  prefix="${base#*/}"
+  [[ "$size" =~ ^[0-9]{1,2}$ ]] || { error "--size must be a prefix length such as $POOL_DEFAULT_SIZE"; exit 1; }
+  (( prefix >= 8 && prefix <= 24 )) || { error "the base range must be between /8 and /24"; exit 1; }
+  (( size > prefix && size <= 28 )) || { error "--size must be larger than the base's /$prefix and at most 28"; exit 1; }
+  local normalized_start given
+  normalized_start="$(cidr_range "$base" | cut -d' ' -f1)"
+  given="$(cidr_range "${base%%/*}" | cut -d' ' -f1)"
+  [[ "$given" == "$normalized_start" ]] || { error "$base has host bits set; did you mean a range that starts on a /$prefix boundary?"; exit 1; }
+
+  local capacity=$(( 1 << (size - prefix) ))
+  log "pool: $base split into /$size networks = $capacity networks"
+
+  local used clash=""
+  while read -r used; do
+    [[ -n "$used" ]] || continue
+    if cidr_overlaps "$base" "$used"; then clash="$clash $used"; fi
+  done < <(host_ranges)
+  if [[ -n "$clash" ]]; then
+    error "$base overlaps ranges this host already uses:$clash"
+    error "pick another range (--base), for example 172.80.0.0/12 or 10.200.0.0/14, that nothing here or on your private networks uses"
+    exit 1
+  fi
+
+  local merged
+  merged="$(mktemp)"
+  if ! daemon_json_with_pool "$base" "$size" "$DAEMON_JSON" > "$merged"; then
+    rm -f "$merged"
+    error "cannot change $DAEMON_JSON: it needs python3 or jq, and must be a valid JSON object. Set \"default-address-pools\" by hand: [{\"base\":\"$base\",\"size\":$size}]"
+    exit 1
+  fi
+  if command -v dockerd >/dev/null 2>&1 && dockerd --help 2>&1 | grep -q -- '--validate'; then
+    dockerd --validate --config-file="$merged" >/dev/null 2>&1 || { rm -f "$merged"; error "Docker would not accept the resulting configuration; $DAEMON_JSON was not changed"; exit 1; }
+  fi
+
+  local live_restore="no"
+  grep -Eq '"live-restore"[[:space:]]*:[[:space:]]*true' "$merged" && live_restore="yes"
+  if (( restart == 1 )); then
+    power_preflight
+    if [[ "$live_restore" == "yes" ]]; then log "live-restore is on: running containers should keep running while Docker restarts"
+    else warn "restarting Docker stops every container, Stackport and nginx included, until they start again"; fi
+    if (( assume_yes == 0 )); then
+      require_interactive_tty
+      read -r -p "Write $DAEMON_JSON and restart Docker now? Type RESTART DOCKER to continue: " confirm
+      [[ "$confirm" == "RESTART DOCKER" ]] || { rm -f "$merged"; log "cancelled; nothing was changed"; exit 0; }
+    fi
+  fi
+
+  local backup=""
+  mkdir -p "$(dirname "$DAEMON_JSON")"
+  if [[ -f "$DAEMON_JSON" ]]; then
+    backup="$DAEMON_JSON.stackport-$(date +%Y%m%d%H%M%S).bak"
+    cp -p "$DAEMON_JSON" "$backup"
+    log "backed up $DAEMON_JSON to $backup"
+  fi
+  install -m 0644 "$merged" "$DAEMON_JSON"
+  rm -f "$merged"
+  log "wrote default-address-pools to $DAEMON_JSON"
+
+  if (( restart == 0 )); then
+    log "Docker was not restarted. The pool applies after: sudo systemctl restart docker"
+    return 0
+  fi
+
+  log "restarting Docker"
+  systemctl restart docker || true
+  local waited=0
+  until docker info >/dev/null 2>&1; do
+    sleep 2; waited=$(( waited + 2 ))
+    if (( waited >= ${NETWORK_POOL_WAIT_S:-60} )); then
+      error "Docker did not come back with the new pool"
+      if [[ -n "$backup" ]]; then
+        cp -p "$backup" "$DAEMON_JSON"
+      else
+        rm -f "$DAEMON_JSON"
+      fi
+      warn "restored the previous $DAEMON_JSON; restarting Docker with it"
+      systemctl restart docker || true
+      exit 1
+    fi
+  done
+  log "Docker is back"
+  if [[ -f "$COMPOSE_FILE" ]]; then repair_stackport; fi
+  network_pool_show
+}
+
+network_pool() {
+  local sub="${1:-show}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    show) network_pool_show ;;
+    set) network_pool_set "$@" ;;
+    *) error "usage: stackport network-pool [show | set --base <cidr> --size <n> [--no-restart] [--yes]]"; exit 1 ;;
+  esac
+}
+
 # ── dispatch ──────────────────────────────────────────────────────────────────
 # Guarded so this file can be `source`d (e.g. to call individual functions
 # directly against a scratch ETC_DIR/VAR_DIR for testing) without also running
@@ -1294,6 +1504,10 @@ case "$COMMAND" in
   reboot)
     require_root
     reboot_host "$@"
+    ;;
+  network-pool)
+    if [[ "${1:-show}" == "set" ]]; then require_root; fi
+    network_pool "$@"
     ;;
   power-run)
     require_root

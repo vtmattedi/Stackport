@@ -76,8 +76,8 @@ export function computeHeadroom(pools: AddressPool[], subnets: string[], poolsKn
 
 const ADVICE = [
   "Docker gives every network a slice of a small default address pool, and a new network fails once it is used up.",
-  'Enlarge it in /etc/docker/daemon.json, for example {"default-address-pools":[{"base":"10.20.0.0/14","size":24}]}',
-  "(that holds 1024 networks), then restart Docker. Pick a base that does not overlap your own networks. Existing networks keep their ranges.",
+  "On the server run `sudo stackport network-pool set --base 10.20.0.0/14 --size 24`: it sets default-address-pools in /etc/docker/daemon.json",
+  "(1024 networks) after checking the range against the host's own routes, and asks before restarting Docker. Existing networks keep their ranges.",
 ].join(" ");
 
 interface DockerInfoPool { Base?: string; Size?: number }
