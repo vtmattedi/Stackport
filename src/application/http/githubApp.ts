@@ -5,7 +5,7 @@ import { auditLog } from "../../shared/logger";
 import { getNginxAppConfig } from "../../modules/ingress/nginx/configWriter";
 import { getCertbotStatus } from "../../modules/ingress/certificates/operations";
 import {
-  ALL_MODULES, completeLink, completeManifest, GithubAppError, preflight, refreshRepositories, startLink, startManifest, syncInstallations,
+  ALL_MODULES, completeLink, completeManifest, GithubAppError, preflight, refreshRepositories, rotateAppCredentials, startLink, startManifest, syncInstallations,
   type ModuleName, type PreflightDeps,
 } from "../../modules/github/app";
 import { GithubError } from "../../modules/github/client";
@@ -128,6 +128,18 @@ router.get("/repositories/:id/inspect", requireAuth, async (req: Request<{ id: s
   if (!branch || branch.length > 255) { res.status(400).json({ error: "Choose a branch." }); return; }
   try { res.json(await inspectRepository(repositoryFromRequest(req), branch)); }
   catch (err) { fail(res, err); }
+});
+
+/** Replaces the App's private key and/or webhook secret. The key is proved against GitHub first; nothing is returned. */
+router.put("/credentials", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const rotated = await rotateAppCredentials({ privateKey: req.body?.privateKey, webhookSecret: req.body?.webhookSecret });
+    auditLog(req.user ?? "unknown", "github-app.rotate", "-", "ok", rotated);
+    res.json(rotated);
+  } catch (err) {
+    auditLog(req.user ?? "unknown", "github-app.rotate", "-", "fail");
+    fail(res, err);
+  }
 });
 
 router.get("/deliveries", requireAuth, (req: Request, res: Response): void => {

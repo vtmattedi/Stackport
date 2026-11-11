@@ -2,7 +2,7 @@
 import { defaultGithubClient, GithubClient, GithubError } from "./client";
 import { signAppJwt } from "./jwt";
 import {
-  consumeState, createState, getApp, getAppSecrets, getInstallation, replaceRepositories, saveApp, setInstallationStatus, listInstallations, upsertInstallation,
+  consumeState, createState, getApp, getAppSecrets, getInstallation, replaceRepositories, saveApp, setInstallationStatus, listInstallations, updateAppSecrets, upsertInstallation,
   type AppRecord, type InstallationRecord, type RepositoryRecord,
 } from "./store";
 
@@ -146,6 +146,39 @@ export async function completeManifest(code: unknown, state: unknown, deps: Pref
   };
   saveApp(record, { privateKey: converted.pem, webhookSecret: converted.webhook_secret, clientSecret: converted.client_secret });
   return getApp() as AppRecord;
+}
+
+// ---- rotating the App's credentials
+
+/** A new private key (generated on GitHub, in the App's settings) is proved before it replaces the old one: a JWT
+ *  signed with it must be accepted by GitHub as this App. Until then nothing is stored, so a wrong paste cannot lock
+ *  Stackport out. The webhook secret cannot be proved from here: it is replaced as given, and GitHub's own setting
+ *  has to match. */
+export async function rotateAppCredentials(input: { privateKey?: unknown; webhookSecret?: unknown }, client: GithubClient = defaultGithubClient()): Promise<{ privateKey: boolean; webhookSecret: boolean }> {
+  const { app } = requireApp();
+  const update: { privateKey?: string; webhookSecret?: string } = {};
+  if (input.privateKey !== undefined) {
+    const pem = typeof input.privateKey === "string" ? input.privateKey.trim() : "";
+    if (!/^-----BEGIN (RSA )?PRIVATE KEY-----[\s\S]+-----END (RSA )?PRIVATE KEY-----$/.test(pem) || pem.length > 10_000) throw new GithubAppError("That is not a PEM private key.");
+    let jwt: string;
+    try { jwt = signAppJwt(app.appId, pem); } catch { throw new GithubAppError("That private key could not be read."); }
+    try {
+      const { body } = await client.request<{ id?: number }>({ path: "/app", bearer: jwt });
+      if (body?.id !== app.appId) throw new GithubAppError("GitHub accepted the key, but for a different App.", 400);
+    } catch (err) {
+      if (err instanceof GithubAppError) throw err;
+      throw new GithubAppError(err instanceof GithubError && err.status === 401 ? "GitHub did not accept that key for this App." : "GitHub could not be reached to check the key.", err instanceof GithubError && err.status === 401 ? 400 : 502);
+    }
+    update.privateKey = pem;
+  }
+  if (input.webhookSecret !== undefined) {
+    const secret = typeof input.webhookSecret === "string" ? input.webhookSecret : "";
+    if (secret.length < 16 || secret.length > 200) throw new GithubAppError("The webhook secret must be 16 to 200 characters.");
+    update.webhookSecret = secret;
+  }
+  if (!updateAppSecrets(update)) throw new GithubAppError("Nothing to rotate: give a private key, a webhook secret, or both.");
+  forgetInstallationTokens();
+  return { privateKey: update.privateKey !== undefined, webhookSecret: update.webhookSecret !== undefined };
 }
 
 // ---- tokens

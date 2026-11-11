@@ -38,6 +38,8 @@ export interface FakeGithub {
   conversions: number;
   tokensIssued: number;
   grantedUserTokens: Set<string>;
+  /** More public keys the fake accepts a JWT from, for key rotation. */
+  extraPublicKeys: string[];
   close(): Promise<void>;
 }
 
@@ -46,7 +48,7 @@ export async function startFakeGithub(): Promise<FakeGithub> {
   const fake: FakeGithub = {
     apiUrl: "", webUrl: "", appId: 4242, clientId: "Iv1.fakeclient", clientSecret: "fake-client-secret", webhookSecret: "fake-webhook-secret", publicKey,
     installations: [], requests: [], rateLimit: null, tokenLifetimeMs: 60 * 60 * 1000, maxConcurrent: 0, holdMs: 0, conversions: 0, tokensIssued: 0,
-    grantedUserTokens: new Set(), close: async () => undefined,
+    grantedUserTokens: new Set(), extraPublicKeys: [], close: async () => undefined,
   };
   const usedCodes = new Set<string>();
   const codes = new Map<string, "manifest" | "oauth">();
@@ -56,7 +58,8 @@ export async function startFakeGithub(): Promise<FakeGithub> {
   const verifyJwt = (token: string): boolean => {
     const [h, p, s] = token.split(".");
     if (!h || !p || !s) return false;
-    if (!crypto.createVerify("RSA-SHA256").update(`${h}.${p}`).verify(publicKey, Buffer.from(s, "base64url"))) return false;
+    const signedBy = [publicKey, ...fake.extraPublicKeys].some((key) => crypto.createVerify("RSA-SHA256").update(`${h}.${p}`).verify(key, Buffer.from(s, "base64url")));
+    if (!signedBy) return false;
     const claims = JSON.parse(Buffer.from(p, "base64url").toString("utf8")) as { iat: number; exp: number; iss: string };
     const now = Math.floor(Date.now() / 1000);
     return claims.iss === String(fake.appId) && claims.exp - claims.iat <= 600 && claims.exp > now - 5;
@@ -88,6 +91,11 @@ export async function startFakeGithub(): Promise<FakeGithub> {
     if (fake.rateLimit && url.pathname.startsWith(fake.rateLimit.prefix) && fake.rateLimit.remaining > 0) {
       fake.rateLimit.remaining -= 1;
       return json(res, 429, { message: "slow down" }, { "retry-after": "1" });
+    }
+
+    if (req.method === "GET" && url.pathname === "/app") {
+      if (!verifyJwt(auth)) return json(res, 401, { message: "A JSON web token could not be decoded" });
+      return json(res, 200, { id: fake.appId, slug: "stackport-test" });
     }
 
     const conversion = /^\/app-manifests\/([^/]+)\/conversions$/.exec(url.pathname);

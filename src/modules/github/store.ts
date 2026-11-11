@@ -76,6 +76,15 @@ export function saveApp(app: Omit<AppRecord, "createdAt">, secrets: AppSecrets):
     encryptSecret(secrets.privateKey), encryptSecret(secrets.webhookSecret), encryptSecret(secrets.clientSecret));
 }
 
+/** Replaces some of the App's secrets and leaves the rest. Encrypted with the current key like the originals. */
+export function updateAppSecrets(update: Partial<AppSecrets>): boolean {
+  const columns: [string, string | undefined][] = [["private_key_enc", update.privateKey], ["webhook_secret_enc", update.webhookSecret], ["client_secret_enc", update.clientSecret]];
+  const changes = columns.filter((entry): entry is [string, string] => entry[1] !== undefined);
+  if (changes.length === 0) return false;
+  const assignments = changes.map(([column]) => `${column} = ?`).join(", ");
+  return getDatabase().prepare(`UPDATE github_app SET ${assignments} WHERE id = 1`).run(...changes.map(([, value]) => encryptSecret(value))).changes > 0;
+}
+
 // ---- the `state` of a browser round trip
 
 const STATE_TTL_MS = 10 * 60 * 1000;

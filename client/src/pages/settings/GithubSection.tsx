@@ -36,6 +36,8 @@ export default function GithubSection() {
   const [isPublic, setIsPublic] = useState(false);
   const [modules, setModules] = useState<string[]>([]);
   const [deliveries, setDeliveries] = useState<GithubDelivery[]>([]);
+  const [newKey, setNewKey] = useState("");
+  const [newSecret, setNewSecret] = useState("");
   const [params, setParams] = useSearchParams();
   const announced = useRef(false);
 
@@ -193,6 +195,30 @@ export default function GithubSection() {
           </tbody>
         </table>
       )}
+      <details>
+        <summary>Rotate credentials</summary>
+        <p className="hint">
+          Generate a new private key in <a href={`${app.htmlUrl.replace("/apps/", "/settings/apps/")}`} target="_blank" rel="noreferrer">the App's settings</a> and paste it here. Stackport
+          checks with GitHub that the key works for this App before it replaces the old one, so a wrong paste changes nothing. A new webhook secret has to be set
+          on GitHub as well; Stackport cannot check it.
+        </p>
+        <div className="field">
+          <label>New private key (PEM)</label>
+          <textarea rows={4} value={newKey} onChange={(event) => setNewKey(event.target.value)} spellCheck={false} autoComplete="off" />
+        </div>
+        <div className="field">
+          <label>New webhook secret</label>
+          <Input type="password" value={newSecret} onChange={(event) => setNewSecret(event.target.value)} autoComplete="off" />
+        </div>
+        <Button type="button" size="sm" disabled={busy !== "" || (!newKey.trim() && !newSecret)}
+          onClick={() => void run("rotate", async () => {
+            const result = await api.rotateGithubCredentials({ ...(newKey.trim() ? { privateKey: newKey.trim() } : {}), ...(newSecret ? { webhookSecret: newSecret } : {}) });
+            setNewKey(""); setNewSecret("");
+            notify.success(result.privateKey && result.webhookSecret ? "Key and webhook secret replaced." : result.privateKey ? "Private key replaced." : "Webhook secret replaced.");
+          })}>
+          Replace
+        </Button>
+      </details>
       <details>
         <summary>Forget this App</summary>
         <p className="hint">Removes the App from this Stackport. It does not delete it on GitHub (do that in the App's settings), and it is refused while a project still deploys through it.</p>
