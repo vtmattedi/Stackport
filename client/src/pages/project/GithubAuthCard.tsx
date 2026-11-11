@@ -2,7 +2,11 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Plug } from "lucide-react";
 import { ExpandableCard } from "../../components/ExpandableCard";
+import { AppSelect } from "../../components/AppSelect";
 import { Button } from "../../components/ui/button";
+import { Field } from "../../components/ui/field";
+import { Stack } from "../../components/ui/stack";
+import { Hint } from "../../components/ui/text";
 import { api, ApiError } from "../../api/client";
 import type { Project } from "../../api/types";
 import { notify } from "../../lib/notify";
@@ -46,36 +50,43 @@ export function GithubAuthCard({ project, setProject }: { project: Project; setP
   return (
     <ExpandableCard icon={<Plug size={13} />} title="GitHub access" storageKey="project.github-auth" summary={<span>{usesApp ? "GitHub App" : "Token"}</span>}>
       {usesApp ? (
-        <>
-          <p className="hint">
+        <Stack gap={4}>
+          <Hint>
             Deploys and branch checks use a short-lived token from the GitHub App (<Link to="/settings/github">Settings &gt; GitHub</Link>). If the App
             loses access to <code className="mono">{project.githubRepo}</code>, they fail with a message: they do not fall back to a token.
-          </p>
-          <div className="field">
-            <label>Deploy when</label>
-            <select value={project.githubDeployOn} disabled={saving} onChange={(event) => void chooseDeployOn(event.target.value as "push" | "ci" | "release")}>
-              <option value="push">a commit is pushed to the branch</option>
-              <option value="ci">a pushed commit's checks pass</option>
-              <option value="release">a release is published</option>
-            </select>
-            <p className="hint">
-              {project.githubDeployOn === "ci" && "A push is held while its checks run. It deploys when they pass; if one fails, it does not, and you are told. A repository with no checks deploys after five minutes."}
-              {project.githubDeployOn === "release" && "Pushes are ignored. A published release (not a draft or prerelease) deploys the commit its tag points at."}
-              {project.githubDeployOn === "push" && "Every push to the auto-deploy branch deploys, as before."}
-            </p>
-          </div>
-          <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => void move("token")}>Use this project's token again</Button>
-        </>
+          </Hint>
+          <Field
+            label="Deploy when"
+            hint={
+              project.githubDeployOn === "ci" ? "A push is held while its checks run. It deploys when they pass; if one fails, it does not, and you are told. A repository with no checks deploys after five minutes."
+                : project.githubDeployOn === "release" ? "Pushes are ignored. A published release (not a draft or prerelease) deploys the commit its tag points at."
+                  : "Every push to the auto-deploy branch deploys, as before."
+            }
+          >
+            <AppSelect
+              value={project.githubDeployOn}
+              disabled={saving}
+              onValueChange={(value) => void chooseDeployOn(value as "push" | "ci" | "release")}
+              options={[
+                { value: "push", label: "a commit is pushed to the branch" },
+                { value: "ci", label: "a pushed commit's checks pass" },
+                { value: "release", label: "a release is published" },
+              ]}
+              triggerClassName="max-w-sm"
+            />
+          </Field>
+          <div><Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => void move("token")}>Use this project's token again</Button></div>
+        </Stack>
       ) : (
-        <>
-          <p className="hint">
+        <Stack gap={4}>
+          <Hint>
             This project reaches <code className="mono">{project.githubRepo}</code> with a token. The GitHub App replaces it with short-lived tokens
             that Stackport requests itself. The token stays on the project, so you can move back.
-          </p>
-          <Button type="button" size="sm" disabled={saving} onClick={() => void move("app")}>Use the GitHub App</Button>
-        </>
+          </Hint>
+          <div><Button type="button" size="sm" disabled={saving} onClick={() => void move("app")}>Use the GitHub App</Button></div>
+        </Stack>
       )}
-      {problem && <p role="alert" className="hint"><strong>{problem}</strong></p>}
+      {problem && <Hint role="alert" className="mt-3 font-semibold text-destructive">{problem}</Hint>}
     </ExpandableCard>
   );
 }

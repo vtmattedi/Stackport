@@ -6,6 +6,8 @@ import { api } from "../../api/client";
 import type { DockerNetworkInfo, NetworkOwnerKind, NetworkRemoval } from "../../api/types";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
+import { Checkbox } from "../../components/ui/checkbox";
+import { CheckRow } from "../../components/ui/field";
 import { SubShellSectionHeader } from "../../components/SubShell";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { notify } from "../../lib/notify";
@@ -166,9 +168,7 @@ export function NetworksSection() {
               <button key={value} type="button" className={styles.filter} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label} {counts(value)}</button>
             ))}
           </div>
-          <label className={styles.unused}>
-            <input type="checkbox" checked={unusedOnly} onChange={(e) => setUnusedOnly(e.target.checked)} /> No containers attached
-          </label>
+          <CheckRow className={styles.unused} control={<Checkbox checked={unusedOnly} onCheckedChange={(checked) => setUnusedOnly(checked === true)} />} title="No containers attached" />
         </div>
         {removable.length > 0 && (
           <div className={styles.bar}>
@@ -190,13 +190,12 @@ export function NetworksSection() {
                 {shown.map((network) => (
                   <tr key={network.id || network.name}>
                     <td>
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         aria-label={`Select ${network.name}`}
                         disabled={network.removalBlocker !== null || removing}
                         title={network.removalBlocker ?? "Nothing is attached: it can be removed"}
                         checked={selected.has(network.name) && network.removalBlocker === null}
-                        onChange={(e) => setSelected((current) => { const next = new Set(current); if (e.target.checked) next.add(network.name); else next.delete(network.name); return next; })}
+                        onCheckedChange={(checked) => setSelected((current) => { const next = new Set(current); if (checked === true) next.add(network.name); else next.delete(network.name); return next; })}
                       />
                     </td>
                     <td className={styles.name}>

@@ -1,5 +1,6 @@
 import { AlertCircle } from "lucide-react";
 import { Alert, AlertDescription } from "./ui/alert";
+import { Disclosure } from "./Disclosure";
 import styles from "./ServiceError.module.scss";
 
 interface Explanation {
@@ -48,10 +49,9 @@ export function ServiceError({ service, reason, className }: { service: string; 
           <strong>{summary}</strong>
           {fix && <span>{fix}</span>}
           {reason && (
-            <details className={styles.details}>
-              <summary>Details</summary>
+            <Disclosure title="Details" className={styles.details}>
               <pre>{reason}</pre>
-            </details>
+            </Disclosure>
           )}
         </div>
       </AlertDescription>

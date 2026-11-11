@@ -4,6 +4,8 @@ import { AlertCircle, AlertTriangle, Loader, Power, RefreshCw } from "lucide-rea
 import { api, ApiError } from "../../api/client";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
+import { Checkbox } from "../../components/ui/checkbox";
+import { CheckRow } from "../../components/ui/field";
 import { AppSelect } from "../../components/AppSelect";
 import { SubShellSectionHeader } from "../../components/SubShell";
 import { notify } from "../../lib/notify";
@@ -153,9 +155,7 @@ export function PowerSection() {
                   <AlertTitle>{actionsRunning} {actionsRunning === 1 ? "action is" : "actions are"} running</AlertTitle>
                   <AlertDescription>
                     <p>{preflight.runningActions.map((action) => `${action.kind} (${action.key})`).join(", ")}. A reboot cuts them off, which can leave a deploy half done.</p>
-                    <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input type="checkbox" checked={interrupt} onChange={(e) => setInterrupt(e.target.checked)} /> They may be interrupted
-                    </label>
+                    <CheckRow className="mt-2" control={<Checkbox checked={interrupt} onCheckedChange={(checked) => setInterrupt(checked === true)} />} title="They may be interrupted" />
                   </AlertDescription>
                 </Alert>
               )}

@@ -8,6 +8,7 @@ import { NumberInput } from "../../components/NumberInput";
 import { ProjectGroupField } from "../../components/ProjectGroupField";
 import { Button } from "../../components/ui/button";
 import { Switch } from "../../components/ui/switch";
+import { Textarea } from "../../components/ui/textarea";
 import { api, ApiError } from "../../api/client";
 import type { Credential, GitHubBranch, Project, ProjectDomain } from "../../api/types";
 import { useSystemActions, useSystemSelector } from "../../context/SystemContext";
@@ -305,8 +306,8 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
                   Extra Nginx config
                   <span className="hint"> (raw directives appended inside the proxy location block, e.g. client_max_body_size)</span>
                 </label>
-                <textarea
-                  className="mono"
+                <Textarea
+                  className="font-mono text-xs"
                   rows={4}
                   placeholder={"client_max_body_size 520M;\nclient_body_timeout 300s;\nproxy_read_timeout 300s;\nproxy_send_timeout 300s;"}
                   value={configNginxExtra}
@@ -317,8 +318,8 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
                 <label>
                   Extra Nginx blocks <span className="hint">(HTTPS server only — raw blocks appended after the proxy location, e.g. an extra `location`. Use {"{{PORT}}"} for this project's internal port)</span>
                 </label>
-                <textarea
-                  className="mono"
+                <Textarea
+                  className="font-mono text-xs"
                   rows={6}
                   placeholder={'location /specific/url {\n    proxy_pass http://127.0.0.1:{{PORT}};\n    proxy_http_version 1.1;\n    proxy_set_header X-specific-route-only "das";\n\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n}'}
                   value={configNginxExtraBlocks}
