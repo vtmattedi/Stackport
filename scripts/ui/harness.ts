@@ -35,6 +35,10 @@ export async function startHarness(): Promise<Harness> {
   set("ADMIN_USERNAME", HARNESS_USER);
   set("ADMIN_PASSWORD_HASH", bcrypt.hashSync(HARNESS_PASSWORD, 10));
 
+  // Docker, Nginx and Certbot answer from fixtures (scripts/ui/fakeDocker.ts) unless UI_HARNESS_DOCKER=real.
+  const { installFakeDocker } = await import("./fakeDocker");
+  installFakeDocker();
+
   // The app reads its configuration when it is first imported, so it is imported only now.
   const { default: app } = await import("../../src/app");
   const { initializeDatabase, closeDatabase } = await import("../../src/config/database");
@@ -77,6 +81,7 @@ async function seed(): Promise<void> {
   const { addManagedDomain, reserveHostnameForProject } = await import("../../src/modules/ingress/managedDomains");
   const { createApiToken } = await import("../../src/modules/identity/apiTokens");
   const github = await import("../../src/modules/github/store");
+  const { listProjectDomains, setProjectDomainRoute } = await import("../../src/modules/ingress/domains");
 
   addManagedDomain("example.com", true);
   addManagedDomain("apps.example.org");
@@ -88,7 +93,11 @@ async function seed(): Promise<void> {
   ];
   for (const input of projects) {
     const project = createProject({ ...input, sourceType: "upload" });
-    try { reserveHostnameForProject(project.id, project.name); } catch { /* the page shows what it can */ }
+    try {
+      reserveHostnameForProject(project.id, project.name);
+      // A route (service and port) is what makes a hostname count as published, which is what Nginx and Certbot list.
+      for (const domain of listProjectDomains(project.id)) setProjectDomainRoute(project.id, domain.id, "web", 3000);
+    } catch { /* the page shows what it can */ }
   }
   createApiToken({ name: "laptop Claude Code", expiresInDays: 90, scope: "read" });
   createApiToken({ name: "ci deploy (production only)", expiresInDays: 30, scope: "write", projectGroup: "production" });

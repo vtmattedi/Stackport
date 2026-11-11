@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, useEffect } from "react";
 import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  Cpu, RefreshCw, Loader, Box, Layers, AlertCircle, RotateCw, Play, Square, Hammer, ChevronDown, ChevronRight, X, FileText, Save, Eye, Settings, ShieldCheck, ShieldX, KeyRound, Trash2, Mail, SquareTerminal, Radio,
+  Cpu, RefreshCw, Loader, Box, Layers, AlertCircle, RotateCw, Play, Square, Hammer, ChevronDown, ChevronRight, X, FileText, Save, Eye, Settings, KeyRound, Trash2, SquareTerminal, Radio,
 } from "lucide-react";
 import NginxCode from "../components/NginxCode";
 // The terminal dialogs pull in xterm (~90 KB gzipped); load it only when one opens.
@@ -16,7 +16,6 @@ import type {
   NginxAppConfig,
   NginxDocument,
   NginxDocumentKind,
-  CertbotEntry,
 } from "../api/types";
 import { useSystem } from "../context/SystemContext";
 import { formatShortDateTime } from "../lib/format";
@@ -35,6 +34,7 @@ import { StackPortWordmark } from "../logo/StackPortBrand";
 import { NetworkHeadroomNotice } from "./system/NetworkHeadroomNotice";
 import { NetworksSection } from "./system/NetworksSection";
 import { PowerSection } from "./system/PowerSection";
+import { CertbotSection } from "./system/CertbotSection";
 import MaintenanceSection from "./settings/MaintenanceSection";
 import StorageSection from "./settings/StorageSection";
 import { HOST_SECTIONS, isHostTab, type HostTab } from "../lib/hostSections";
@@ -249,18 +249,6 @@ function readNginxDocumentKind(): NginxDocumentKind {
   }
 }
 
-function certbotStatusLabel(entry: CertbotEntry): [string, string] {
-  if (!entry.hasCertificate) return ["valid", "missing"];
-  if (entry.status === "expired") return ["valid", "expired"];
-  if (entry.status === "expiring") return ["expiring", "missing"];
-  if (entry.status === "unknown") return ["valid", "unknown"];
-  return ["valid", "missing"];
-}
-
-function certbotStatusOk(entry: CertbotEntry): boolean {
-  return entry.hasCertificate && entry.status !== "expired" && entry.status !== "unknown";
-}
-
 interface StackRowProps {
   stack: ComposeStack;
   onAction: (stack: string, action: ComposeOp) => Promise<void>;
@@ -399,10 +387,6 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
   const [reloading, setReloading] = useState(false);
   const [applyingNginx, setApplyingNginx] = useState(false);
   const [reloadResult, setReloadResult] = useState<{ ok: boolean; output: string } | null>(null);
-  const [certbotEmailDraft, setCertbotEmailDraft] = useState("");
-  const [certbotEmailDirty, setCertbotEmailDirty] = useState(false);
-  const [savingCertbotEmail, setSavingCertbotEmail] = useState(false);
-  const [certbotEmailResult, setCertbotEmailResult] = useState<{ ok: boolean; output: string } | null>(null);
   const [nginxAppEnabledDraft, setNginxAppEnabledDraft] = useState(false);
   const [nginxAppDomainDraft, setNginxAppDomainDraft] = useState("");
   const [nginxAppUseSslDraft, setNginxAppUseSslDraft] = useState(true);
@@ -451,11 +435,6 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
       setNginxDocKind("generated");
     }
   }, [nginx?.layer, nginxDocKind]);
-
-  useEffect(() => {
-    if (certbotEmailDirty) return;
-    setCertbotEmailDraft(data?.certbot.email ?? "");
-  }, [data?.certbot.email, certbotEmailDirty]);
 
   useEffect(() => {
     if (nginxAppChanged) return;
@@ -551,28 +530,6 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
     setCertbotOps((prev) => ({ ...prev, [domain]: { ...(prev[domain] ?? { op: null }), result: null } }));
   }
 
-  async function handleCertbotEmailSave() {
-    const toastId = notify.loading("Saving certbot email...");
-    setSavingCertbotEmail(true);
-    setCertbotEmailResult(null);
-    try {
-      const result = await api.updateCertbotEmail(certbotEmailDraft);
-      setCertbotEmailDraft(result.email);
-      setCertbotEmailDirty(false);
-      setCertbotEmailResult({
-        ok: true,
-        output: result.emailConfigured ? "Certbot email saved." : "Certbot email cleared.",
-      });
-      notify.success(result.emailConfigured ? "Certbot email saved." : "Certbot email cleared.", { id: toastId });
-      refresh();
-    } catch (err) {
-      setCertbotEmailResult({ ok: false, output: err instanceof ApiError ? err.message : "Failed to save certbot email" });
-      notify.error(err, "Failed to save certbot email", { id: toastId });
-    } finally {
-      setSavingCertbotEmail(false);
-    }
-  }
-
   async function handleNginxReload() {
     const toastId = notify.loading("Reloading nginx...");
     setReloading(true);
@@ -639,48 +596,6 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
       setSavingNginxApp(false);
     }
   }
-
-  const certbotEmailForm = (
-    <>
-      <div className={styles.certbotEmailPanel}>
-        <div className="field field-wide">
-          <label htmlFor="certbot-email">
-            <Mail size={12} />
-            Certificate email
-          </label>
-          <Input
-            id="certbot-email"
-            type="email"
-            className={styles.formInput}
-            value={certbotEmailDraft}
-            placeholder="admin@example.com"
-            onChange={(event) => {
-              setCertbotEmailDraft(event.target.value);
-              setCertbotEmailDirty(true);
-            }}
-          />
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          onClick={() => void handleCertbotEmailSave()}
-          disabled={savingCertbotEmail || certbotEmailDraft.trim() === (certbot?.email ?? "")}
-          title="Save certbot email"
-        >
-          {savingCertbotEmail ? <Loader size={12} className="spin" /> : <Save size={12} />}
-          Save
-        </Button>
-      </div>
-      {certbotEmailResult && (
-        <OutputBlock
-          output={certbotEmailResult.output}
-          ok={certbotEmailResult.ok}
-          onDismiss={() => setCertbotEmailResult(null)}
-        />
-      )}
-    </>
-  );
 
   const dockerPanel = (
     <>
@@ -1063,97 +978,6 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
     </>
   );
 
-  const certbotPanel = (
-    <>
-
-      {!certbot?.available ? (
-        <div>
-          <ServiceError service="Certbot" reason={certbot?.reason} className={styles.softAlert} />
-        </div>
-      ) : certbot.entries.length === 0 ? (
-        <>
-          {certbotEmailForm}
-          <div className={styles.panelEmpty}>No routed domains.</div>
-        </>
-      ) : (
-        <>
-          {certbotEmailForm}
-          <div className={styles.certbotList}>
-            {certbot.entries.map((entry) => {
-              const state = certbotOps[entry.domain] ?? { op: null, result: null };
-              const busy = state.op !== null;
-              const expires = formatShortDateTime(entry.expiresAt, "not issued");
-              return (
-                <div className={styles.certbotRow} key={entry.domain}>
-                  <div className={styles.certbotMain}>
-                    <div className={styles.certbotHost}>
-                      {entry.hasCertificate ? <ShieldCheck size={14} /> : <ShieldX size={14} />}
-                      <span className="mono path-text">{entry.domain}</span>
-                      <span className="badge">{entry.type}</span>
-                      <StatusChip ok={certbotStatusOk(entry)} labels={certbotStatusLabel(entry)} />
-                    </div>
-                    <div className={styles.certbotMeta}>
-                      <span className="mono path-text">expires: {expires}</span>
-                      {entry.issuer && <span className="mono path-text">issuer: {entry.issuer}</span>}
-                      {entry.path && <span className="mono path-text">path: {entry.path}</span>}
-                    </div>
-                  </div>
-
-                  <div className={cn("row-actions", styles.certbotActions)}>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="xs"
-                      onClick={() => void handleCertbotAction(entry.domain, "issue")}
-                      disabled={busy || !certbot.emailConfigured}
-                      title={certbot.emailConfigured ? "Issue certificate" : "Save a certbot email first"}
-                    >
-                      {state.op === "issue" ? <Loader size={12} className="spin" /> : <KeyRound size={12} />}
-                      Issue
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="xs"
-                      onClick={() => void handleCertbotAction(entry.domain, "renew")}
-                      disabled={busy || !entry.hasCertificate}
-                      title="Renew certificate"
-                    >
-                      {state.op === "renew" ? <Loader size={12} className="spin" /> : <RotateCw size={12} />}
-                      Renew
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="xs"
-                      className={styles.dangerButton}
-                      onClick={() => void handleCertbotAction(entry.domain, "delete")}
-                      disabled={busy || !entry.hasCertificate}
-                      title="Delete certificate"
-                    >
-                      {state.op === "delete" ? <Loader size={12} className="spin" /> : <Trash2 size={12} />}
-                      Delete
-                    </Button>
-                  </div>
-
-                  {state.result && (
-                    <div className={styles.certbotResult}>
-                      <OutputBlock
-                        output={state.result.output}
-                        ok={state.result.ok}
-                        onDismiss={() => dismissCertbotResult(entry.domain)}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </>
-  );
-
   const nginxActions = nginx?.available && (
     <>
       <Button
@@ -1210,22 +1034,6 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
         description="Compose stacks and standalone containers, Docker's disk usage and cleanup, and the deploy folder."
       />
     ),
-    certbot: (
-      <SubShellSectionHeader
-        title="Certbot"
-        icon={ShieldCheck}
-        meta={certbot && <StatusChip ok={certbot.available} labels={["available", "unavailable"]} />}
-        description={
-          certbot?.available ? (
-            <span className={styles.inlineMeta}>
-              <span>Issues and renews certificates in temporary Docker containers.</span>
-              <span className="mono path-text">{certbot.rootPath}</span>
-              <span className="mono">{certbot.emailConfigured ? "email configured" : "no email"}</span>
-            </span>
-          ) : "Issues and renews certificates in temporary Docker containers."
-        }
-      />
-    ),
   };
 
   // Disk usage and the deploy-folder scan used to be Settings pages; they are about this machine, so they sit with Docker.
@@ -1236,7 +1044,7 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
       <MaintenanceSection />
     </div>
   );
-  const panels = { nginx: nginxPanel, docker: dockerWithHousekeeping, certbot: certbotPanel };
+  const panels = { nginx: nginxPanel, docker: dockerWithHousekeeping };
 
   return (
     <SubShell
@@ -1262,6 +1070,8 @@ function SystemPage({ activeTab }: { activeTab: HostTab }) {
         <NetworksSection />
       ) : activeTab === "power" ? (
         <PowerSection />
+      ) : activeTab === "certbot" ? (
+        <CertbotSection />
       ) : (
         <>
           {headers[activeTab]}
