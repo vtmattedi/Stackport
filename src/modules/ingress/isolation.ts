@@ -188,17 +188,20 @@ export async function switchToIsolated(projectId: number, deps: IsolationDeps): 
   if (unreachable) return fail(`The new route was not working, so nothing was changed: ${unreachable}.`, removeNew);
   steps.push("Every route answers from nginx on the new network. The old route is still in place.");
 
-  // From here nginx's config changes, so a failure restores it.
+  // From here nginx's config changes, so a failure restores it. TCP proxies, once moved, are moved back before the network
+  // goes: one still attached would keep the network alive and could no longer reach its service.
+  let tcpMoved = false;
   const revert = async (): Promise<void> => {
     deps.setFlag(projectId, false);
     await deps.applyNginx();
+    if (tcpMoved) await deps.applyTcp().catch((err: unknown) => logger.warn({ err, projectId }, "isolation: moving TCP proxies back failed"));
     await removeNew();
   };
   deps.setFlag(projectId, true);
   const nginx = await deps.applyNginx();
   if (!nginx.ok) return fail(`nginx refused the new configuration: ${nginx.message.trim() || "no message"}. The old configuration was restored.`, revert);
   steps.push("nginx now uses the new route.");
-  try { await deps.applyTcp(); steps.push("TCP proxies follow the project onto its network."); }
+  try { tcpMoved = true; await deps.applyTcp(); steps.push("TCP proxies follow the project onto its network."); }
   catch (err) { steps.push(`TCP proxies could not be moved (${text(err)}); the next start-up retries it.`); }
 
   const stillUnreachable = await verifyAll(routes, (s) => isolatedAlias(projectId, s), deps.probe);

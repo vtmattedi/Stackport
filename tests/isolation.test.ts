@@ -184,6 +184,18 @@ test("switch: when nginx refuses the new config, the flag and the config go back
   assert.ok(f.calls.some((c) => isNet(c, "rm")));
 });
 
+test("switch: when the check after nginx switched fails, TCP proxies are moved back before the network is removed", async () => {
+  let probes = 0;
+  const f = fake({ reachable: () => ++probes <= 1 });
+  const result = await switchToIsolated(7, f.deps);
+  assert.equal(result.ok, false);
+  assert.match(result.reason ?? "", /After nginx switched/);
+  assert.deepEqual(f.flags, [true, false]);
+  assert.equal(f.tcpCount(), 2, "moved onto the network, then back");
+  assert.equal(f.nginxApplied.length, 2);
+  assert.ok(f.calls.some((c) => isNet(c, "rm") && c[2] === "stackport-iso-7"));
+});
+
 test("switch: a project with nothing running cannot be checked, so nothing changes", async () => {
   const f = fake({ running: 0 });
   const result = await switchToIsolated(7, f.deps);
