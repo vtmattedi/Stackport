@@ -15,6 +15,20 @@ export function GithubAuthCard({ project, setProject }: { project: Project; setP
   if (project.sourceType !== "github" || !project.githubRepo) return null;
   const usesApp = project.githubAuthMode === "app";
 
+  async function chooseDeployOn(mode: "push" | "ci" | "release") {
+    setSaving(true);
+    setProblem("");
+    try {
+      const result = await api.setProjectGithubDeployOn(project.id, mode);
+      setProject({ ...project, githubDeployOn: result.githubDeployOn });
+      notify.success("Saved.");
+    } catch (err) {
+      setProblem(err instanceof ApiError ? err.message : "Could not change what makes this project deploy");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function move(mode: "app" | "token") {
     setSaving(true);
     setProblem("");
@@ -37,6 +51,19 @@ export function GithubAuthCard({ project, setProject }: { project: Project; setP
             Deploys and branch checks use a short-lived token from the GitHub App (<Link to="/settings/github">Settings &gt; GitHub</Link>). If the App
             loses access to <code className="mono">{project.githubRepo}</code>, they fail with a message: they do not fall back to a token.
           </p>
+          <div className="field">
+            <label>Deploy when</label>
+            <select value={project.githubDeployOn} disabled={saving} onChange={(event) => void chooseDeployOn(event.target.value as "push" | "ci" | "release")}>
+              <option value="push">a commit is pushed to the branch</option>
+              <option value="ci">a pushed commit's checks pass</option>
+              <option value="release">a release is published</option>
+            </select>
+            <p className="hint">
+              {project.githubDeployOn === "ci" && "A push is held while its checks run. It deploys when they pass; if one fails, it does not, and you are told. A repository with no checks deploys after five minutes."}
+              {project.githubDeployOn === "release" && "Pushes are ignored. A published release (not a draft or prerelease) deploys the commit its tag points at."}
+              {project.githubDeployOn === "push" && "Every push to the auto-deploy branch deploys, as before."}
+            </p>
+          </div>
           <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => void move("token")}>Use this project's token again</Button>
         </>
       ) : (

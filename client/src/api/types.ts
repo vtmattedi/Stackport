@@ -48,6 +48,8 @@ export interface Project {
   githubAuthMode: "app" | null;
   githubRepositoryId: number | null;
   githubInstallationId: number | null;
+  /** What makes an App project deploy: a push (default), a push once its checks pass, or a published release. */
+  githubDeployOn: "push" | "ci" | "release";
   /** Routed services sit on a network of this project's own instead of the shared ingress network. */
   ingressIsolated: boolean;
   /** Resolved-config policy violations reject a deploy; off, they only warn. */

@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import { auditLog } from "../../../shared/logger";
 import { findProjectByHookId, hasDelivery, recordDelivery, verifySignature } from "../githubWebhooks";
 import { requestAutoDeploy } from "../autoDeploy";
-import { processDelivery, receiveAppDelivery } from "../../github/webhook";
+import { processDeliveryAsync, receiveAppDelivery } from "../../github/webhook";
 
 const router = Router();
 
@@ -42,7 +42,7 @@ router.post(
       event: req.header("x-github-event") ?? undefined,
     });
     res.status(result.status).json(result.body);
-    if (deliveryId) setImmediate(() => { processDelivery(deliveryId); });
+    if (deliveryId) setImmediate(() => { void processDeliveryAsync(deliveryId); });
   },
 );
 

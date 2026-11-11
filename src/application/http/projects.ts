@@ -76,6 +76,7 @@ import { removeIngressNetwork } from "../../modules/ingress/networks";
 import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
 import { dnsGate } from "../../modules/ingress/dnsCheck";
+import { modeAvailable } from "../../modules/github/ci";
 import { realRenameDeps } from "../../modules/ingress/hostnameOps";
 import { addManagedProjectDomain, getManagedDomain, renameProjectHostname, reserveHostnameForProject, validateLabel } from "../../modules/ingress/managedDomains";
 import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
@@ -686,6 +687,24 @@ router.get("/:id/ingress-health", requireAuth, async (req: Request<{ id: string 
   if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   res.json(await checkProjectIngress(id));
+});
+
+/** What makes a project that deploys through the GitHub App deploy: a push (default), a push once its checks pass (M2), or a
+ *  published release (M3). A mode the App was not registered for, or whose permissions the installation has not approved, is
+ *  refused with the reason. Changing the mode drops a commit that was waiting for checks. */
+router.put("/:id/github-deploy-on", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  const mode: unknown = req.body?.mode;
+  if (mode !== "push" && mode !== "ci" && mode !== "release") { res.status(400).json({ error: 'mode must be "push", "ci" or "release"' }); return; }
+  if (project.githubAuthMode !== "app") { res.status(409).json({ error: "This project does not deploy through the GitHub App." }); return; }
+  const problem = modeAvailable(mode, project.githubInstallationId);
+  if (problem) { res.status(409).json({ error: problem }); return; }
+  getDatabase().prepare("UPDATE projects SET github_deploy_on = ?, github_pending_ci_sha = NULL, github_pending_ci_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(mode === "push" ? null : mode, id);
+  auditLog(req.user ?? "unknown", "project.github-deploy-on", String(id), "ok", { mode });
+  res.json({ githubDeployOn: mode });
 });
 
 /** Moves a project between a token and the GitHub App (Phase B). Moving to the App first proves, with a real call, that

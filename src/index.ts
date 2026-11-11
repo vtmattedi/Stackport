@@ -22,7 +22,8 @@ import { getPushConfig } from "./modules/notifications/push/transport";
 import { pushDeliveryWorker } from "./modules/notifications/push/worker";
 import { logger } from "./shared/logger";
 import { getNetworkHeadroom } from "./modules/maintenance/networkHeadroom";
-import { pruneDeliveries, resumeDeliveries } from "./modules/github/webhook";
+import { pruneDeliveries, resumeAllDeliveries } from "./modules/github/webhook";
+import { sweepHeldCommits } from "./modules/github/ci";
 
 /** In this order: services on the shared network first (nginx's config names them by alias), then the config,
  *  then the TCP proxies, then the per-project networks 1.3.0 left behind. */
@@ -50,7 +51,10 @@ try {
   ensureBootstrapCredential();
   void startIngress();
   // Deliveries stored but not handled before the last stop (a crash between intake and handling), and old ones to drop.
-  try { resumeDeliveries(); pruneDeliveries(); } catch (err) { logger.warn({ err }, "github-app: resuming deliveries failed"); }
+  try { pruneDeliveries(); } catch (err) { logger.warn({ err }, "github-app: pruning deliveries failed"); }
+  void resumeAllDeliveries().catch((err: unknown) => logger.warn({ err }, "github-app: resuming deliveries failed"));
+  // Commits held for their checks: a repository with no checks never sends an event, so they are looked at on a timer.
+  setInterval(() => { void sweepHeldCommits().catch((err: unknown) => logger.warn({ err }, "github-app: sweeping held commits failed")); }, 60_000).unref();
   setInterval(() => { try { pruneDeliveries(); } catch { /* retried tomorrow */ } }, 24 * 60 * 60 * 1000).unref();
   void warnIfNetworkPoolIsNearlyFull();
   void reconcileNetworkGroups();

@@ -147,8 +147,8 @@ router.get("/deliveries", requireAuth, (req: Request, res: Response): void => {
 });
 
 /** Handles a stored delivery again, for one that failed or was ignored for a reason that has since been fixed. */
-router.post("/deliveries/:id/replay", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
-  const status = replayDelivery(req.params.id);
+router.post("/deliveries/:id/replay", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const status = await replayDelivery(req.params.id);
   if (status === null) { res.status(404).json({ error: "Delivery not found" }); return; }
   auditLog(req.user ?? "unknown", "github-app.replay", req.params.id, status === "failed" ? "fail" : "ok", { status });
   res.json({ status, deliveries: listDeliveries(20) });

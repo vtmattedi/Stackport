@@ -453,6 +453,8 @@ export const api = {
     request<{ composePolicyEnforced: boolean }>(`/projects/${projectId}/compose-policy-enforcement`, { method: "PUT", body: JSON.stringify({ enforced }) }),
   rotateGithubCredentials: (input: { privateKey?: string; webhookSecret?: string }) =>
     request<{ privateKey: boolean; webhookSecret: boolean }>("/github-app/credentials", { method: "PUT", body: JSON.stringify(input) }),
+  setProjectGithubDeployOn: (projectId: number, mode: "push" | "ci" | "release") =>
+    request<{ githubDeployOn: "push" | "ci" | "release" }>(`/projects/${projectId}/github-deploy-on`, { method: "PUT", body: JSON.stringify({ mode }) }),
   getGithubDeliveries: () => request<{ deliveries: GithubDelivery[] }>("/github-app/deliveries"),
   replayGithubDelivery: (deliveryId: string) =>
     request<{ status: string; deliveries: GithubDelivery[] }>(`/github-app/deliveries/${encodeURIComponent(deliveryId)}/replay`, { method: "POST" }),

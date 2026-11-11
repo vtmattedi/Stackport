@@ -302,9 +302,9 @@ test("repositories added or removed update the cache, and a removed one is revok
 
 test("events we do not use yet are recorded and ignored", () => {
   world();
-  const { id } = deliver("workflow_run", { action: "completed", installation: { id: 11 } });
+  const { id } = deliver("issues", { action: "opened", installation: { id: 11 } });
   assert.equal(statusOf(id), "ignored");
-  assert.match(detailOf(id), /not used yet/);
+  assert.match(detailOf(id), /not used/);
 });
 
 // ---- crash, failure, replay, retention
@@ -325,7 +325,7 @@ test("a delivery stored but not handled before a crash is handled at start-up", 
   clearPendingAutoDeploy(projectId); release();
 });
 
-test("a delivery that fails is recorded, retried up to three times, and can be replayed by hand", () => {
+test("a delivery that fails is recorded, retried up to three times, and can be replayed by hand", async () => {
   world();
   const id = newId();
   getDatabase().prepare("INSERT INTO github_app_deliveries (delivery_id, event, payload_json, status) VALUES (?, 'push', '{broken', 'received')").run(id);
@@ -337,8 +337,8 @@ test("a delivery that fails is recorded, retried up to three times, and can be r
   assert.equal(resumeDeliveries(), 0, "after three attempts it is left for a person");
   getDatabase().prepare("UPDATE github_app_deliveries SET payload_json = ? WHERE delivery_id = ?").run(JSON.stringify(reducePayload("ping", {})), id);
   getDatabase().prepare("UPDATE github_app_deliveries SET event = 'ping' WHERE delivery_id = ?").run(id);
-  assert.equal(replayDelivery(id), "processed", "replayed once whatever was wrong is fixed");
-  assert.equal(replayDelivery("does-not-exist"), null);
+  assert.equal(await replayDelivery(id), "processed", "replayed once whatever was wrong is fixed");
+  assert.equal(await replayDelivery("does-not-exist"), null);
 });
 
 test("retention: handled deliveries go after 14 days, failed ones after 30", () => {

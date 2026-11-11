@@ -31,7 +31,7 @@ export function bindProjectToApp(projectId: number, repository: AppRepository): 
 
 /** Back to the token the project had. The credential columns were never touched, so nothing is lost. */
 export function unbindProjectFromApp(projectId: number): void {
-  getDatabase().prepare("UPDATE projects SET github_auth_mode = NULL, github_repository_id = NULL, github_installation_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projectId);
+  getDatabase().prepare("UPDATE projects SET github_auth_mode = NULL, github_repository_id = NULL, github_installation_id = NULL, github_pending_ci_sha = NULL, github_pending_ci_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projectId);
 }
 
 /** Granted repositories whose name matches (case-insensitive), across every linked installation. More than one

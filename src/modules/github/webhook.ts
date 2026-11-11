@@ -3,6 +3,8 @@ import { getDatabase } from "../../config/database";
 import { auditLog, logger } from "../../shared/logger";
 import { requestAutoDeploy } from "../automation/autoDeploy";
 import { getApp, getAppSecrets, getInstallation, listRepositories, setInstallationStatus, upsertInstallation } from "./store";
+import { defaultGithubClient, type GithubClient } from "./client";
+import { deployRelease, holdForCi, settleRepository } from "./ci";
 
 /**
  * The one webhook endpoint of the GitHub App (Phase C, docs/1.3.7/github-app.md §7).
@@ -29,6 +31,10 @@ export interface StoredPayload {
   account: { id: number; login: string; type: string } | null;
   permissions: Record<string, string> | null;
   suspended: boolean;
+  /** A release event: its tag, and whether it is a draft or prerelease (module M3). */
+  release?: { tag: string; prerelease: boolean; draft: boolean } | null;
+  /** A check suite or workflow run event: the commit and how it ended (module M2). */
+  check?: { sha: string; status: string | null; conclusion: string | null } | null;
   added: { id: number; fullName: string; isPrivate: boolean }[];
   removed: { id: number; fullName: string }[];
 }
@@ -62,6 +68,8 @@ export function reducePayload(event: string, raw: unknown): StoredPayload {
   const list = (value: unknown): Json[] => (Array.isArray(value) ? value.map(obj).filter((v): v is Json => v !== null) : []);
   const repoId = int(repository?.["id"]);
   const permissions = obj(installation?.["permissions"]);
+  const release = obj(body["release"]);
+  const suite = obj(body["check_suite"]) ?? obj(body["workflow_run"]);
   return {
     event,
     action: clip(body["action"]),
@@ -74,6 +82,8 @@ export function reducePayload(event: string, raw: unknown): StoredPayload {
     account: account && int(account["id"]) !== null && typeof account["login"] === "string" ? { id: account["id"] as number, login: clip(account["login"]) ?? "", type: clip(account["type"]) ?? "User" } : null,
     permissions: permissions ? Object.fromEntries(Object.entries(permissions).filter(([, v]) => typeof v === "string").slice(0, 50).map(([k, v]) => [k.slice(0, 60), String(v).slice(0, 20)])) : null,
     suspended: typeof installation?.["suspended_at"] === "string",
+    release: release && typeof release["tag_name"] === "string" ? { tag: clip(release["tag_name"]) ?? "", prerelease: release["prerelease"] === true, draft: release["draft"] === true } : null,
+    check: suite && typeof suite["head_sha"] === "string" ? { sha: clip(suite["head_sha"]) ?? "", status: clip(suite["status"]), conclusion: clip(suite["conclusion"]) } : null,
     added: list(body["repositories_added"]).filter((r) => int(r["id"]) !== null && typeof r["full_name"] === "string").slice(0, 500).map((r) => ({ id: r["id"] as number, fullName: clip(r["full_name"]) ?? "", isPrivate: r["private"] === true })),
     removed: list(body["repositories_removed"]).filter((r) => int(r["id"]) !== null && typeof r["full_name"] === "string").slice(0, 500).map((r) => ({ id: r["id"] as number, fullName: clip(r["full_name"]) ?? "" })),
   };
@@ -115,13 +125,13 @@ function finish(deliveryId: string, status: DeliveryStatus, detail: string | nul
 }
 
 interface ProjectTarget {
-  id: number; name: string; paused: number; deploy_trigger: string; auto_deploy_branch: string | null; last_commit_sha: string | null;
+  id: number; name: string; paused: number; deploy_trigger: string; auto_deploy_branch: string | null; last_commit_sha: string | null; github_deploy_on: string | null;
 }
 
 /** Projects bound to this repository id through this installation. */
 function projectsFor(installationId: number, repositoryId: number): ProjectTarget[] {
   return getDatabase().prepare(
-    "SELECT id, name, paused, deploy_trigger, auto_deploy_branch, last_commit_sha FROM projects WHERE github_auth_mode = 'app' AND github_installation_id = ? AND github_repository_id = ?",
+    "SELECT id, name, paused, deploy_trigger, auto_deploy_branch, last_commit_sha, github_deploy_on FROM projects WHERE github_auth_mode = 'app' AND github_installation_id = ? AND github_repository_id = ?",
   ).all(installationId, repositoryId) as ProjectTarget[];
 }
 
@@ -137,16 +147,23 @@ function handlePush(payload: StoredPayload): [DeliveryStatus, string] {
 
   const outcomes: string[] = [];
   for (const project of targets) {
+    if (project.github_deploy_on === "release") { outcomes.push(`${project.name}: deploys on a release, not on a push`); continue; }
     if (project.paused) { outcomes.push(`${project.name}: paused`); continue; }
     if (project.deploy_trigger === "manual") { outcomes.push(`${project.name}: deploys are manual`); continue; }
     if (!project.auto_deploy_branch) { outcomes.push(`${project.name}: no auto-deploy branch`); continue; }
     if (payload.ref !== `refs/heads/${project.auto_deploy_branch}`) { outcomes.push(`${project.name}: push to ${payload.ref ?? "an unknown ref"}, not ${project.auto_deploy_branch}`); continue; }
     if (payload.after === project.last_commit_sha) { outcomes.push(`${project.name}: commit already deployed`); continue; }
+    if (project.github_deploy_on === "ci") {
+      // Held until its checks pass; a newer push replaces it. It is settled right after this (and again when a check finishes).
+      holdForCi(project.id, payload.after);
+      outcomes.push(`${project.name}: waiting for checks`);
+      continue;
+    }
     const outcome = requestAutoDeploy(project.id, { sha: payload.after, commitMessage: payload.commit?.message ?? null, commitAuthor: payload.commit?.author ?? null, commitAt: payload.commit?.at ?? null }, "webhook");
     outcomes.push(`${project.name}: ${outcome === "started" ? "deploy started" : "deploy queued"}`);
     auditLog("github", "github-app.deploy", project.name, "ok", { sha: payload.after.slice(0, 7), outcome });
   }
-  const deployed = outcomes.some((o) => /deploy (started|queued)/.test(o));
+  const deployed = outcomes.some((o) => /deploy (started|queued)|waiting for checks/.test(o));
   return [deployed ? "processed" : "ignored", outcomes.join("; ")];
 }
 
@@ -208,8 +225,64 @@ export function handlePayload(payload: StoredPayload): [DeliveryStatus, string] 
     case "push": return handlePush(payload);
     case "installation": return handleInstallation(payload);
     case "installation_repositories": return handleRepositories(payload);
-    default: return ["ignored", `The "${payload.event}" event is not used yet`];
+    default: return ["ignored", `The "${payload.event}" event is not used`];
   }
+}
+
+/** Events that need a call to GitHub to be handled, so they go through `processDeliveryAsync`. */
+const ASYNC_EVENTS = new Set(["release", "check_suite", "workflow_run"]);
+
+async function handleAsync(payload: StoredPayload, client: GithubClient): Promise<[DeliveryStatus, string]> {
+  if (payload.installationId === null || !payload.repository) return ["ignored", "An event without an installation or repository"];
+  const installation = getInstallation(payload.installationId);
+  if (!installation || installation.status !== "linked") return ["ignored", "The installation is not linked to Stackport, so its events are ignored"];
+  if (!listRepositories(payload.installationId).some((r) => r.repositoryId === payload.repository?.id)) return ["ignored", "The App does not have access to this repository"];
+
+  if (payload.event === "release") {
+    if ((payload.action !== "published" && payload.action !== "released") || !payload.release) return ["ignored", `Release action "${payload.action ?? "unknown"}" is not used`];
+    const detail = await deployRelease(payload.installationId, payload.repository.id, payload.release.tag, payload.release.prerelease, payload.release.draft, client);
+    return [/deploy (started|queued)/.test(detail) ? "processed" : "ignored", detail];
+  }
+  // check_suite and workflow_run: only a finished one can change what a held commit does.
+  if (payload.action !== "completed" || !payload.check) return ["ignored", `The "${payload.event}" event is only used when it completes`];
+  const results = await settleRepository(payload.installationId, payload.repository.id, payload.check.sha, new Date(), client);
+  if (results.length === 0) return ["ignored", `No project is waiting for the checks of ${payload.check.sha.slice(0, 7)}`];
+  return ["processed", results.join(", ")];
+}
+
+/** Handles any stored delivery, including the ones that need GitHub: releases and finished checks. After a push, projects
+ *  that wait for checks are settled at once (the checks may already be done). */
+export async function processDeliveryAsync(deliveryId: string, client: GithubClient = defaultGithubClient()): Promise<DeliveryStatus | null> {
+  const db = getDatabase();
+  const row = db.prepare("SELECT delivery_id, payload_json, status, attempts FROM github_app_deliveries WHERE delivery_id = ?").get(deliveryId) as DeliveryRow | undefined;
+  if (!row) return null;
+  let payload: StoredPayload;
+  try { payload = JSON.parse(row.payload_json) as StoredPayload; }
+  catch { return processDelivery(deliveryId); }
+  if (!ASYNC_EVENTS.has(payload.event)) {
+    const status = processDelivery(deliveryId);
+    if (payload.event === "push" && status === "processed" && payload.installationId !== null && payload.repository && payload.after) {
+      await settleRepository(payload.installationId, payload.repository.id, payload.after, new Date(), client).catch((err: unknown) => logger.warn({ err, deliveryId }, "github-app: settling held commits after a push failed"));
+    }
+    return status;
+  }
+  db.prepare("UPDATE github_app_deliveries SET attempts = attempts + 1 WHERE delivery_id = ?").run(deliveryId);
+  try {
+    const [status, detail] = await handleAsync(payload, client);
+    finish(deliveryId, status, detail);
+    return status;
+  } catch (err) {
+    finish(deliveryId, "failed", err instanceof Error ? err.message.slice(0, 500) : "failed");
+    logger.warn({ err, deliveryId }, "github-app: a delivery could not be handled");
+    return "failed";
+  }
+}
+
+/** At start-up: every delivery stored but not handled, or failed with attempts left, including the ones that need GitHub. */
+export async function resumeAllDeliveries(client: GithubClient = defaultGithubClient()): Promise<number> {
+  const rows = getDatabase().prepare("SELECT delivery_id FROM github_app_deliveries WHERE status = 'received' OR (status = 'failed' AND attempts < ?) ORDER BY received_at").all(3) as { delivery_id: string }[];
+  for (const row of rows) await processDeliveryAsync(row.delivery_id, client);
+  return rows.length;
 }
 
 const MAX_ATTEMPTS = 3;
@@ -219,6 +292,8 @@ export function processDelivery(deliveryId: string): DeliveryStatus | null {
   const db = getDatabase();
   const row = db.prepare("SELECT delivery_id, payload_json, status, attempts FROM github_app_deliveries WHERE delivery_id = ?").get(deliveryId) as DeliveryRow | undefined;
   if (!row) return null;
+  // Events that need GitHub are left for processDeliveryAsync, which the endpoint and start-up use.
+  try { if (ASYNC_EVENTS.has((JSON.parse(row.payload_json) as StoredPayload).event)) return "received"; } catch { /* handled below */ }
   db.prepare("UPDATE github_app_deliveries SET attempts = attempts + 1 WHERE delivery_id = ?").run(deliveryId);
   try {
     const [status, detail] = handlePayload(JSON.parse(row.payload_json) as StoredPayload);
@@ -240,8 +315,8 @@ export function resumeDeliveries(): number {
 }
 
 /** Replays a stored delivery by hand. It is handled again from the stored copy; the signature was checked at intake. */
-export function replayDelivery(deliveryId: string): DeliveryStatus | null {
-  return processDelivery(deliveryId);
+export function replayDelivery(deliveryId: string): Promise<DeliveryStatus | null> {
+  return processDeliveryAsync(deliveryId);
 }
 
 export interface DeliveryView { deliveryId: string; event: string; action: string | null; installationId: number | null; status: DeliveryStatus; attempts: number; receivedAt: string; processedAt: string | null; detail: string | null }
