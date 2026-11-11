@@ -76,8 +76,8 @@ export function computeHeadroom(pools: AddressPool[], subnets: string[], poolsKn
 
 const ADVICE = [
   "Docker gives every network a slice of a small default address pool, and a new network fails once it is used up.",
-  'Enlarge it in /etc/docker/daemon.json, for example {"default-address-pools":[{"base":"10.20.0.0/14","size":24}]}',
-  "(that holds 1024 networks), then restart Docker. Pick a base that does not overlap your own networks. Existing networks keep their ranges.",
+  "On the server run `sudo stackport network-pool set --base 10.20.0.0/14 --size 24`: it sets default-address-pools in /etc/docker/daemon.json",
+  "(1024 networks) after checking the range against the host's own routes, and asks before restarting Docker. Existing networks keep their ranges.",
 ].join(" ");
 
 interface DockerInfoPool { Base?: string; Size?: number }
@@ -91,8 +91,8 @@ export function getNetworkHeadroom(): Promise<NetworkHeadroom> {
   return headroomCache.get();
 }
 
-/** The subnets of every network and the daemon's pools, as Docker reports them. */
-export async function readNetworkHeadroom(run: DockerRun = dockerRun): Promise<NetworkHeadroom> {
+/** The daemon's address pools; the stock ones, with `known` false, when it will not say. */
+export async function readAddressPools(run: DockerRun = dockerRun): Promise<{ pools: AddressPool[]; known: boolean }> {
   let pools = DEFAULT_ADDRESS_POOLS;
   let poolsKnown = false;
   try {
@@ -100,12 +100,19 @@ export async function readNetworkHeadroom(run: DockerRun = dockerRun): Promise<N
     if (parsed && parsed.length) {
       pools = parsed.filter((p): p is { Base: string; Size: number } => typeof p.Base === "string" && typeof p.Size === "number").map((p) => ({ base: p.Base, size: p.Size }));
       poolsKnown = pools.length > 0;
-    } else if (Array.isArray(parsed)) {
-      poolsKnown = true; // the daemon answered, and it has no custom pools, so the stock ones apply
+    } else if (Array.isArray(parsed) || parsed === null) {
+      // The daemon answered and has no custom pools (Docker prints null for an unset list), so the stock ones apply.
+      // A daemon too old to have the field makes the command fail instead, which is caught below.
+      poolsKnown = true;
     }
   } catch { /* keep the stock pools; poolsKnown says they are an assumption */ }
   if (!pools.length) { pools = DEFAULT_ADDRESS_POOLS; poolsKnown = false; }
+  return { pools, known: poolsKnown };
+}
 
+/** The subnets of every network and the daemon's pools, as Docker reports them. */
+export async function readNetworkHeadroom(run: DockerRun = dockerRun): Promise<NetworkHeadroom> {
+  const { pools, known: poolsKnown } = await readAddressPools(run);
   const ids = (await run(["network", "ls", "--quiet"])).split(/\s+/).filter(Boolean);
   const subnets: string[] = [];
   if (ids.length) {

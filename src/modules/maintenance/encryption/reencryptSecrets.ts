@@ -1,11 +1,9 @@
 import { getDatabase } from "../../../config/database";
 import { currentKeyId, decryptSecret, encryptSecret, LEGACY_KEY_ID, secretKeyId } from "../../../shared/crypto";
-import type { LegacyMigration, MigrationMode, MigrationReport, ReportItem } from "./types";
+import type { EncryptionTask, MigrationMode, MigrationReport, ReportItem } from "./types";
 
-/** TEMPORARY (see types.ts). S7: re-encrypt every stored secret under the current
- *  ENCRYPTION_KEY, so JWT_SECRET (or an old encryption key) can be rotated or retired.
- *  It is also how a later key rotation is finished, so this one may be worth keeping when
- *  the others are removed. */
+/** S7: re-encrypt every stored secret under the current ENCRYPTION_KEY, so JWT_SECRET
+ *  (or an old encryption key) can be rotated or retired. It is how a key rotation is finished. */
 
 export interface SecretColumn { table: string; column: string; idColumn: string; label: string }
 
@@ -104,7 +102,7 @@ function defaultDeps(): ReencryptDeps {
   };
 }
 
-export const reencryptSecretsMigration: LegacyMigration = {
+export const reencryptSecretsMigration: EncryptionTask = {
   id: "reencrypt-secrets",
   title: "Re-encrypt stored secrets with the current key (S7)",
   description:

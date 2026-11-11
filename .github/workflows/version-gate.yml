@@ -1,0 +1,27 @@
+name: Version gate
+
+# A pull request to main raises the version, and the version matches the branch name when the branch is named like one
+# (scripts/ci/version-gate.sh). The version a server shows comes from package.json, so it has to be right before the merge.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check the version
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          head="$(node -p "require('./package.json').version")"
+          base="$(git show "$BASE_SHA:package.json" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version")"
+          bash scripts/ci/version-gate.sh "$HEAD_REF" "$head" "$base"

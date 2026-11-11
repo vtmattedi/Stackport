@@ -59,7 +59,7 @@ Only `url` is required in the manifest; everything below is ours to choose.
   "hook_attributes": { "url": "https://<domain>/api/hooks/github/app", "active": true },
   "public": false,
   "default_permissions": { "contents": "read" },
-  "default_events": ["push", "installation", "installation_repositories"]
+  "default_events": ["push"]
 }
 ```
 

@@ -18,7 +18,7 @@ services, builders, configuration, or database migrations.
 | `src/modules/identity` | Installation/bootstrap, sessions, API/setup tokens, authentication, and admin routes |
 | `src/modules/credentials` | Credential routes and record types |
 | `src/modules/containers` | Container shell and log operations |
-| `src/modules/maintenance` | Self-update, readiness, version reporting, Docker storage maintenance, and the temporary one-off data migrations behind Settings > Migrations (`maintenance/migrations`, to be deleted once installs have run them) |
+| `src/modules/maintenance` | Self-update, readiness, version reporting, Docker storage maintenance, and the encryption task behind Settings > Encryption (`maintenance/encryption`: re-encrypt stored secrets, which finishes a key rotation) |
 | `src/integrations/docker` | Shared Docker queries, resource classification, and container references |
 | `src/transports` | Socket.IO and MCP protocol adapters |
 | `src/application` | Composition across capabilities, including project/system HTTP routers and realtime wiring |

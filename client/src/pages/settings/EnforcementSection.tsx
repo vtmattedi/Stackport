@@ -48,8 +48,9 @@ export default function EnforcementSection() {
     <div className="card">
       <p className="hint">
         New projects start with every protection on. A project created before 1.3 keeps its old behaviour until you switch
-        it. Enforcing the policy and hardened defaults are per-project switches on the project's Settings tab; managed
-        volumes need their data copied first, so they are switched on by <Link to="/settings/migrations">Migrations</Link>.
+        it. Enforcing the policy and hardened defaults are per-project switches on the project's Settings tab. Managed
+        volumes apply to new projects only: the page that copied an older project's data over was removed in 1.3.9, so
+        a project that still lists them as off keeps its current mounts.
       </p>
       {incomplete.length === 0 ? (
         <p>Every project has all three protections on.</p>

@@ -12,7 +12,7 @@ import { getDatabase, initializeDatabase } from "../src/config/database";
 import { MIGRATIONS, runMigrations, schemaVersion } from "../src/migrations";
 import { createKeyring } from "../src/shared/crypto";
 import { issueAuthToken } from "../src/modules/identity/sessions";
-import { runReencryption, SECRET_COLUMNS, type ReencryptDeps } from "../src/modules/maintenance/migrations/reencryptSecrets";
+import { runReencryption, SECRET_COLUMNS, type ReencryptDeps } from "../src/modules/maintenance/encryption/reencryptSecrets";
 import { GithubClient, setDefaultGithubClientForTests } from "../src/modules/github/client";
 import {
   appJwt, completeLink, completeManifest, forgetInstallationTokens, installationToken, refreshRepositories, rotateAppCredentials, startLink, startManifest, type PreflightDeps,

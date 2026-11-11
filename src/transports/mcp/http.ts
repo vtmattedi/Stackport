@@ -7,7 +7,7 @@ import { z } from "zod";
 import { requireApiToken } from "../../modules/identity/middleware/apiToken";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
-import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listGithubRepositoriesView, listManagedDomainsView, listNetworkGroupsView, listProjectsView } from "./readModel";
+import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listDockerNetworksView, listGithubRepositoriesView, listManagedDomainsView, listNetworkGroupsView, listProjectsView } from "./readModel";
 import { registerWriteTools } from "./writeTools";
 import { packageVersion } from "../../modules/maintenance/version";
 
@@ -119,6 +119,20 @@ export function buildMcpServer(token: ApiToken): McpServer {
     () => {
       audit("stackport_list_github_repositories");
       return result(listGithubRepositoriesView());
+    }
+  );
+
+  server.registerTool(
+    "stackport_list_docker_networks",
+    {
+      title: "List Docker networks",
+      description: "Every Docker network on the host with who owns it (a project, a network group, Stackport itself, or something else), its subnets, how many slices of Docker's address pool it takes and how many containers are attached, plus how many more networks the pool can hold. Use it to see why a deploy cannot create a network, or what is using the address space.",
+      annotations: READ_ONLY,
+    },
+    async () => {
+      audit("stackport_list_docker_networks");
+      try { return result(await listDockerNetworksView()); }
+      catch (err) { return notFound(`Docker could not be read: ${err instanceof Error ? err.message : "unknown error"}`); }
     }
   );
 

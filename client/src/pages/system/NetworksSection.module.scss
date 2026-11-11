@@ -1,0 +1,25 @@
+.meter { height: 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); overflow: hidden; margin: 10px 0 6px; }
+.meter-fill { height: 100%; background: var(--success, #3fb950); }
+.meter-fill-warning { background: var(--warning, #d29922); }
+.meter-fill-critical { background: var(--danger, #f85149); }
+.meter-text { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; }
+.pools { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--dim); }
+
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 12px 0; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter { font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--dim); cursor: pointer; }
+.filter[aria-pressed="true"] { color: var(--text, inherit); border-color: var(--accent, currentColor); background: rgba(99, 102, 241, 0.12); }
+.unused { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim); }
+
+.table-wrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th, .table td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--border); vertical-align: top; }
+.table th { color: var(--dim); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; border-top: 0; }
+.name { font-family: var(--mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+.owner { display: grid; gap: 2px; }
+.kind { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); width: fit-content; white-space: nowrap; }
+.kind-project, .kind-isolated { color: var(--success, #3fb950); border-color: var(--success, #3fb950); }
+.kind-group { color: var(--accent, #818cf8); border-color: var(--accent, #818cf8); }
+.kind-legacy { color: var(--warning, #d29922); border-color: var(--warning, #d29922); }
+.muted { color: var(--dim); }
+.empty { color: var(--dim); font-size: 13px; padding: 8px 0; }

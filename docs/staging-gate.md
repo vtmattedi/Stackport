@@ -13,7 +13,8 @@ A pull request that changes any of these needs a result from a real host:
 - Docker networks, aliases or attachment: `src/modules/ingress/networks.ts`, `bootstrap.ts`, `health.ts`, `isolation.ts`, `isolationState.ts`, `tcp.ts`,
   `src/shared/ingressNames.ts`, `src/modules/deployments/compose/networking.ts`, `groupNetworks.ts`,
   `src/modules/deployments/networkGroupAssignment.ts`
-- Mounts and data: `managedVolumes.ts`, `seedVolumes.ts`, `src/modules/maintenance/migrations/`
+- Mounts and data: `managedVolumes.ts`, `seedVolumes.ts`
+- Docker's address pool and the host's power: `src/modules/maintenance/networkHeadroom.ts`, `networks.ts`, `power.ts`
 - nginx and certificates: `src/modules/ingress/nginx/`, `src/modules/ingress/certificates/`, `hostnameOps.ts` (a hostname change applies nginx and asks for a certificate)
 - Start-up order: `src/index.ts`
 - The host: `stackport.sh`, `docker-compose.system.yml`, `Dockerfile`, `docker-entrypoint.sh`

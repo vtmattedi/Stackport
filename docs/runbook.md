@@ -81,4 +81,18 @@ sudo stackport rollback                   # back to the previous version, config
 ```
 
 `sudo stackport update` prints the network headroom before it starts. A warning there is a reason to enlarge
-the pool first.
+the pool first:
+
+```bash
+sudo stackport network-pool                                      # where things stand
+sudo stackport network-pool set --base 10.20.0.0/14 --size 24    # room for 1024 networks
+```
+
+`set` checks the range against this host's routes and interfaces (it refuses one that clashes with a VPN or a private
+network), backs up `/etc/docker/daemon.json`, lists the containers that will not restart by themselves, and asks before
+restarting Docker, which stops every container until it starts again (unless `live-restore` is on). If Docker does not come back it puts the old
+file back. Networks that exist keep their ranges. `--no-restart` writes the file and leaves the restart to you. Host > Networks in the UI shows
+the same numbers and which networks use them, and can remove the ones nothing is attached to.
+
+To reboot the machine: `sudo stackport reboot [--in <minutes>]`, or Host > Power. After updating to 1.3.9 run `sudo stackport repair` once: it
+adds the power key and the systemd units Host > Power needs.

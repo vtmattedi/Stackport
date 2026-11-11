@@ -12,6 +12,7 @@ import { expectedComposeProjectName } from "../../modules/projects/workspace";
 import { listNetworkGroups } from "../../modules/projects/networkGroups";
 import { getNetworkGroupView, type NetworkGroupView } from "../../modules/deployments/networkGroupAssignment";
 import { groupAlias } from "../../shared/networkGroups";
+import { getNetworkOverview } from "../../modules/maintenance/networks";
 import { checkProjectIngress, type IngressStatus } from "../../modules/ingress/health";
 
 /**
@@ -227,6 +228,20 @@ export function listGithubRepositoriesView(): GithubRepositoriesView {
     repositories: listGithubAppRepositories()
       .filter((r) => accounts.get(r.installationId)?.status === "linked")
       .map((r) => ({ fullName: r.fullName, account: accounts.get(r.installationId)?.accountLogin ?? "", private: r.isPrivate, archived: r.archived, defaultBranch: r.defaultBranch, project: projectForRepository(r.repositoryId) })),
+  };
+}
+
+export interface DockerNetworksView {
+  headroom: { capacity: number; used: number; free: number; level: string };
+  networks: { name: string; owner: string; ownerKind: string; driver: string; subnets: string[]; slices: number; containers: number }[];
+}
+
+/** Docker's networks with who owns each and how much address space it takes, without container names or ids. */
+export async function listDockerNetworksView(): Promise<DockerNetworksView> {
+  const { networks, headroom } = await getNetworkOverview();
+  return {
+    headroom: { capacity: headroom.capacity, used: headroom.used, free: headroom.free, level: headroom.level },
+    networks: networks.map((n) => ({ name: n.name, owner: n.owner.label, ownerKind: n.owner.kind, driver: n.driver, subnets: n.subnets, slices: n.slices, containers: n.containers.length })),
   };
 }
 

@@ -34,6 +34,10 @@ import type {
   HardeningDefaults,
   ProjectEnforcement,
   NetworkHeadroom,
+  NetworkOverview,
+  NetworkRemoval,
+  PowerPreflight,
+  PowerState,
   IngressHealth,
   IngressIsolationResult,
   GithubSettings,
@@ -492,6 +496,13 @@ export const api = {
     request<IngressIsolationResult>(`/projects/${projectId}/ingress-isolation`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   getProjectIngressHealth: (projectId: number) => request<IngressHealth>(`/projects/${projectId}/ingress-health`),
   getNetworkHeadroom: () => request<NetworkHeadroom>("/system/network-headroom"),
+  getNetworks: () => request<NetworkOverview>("/system/networks"),
+  removeNetworks: (names: string[]) =>
+    request<{ results: NetworkRemoval[] }>("/system/networks/remove", { method: "POST", body: JSON.stringify({ names }) }),
+  getPower: () => request<{ state: PowerState; preflight: PowerPreflight }>("/system/power"),
+  rebootHost: (input: { delayMinutes: number; confirm: string; interruptActions: boolean }) =>
+    request<{ state: PowerState; preflight: PowerPreflight }>("/system/power/reboot", { method: "POST", body: JSON.stringify(input) }),
+  cancelHostReboot: () => request<{ state: PowerState }>("/system/power/cancel", { method: "POST" }),
   getProjectEnforcement: () => request<{ projects: ProjectEnforcement[] }>("/system/project-enforcement"),
   getProjectNetworkGroup: (projectId: number) => request<NetworkGroupView>(`/projects/${projectId}/network-group`),
   setProjectNetworkGroup: (projectId: number, group: string, services: string[]) =>

@@ -85,7 +85,7 @@ test("an API token is not accepted by the admin API", async () => {
 test("only the read-only tools exist", async () => {
   const client = await connect(token);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_get_project", "stackport_get_project_ingress_health", "stackport_get_project_network_group", "stackport_list_github_repositories", "stackport_list_managed_domains", "stackport_list_network_groups", "stackport_list_projects", "stackport_status"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_get_project", "stackport_get_project_ingress_health", "stackport_get_project_network_group", "stackport_list_docker_networks", "stackport_list_github_repositories", "stackport_list_managed_domains", "stackport_list_network_groups", "stackport_list_projects", "stackport_status"]);
   assert.ok(tools.every((t) => t.annotations?.readOnlyHint === true));
   await client.close();
 });

@@ -5,24 +5,23 @@ import { Alert, AlertDescription } from "../../../components/ui/alert";
 import { Button } from "../../../components/ui/button";
 import { useConfirm } from "../../../components/ConfirmDialog";
 import { notify } from "../../../lib/notify";
-import { migrationsApi, type MigrationInfo, type MigrationMode, type ReportStatus } from "./migrationsApi";
-import styles from "./MigrationsSection.module.scss";
+import { encryptionApi, type MigrationInfo, type MigrationMode, type ReportStatus } from "./encryptionApi";
+import styles from "./EncryptionSection.module.scss";
 
 const STATUS_ICON: Record<ReportStatus, typeof Info> = { ok: CheckCircle2, warn: AlertTriangle, error: AlertCircle, info: Info };
 
-/** TEMPORARY: one-off migrations with a dry run and an execute. Delete this folder when
- *  every install has run them (see src/modules/maintenance/migrations/types.ts on the server). */
-export default function MigrationsSection() {
+/** Encryption tasks with a dry run and an execute: re-encrypting stored secrets, which finishes a key rotation. */
+export default function EncryptionSection() {
   const confirmDialog = useConfirm();
   const [migrations, setMigrations] = useState<MigrationInfo[] | null>(null);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
     try {
-      setMigrations(await migrationsApi.list());
+      setMigrations(await encryptionApi.list());
       setError("");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load migrations");
+      setError(err instanceof ApiError ? err.message : "Failed to load the encryption tasks");
     }
   }, []);
 
@@ -46,23 +45,23 @@ export default function MigrationsSection() {
       if (!ok) return;
     }
     try {
-      await migrationsApi.start(migration.id, mode);
+      await encryptionApi.start(migration.id, mode);
       await load();
     } catch (err) {
-      notify.error(err, mode === "dry-run" ? "Could not start the dry run" : "Could not start the migration");
+      notify.error(err, mode === "dry-run" ? "Could not start the dry run" : "Could not start the task");
     }
   }
 
   if (error) return <Alert variant="destructive"><AlertCircle size={14} /><AlertDescription>{error}</AlertDescription></Alert>;
   if (!migrations) return <div className={styles.empty}><Loader size={14} className="spin" /> Loading…</div>;
-  if (!migrations.length) return <div className={styles.empty}>No migrations are pending.</div>;
+  if (!migrations.length) return <div className={styles.empty}>Nothing to run.</div>;
 
   return (
     <div className={styles.list}>
       <Alert>
         <Info size={14} />
         <AlertDescription>
-          Temporary page for one-off data migrations. A dry run shows what would happen and changes nothing.
+          A dry run shows what would happen and changes nothing.
         </AlertDescription>
       </Alert>
       {migrations.map((migration) => {
@@ -83,7 +82,7 @@ export default function MigrationsSection() {
             </header>
             <p className={styles.description}>{migration.description}</p>
 
-            {running && <p className={styles.status}>Running {job.mode === "execute" ? "migration" : "dry run"}…</p>}
+            {running && <p className={styles.status}>Running {job.mode === "execute" ? "task" : "dry run"}…</p>}
             {job.state === "failed" && (
               <Alert variant="destructive"><AlertCircle size={14} /><AlertDescription>{job.error ?? "The run failed."}</AlertDescription></Alert>
             )}

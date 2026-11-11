@@ -56,6 +56,8 @@ Usage:
   stackport status
   stackport selfcheck
   stackport repair
+  stackport reboot [--in <minutes>] [--yes]
+  stackport network-pool [show | set --base <cidr> --size <n> [--replace] [--no-restart] [--yes]]
   stackport admin-recovery
   stackport uninstall
   stackport uninstall --purge
@@ -69,6 +71,17 @@ selfcheck: verify this script and its host dependencies (read-only).
 status:   non-mutating inspection of the current installation.
 repair:   reconcile StackPort-owned infrastructure (network, nginx scaffold,
           directory permissions) without touching admin/secrets/certs/project data.
+reboot:   schedule a reboot of this machine (now, or in a number of minutes, up
+          to 60) after listing the containers that will not come back by
+          themselves. Host > Power in the UI asks for the same thing through a
+          signed request file and a systemd path unit that install and repair set up.
+network-pool: show Docker's address pools, or enlarge them. `set` writes
+          default-address-pools into /etc/docker/daemon.json after checking the
+          range against this host's routes, keeps a backup, restarts Docker
+          unless --no-restart (which stops every container unless live-restore is
+          on), and puts the old file back if Docker does not come up. The default
+          is 10.20.0.0/14 in /24 slices: 1024 networks. Existing networks keep
+          their ranges. Pools already in daemon.json are replaced only with --replace.
 admin-recovery: root+interactive only — generates a temporary credential to reset
           StackPort's administrator password.
 uninstall: remove StackPort's runtime, preserving /etc/stackport and
@@ -337,6 +350,8 @@ ensure_secrets() {
   # Encrypts stored credentials and tokens, separate from JWT_SECRET so rotating the
   # session secret cannot break them. Back up secrets.env: without this key they are lost.
   generate_secret_if_missing "ENCRYPTION_KEY"
+  # Signs the reboot requests Host > Power writes; this script refuses any request that is not signed with it (see power_verify).
+  generate_secret_if_missing "STACKPORT_POWER_KEY"
 
   # Bootstrap password: generated once, here, by bash — the app only ever consumes
   # it (modules/identity/installation.ts's ensureBootstrapCredential), it never invents or
@@ -467,6 +482,7 @@ ensure_env_file() {
     echo "HOST_PROJECT_ROOT=$APP_DIR"
     echo "STACKPORT_DATA_DIR=$VAR_DIR/data"
     echo "STACKPORT_LOGS_DIR=$VAR_DIR/logs"
+    echo "STACKPORT_POWER_DIR=$POWER_STATE_DIR"
     echo "STACKPORT_NGINX_DIR=$VAR_DIR/nginx"
     # The app's update check: which branch, which repository, and what is running.
     echo "GIT_BRANCH=$(configured_branch)"
@@ -557,6 +573,7 @@ install_stackport() {
   ensure_firewall
   pull_stackport
   ensure_cli
+  ensure_power_units
   start_stackport
 
   if healthcheck_stackport; then
@@ -754,6 +771,7 @@ update_stackport() {
     state_set current "$target"
     state_set lastUpdate success
     install -m 0755 "$APP_DIR/stackport.sh" "$CLI_TARGET"
+    ensure_power_units || true
     cleanup_staging
     prune_staged_images "$STAGED_IMAGE"
     log "update complete"
@@ -886,7 +904,7 @@ print_network_headroom() {
   if (( free < 0 )); then free=0; fi
   echo "networks:     $used of $capacity address-pool slices used, $free free$([[ "$known" == stock ]] && echo " (Docker's default pools)")"
   if (( free <= 6 )); then
-    warn "Docker has room for only $free more networks. Enlarge the pool in /etc/docker/daemon.json, e.g. {\"default-address-pools\":[{\"base\":\"10.20.0.0/14\",\"size\":24}]}, then restart Docker."
+    warn "Docker has room for only $free more networks. Enlarge the pool: sudo stackport network-pool set --base 10.20.0.0/14 --size 24 (it checks the range against this host first and asks before restarting Docker); or edit /etc/docker/daemon.json by hand: {\"default-address-pools\":[{\"base\":\"10.20.0.0/14\",\"size\":24}]}, then restart Docker."
   fi
 }
 
@@ -972,6 +990,16 @@ repair_stackport() {
 
   seed_nginx_data
 
+  # A release that adds the reboot request needs its key and its systemd units on a host installed before it: this is where they arrive.
+  local new_power_key=0
+  if [[ -f "$SECRETS_ENV_FILE" ]] && ! grep -q '^STACKPORT_POWER_KEY=' "$SECRETS_ENV_FILE"; then
+    generate_secret_if_missing "STACKPORT_POWER_KEY"
+    new_power_key=1
+  fi
+  # The app also needs the read-only mount of $POWER_STATE_DIR, which a container made by an older release does not have.
+  if [[ "$(docker inspect stackport --format '{{range .Mounts}}{{if eq .Destination "/app/power-state"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)" != "$POWER_STATE_DIR" ]]; then new_power_key=1; fi
+  ensure_power_units
+
   log "checking directory ownership"
   chown -R "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$VAR_DIR/data" "$VAR_DIR/logs" "$VAR_DIR/nginx" 2>/dev/null || true
 
@@ -989,6 +1017,10 @@ repair_stackport() {
   fi
 
   strip_bootstrap_secret_if_consumed || true
+  if (( new_power_key == 1 )) && [[ -f "$COMPOSE_FILE" ]] && docker ps --format '{{.Names}}' | grep -qx stackport; then
+    log "recreating stackport so it gets the power key and the power state mount"
+    compose up -d --force-recreate stackport >/dev/null
+  fi
   log "repair complete"
 }
 
@@ -1036,6 +1068,7 @@ uninstall_stackport() {
     fi
   fi
 
+  remove_power_units
   if [[ -f "$COMPOSE_FILE" ]]; then
     log "stopping and removing StackPort containers"
     compose down --remove-orphans || true
@@ -1056,6 +1089,464 @@ uninstall_stackport() {
     log "StackPort runtime removed. Persistent state preserved under $ETC_DIR and $VAR_DIR."
     log "Run 'stackport install' to reinstall using the existing configuration/data."
   fi
+}
+
+# ── power (reboot the host, from SSH or from Host > Power) ─────────────────────
+# Stackport runs in a container with no way to reboot the machine it is on, and it should not get one. Instead the app writes a signed
+# request file into its data directory and a systemd path unit on the host acts on it. The request carries an HMAC made with
+# STACKPORT_POWER_KEY (secrets.env, root only; the app has the same value in its environment), a timestamp and the action; this script
+# refuses anything unsigned, stale, malformed or too large, and consumes the request before acting, so a failure cannot loop.
+#
+# The app's data directory belongs to the app, so root treats everything in it as hostile: a request is read as the app's own user (so a
+# link or a pipe in its place can reach nothing the app could not already read), and root never writes there. What root has to tell the
+# app (that the units are installed, and what happened to the last request) goes in a root-owned directory the container mounts read-only.
+
+POWER_DIR="${POWER_DIR:-$VAR_DIR/data/power}"            # requests, written by the app
+POWER_STATE_DIR="${POWER_STATE_DIR:-$VAR_DIR/power}"     # ready, status, last-error: written by root, read by the app
+POWER_UNIT_DIR="${POWER_UNIT_DIR:-/etc/systemd/system}"
+POWER_MAX_AGE_S=300
+POWER_MAX_DELAY_MIN=60
+
+# HMAC-SHA256 (hex) over "action|requested_at|by|delay_min" with STACKPORT_POWER_KEY. The app signs the same string.
+power_mac() {
+  printf '%s|%s|%s|%s' "$1" "$2" "$3" "$4" | openssl dgst -sha256 -hmac "$STACKPORT_POWER_KEY" -hex | sed 's/^.*= //'
+}
+
+# Writes one small file of KEY=value lines into $POWER_STATE_DIR, atomically. The directory is root's, so this cannot be redirected.
+power_write_state() {
+  local name="$1"; shift
+  mkdir -p "$POWER_STATE_DIR"
+  local tmp
+  tmp="$(mktemp "$POWER_STATE_DIR/.$name.XXXXXX")"
+  printf '%s\n' "$@" > "$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$POWER_STATE_DIR/$name"
+}
+
+# The schedule: what the host will do (scheduled with the time, or cancelled). A rejected request does not touch it, so a scheduled
+# reboot stays cancellable from the UI after a bad request.
+power_status() {
+  local state="$1" reboot_at="${2:-}" by="${3:-}"
+  local lines=("state=$state" "at=$(date +%s)")
+  [[ -n "$reboot_at" ]] && lines+=("reboot_at=$reboot_at")
+  [[ -n "$by" ]] && lines+=("by=$by")
+  power_write_state status "${lines[@]}"
+  rm -f "$POWER_STATE_DIR/last-error"
+}
+
+# The last request that was refused or failed, apart from the schedule.
+power_error() {
+  local detail
+  detail="$(printf '%s' "$1" | tr -d '\r\n' | cut -c1-200)"
+  power_write_state last-error "state=${2:-rejected}" "at=$(date +%s)" "detail=$detail"
+}
+
+# Reads at most 2 KiB of a request as the app's user, never as root, with a time limit (a pipe in its place would block).
+power_read_request() {
+  local path="$1"
+  if [[ -n "${POWER_READ_AS:-}" ]]; then
+    # A test hook that names a wrapper command, so the variable is deliberately split into words.
+    # shellcheck disable=SC2086
+    timeout 3 $POWER_READ_AS head -c 2048 -- "$path" 2>/dev/null
+  else
+    timeout 3 setpriv --reuid="${STACKPORT_UID:-1000}" --regid="${STACKPORT_GID:-1000}" --clear-groups head -c 2048 -- "$path" 2>/dev/null
+  fi
+}
+
+# One value from a request, only if it is exactly one `key=value` line.
+power_field() {
+  local file="$1" key="$2"
+  [[ "$(grep -c "^${key}=" "$file")" == "1" ]] || return 1
+  grep "^${key}=" "$file" | cut -d= -f2-
+}
+
+# Checks a request file and prints "<action> <by> <delay_min>" when it is valid; otherwise prints the reason on stderr and fails.
+power_verify() {
+  local file="$1" expected="$2" action requested_at by delay mac now
+  action="$(power_field "$file" action)" || { echo "no single action line" >&2; return 1; }
+  requested_at="$(power_field "$file" requested_at)" || { echo "no single requested_at line" >&2; return 1; }
+  by="$(power_field "$file" by)" || { echo "no single by line" >&2; return 1; }
+  delay="$(power_field "$file" delay_min)" || { echo "no single delay_min line" >&2; return 1; }
+  mac="$(power_field "$file" mac)" || { echo "no single mac line" >&2; return 1; }
+  [[ "$action" == "$expected" ]] || { echo "the file is named for $expected but asks for something else" >&2; return 1; }
+  [[ "$requested_at" =~ ^[0-9]{1,12}$ ]] || { echo "requested_at is not a time" >&2; return 1; }
+  [[ "$by" =~ ^[A-Za-z0-9._-]{1,40}$ ]] || { echo "by is not a plain name" >&2; return 1; }
+  # 10# so a leading zero is a decimal number, not octal.
+  [[ "$delay" =~ ^[0-9]{1,3}$ ]] && (( 10#$delay <= POWER_MAX_DELAY_MIN )) || { echo "delay_min is not 0 to $POWER_MAX_DELAY_MIN" >&2; return 1; }
+  [[ "$mac" =~ ^[0-9a-f]{64}$ ]] || { echo "mac is not a hex digest" >&2; return 1; }
+  [[ -n "${STACKPORT_POWER_KEY:-}" ]] || { echo "this host has no power key" >&2; return 1; }
+  [[ "$(power_mac "$action" "$requested_at" "$by" "$delay")" == "$mac" ]] || { echo "the signature does not match" >&2; return 1; }
+  now="$(date +%s)"
+  (( 10#$requested_at <= now + 60 )) || { echo "the request is from the future" >&2; return 1; }
+  (( now - 10#$requested_at <= POWER_MAX_AGE_S )) || { echo "the request is older than $POWER_MAX_AGE_S seconds" >&2; return 1; }
+  printf '%s %s %s\n' "$action" "$by" "$delay"
+}
+
+# Schedules the reboot (delay_min 0 means now) and records it. SHUTDOWN_CMD is replaceable so the logic can be tested.
+power_schedule() {
+  local by="$1" delay=$((10#$2)) shutdown_cmd="${SHUTDOWN_CMD:-shutdown}" when
+  if (( delay == 0 )); then when="now"; else when="+$delay"; fi
+  "$shutdown_cmd" -r "$when" "Stackport: reboot requested by $by" || { power_error "shutdown refused the request" failed; return 1; }
+  power_status scheduled "$(( $(date +%s) + delay * 60 ))" "$by"
+  log "reboot scheduled ($when) for $by"
+}
+
+power_cancel() {
+  local by="$1" shutdown_cmd="${SHUTDOWN_CMD:-shutdown}"
+  "$shutdown_cmd" -c >/dev/null 2>&1 || true
+  power_status cancelled "" "$by"
+  log "scheduled reboot cancelled for $by"
+}
+
+# Run by the systemd service when a request file appears: handles each, consuming it first.
+power_run() {
+  load_secrets
+  local name path copy reason fields action by delay content
+  for name in reboot-request cancel-request; do
+    path="$POWER_DIR/$name"
+    [[ -e "$path" || -L "$path" ]] || continue
+    copy="$(mktemp)"
+    if [[ -L "$path" ]]; then
+      : > "$copy"
+    else
+      content="$(power_read_request "$path" || true)"
+      if (( ${#content} > 1024 )); then : > "$copy"; else printf '%s\n' "$content" > "$copy"; fi
+    fi
+    rm -f "$path"
+    if ! fields="$(power_verify "$copy" "${name%-request}" 2>&1)"; then
+      reason="$fields"
+      rm -f "$copy"
+      warn "refused $name: $reason"
+      power_error "$reason" rejected
+      continue
+    fi
+    rm -f "$copy"
+    read -r action by delay <<< "$fields"
+    if [[ "$action" == "reboot" ]]; then power_schedule "$by" "$delay" || true; else power_cancel "$by"; fi
+  done
+}
+
+# Warns about containers that would not come back after a reboot: a restart policy of "no" means they stay stopped. Never fails: this is
+# information, and a host whose Docker is down is exactly when someone needs to reboot it.
+power_preflight() {
+  local running unrestarted
+  running="$(docker ps -q 2>/dev/null | wc -l | tr -d ' ' || true)"
+  unrestarted="$(docker ps -q 2>/dev/null | xargs -r docker inspect --format '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' 2>/dev/null | awk '$2 == "" || $2 == "no" { sub(/^\//, "", $1); print $1 }' | tr '\n' ' ' || true)"
+  log "${running:-0} containers are running"
+  if [[ -n "${unrestarted// /}" ]]; then
+    warn "these have no restart policy and will stay stopped after the reboot: $unrestarted"
+  fi
+  return 0
+}
+
+# stackport reboot [--in <minutes>] [--yes]
+reboot_host() {
+  local delay=0 assume_yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) assume_yes=1 ;;
+      --in) shift; delay="${1:-}" ;;
+      --in=*) delay="${1#--in=}" ;;
+      *) error "unknown option: $1"; exit 1 ;;
+    esac
+    shift
+  done
+  [[ "$delay" =~ ^[0-9]{1,3}$ ]] && (( 10#$delay <= POWER_MAX_DELAY_MIN )) || { error "--in takes a number of minutes from 0 to $POWER_MAX_DELAY_MIN"; exit 1; }
+  delay=$((10#$delay))
+  power_preflight
+  if (( assume_yes == 0 )); then
+    require_interactive_tty
+    read -r -p "Reboot this machine $( (( delay == 0 )) && echo now || echo "in $delay minute(s)")? Type REBOOT to continue: " confirm
+    [[ "$confirm" == "REBOOT" ]] || { log "cancelled"; exit 0; }
+  fi
+  power_schedule "cli" "$delay"
+}
+
+# Installs the systemd units that act on a request from Host > Power, and tells the app they are there ($POWER_STATE_DIR/ready).
+ensure_power_units() {
+  # Root's directory: created by root, so nothing the app does can redirect what is written in it.
+  mkdir -p "$POWER_STATE_DIR"
+  chmod 755 "$POWER_STATE_DIR"
+  # The app's directory: if it was replaced by a link, drop the link (rm removes the link, not what it points to) and make a real one.
+  if [[ -L "$POWER_DIR" ]]; then rm -f "$POWER_DIR"; fi
+  mkdir -p "$POWER_DIR"
+  chown -h "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$POWER_DIR" 2>/dev/null || true
+  if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+    rm -f "$POWER_STATE_DIR/ready"
+    warn "systemd is not running here, so Host > Power cannot reboot the machine; use 'sudo stackport reboot' over SSH"
+    return 0
+  fi
+  if ! command -v setpriv >/dev/null 2>&1; then
+    rm -f "$POWER_STATE_DIR/ready"
+    warn "setpriv (util-linux) is missing, so Host > Power cannot read requests safely; use 'sudo stackport reboot' over SSH"
+    return 0
+  fi
+  cat > "$POWER_UNIT_DIR/stackport-power.path" <<UNIT
+[Unit]
+Description=Act on a reboot or cancel request from Stackport (Host > Power)
+
+[Path]
+PathExistsGlob=$POWER_DIR/*-request
+Unit=stackport-power.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  cat > "$POWER_UNIT_DIR/stackport-power.service" <<UNIT
+[Unit]
+Description=Stackport power request
+
+[Service]
+Type=oneshot
+ExecStart=$CLI_TARGET power-run
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now stackport-power.path >/dev/null 2>&1 || { warn "could not start stackport-power.path"; rm -f "$POWER_STATE_DIR/ready"; return 0; }
+  : > "$POWER_STATE_DIR/ready"
+  log "Host > Power is enabled"
+}
+
+remove_power_units() {
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    systemctl disable --now stackport-power.path >/dev/null 2>&1 || true
+  fi
+  rm -f "$POWER_UNIT_DIR/stackport-power.path" "$POWER_UNIT_DIR/stackport-power.service" "$POWER_STATE_DIR/ready"
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
+}
+
+# ── network-pool (enlarge Docker's address pool) ───────────────────────────────
+# Every Docker network takes a slice of the daemon's address pools, and the stock pools hold 31. This sets `default-address-pools` in
+# /etc/docker/daemon.json to a larger range after checking it against the host's own routes and interfaces, keeps a backup, restarts
+# Docker only when asked, and puts the old file back if Docker does not come up. Existing networks keep their ranges.
+
+DAEMON_JSON="${DAEMON_JSON:-/etc/docker/daemon.json}"
+POOL_DEFAULT_BASE="10.20.0.0/14"
+POOL_DEFAULT_SIZE=24
+
+# "a.b.c.d/n" -> "start end" as integers. Fails on anything that is not a valid IPv4 CIDR (a bare address is a /32).
+cidr_range() {
+  local cidr="$1" ip prefix a b c d
+  ip="${cidr%%/*}"
+  if [[ "$cidr" == */* ]]; then prefix="${cidr#*/}"; else prefix=32; fi
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  a="${BASH_REMATCH[1]}"; b="${BASH_REMATCH[2]}"; c="${BASH_REMATCH[3]}"; d="${BASH_REMATCH[4]}"
+  (( a <= 255 && b <= 255 && c <= 255 && d <= 255 )) || return 1
+  [[ "$prefix" =~ ^[0-9]{1,2}$ ]] && (( prefix <= 32 )) || return 1
+  local value=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  local size=$(( 1 << (32 - prefix) ))
+  local start=$(( value - (value % size) ))
+  printf '%s %s\n' "$start" "$(( start + size - 1 ))"
+}
+
+cidr_overlaps() {
+  local one two
+  one="$(cidr_range "$1")" || return 1
+  two="$(cidr_range "$2")" || return 1
+  local s1 e1 s2 e2
+  read -r s1 e1 <<< "$one"
+  read -r s2 e2 <<< "$two"
+  (( s1 <= e2 && s2 <= e1 ))
+}
+
+# The IPv4 ranges the host itself uses, one per line: routes and interface addresses, except Docker's own bridges and loopback.
+host_ranges() {
+  {
+    ip -4 -o route show 2>/dev/null | awk '$1 != "default" && $0 !~ /dev (docker0|br-|veth|lo)/ { print $1 }'
+    ip -4 -o addr show 2>/dev/null | awk '$2 !~ /^(docker0|br-|veth|lo)/ { for (i = 1; i <= NF; i++) if ($i == "inet") print $(i + 1) }'
+  } | sort -u
+}
+
+# Prints the daemon.json text with default-address-pools set, keeping every other key. Needs python3 or jq.
+daemon_json_with_pool() {
+  local base="$1" size="$2" file="$3"
+  local py=""
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import json' >/dev/null 2>&1; then py="$candidate"; break; fi
+  done
+  if [[ -n "$py" ]]; then
+    "$py" - "$file" "$base" "$size" <<'PY'
+import json, sys
+path, base, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    with open(path) as f:
+        text = f.read().strip()
+    data = json.loads(text) if text else {}
+except FileNotFoundError:
+    data = {}
+if not isinstance(data, dict):
+    sys.exit("daemon.json is not a JSON object")
+data["default-address-pools"] = [{"base": base, "size": size}]
+print(json.dumps(data, indent=2))
+PY
+  elif command -v jq >/dev/null 2>&1; then
+    if [[ -s "$file" ]]; then jq --arg base "$base" --argjson size "$size" '."default-address-pools" = [{"base": $base, "size": $size}]' "$file"
+    else jq -n --arg base "$base" --argjson size "$size" '{"default-address-pools": [{"base": $base, "size": $size}]}'; fi
+  else
+    return 2
+  fi
+}
+
+# The default-address-pools already in daemon.json, as "base size" lines; nothing when there are none (or no JSON tool to ask with).
+daemon_json_existing_pools() {
+  local file="$1" py=""
+  [[ -s "$file" ]] || return 0
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import json' >/dev/null 2>&1; then py="$candidate"; break; fi
+  done
+  if [[ -n "$py" ]]; then
+    "$py" - "$file" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+for pool in (data.get("default-address-pools") or []) if isinstance(data, dict) else []:
+    print(pool.get("base", "?"), pool.get("size", "?"))
+PY
+  elif command -v jq >/dev/null 2>&1; then
+    jq -r '(."default-address-pools" // [])[] | "\(.base) \(.size)"' "$file" 2>/dev/null || true
+  fi
+}
+
+# The pools the daemon reports, e.g. "10.20.0.0/14 /24" per line; the stock pools when none are set.
+docker_pools() {
+  local out
+  out="$(docker info --format '{{range .DefaultAddressPools}}{{.Base}} {{.Size}}{{"\n"}}{{end}}' 2>/dev/null || true)"
+  if [[ -z "${out//[[:space:]]/}" ]]; then echo "stock (172.17.0.0/16 to 172.31.0.0/16, then 192.168.0.0/16 in /20 slices): 31 networks"; else printf '%s\n' "$out"; fi
+}
+
+# stackport network-pool [show]
+network_pool_show() {
+  log "Docker's address pools:"
+  docker_pools | sed 's/^/  /'
+  print_network_headroom
+  if [[ -f "$DAEMON_JSON" ]]; then log "$DAEMON_JSON exists"; else log "$DAEMON_JSON does not exist (Docker's defaults apply)"; fi
+  log "to enlarge: sudo stackport network-pool set --base $POOL_DEFAULT_BASE --size $POOL_DEFAULT_SIZE"
+}
+
+# stackport network-pool set --base <cidr> --size <n> [--replace] [--no-restart] [--yes]
+network_pool_set() {
+  local base="$POOL_DEFAULT_BASE" size="$POOL_DEFAULT_SIZE" restart=1 assume_yes=0 replace=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base) shift; base="${1:-}" ;;
+      --base=*) base="${1#--base=}" ;;
+      --size) shift; size="${1:-}" ;;
+      --size=*) size="${1#--size=}" ;;
+      --no-restart) restart=0 ;;
+      --replace) replace=1 ;;
+      --yes) assume_yes=1 ;;
+      *) error "unknown option: $1"; exit 1 ;;
+    esac
+    shift
+  done
+
+  local prefix
+  cidr_range "$base" >/dev/null || { error "--base must be an IPv4 range such as $POOL_DEFAULT_BASE"; exit 1; }
+  [[ "$base" == */* ]] || { error "--base needs a prefix length, such as $POOL_DEFAULT_BASE"; exit 1; }
+  prefix="${base#*/}"
+  [[ "$size" =~ ^[0-9]{1,2}$ ]] || { error "--size must be a prefix length such as $POOL_DEFAULT_SIZE"; exit 1; }
+  (( prefix >= 8 && prefix <= 24 )) || { error "the base range must be between /8 and /24"; exit 1; }
+  (( size > prefix && size <= 28 )) || { error "--size must be larger than the base's /$prefix and at most 28"; exit 1; }
+  local normalized_start given
+  normalized_start="$(cidr_range "$base" | cut -d' ' -f1)"
+  given="$(cidr_range "${base%%/*}" | cut -d' ' -f1)"
+  [[ "$given" == "$normalized_start" ]] || { error "$base has host bits set; did you mean a range that starts on a /$prefix boundary?"; exit 1; }
+
+  local capacity=$(( 1 << (size - prefix) ))
+  log "pool: $base split into /$size networks = $capacity networks"
+
+  local used clash=""
+  while read -r used; do
+    [[ -n "$used" ]] || continue
+    if cidr_overlaps "$base" "$used"; then clash="$clash $used"; fi
+  done < <(host_ranges)
+  if [[ -n "$clash" ]]; then
+    error "$base overlaps ranges this host already uses:$clash"
+    error "pick another range (--base), for example 172.80.0.0/12 or 10.200.0.0/14, that nothing here or on your private networks uses"
+    exit 1
+  fi
+
+  # Pools somebody already chose (to stay clear of a VPN, say) are not replaced without being asked.
+  local existing
+  existing="$(daemon_json_existing_pools "$DAEMON_JSON" || true)"
+  if [[ -n "$existing" ]] && (( replace == 0 )); then
+    error "$DAEMON_JSON already sets default-address-pools:"
+    printf '%s\n' "$existing" | sed 's/^/  /' >&2
+    error "a new pool replaces them, and networks made later could land in ranges they were chosen to avoid. Pass --replace to do that, or merge the ranges by hand."
+    exit 1
+  fi
+
+  local merged
+  merged="$(mktemp)"
+  if ! daemon_json_with_pool "$base" "$size" "$DAEMON_JSON" > "$merged"; then
+    rm -f "$merged"
+    error "cannot change $DAEMON_JSON: it needs python3 or jq, and must be a valid JSON object. Set \"default-address-pools\" by hand: [{\"base\":\"$base\",\"size\":$size}]"
+    exit 1
+  fi
+  if command -v dockerd >/dev/null 2>&1 && dockerd --help 2>&1 | grep -q -- '--validate'; then
+    dockerd --validate --config-file="$merged" >/dev/null 2>&1 || { rm -f "$merged"; error "Docker would not accept the resulting configuration; $DAEMON_JSON was not changed"; exit 1; }
+  fi
+
+  local live_restore="no"
+  grep -Eq '"live-restore"[[:space:]]*:[[:space:]]*true' "$merged" && live_restore="yes"
+  if (( restart == 1 )); then
+    power_preflight
+    if [[ "$live_restore" == "yes" ]]; then log "live-restore is on: running containers should keep running while Docker restarts"
+    else warn "restarting Docker stops every container, Stackport and nginx included, until they start again"; fi
+    if (( assume_yes == 0 )); then
+      require_interactive_tty
+      read -r -p "Write $DAEMON_JSON and restart Docker now? Type RESTART DOCKER to continue: " confirm
+      [[ "$confirm" == "RESTART DOCKER" ]] || { rm -f "$merged"; log "cancelled; nothing was changed"; exit 0; }
+    fi
+  fi
+
+  local backup=""
+  mkdir -p "$(dirname "$DAEMON_JSON")"
+  if [[ -f "$DAEMON_JSON" ]]; then
+    backup="$DAEMON_JSON.stackport-$(date +%Y%m%d%H%M%S).bak"
+    cp -p "$DAEMON_JSON" "$backup"
+    log "backed up $DAEMON_JSON to $backup"
+  fi
+  install -m 0644 "$merged" "$DAEMON_JSON"
+  rm -f "$merged"
+  log "wrote default-address-pools to $DAEMON_JSON"
+
+  if (( restart == 0 )); then
+    log "Docker was not restarted. The pool applies after: sudo systemctl restart docker"
+    return 0
+  fi
+
+  log "restarting Docker"
+  systemctl restart docker || true
+  local waited=0
+  until docker info >/dev/null 2>&1; do
+    sleep 2; waited=$(( waited + 2 ))
+    if (( waited >= ${NETWORK_POOL_WAIT_S:-60} )); then
+      error "Docker did not come back with the new pool"
+      if [[ -n "$backup" ]]; then
+        cp -p "$backup" "$DAEMON_JSON"
+      else
+        rm -f "$DAEMON_JSON"
+      fi
+      warn "restored the previous $DAEMON_JSON; restarting Docker with it"
+      systemctl restart docker || true
+      exit 1
+    fi
+  done
+  log "Docker is back"
+  if [[ -f "$COMPOSE_FILE" ]]; then repair_stackport; fi
+  network_pool_show
+}
+
+network_pool() {
+  local sub="${1:-show}"
+  [[ $# -gt 0 ]] && shift
+  case "$sub" in
+    show) network_pool_show ;;
+    set) network_pool_set "$@" ;;
+    *) error "usage: stackport network-pool [show | set --base <cidr> --size <n> [--replace] [--no-restart] [--yes]]"; exit 1 ;;
+  esac
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
@@ -1090,6 +1581,18 @@ case "$COMMAND" in
   repair)
     require_root
     repair_stackport
+    ;;
+  reboot)
+    require_root
+    reboot_host "$@"
+    ;;
+  network-pool)
+    if [[ "${1:-show}" == "set" ]]; then require_root; fi
+    network_pool "$@"
+    ;;
+  power-run)
+    require_root
+    power_run
     ;;
   admin-recovery)
     admin_recovery

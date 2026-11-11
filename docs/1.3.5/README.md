@@ -98,7 +98,7 @@ Settled defaults from §12 of the plan, unless you say otherwise:
 | L2 | Stale comments and names | S | 32 comments say "Phase 1.7"; `ensureProjectProxyNetwork` and `applyStackportProxyNetwork` now mean the ingress network; two doc comments name a file that no longer exists (`composeNetworking.ts`). |
 | L3 | `docs/plan.md` repeats the 1.3 security table | S | Out of date the day it was written (S9 and S15 changed). Point it at `docs/1.3/` instead of keeping two copies. |
 | L4 | Delete `docs/deprecated/` (B7) | S | Nothing in it is current. |
-| L5 | Temporary migrations page | S | Stays through 1.3.x so installs can migrate. Remove it (`src/modules/maintenance/migrations`, `client/src/pages/settings/migrations`, the TEMPORARY lines) in the first release after every install has run it. Decide the release now. |
+| L5 | Temporary migrations page | S | Stays through 1.3.x so installs can migrate. **Done in 1.3.9:** the managed-volume copy, the original-mount cleanup and the env-value encryption were removed; the re-encryption stayed, as Settings > Encryption (`src/modules/maintenance/encryption`). |
 | L6 | Lint warnings (G4/B5) | M | |
 | L7 | Compat shims from the modular layout | | Main owns `src/routes`, `src/utils`, `src/middleware`, `src/mcp`, `src/entities`. Not ours; left alone unless main removes them. |
 | L8 | Version | S | Reported version is 1.3.1 (the hotfix). Bump to 1.3.5 with `scripts/bump-version.cjs` when this branch is ready to release, not before. |

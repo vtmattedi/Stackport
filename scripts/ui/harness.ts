@@ -30,6 +30,8 @@ export async function startHarness(): Promise<Harness> {
   set("LOG_DIR", path.join(dir, "logs"));
   set("NGINX_PATH", path.join(dir, "nginx"));
   set("LOG_LEVEL", "silent");
+  set("STACKPORT_POWER_KEY", "ui-harness-power-key");
+  set("POWER_STATE_DIR", path.join(dir, "power-state"));
   set("ADMIN_USERNAME", HARNESS_USER);
   set("ADMIN_PASSWORD_HASH", bcrypt.hashSync(HARNESS_PASSWORD, 10));
 
@@ -40,6 +42,9 @@ export async function startHarness(): Promise<Harness> {
   const { SocketManager } = await import("../../src/transports/socket/manager");
 
   initializeDatabase();
+  // Host > Power shows its reboot form when the host side is installed: this stands in for it (nothing here can reboot anything).
+  fs.mkdirSync(path.join(dir, "power-state"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "power-state", "ready"), "");
   await seed();
 
   const http: Server = createServer(app);

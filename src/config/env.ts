@@ -24,6 +24,10 @@ export const config = {
   // Key for stored secrets, separate from the session secret (utils/crypto.ts). Optional so an
   // install keeps working until stackport.sh has generated one.
   encryptionKey: process.env["ENCRYPTION_KEY"] ?? "",
+  // Signs the reboot requests Host > Power writes for the host (maintenance/power.ts); stackport.sh generates it. Empty disables Power.
+  powerKey: process.env["STACKPORT_POWER_KEY"] ?? "",
+  // The host's root-owned directory (read-only mount) with what its power units say back; see maintenance/power.ts.
+  powerStateDir: process.env["POWER_STATE_DIR"] ?? "/app/power-state",
   encryptionKeysPrevious: (process.env["ENCRYPTION_KEY_PREVIOUS"] ?? "").split(",").map((key) => key.trim()).filter(Boolean),
   // A session ends after this long without use, and in any case this long after login (S6).
   sessionIdleHours: positiveNumber(process.env["SESSION_IDLE_HOURS"], 24),

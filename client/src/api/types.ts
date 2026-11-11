@@ -601,7 +601,68 @@ export interface NetworkHeadroom {
   level: "ok" | "warning" | "critical";
   /** False when the daemon's pools could not be read and Docker's stock ones were assumed. */
   poolsKnown: boolean;
+  /** The address pools Docker hands networks out of. */
+  pools: { base: string; size: number }[];
   advice: string | null;
+}
+
+/** What the host will do (Host > Power): a reboot at a time, or nothing because the last request was a cancel. */
+export interface HostSchedule {
+  state: "scheduled" | "cancelled" | "unknown";
+  at: number | null;
+  rebootAt: number | null;
+  by: string | null;
+}
+
+/** The last request the host refused or could not carry out. */
+export interface HostError {
+  state: "rejected" | "failed";
+  at: number | null;
+  detail: string | null;
+}
+
+export interface PowerState {
+  available: boolean;
+  unavailableReason: string | null;
+  requestPending: boolean;
+  /** A request file is still there, older than the host would accept: the host is not picking requests up. */
+  requestStale: boolean;
+  schedule: HostSchedule | null;
+  lastError: HostError | null;
+  rebootScheduled: boolean;
+}
+
+export interface PowerPreflight {
+  runningActions: { id: string; kind: string; key: string; startedAt: string }[];
+  runningContainers: number;
+  containersWithoutRestart: string[];
+  dockerRead: boolean;
+}
+
+export type NetworkOwnerKind = "docker" | "stackport" | "project" | "group" | "isolated" | "legacy" | "other";
+
+/** One Docker network, with who owns it and what it takes from the address pool (Host > Networks). */
+export interface DockerNetworkInfo {
+  id: string;
+  name: string;
+  driver: string;
+  scope: string;
+  internal: boolean;
+  subnets: string[];
+  slices: number;
+  containers: { id: string; name: string }[];
+  owner: { kind: NetworkOwnerKind; label: string; projectId: number | null };
+  createdAt: string | null;
+  madeByCompose: boolean;
+  /** Why it cannot be removed from the page, or null when it can. */
+  removalBlocker: string | null;
+}
+
+export interface NetworkRemoval { name: string; removed: boolean; reason: string | null }
+
+export interface NetworkOverview {
+  networks: DockerNetworkInfo[];
+  headroom: NetworkHeadroom;
 }
 
 /** Which 1.3 protections a project has; the Settings view lists the ones missing any. */

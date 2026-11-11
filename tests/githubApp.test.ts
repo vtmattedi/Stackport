@@ -55,12 +55,14 @@ test("manifest: every URL is built from the saved domain, and modules add exactl
   assert.equal(all.redirect_url, "https://sp.example.com/api/github-app/manifest/callback");
   assert.deepEqual(all.callback_urls, ["https://sp.example.com/api/github-app/oauth/callback"]);
   assert.deepEqual(all.default_permissions, { contents: "read", deployments: "write", checks: "read", actions: "read", statuses: "read" });
-  assert.deepEqual([...all.default_events].sort(), ["check_suite", "installation", "installation_repositories", "push", "release", "workflow_run"]);
+  assert.deepEqual([...all.default_events].sort(), ["check_suite", "push", "release", "workflow_run"]);
   assert.ok(String(all.name).length <= 34);
 
   const core = buildManifest("https://sp.example.com", { modules: [], owner: "", isPublic: false }) as Record<string, any>;
   assert.deepEqual(core.default_permissions, { contents: "read" });
-  assert.deepEqual([...core.default_events].sort(), ["installation", "installation_repositories", "push"]);
+  assert.deepEqual([...core.default_events].sort(), ["push"]);
+  // GitHub refuses a manifest that names the events it sends to every App ("Default events unsupported"), as it did in 1.3.8.
+  for (const manifest of [all, core]) for (const always of ["installation", "installation_repositories", "ping", "meta"]) assert.ok(!manifest.default_events.includes(always), `${always} must not be a default event`);
 });
 
 test("registration: the round trip stores the App, encrypts its secrets, and the state works once", async () => {
