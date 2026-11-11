@@ -4,26 +4,41 @@ import fs from "fs";
 import { config } from "../config/env";
 import { pushAuditEntry, type AuditEntry } from "./auditStore";
 
-function buildLogger(): pino.Logger {
-  if (config.nodeEnv === "development") {
+export interface LoggerOptions {
+  nodeEnv: string;
+  logLevel: string;
+  logDir: string;
+  /** Where warnings and errors are repeated in production. `docker logs` reads this stream. */
+  consoleStream?: NodeJS.WritableStream;
+}
+
+/** Development: pretty console output. Production: everything at the configured level goes to
+ *  `app.log`, and warnings and errors also go to the console, so `docker logs` shows what went
+ *  wrong without anyone having to open the file (P4). */
+export function buildLogger(options: LoggerOptions): pino.Logger {
+  if (options.nodeEnv === "development") {
     try {
       require.resolve("pino-pretty");
       return pino({
-        level: config.logLevel,
+        level: options.logLevel,
         transport: { target: "pino-pretty", options: { colorize: true } },
       });
     } catch {
-      return pino({ level: config.logLevel });
+      return pino({ level: options.logLevel });
     }
   }
-  fs.mkdirSync(config.logDir, { recursive: true });
+  fs.mkdirSync(options.logDir, { recursive: true });
+  const file = pino.destination({ dest: path.join(options.logDir, "app.log"), sync: false });
   return pino(
-    { level: config.logLevel },
-    pino.destination({ dest: path.join(config.logDir, "app.log"), sync: false })
+    { level: options.logLevel },
+    pino.multistream([
+      { stream: file, level: options.logLevel },
+      { stream: options.consoleStream ?? process.stdout, level: "warn" },
+    ]),
   );
 }
 
-export const logger = buildLogger();
+export const logger = buildLogger({ nodeEnv: config.nodeEnv, logLevel: config.logLevel, logDir: config.logDir });
 
 export function auditLog(
   actor: string,
