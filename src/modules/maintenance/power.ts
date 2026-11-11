@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- every path is the power directory beside Stackport's database plus a fixed file name (reboot-request, cancel-request, ready, status). */
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
