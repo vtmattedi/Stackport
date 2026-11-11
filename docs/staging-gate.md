@@ -10,13 +10,17 @@ This gate makes the check part of the pull request.
 
 A pull request that changes any of these needs a result from a real host:
 
-- Docker networks, aliases or attachment: `src/modules/ingress/networks.ts`, `bootstrap.ts`, `health.ts`,
+- Docker networks, aliases or attachment: `src/modules/ingress/networks.ts`, `bootstrap.ts`, `health.ts`, `isolation.ts`, `isolationState.ts`, `tcp.ts`,
   `src/shared/ingressNames.ts`, `src/modules/deployments/compose/networking.ts`, `groupNetworks.ts`,
   `src/modules/deployments/networkGroupAssignment.ts`
 - Mounts and data: `managedVolumes.ts`, `seedVolumes.ts`, `src/modules/maintenance/migrations/`
 - nginx: `src/modules/ingress/nginx/`
 - Start-up order: `src/index.ts`
 - The host: `stackport.sh`, `docker-compose.system.yml`, `Dockerfile`, `docker-entrypoint.sh`
+
+`src/modules/deployments/operations.ts` is not on the list although it calls into the network code: it holds the whole deploy flow, so
+every deploy-related PR would need a staging line and "not needed" would become a reflex. If a change to it touches network attachment or start-up order,
+add the lines anyway.
 
 The list is `GATED` in [scripts/ci/staging-gate.sh](../scripts/ci/staging-gate.sh); the workflow
 `.github/workflows/staging-gate.yml` runs it on every pull request to `main`. Change one place and the other
