@@ -118,13 +118,14 @@ export default function McpSection() {
 
   return (
     <>
-      <div className="card" style={{ maxWidth: 720 }}>
+      <div className="card">
         <div className="card-title"><KeyRound size={13} />API tokens</div>
-        <p className="hint" style={{ marginBottom: 12 }}>
+        <p className="hint" style={{ marginBottom: 12, maxWidth: "80ch" }}>
           Tokens give access to <span className="mono">{endpoint}</span>: project status, repository, branch,
-          health, recent deployments, containers and network groups. They never expose credentials, env files or logs.
-          A <strong>read and write</strong> token can also deploy, roll back, restart and stop projects, and change which projects can reach which services (network groups), in all projects or
-          in one project group. Every one of those takes two calls: the first only says what would happen, and the action
+          health, recent deployments, containers, network groups, managed domains and the GitHub repositories the App can use. They never expose credentials, env files or logs.
+          A <strong>read and write</strong> token can also deploy, roll back, restart and stop projects, change which projects can reach which services (network groups),
+          change a project's hostname, and create a project from a GitHub repository, in all projects or
+          in one project group (a project it creates goes into that group). Every one of those takes two calls: the first only says what would happen, and the action
           runs only when the second call presents the confirmation it returned. Each call is written to the audit log.
           Works with Claude Code and Claude Desktop. claude.ai connectors need OAuth, which isn't supported yet.
         </p>
