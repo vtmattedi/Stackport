@@ -218,4 +218,67 @@ echo 'PASS: UI reports failed-health rollback and the previous app is restored'
 echo 'PASS: update, rollback and restart preserve the push identity'
 assert_push_queue
 echo 'PASS: repair, container replacement and rollback preserve durable push event and delivery records'
+# P5: Docker's address pool is a host-wide limit (about 31 networks by default). 1.3.0 created a network per
+# project, ran out of it on a real server, and took routed projects down. Use the pool up completely, then update:
+# routing must survive, because nothing in an update may need a new network.
+docker compose -p 1-regression -f /var/lib/stackport/data/repos/1-regression/compose.yml start web >/dev/null
+filled=0
+while docker network create "pool-fill-$filled" >/dev/null 2>&1; do
+  filled=$((filled + 1))
+  [[ $filled -lt 100 ]] || { echo 'FAIL: could not use up the address pool'; exit 1; }
+done
+echo "address pool used up after $filled filler networks"
+if docker network create pool-fill-extra >/dev/null 2>&1; then echo 'FAIL: the pool was not exhausted'; exit 1; fi
+git -C /fixture revert --no-edit HEAD >/dev/null
+start_ui_update
+wait_ui_update success
+curl --retry 15 --retry-all-errors --retry-delay 1 -fsS --resolve sp.install.test:443:127.0.0.1 https://sp.install.test/health >/dev/null
+curl --retry 15 --retry-all-errors --retry-delay 1 -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
+for _ in {1..30}; do
+  [[ "$(curl -fsS -H "Authorization: Bearer $update_token" http://localhost:3000/api/projects/1/ingress-health | jq -r .status)" == ok ]] && break
+  sleep 1
+done
+[[ "$(curl -fsS -H "Authorization: Bearer $update_token" http://localhost:3000/api/projects/1/ingress-health | jq -r .status)" == ok ]] || { echo 'FAIL: routing is not healthy after an update with the address pool used up'; exit 1; }
+echo 'PASS: an update with Docker address pool used up keeps routing working (P5), and the routing probe agrees (P2)'
+headroom_json=$(curl -fsS -H "Authorization: Bearer $update_token" http://localhost:3000/api/system/network-headroom)
+echo "network headroom: $headroom_json"
+[[ "$(jq -r .level <<< "$headroom_json")" == critical ]] || { echo 'FAIL: the API did not report the pool as critical'; exit 1; }
+status_output=$(stackport status 2>&1 || true)
+grep -q 'room for only' <<< "$status_output" || { echo 'FAIL: stackport status did not warn about the pool'; echo "$status_output"; exit 1; }
+for _ in {1..20}; do docker logs stackport 2>&1 | grep -q 'address-pool slices used' && break; sleep 1; done
+docker logs stackport 2>&1 | grep -q 'address-pool slices used' || { echo 'FAIL: the pool warning is not in docker logs'; docker logs --tail 30 stackport 2>&1; exit 1; }
+echo 'PASS: the nearly-full pool is reported by the API, by stackport status, and in docker logs (P3, P4)'
+# P7: a network of the project's own, with the Docker address pool already used up. The subnet comes from
+# Stackport's own range, so none of the pool is needed.
+api() { curl -fsS -H "Authorization: Bearer $update_token" -H 'Content-Type: application/json' "$@"; }
+isolation=$(api -X PUT -d '{"enabled":true}' http://localhost:3000/api/projects/1/ingress-isolation)
+echo "isolation result: $isolation"
+[[ "$(jq -r .ok <<< "$isolation")" == true ]] || { echo 'FAIL: the project could not be isolated'; exit 1; }
+[[ "$(docker network inspect stackport-iso-1 --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}')" == 10.212.0.32/27 ]] || { echo 'FAIL: the isolated network has the wrong subnet'; docker network inspect stackport-iso-1; exit 1; }
+docker network inspect stackport-iso-1 --format '{{range .Containers}}{{.Name}} {{end}}' | grep -q stackport-nginx
+docker network inspect stackport-iso-1 --format '{{range .Containers}}{{.Name}} {{end}}' | grep -q 1-regression-web-1
+if docker network inspect stackport-proxy --format '{{range .Containers}}{{.Name}} {{end}}' | grep -q 1-regression-web-1; then echo 'FAIL: the service is still on the shared network'; exit 1; fi
+docker exec stackport-nginx grep -q 'iso1-web' /etc/nginx/sites-available/default
+curl --retry 15 --retry-all-errors --retry-delay 1 -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
+[[ "$(api http://localhost:3000/api/projects/1/ingress-health | jq -r '.status + " " + (.isolated|tostring)')" == 'ok true' ]]
+echo 'PASS: a project on its own network, with the address pool used up: subnet from our range, off the shared network, routing ok (P7)'
+
+# nginx recreated loses the networks it was connected to by hand: the weakness the 1.3.0 postmortem names.
+docker rm -f stackport-nginx >/dev/null
+stackport repair > /repair-isolated.log 2>&1
+docker restart stackport >/dev/null
+for _ in {1..40}; do
+  curl -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null 2>&1 && break
+  sleep 1
+done
+curl -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null || { echo 'FAIL: routing did not come back after nginx was recreated'; docker logs --tail 40 stackport 2>&1; exit 1; }
+docker network inspect stackport-iso-1 --format '{{range .Containers}}{{.Name}} {{end}}' | grep -q stackport-nginx
+echo 'PASS: nginx recreated, Stackport restarted: the isolated route comes back by itself (P7)'
+
+back=$(api -X PUT -d '{"enabled":false}' http://localhost:3000/api/projects/1/ingress-isolation)
+[[ "$(jq -r .ok <<< "$back")" == true ]] || { echo "FAIL: could not switch back: $back"; exit 1; }
+curl --retry 15 --retry-all-errors --retry-delay 1 -fsS --resolve site.install.test:443:127.0.0.1 https://site.install.test/ >/dev/null
+docker network inspect stackport-proxy --format '{{range .Containers}}{{.Name}} {{end}}' | grep -q 1-regression-web-1
+if docker network inspect stackport-iso-1 >/dev/null 2>&1; then echo 'FAIL: the isolated network was not removed'; exit 1; fi
+echo 'PASS: switched back to the shared network and the isolated network is gone (P7)'
 echo 'All clean-install regressions passed (test CA; no public ACME requests).'
