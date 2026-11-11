@@ -667,7 +667,7 @@ router.get("/:id/compose-policy", requireAuth, async (req: Request<{ id: string 
   if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   try { res.json(await getProjectComposePolicy(id)); }
-  catch { res.json({ composeFile: null, violations: [] }); }
+  catch { res.json({ composeFile: null, violations: [], resolved: { checked: false, violations: [] }, enforced: true }); }
 });
 
 /** Rejects (true) or only warns about (false) resolved-config policy violations (S1) for one

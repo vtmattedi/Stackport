@@ -17,7 +17,7 @@ import { emitProjectDeploy, type ProjectDeployEvent } from "../../application/re
 import { actionRegistry, projectRepoKey } from "../actions/registry";
 import { loadYamlDoc } from "./compose/yaml";
 import { checkComposeFileReferences } from "./compose/references";
-import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
+import { evaluateResolvedPolicy, formatPolicyRejection, validateComposePolicy, validateResolvedComposePolicy, type ComposeResolution, type PolicyViolation } from "./compose/policy";
 import { applyStackportProxyNetwork, connectRunningProxyServices } from "./compose/networking";
 import { ensureSharedIngressNetwork } from "../ingress/networks";
 import { dockerCli, pruneGroupNetworks, syncGroupNetwork } from "./compose/groupNetworks";
@@ -197,9 +197,33 @@ export async function getProjectComposeEnvFiles(projectId: number, selectedFile?
 /** The selected Compose file in the checkout, checked against the policy a deploy
  *  enforces, so violations show before anyone deploys. A file that doesn't parse has
  *  none here: the deploy leaves that to docker compose too. */
-export async function getProjectComposePolicy(projectId: number): Promise<{ composeFile: string; violations: PolicyViolation[] }> {
+export interface ProjectComposePolicy {
+  composeFile: string;
+  /** Problems in the file as written (and the files it points at). Every project is checked for these. */
+  violations: PolicyViolation[];
+  /** What Compose will actually run, which is where S1's allowlist rules apply (G3). */
+  resolved: {
+    /** False when the file could not be resolved, so nothing below was checked. */
+    checked: boolean;
+    /** Why it could not be resolved. */
+    reason?: string;
+    /** Problems found only after resolving; the ones already in `violations` are left out. */
+    violations: PolicyViolation[];
+  };
+  /** Whether a deploy rejects the resolved problems (true) or only warns about them (false). */
+  enforced: boolean;
+}
+
+export async function getProjectComposePolicy(projectId: number): Promise<ProjectComposePolicy> {
   const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
-  return { composeFile, violations: [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)] };
+  const violations = [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)];
+  const enforced = isComposePolicyEnforced(projectId);
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+  if (!resolution.ok) return { composeFile, violations, resolved: { checked: false, reason: resolution.reason, violations: [] }, enforced };
+  const fingerprint = (v: PolicyViolation): string => JSON.stringify([v.section ?? "services", v.service, v.key, v.problem]);
+  const known = new Set(violations.map(fingerprint));
+  const resolvedOnly = validateResolvedComposePolicy(resolution.doc, { projectDir: repoPath, projectId }).violations.filter((v) => !known.has(fingerprint(v)));
+  return { composeFile, violations, resolved: { checked: true, violations: resolvedOnly }, enforced };
 }
 
 export interface ComposeVariableStatus extends ComposeVariableRef {

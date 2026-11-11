@@ -1027,7 +1027,12 @@ export interface PolicyViolation {
 export interface ComposePolicyResult {
   /** Null when there is no checkout or no Compose file selected yet. */
   composeFile: string | null;
+  /** Problems in the file as written; every project is checked for these. */
   violations: PolicyViolation[];
+  /** What Compose will actually run. `checked` is false when the file could not be resolved. */
+  resolved: { checked: boolean; reason?: string; violations: PolicyViolation[] };
+  /** Whether a deploy rejects the resolved problems or only warns about them. */
+  enforced: boolean;
 }
 
 export interface NetworkGroupHostname { service: string; hostname: string }
