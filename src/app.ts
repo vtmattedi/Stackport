@@ -33,7 +33,15 @@ export const trustedProxy = createTrustedProxy({
 });
 app.set("trust proxy", trustedProxy.trust);
 
-app.use(helmet());
+/** helmet's defaults, with one change: a form may be posted to the configured GitHub, which is how an App is registered from a
+ *  manifest (the browser posts the manifest to GitHub's registration page). Everything else stays at `'self'`. */
+export function securityHeaders(githubWebUrl: string = config.githubWebUrl): ReturnType<typeof helmet> {
+  let origin: string | null = null;
+  try { origin = new URL(githubWebUrl).origin; } catch { /* an invalid setting adds nothing */ }
+  return helmet(origin ? { contentSecurityPolicy: { directives: { "form-action": ["'self'", origin] } } } : undefined);
+}
+
+app.use(securityHeaders());
 
 app.use(
   cors({
