@@ -606,6 +606,30 @@ export interface NetworkHeadroom {
   advice: string | null;
 }
 
+/** What the host did with the last reboot or cancel request (Host > Power). */
+export interface HostPowerStatus {
+  state: "scheduled" | "cancelled" | "rejected" | "failed" | "unknown";
+  at: number | null;
+  rebootAt: number | null;
+  by: string | null;
+  detail: string | null;
+}
+
+export interface PowerState {
+  available: boolean;
+  unavailableReason: string | null;
+  requestPending: boolean;
+  status: HostPowerStatus | null;
+  rebootScheduled: boolean;
+}
+
+export interface PowerPreflight {
+  runningActions: { id: string; kind: string; key: string; startedAt: string }[];
+  runningContainers: number;
+  containersWithoutRestart: string[];
+  dockerRead: boolean;
+}
+
 export type NetworkOwnerKind = "docker" | "stackport" | "project" | "group" | "isolated" | "legacy" | "other";
 
 /** One Docker network, with who owns it and what it takes from the address pool (Host > Networks). */

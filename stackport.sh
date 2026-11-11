@@ -56,6 +56,7 @@ Usage:
   stackport status
   stackport selfcheck
   stackport repair
+  stackport reboot [--in <minutes>] [--yes]
   stackport admin-recovery
   stackport uninstall
   stackport uninstall --purge
@@ -69,6 +70,10 @@ selfcheck: verify this script and its host dependencies (read-only).
 status:   non-mutating inspection of the current installation.
 repair:   reconcile StackPort-owned infrastructure (network, nginx scaffold,
           directory permissions) without touching admin/secrets/certs/project data.
+reboot:   schedule a reboot of this machine (now, or in a number of minutes, up
+          to 60) after listing the containers that will not come back by
+          themselves. Host > Power in the UI asks for the same thing through a
+          signed request file and a systemd path unit that install and repair set up.
 admin-recovery: root+interactive only — generates a temporary credential to reset
           StackPort's administrator password.
 uninstall: remove StackPort's runtime, preserving /etc/stackport and
@@ -337,6 +342,8 @@ ensure_secrets() {
   # Encrypts stored credentials and tokens, separate from JWT_SECRET so rotating the
   # session secret cannot break them. Back up secrets.env: without this key they are lost.
   generate_secret_if_missing "ENCRYPTION_KEY"
+  # Signs the reboot requests Host > Power writes; this script refuses any request that is not signed with it (see power_verify).
+  generate_secret_if_missing "STACKPORT_POWER_KEY"
 
   # Bootstrap password: generated once, here, by bash — the app only ever consumes
   # it (modules/identity/installation.ts's ensureBootstrapCredential), it never invents or
@@ -557,6 +564,7 @@ install_stackport() {
   ensure_firewall
   pull_stackport
   ensure_cli
+  ensure_power_units
   start_stackport
 
   if healthcheck_stackport; then
@@ -754,6 +762,7 @@ update_stackport() {
     state_set current "$target"
     state_set lastUpdate success
     install -m 0755 "$APP_DIR/stackport.sh" "$CLI_TARGET"
+    ensure_power_units || true
     cleanup_staging
     prune_staged_images "$STAGED_IMAGE"
     log "update complete"
@@ -972,6 +981,14 @@ repair_stackport() {
 
   seed_nginx_data
 
+  # A release that adds the reboot request needs its key and its systemd units on a host installed before it: this is where they arrive.
+  local new_power_key=0
+  if [[ -f "$SECRETS_ENV_FILE" ]] && ! grep -q '^STACKPORT_POWER_KEY=' "$SECRETS_ENV_FILE"; then
+    generate_secret_if_missing "STACKPORT_POWER_KEY"
+    new_power_key=1
+  fi
+  ensure_power_units
+
   log "checking directory ownership"
   chown -R "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$VAR_DIR/data" "$VAR_DIR/logs" "$VAR_DIR/nginx" 2>/dev/null || true
 
@@ -989,6 +1006,10 @@ repair_stackport() {
   fi
 
   strip_bootstrap_secret_if_consumed || true
+  if (( new_power_key == 1 )) && docker ps --format '{{.Names}}' | grep -qx stackport; then
+    log "restarting stackport so it reads the new power key"
+    docker restart stackport >/dev/null
+  fi
   log "repair complete"
 }
 
@@ -1036,6 +1057,7 @@ uninstall_stackport() {
     fi
   fi
 
+  remove_power_units
   if [[ -f "$COMPOSE_FILE" ]]; then
     log "stopping and removing StackPort containers"
     compose down --remove-orphans || true
@@ -1056,6 +1078,184 @@ uninstall_stackport() {
     log "StackPort runtime removed. Persistent state preserved under $ETC_DIR and $VAR_DIR."
     log "Run 'stackport install' to reinstall using the existing configuration/data."
   fi
+}
+
+# ── power (reboot the host, from SSH or from Host > Power) ─────────────────────
+# Stackport runs in a container with no way to reboot the machine it is on, and it should not get one. Instead the app writes a signed
+# request file into its data directory and a systemd path unit on the host acts on it. The request carries an HMAC made with
+# STACKPORT_POWER_KEY (secrets.env, root only; the app has the same value in its environment), a timestamp and the action; this script
+# refuses anything unsigned, stale, malformed or not a regular file. It consumes the request before acting, so a failure cannot loop.
+
+POWER_DIR="${POWER_DIR:-$VAR_DIR/data/power}"
+POWER_UNIT_DIR="${POWER_UNIT_DIR:-/etc/systemd/system}"
+POWER_MAX_AGE_S=300
+POWER_MAX_DELAY_MIN=60
+
+# HMAC-SHA256 (hex) over "action|requested_at|by|delay_min" with STACKPORT_POWER_KEY. The app signs the same string.
+power_mac() {
+  printf '%s|%s|%s|%s' "$1" "$2" "$3" "$4" | openssl dgst -sha256 -hmac "$STACKPORT_POWER_KEY" -hex | sed 's/^.*= //'
+}
+
+# Writes $POWER_DIR/status for the app to read: what happened to the last request. Atomic, readable by the app's user.
+power_status() {
+  local state="$1" detail="${2:-}" reboot_at="${3:-}" by="${4:-}"
+  mkdir -p "$POWER_DIR"
+  local tmp
+  tmp="$(mktemp "$POWER_DIR/.status.XXXXXX")"
+  {
+    echo "state=$state"
+    echo "at=$(date +%s)"
+    [[ -n "$reboot_at" ]] && echo "reboot_at=$reboot_at"
+    [[ -n "$by" ]] && echo "by=$by"
+    [[ -n "$detail" ]] && echo "detail=$(printf '%s' "$detail" | tr -d '\r\n' | cut -c1-200)"
+  } > "$tmp"
+  chmod 644 "$tmp"
+  chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$POWER_DIR/status"
+}
+
+# One value from a request file, only if it is exactly one `key=value` line.
+power_field() {
+  local file="$1" key="$2"
+  [[ "$(grep -c "^${key}=" "$file")" == "1" ]] || return 1
+  grep "^${key}=" "$file" | cut -d= -f2-
+}
+
+# Checks a request file and prints "<action> <by> <delay_min>" when it is valid; otherwise prints the reason on stderr and fails.
+power_verify() {
+  local file="$1" expected="$2" action requested_at by delay mac now
+  action="$(power_field "$file" action)" || { echo "no single action line" >&2; return 1; }
+  requested_at="$(power_field "$file" requested_at)" || { echo "no single requested_at line" >&2; return 1; }
+  by="$(power_field "$file" by)" || { echo "no single by line" >&2; return 1; }
+  delay="$(power_field "$file" delay_min)" || { echo "no single delay_min line" >&2; return 1; }
+  mac="$(power_field "$file" mac)" || { echo "no single mac line" >&2; return 1; }
+  [[ "$action" == "$expected" ]] || { echo "the file is named for $expected but asks for ${action:0:20}" >&2; return 1; }
+  [[ "$requested_at" =~ ^[0-9]{1,12}$ ]] || { echo "requested_at is not a time" >&2; return 1; }
+  [[ "$by" =~ ^[A-Za-z0-9._-]{1,40}$ ]] || { echo "by is not a plain name" >&2; return 1; }
+  [[ "$delay" =~ ^[0-9]{1,3}$ ]] && (( delay <= POWER_MAX_DELAY_MIN )) || { echo "delay_min is not 0 to $POWER_MAX_DELAY_MIN" >&2; return 1; }
+  [[ "$mac" =~ ^[0-9a-f]{64}$ ]] || { echo "mac is not a hex digest" >&2; return 1; }
+  [[ -n "${STACKPORT_POWER_KEY:-}" ]] || { echo "this host has no power key" >&2; return 1; }
+  [[ "$(power_mac "$action" "$requested_at" "$by" "$delay")" == "$mac" ]] || { echo "the signature does not match" >&2; return 1; }
+  now="$(date +%s)"
+  (( requested_at <= now + 60 )) || { echo "the request is from the future" >&2; return 1; }
+  (( now - requested_at <= POWER_MAX_AGE_S )) || { echo "the request is older than $POWER_MAX_AGE_S seconds" >&2; return 1; }
+  printf '%s %s %s\n' "$action" "$by" "$delay"
+}
+
+# Schedules the reboot (delay_min 0 means now) and records it. SHUTDOWN_CMD is replaceable so the logic can be tested.
+power_schedule() {
+  local by="$1" delay="$2" shutdown_cmd="${SHUTDOWN_CMD:-shutdown}" when
+  if (( delay == 0 )); then when="now"; else when="+$delay"; fi
+  "$shutdown_cmd" -r "$when" "Stackport: reboot requested by $by" || { power_status failed "shutdown refused the request" "" "$by"; return 1; }
+  power_status scheduled "" "$(( $(date +%s) + delay * 60 ))" "$by"
+  log "reboot scheduled ($when) for $by"
+}
+
+power_cancel() {
+  local by="$1" shutdown_cmd="${SHUTDOWN_CMD:-shutdown}"
+  "$shutdown_cmd" -c >/dev/null 2>&1 || true
+  power_status cancelled "" "" "$by"
+  log "scheduled reboot cancelled for $by"
+}
+
+# Run by the systemd service when a request file appears: handles each, consuming it first.
+power_run() {
+  load_secrets
+  local name path copy reason fields action by delay
+  for name in reboot-request cancel-request; do
+    path="$POWER_DIR/$name"
+    [[ -e "$path" || -L "$path" ]] || continue
+    copy="$(mktemp)"
+    if [[ -f "$path" && ! -L "$path" ]] && (( $(stat -c %s "$path") <= 1024 )); then cat "$path" > "$copy"; else : > "$copy"; fi
+    rm -f "$path"
+    if ! fields="$(power_verify "$copy" "${name%-request}" 2>&1)"; then
+      reason="$fields"
+      rm -f "$copy"
+      warn "refused $name: $reason"
+      power_status rejected "$reason"
+      continue
+    fi
+    rm -f "$copy"
+    read -r action by delay <<< "$fields"
+    if [[ "$action" == "reboot" ]]; then power_schedule "$by" "$delay" || true; else power_cancel "$by"; fi
+  done
+}
+
+# Warns about containers that would not come back after a reboot: a restart policy of "no" means they stay stopped.
+power_preflight() {
+  local running unrestarted
+  running="$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')"
+  unrestarted="$(docker ps -q 2>/dev/null | xargs -r docker inspect --format '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' 2>/dev/null | awk '$2 == "" || $2 == "no" { sub(/^\//, "", $1); print $1 }' | tr '\n' ' ')"
+  log "$running containers are running"
+  if [[ -n "${unrestarted// /}" ]]; then
+    warn "these have no restart policy and will stay stopped after the reboot: $unrestarted"
+  fi
+}
+
+# stackport reboot [--in <minutes>] [--yes]
+reboot_host() {
+  local delay=0 assume_yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) assume_yes=1 ;;
+      --in) shift; delay="${1:-}" ;;
+      --in=*) delay="${1#--in=}" ;;
+      *) error "unknown option: $1"; exit 1 ;;
+    esac
+    shift
+  done
+  [[ "$delay" =~ ^[0-9]{1,3}$ ]] && (( delay <= POWER_MAX_DELAY_MIN )) || { error "--in takes a number of minutes from 0 to $POWER_MAX_DELAY_MIN"; exit 1; }
+  power_preflight
+  if (( assume_yes == 0 )); then
+    require_interactive_tty
+    read -r -p "Reboot this machine $( (( delay == 0 )) && echo now || echo "in $delay minute(s)")? Type REBOOT to continue: " confirm
+    [[ "$confirm" == "REBOOT" ]] || { log "cancelled"; exit 0; }
+  fi
+  power_schedule "cli" "$delay"
+}
+
+# Installs the systemd units that act on a request from Host > Power, and tells the app they are there ($POWER_DIR/ready).
+ensure_power_units() {
+  mkdir -p "$POWER_DIR"
+  chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$POWER_DIR" 2>/dev/null || true
+  chmod 755 "$POWER_DIR"
+  if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+    rm -f "$POWER_DIR/ready"
+    warn "systemd is not running here, so Host > Power cannot reboot the machine; use 'sudo stackport reboot' over SSH"
+    return 0
+  fi
+  cat > "$POWER_UNIT_DIR/stackport-power.path" <<UNIT
+[Unit]
+Description=Act on a reboot or cancel request from Stackport (Host > Power)
+
+[Path]
+PathExistsGlob=$POWER_DIR/*-request
+Unit=stackport-power.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  cat > "$POWER_UNIT_DIR/stackport-power.service" <<UNIT
+[Unit]
+Description=Stackport power request
+
+[Service]
+Type=oneshot
+ExecStart=$CLI_TARGET power-run
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now stackport-power.path >/dev/null 2>&1 || { warn "could not start stackport-power.path"; rm -f "$POWER_DIR/ready"; return 0; }
+  : > "$POWER_DIR/ready"
+  chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$POWER_DIR/ready" 2>/dev/null || true
+  log "Host > Power is enabled"
+}
+
+remove_power_units() {
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    systemctl disable --now stackport-power.path >/dev/null 2>&1 || true
+  fi
+  rm -f "$POWER_UNIT_DIR/stackport-power.path" "$POWER_UNIT_DIR/stackport-power.service" "$POWER_DIR/ready"
+  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
 }
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
@@ -1090,6 +1290,14 @@ case "$COMMAND" in
   repair)
     require_root
     repair_stackport
+    ;;
+  reboot)
+    require_root
+    reboot_host "$@"
+    ;;
+  power-run)
+    require_root
+    power_run
     ;;
   admin-recovery)
     admin_recovery

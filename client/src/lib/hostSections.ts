@@ -1,4 +1,4 @@
-import { Box, Gauge, Layers, Network, ShieldCheck } from "lucide-react";
+import { Box, Gauge, Layers, Network, Power, ShieldCheck } from "lucide-react";
 
 /** The pages under /host, in the order they are listed. One list for the Host page, the nav's hover menu and the command palette. */
 export const HOST_SECTIONS = [
@@ -7,6 +7,7 @@ export const HOST_SECTIONS = [
   { tab: "networks", label: "Networks", icon: Network },
   { tab: "nginx", label: "Nginx", icon: Layers },
   { tab: "certbot", label: "Certbot", icon: ShieldCheck },
+  { tab: "power", label: "Power", icon: Power },
 ] as const;
 
 export type HostTab = (typeof HOST_SECTIONS)[number]["tab"];

@@ -36,6 +36,7 @@ import { getHardeningDefaults, setHardeningDefaults } from "../../modules/deploy
 import { listProjectEnforcement } from "../../modules/deployments/compose/enforcement";
 import { getNetworkHeadroom } from "../../modules/maintenance/networkHeadroom";
 import { getNetworkOverview } from "../../modules/maintenance/networks";
+import { PowerError, readPowerPreflight, readPowerState, requestCancel, requestReboot } from "../../modules/maintenance/power";
 import { getStorageThresholds, setStorageThresholds, type StorageThresholds } from "../../modules/maintenance/storage/operations";
 
 import { startSelfUpdate, getSelfUpdateStatus, SelfUpdateBusyError } from "../../modules/maintenance/selfUpdate";
@@ -229,6 +230,42 @@ router.get("/network-headroom", requireAuth, async (_req: Request, res: Response
 router.get("/networks", requireAuth, async (_req: Request, res: Response): Promise<void> => {
   try { res.json(await getNetworkOverview()); }
   catch (err) { res.status(503).json({ error: err instanceof Error ? err.message : "Docker could not be read" }); }
+});
+
+/** Host > Power: whether the host side is set up, what happened to the last request, and what a reboot would cut off. */
+router.get("/power", requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  res.json({ state: readPowerState(), preflight: await readPowerPreflight() });
+});
+
+/** Asks the host to reboot. Needs the typed word, and acknowledging what is running unless nothing is. */
+router.post("/power/reboot", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const user = req.user ?? "unknown";
+  if (req.body?.confirm !== "reboot") { res.status(400).json({ error: 'Type "reboot" to confirm.' }); return; }
+  const preflight = await readPowerPreflight();
+  if (preflight.runningActions.length > 0 && req.body?.interruptActions !== true) {
+    res.status(409).json({ error: `${preflight.runningActions.length} action(s) are running and a reboot would cut them off. Wait for them, or confirm that they may be interrupted.`, preflight });
+    return;
+  }
+  try {
+    const state = requestReboot(user, req.body?.delayMinutes);
+    auditLog(user, "host.reboot-request", "-", "ok", { delayMinutes: req.body?.delayMinutes, interrupted: preflight.runningActions.map((a) => a.key), withoutRestart: preflight.containersWithoutRestart });
+    res.status(202).json({ state, preflight });
+  } catch (err) {
+    if (err instanceof PowerError) { auditLog(user, "host.reboot-request", "-", "fail", { reason: err.message }); res.status(err.status).json({ error: err.message }); return; }
+    throw err;
+  }
+});
+
+router.post("/power/cancel", requireAuth, (req: Request, res: Response): void => {
+  const user = req.user ?? "unknown";
+  try {
+    const state = requestCancel(user);
+    auditLog(user, "host.reboot-cancel", "-", "ok");
+    res.status(202).json({ state });
+  } catch (err) {
+    if (err instanceof PowerError) { res.status(err.status).json({ error: err.message }); return; }
+    throw err;
+  }
 });
 
 /** Which 1.3 protections each project has, unprotected ones first (G2). */
