@@ -863,8 +863,7 @@ strip_bootstrap_secret_if_consumed() {
 network_headroom() {
   command -v docker >/dev/null 2>&1 || return 1
   local pools capacity=0 known=daemon base size prefix used
-  pools="$(docker info --format '{{range .DefaultAddressPools}}{{.Base}} {{.Size}}{{"
-"}}{{end}}' 2>/dev/null)" || return 1
+  pools="$(docker info --format '{{range .DefaultAddressPools}}{{.Base}} {{.Size}}{{"\n"}}{{end}}' 2>/dev/null)" || return 1
   if [[ -z "${pools//[[:space:]]/}" ]]; then
     capacity=31
     known=stock
