@@ -173,6 +173,17 @@ test("moving back to a token is one call and changes only the mode", async () =>
   assert.equal((await call("PUT", "/projects/999999/github-auth", { mode: "token" })).status, 404);
 });
 
+test("an App project's repository cannot be renamed under its binding; after moving back to a token it can", async () => {
+  const created = (await (await call("POST", "/projects", { name: "rename-guard", githubApp: { installationId: 11, repositoryId: 101 } })).json()) as { id: number };
+  const refused = await call("PATCH", `/projects/${created.id}`, { githubRepo: "acme/blog" });
+  assert.equal(refused.status, 409);
+  assert.match(((await refused.json()) as { error: string }).error, /Move it back to a token/);
+  assert.equal(getProjectById(created.id)?.githubRepo, "acme/shop", "nothing changed");
+  assert.equal((await call("PATCH", `/projects/${created.id}`, { githubRepo: "ACME/Shop", name: "rename-guard-2" })).status, 200, "the same repository, in another case, and other fields are fine");
+  await call("PUT", `/projects/${created.id}/github-auth`, { mode: "token" });
+  assert.equal((await call("PATCH", `/projects/${created.id}`, { githubRepo: "acme/blog" })).status, 200);
+});
+
 test("the App cannot be forgotten while a project still deploys through it", async () => {
   const res = await call("DELETE", "/github-app");
   assert.equal(res.status, 409);

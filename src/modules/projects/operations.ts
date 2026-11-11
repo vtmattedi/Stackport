@@ -173,6 +173,12 @@ export function updateProject(projectId: number, input: UpdateProjectInput, opti
     ? parseNginxExtraBlocks(input.nginxExtraBlocks)
     : existing.nginx_extra_blocks ?? null;
 
+  // A project bound to the App is bound to a repository id, so a new name here would leave the binding pointing at the
+  // old repository: clones and webhooks would go to different places. It moves back to a token first.
+  if (existing.github_auth_mode === "app" && (githubRepo ?? "").toLowerCase() !== (existing.github_repo ?? "").toLowerCase()) {
+    throw new ProjectAdminError(409, "This project deploys through the GitHub App, which is bound to its repository. Move it back to a token (Project > Settings > GitHub access) before changing the repository.");
+  }
+
   ensureCredentialExists(credentialId);
   ensureGithubCredentialExists(githubCredentialId);
   ensurePortAvailable(internalPort, projectId);
