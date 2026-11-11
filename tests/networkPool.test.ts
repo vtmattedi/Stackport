@@ -121,12 +121,25 @@ test("it merges into an existing daemon.json, keeping every other key, and keeps
   assert.match(r.out, /sudo systemctl restart docker/);
 });
 
-test("with no daemon.json it creates one; an existing pool is replaced, not added to", { skip: !hasJson }, () => {
+test("with no daemon.json it creates one", { skip: !hasJson }, () => {
   const fresh = sandbox(null);
   assert.equal(fresh.run("--base 172.80.0.0/12 --size 24 --no-restart").status, 0);
   assert.deepEqual(JSON.parse(fs.readFileSync(fresh.json, "utf8")), { "default-address-pools": [{ base: "172.80.0.0/12", size: 24 }] });
-  const replaced = sandbox('{ "default-address-pools": [{ "base": "10.1.0.0/16", "size": 24 }] }');
-  assert.equal(replaced.run("--base 10.20.0.0/14 --size 26 --no-restart").status, 0);
+});
+
+test("pools somebody already chose are shown and kept unless --replace is given", { skip: !hasJson }, () => {
+  const original = '{ "default-address-pools": [{ "base": "10.1.0.0/16", "size": 24 }, { "base": "10.9.0.0/16", "size": 24 }] }';
+  const refused = sandbox(original);
+  const r = refused.run("--base 10.20.0.0/14 --size 26 --no-restart");
+  assert.notEqual(r.status, 0);
+  assert.match(r.out, /already sets default-address-pools/);
+  assert.match(r.out, /10\.1\.0\.0\/16 24/);
+  assert.match(r.out, /10\.9\.0\.0\/16 24/);
+  assert.match(r.out, /--replace/);
+  assert.equal(fs.readFileSync(refused.json, "utf8"), original, "nothing was changed");
+
+  const replaced = sandbox(original);
+  assert.equal(replaced.run("--base 10.20.0.0/14 --size 26 --replace --no-restart").status, 0);
   assert.deepEqual(JSON.parse(fs.readFileSync(replaced.json, "utf8"))["default-address-pools"], [{ base: "10.20.0.0/14", size: 26 }]);
 });
 

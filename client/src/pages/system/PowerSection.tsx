@@ -62,7 +62,7 @@ export function PowerSection() {
   if (!data) return <>{header}<Loader size={14} className="spin" /></>;
 
   const { state, preflight } = data;
-  const status = state.status;
+  const schedule = state.schedule;
   const actionsRunning = preflight.runningActions.length;
   const canSubmit = state.available && !state.requestPending && !scheduled && typed.trim() === "reboot" && (actionsRunning === 0 || interrupt) && !busy;
 
@@ -98,12 +98,12 @@ export function PowerSection() {
     <>
       {header}
       <div style={{ display: "grid", gap: 16 }}>
-        {scheduled && status?.rebootAt && (
+        {scheduled && schedule?.rebootAt && (
           <Alert role="status">
             <AlertTriangle size={14} />
             <AlertTitle>A reboot is scheduled</AlertTitle>
             <AlertDescription>
-              <p>The machine reboots {untilText(Math.round((status.rebootAt * 1000 - now) / 1000))}{status.by ? `, as asked by ${status.by}` : ""}. Stackport and every project go down while it restarts.</p>
+              <p>The machine reboots {untilText(Math.round((schedule.rebootAt * 1000 - now) / 1000))}{schedule.by ? `, as asked by ${schedule.by}` : ""}. Stackport and every project go down while it restarts.</p>
               <Button type="button" variant="outline" size="sm" onClick={() => void cancel()} disabled={busy}>Cancel the reboot</Button>
             </AlertDescription>
           </Alert>
@@ -111,11 +111,18 @@ export function PowerSection() {
         {state.requestPending && (
           <Alert role="status"><Loader size={14} className="spin" /><AlertDescription>Waiting for the host to pick up the request…</AlertDescription></Alert>
         )}
-        {!scheduled && !state.requestPending && status && (status.state === "rejected" || status.state === "failed") && (
+        {state.requestStale && (
           <Alert variant="destructive">
             <AlertCircle size={14} />
-            <AlertTitle>The host did not act on the last request</AlertTitle>
-            <AlertDescription>{status.detail ?? "No reason was recorded."}</AlertDescription>
+            <AlertTitle>The host is not picking up requests</AlertTitle>
+            <AlertDescription>A request has been waiting for more than five minutes. On the server, check <span className="mono">systemctl status stackport-power.path</span>, or run <span className="mono">sudo stackport repair</span>. A new request replaces the stale one.</AlertDescription>
+          </Alert>
+        )}
+        {!state.requestPending && state.lastError && (
+          <Alert variant="destructive">
+            <AlertCircle size={14} />
+            <AlertTitle>{scheduled ? "The host refused the last request, and the scheduled reboot still stands" : "The host did not act on the last request"}</AlertTitle>
+            <AlertDescription>{state.lastError.detail ?? "No reason was recorded."}</AlertDescription>
           </Alert>
         )}
 

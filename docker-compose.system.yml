@@ -27,6 +27,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${STACKPORT_DATA_DIR:-./data}:/app/data
       - ${STACKPORT_LOGS_DIR:-./logs}:/app/logs
+      # What the host's power units tell the app (installed? what happened to the last request?). Root-owned, so read-only here: the app asks
+      # through its own data directory and cannot write to this one.
+      - ${STACKPORT_POWER_DIR:-./power}:/app/power-state:ro
       # Mount dotenv directly to preserve literal $ in secrets.
       - ./.env:/app/.env:ro
       - ${STACKPORT_NGINX_DIR:-./nginx-data}:/etc/nginx

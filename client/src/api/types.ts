@@ -606,12 +606,18 @@ export interface NetworkHeadroom {
   advice: string | null;
 }
 
-/** What the host did with the last reboot or cancel request (Host > Power). */
-export interface HostPowerStatus {
-  state: "scheduled" | "cancelled" | "rejected" | "failed" | "unknown";
+/** What the host will do (Host > Power): a reboot at a time, or nothing because the last request was a cancel. */
+export interface HostSchedule {
+  state: "scheduled" | "cancelled" | "unknown";
   at: number | null;
   rebootAt: number | null;
   by: string | null;
+}
+
+/** The last request the host refused or could not carry out. */
+export interface HostError {
+  state: "rejected" | "failed";
+  at: number | null;
   detail: string | null;
 }
 
@@ -619,7 +625,10 @@ export interface PowerState {
   available: boolean;
   unavailableReason: string | null;
   requestPending: boolean;
-  status: HostPowerStatus | null;
+  /** A request file is still there, older than the host would accept: the host is not picking requests up. */
+  requestStale: boolean;
+  schedule: HostSchedule | null;
+  lastError: HostError | null;
   rebootScheduled: boolean;
 }
 
@@ -644,6 +653,7 @@ export interface DockerNetworkInfo {
   containers: { id: string; name: string }[];
   owner: { kind: NetworkOwnerKind; label: string; projectId: number | null };
   createdAt: string | null;
+  madeByCompose: boolean;
   /** Why it cannot be removed from the page, or null when it can. */
   removalBlocker: string | null;
 }
