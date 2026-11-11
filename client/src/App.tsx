@@ -29,7 +29,7 @@ const EnforcementSection = lazy(() => import("./pages/settings/EnforcementSectio
 const DomainsSection = lazy(() => import("./pages/settings/DomainsSection"));
 const GithubSection = lazy(() => import("./pages/settings/GithubSection"));
 const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
-const MigrationsSection = lazy(() => import("./pages/settings/migrations/MigrationsSection")); // TEMPORARY
+const EncryptionSection = lazy(() => import("./pages/settings/encryption/EncryptionSection"));
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
 const InsightsLayout = lazy(() => import("./pages/insights/InsightsLayout"));
 const InsightsOverview = lazy(() => import("./pages/insights/OverviewSection"));
@@ -102,7 +102,7 @@ export default function App() {
               <Route path="domains" element={<DomainsSection />} />
               <Route path="github" element={<GithubSection />} />
               <Route path="maintenance" element={<MaintenanceSection />} />
-              <Route path="migrations" element={<MigrationsSection />} /> {/* TEMPORARY */}
+              <Route path="encryption" element={<EncryptionSection />} />
               <Route path="*" element={<Navigate to="general" replace />} />
             </Route>
             <Route path="/insights" element={<InsightsLayout />}>

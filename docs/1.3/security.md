@@ -141,7 +141,7 @@ daemon reads as a host path.
   existing one (not even an empty one), and never again, so nothing the application wrote is overwritten.
   A failed copy fails the deploy with the reason.
 - New projects are managed from the start. Existing ones (migration 009) keep their
-  current mounts until **Settings > Migrations** copies their data (a helper container
+  current mounts until Settings > Migrations copied their data (the page, and so the copy, was removed in 1.3.9: a project still unmanaged keeps its mounts) (a helper container
   runs `cp -a`, so ownership survives), leaves the originals in place, and switches
   them over. It has a dry run, and it skips a project whose containers are running or whose state
   cannot be read (a copy of live data loses writes), blocks one on a failed copy, on data found in
@@ -335,15 +335,15 @@ re-encryption migration so either key can rotate.
 **Status: done.** `ENCRYPTION_KEY` (generated into `secrets.env` by install, update and
 repair) encrypts new secrets as `v2:<keyId>:<iv>:<tag>:<data>`; `ENCRYPTION_KEY_PREVIOUS`
 keeps older keys readable. Old-format values are still read with the JWT-derived key until
-**Settings > Migrations > Re-encrypt stored secrets** moves them, after which `JWT_SECRET`
+**Settings > Encryption > Re-encrypt stored secrets** moves them, after which `JWT_SECRET`
 can rotate without breaking them. To rotate the encryption key: put the old value in
 `ENCRYPTION_KEY_PREVIOUS`, set a new `ENCRYPTION_KEY`, restart, run the re-encryption, then
 drop the previous key.
 
 Two things to know. **Back up `secrets.env`**: without `ENCRYPTION_KEY` the stored credentials
 cannot be read. And once secrets are written under the new key, rolling back to a release
-older than 1.3 cannot read them. That entry is the one migration worth keeping when the
-temporary page is removed, because it also finishes a later key rotation.
+older than 1.3 cannot read them. That entry was kept when the temporary page was removed in 1.3.9 (it is now
+Settings > Encryption), because it also finishes a later key rotation.
 
 ### S13 — Encrypt managed env values at rest · 🟡 · M · needs S7
 
@@ -353,7 +353,7 @@ file a deploy uses. Found during PR 8.
 
 **Status: done.** New and edited env files store their values only as ciphertext
 (`project_env_files.variables_enc`, migration 013; `variables_json` is `[]`). Files saved
-before are encrypted by **Settings > Migrations > Encrypt managed env values**. Env values
+before were encrypted by Settings > Migrations > Encrypt managed env values (removed in 1.3.9). Env values
 are in the re-encryption list, so a key rotation covers them. Rolling back to a release
 older than 1.3 deploys an encrypted project with an empty env file, so take the database
 backup first and treat a rollback across this change as a restore.

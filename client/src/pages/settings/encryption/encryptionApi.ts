@@ -1,8 +1,4 @@
-/**
- * TEMPORARY: the whole Settings > Migrations page lives in this folder, with its own
- * API calls so nothing else in the client depends on it. To remove it, see
- * src/modules/maintenance/migrations/types.ts on the server.
- */
+/** The Settings > Encryption page keeps its own API calls: nothing else in the client uses them. */
 import { ApiError, sessionHeaders } from "../../../api/client";
 
 export type ReportStatus = "ok" | "warn" | "error" | "info";
@@ -22,7 +18,7 @@ export interface MigrationJob {
 export interface MigrationInfo { id: string; title: string; description: string; executeWarning: string; destructive: boolean; job: MigrationJob }
 
 async function call<T>(path: string, method: "GET" | "POST"): Promise<T> {
-  const res = await fetch(`/api/legacy-migrations${path}`, {
+  const res = await fetch(`/api/encryption${path}`, {
     method,
     headers: { "Content-Type": "application/json", ...sessionHeaders() },
   });
@@ -33,7 +29,7 @@ async function call<T>(path: string, method: "GET" | "POST"): Promise<T> {
   return (await res.json()) as T;
 }
 
-export const migrationsApi = {
+export const encryptionApi = {
   list: () => call<MigrationInfo[]>("", "GET"),
   start: (id: string, mode: MigrationMode) => call<MigrationJob>(`/${id}/${mode}`, "POST"),
 };

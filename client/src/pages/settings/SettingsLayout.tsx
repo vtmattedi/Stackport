@@ -1,5 +1,5 @@
 import { Outlet, useLocation } from "react-router-dom";
-import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, Wrench, HardDrive, KeyRound, ShieldCheck, ArrowRightLeft, Shield, ShieldAlert, Plug, Globe } from "lucide-react";
+import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, Wrench, HardDrive, KeyRound, ShieldCheck, Lock, Shield, ShieldAlert, Plug, Globe } from "lucide-react";
 import SubShell, { SubShellSectionHeader } from "../../components/SubShell";
 
 export const SETTINGS_SECTIONS = [
@@ -14,8 +14,7 @@ export const SETTINGS_SECTIONS = [
   { path: "hardening", label: "Container defaults", icon: Shield, description: "Memory and process limits that projects with hardened defaults give every service." },
   { path: "enforcement", label: "Project protections", icon: ShieldAlert, description: "Which projects still lack the Compose policy, managed volumes or hardened defaults." },
   { path: "maintenance", label: "Maintenance", icon: Wrench, description: "Housekeeping checks for the deploy folder." },
-  // TEMPORARY: remove with src/pages/settings/migrations (see src/modules/maintenance/migrations/types.ts on the server).
-  { path: "migrations", label: "Migrations", icon: ArrowRightLeft, description: "One-off data migrations, each with a dry run and an execute." },
+  { path: "encryption", label: "Encryption", icon: Lock, description: "Re-encrypt the stored secrets under the current key, to finish a key rotation." },
 ] as const;
 
 export default function SettingsLayout() {

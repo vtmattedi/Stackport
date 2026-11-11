@@ -72,6 +72,6 @@ deferred (see security.md). Several of them are tested only without a real Docke
 see verification.md before relying on them.
 
 **Before S1 and S2 apply to a project:** a project that existed before them keeps its old
-behaviour until it is migrated (Settings > Migrations) or switched on, so treat every
+behaviour until it is switched on (the Settings > Migrations page that copied volume data was removed in 1.3.9), so treat every
 repository Stackport deploys as able to run code as root on the host. Turn off auto-deploy for any repository that someone other
 than the admin can push to.

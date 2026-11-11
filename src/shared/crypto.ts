@@ -10,7 +10,7 @@ import { config } from "../config/env";
  *  - ENCRYPTION_KEY is its own key. New ciphertext is `v2:<keyId>:<iv>:<tag>:<data>`,
  *    where keyId names the key that made it, so any key in the ring can decrypt it.
  *  - ENCRYPTION_KEY_PREVIOUS (comma separated) keeps older keys readable while a rotation
- *    is in progress. Settings > Migrations re-encrypts everything with the current key.
+ *    is in progress. Settings > Encryption re-encrypts everything with the current key.
  *  - Ciphertext from before this change has no prefix (`<iv>:<tag>:<data>`) and is read with
  *    the JWT-derived key. It stays readable until it is re-encrypted; rotate JWT_SECRET only
  *    after that.

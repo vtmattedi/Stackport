@@ -72,7 +72,7 @@ do that after the new one is accepted.
 **The webhook secret:** set the new secret in the App's settings on GitHub and in Stackport (same dialog). Stackport cannot check it, so a mismatch shows as
 deliveries refused with 401 (GitHub's *Recent Deliveries* tab on the App shows them). Use a value of at least 16 characters.
 
-**The encryption key (`ENCRYPTION_KEY`):** the App's three secrets are on the re-encryption list, so Settings > Migrations > Re-encrypt moves them with the
+**The encryption key (`ENCRYPTION_KEY`):** the App's three secrets are on the re-encryption list, so Settings > Encryption > Re-encrypt moves them with the
 rest. Rotate that key as described in [../1.3/security.md](../1.3/security.md) (S7); the App needs no extra step, and `tests/githubAppHardening.test.ts` rotates them and signs with the result.
 
 ## When the domain changes

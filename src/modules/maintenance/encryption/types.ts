@@ -1,13 +1,7 @@
 /**
- * TEMPORARY: one-off data migrations an admin runs from Settings > Migrations.
- *
- * To remove this feature once every install has run its migrations:
- *   1. delete this folder (src/modules/maintenance/migrations) and client/src/pages/settings/migrations
- *   2. delete the `legacyMigrationsRouter` lines in src/application/http/routes.ts
- *   3. delete the "migrations" entries in client/src/pages/settings/SettingsLayout.tsx
- *      and the route in client/src/App.tsx
- *   4. delete tests/legacyMigrations*.test.ts
- * Nothing else imports from here.
+ * Tasks an admin runs from Settings > Encryption, each with a dry run and an execute. Today there is one, re-encrypting the stored
+ * secrets, which is how an encryption key (or JWT_SECRET) is rotated. The one-off data migrations that lived here before 1.3.9
+ * (managed volumes, removing the original mounts, encrypting env values) are gone.
  */
 
 export type ReportStatus = "ok" | "warn" | "error" | "info";
@@ -25,7 +19,7 @@ export interface MigrationReport {
 
 export type MigrationMode = "dry-run" | "execute";
 
-export interface LegacyMigration {
+export interface EncryptionTask {
   id: string;
   title: string;
   description: string;
