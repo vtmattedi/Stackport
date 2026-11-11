@@ -1145,7 +1145,8 @@ power_error() {
 power_read_request() {
   local path="$1"
   if [[ -n "${POWER_READ_AS:-}" ]]; then
-    # shellcheck disable=SC2086 -- a test hook that names a wrapper command
+    # A test hook that names a wrapper command, so the variable is deliberately split into words.
+    # shellcheck disable=SC2086
     timeout 3 $POWER_READ_AS head -c 2048 -- "$path" 2>/dev/null
   else
     timeout 3 setpriv --reuid="${STACKPORT_UID:-1000}" --regid="${STACKPORT_GID:-1000}" --clear-groups head -c 2048 -- "$path" 2>/dev/null
