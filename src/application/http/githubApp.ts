@@ -10,6 +10,7 @@ import {
 } from "../../modules/github/app";
 import { GithubError } from "../../modules/github/client";
 import { getApp, getInstallation, listInstallations, listRepositories } from "../../modules/github/store";
+import { inspectRepository, listRepositoryBranches, resolveAppRepository } from "../../modules/github/binding";
 
 /**
  * Settings > GitHub. The three browser callbacks (`/manifest/callback`, `/oauth/callback`, `/setup`) are the only
@@ -106,6 +107,26 @@ router.get("/repositories", requireAuth, (req: Request, res: Response): void => 
   const installationId = req.query["installationId"] === undefined ? undefined : Number(req.query["installationId"]);
   if (installationId !== undefined && (!Number.isInteger(installationId) || installationId < 1)) { res.status(400).json({ error: "Invalid installation" }); return; }
   res.json({ repositories: listRepositories(installationId) });
+});
+
+/** The repository as the wizard picked it, checked against what the cache says the App can use. */
+function repositoryFromRequest(req: Request<{ id: string }>) {
+  const repositoryId = Number(req.params.id);
+  const installationId = Number(req.query["installationId"]);
+  return resolveAppRepository(installationId, repositoryId);
+}
+
+router.get("/repositories/:id/branches", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  try { res.json({ branches: await listRepositoryBranches(repositoryFromRequest(req)) }); }
+  catch (err) { fail(res, err); }
+});
+
+/** What is in a branch before it is cloned: its Compose files and the variable names in `.env.example`. */
+router.get("/repositories/:id/inspect", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const branch = typeof req.query["branch"] === "string" ? req.query["branch"] : "";
+  if (!branch || branch.length > 255) { res.status(400).json({ error: "Choose a branch." }); return; }
+  try { res.json(await inspectRepository(repositoryFromRequest(req), branch)); }
+  catch (err) { fail(res, err); }
 });
 
 router.post("/installations/:id/refresh", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {

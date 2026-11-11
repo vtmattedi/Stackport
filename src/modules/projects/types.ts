@@ -24,6 +24,11 @@ export interface Project {
   composePolicyEnforced: boolean;
   /** Bind mounts live in Stackport-owned directories (S2). Off until the migration copies the data. */
   volumesManaged: boolean;
+  /** How this project reaches GitHub: through the GitHub App, or (null) with a token as before. */
+  githubAuthMode: "app" | null;
+  /** The repository and installation the App serves it through, when githubAuthMode is "app". */
+  githubRepositoryId: number | null;
+  githubInstallationId: number | null;
   /** Routed services sit on a network of this project's own instead of the shared ingress network (P7). */
   ingressIsolated: boolean;
   /** Network group: projects in the same one reach each other's chosen services (separate from groupName). */
@@ -112,6 +117,9 @@ export interface ProjectRow {
   hardened_defaults?: number | null;
   compose_policy_enforced?: number | null;
   ingress_isolated?: number | null;
+  github_auth_mode?: string | null;
+  github_repository_id?: number | null;
+  github_installation_id?: number | null;
   volumes_managed?: number | null;
   network_group?: string | null;
   pending_deploy_sha?: string | null;
@@ -144,6 +152,9 @@ export function rowToProject(row: ProjectRow): Project {
     deployHealthGraceS: row.deploy_health_grace_s ?? 60,
     autoRollbackUnhealthy: !!row.auto_rollback_unhealthy,
     hardenedDefaults: row.hardened_defaults !== 0,
+    githubAuthMode: row.github_auth_mode === "app" ? "app" : null,
+    githubRepositoryId: row.github_repository_id ?? null,
+    githubInstallationId: row.github_installation_id ?? null,
     ingressIsolated: row.ingress_isolated === 1,
     composePolicyEnforced: row.compose_policy_enforced !== 0,
     volumesManaged: row.volumes_managed !== 0,

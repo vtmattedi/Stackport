@@ -14,6 +14,9 @@ export interface FakeInstallation {
   permissions?: Record<string, string>;
   suspended?: boolean;
   repositories: { id: number; full_name: string; default_branch?: string; private?: boolean; archived?: boolean }[];
+  /** Branches, and files, per repository full name, for the endpoints the wizard reads. */
+  branches?: Record<string, string[]>;
+  files?: Record<string, Record<string, string>>;
 }
 
 export interface FakeGithub {
@@ -145,6 +148,23 @@ export async function startFakeGithub(): Promise<FakeGithub> {
       const installation = fake.installations.find((i) => i.id === granted.installationId)!;
       const page = Number(url.searchParams.get("page") ?? "1");
       return json(res, 200, { total_count: installation.repositories.length, repositories: installation.repositories.slice((page - 1) * 100, page * 100) });
+    }
+    const repoRoute = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(url.pathname);
+    if (req.method === "GET" && repoRoute) {
+      const granted = installationTokens.get(auth);
+      if (!granted || granted.expiresAt < Date.now()) return json(res, 401, { message: "Bad credentials" });
+      const installation = fake.installations.find((i) => i.id === granted.installationId)!;
+      const fullName = `${repoRoute[1]}/${repoRoute[2]}`;
+      if (!installation.repositories.some((r) => r.full_name === fullName)) return json(res, 404, { message: "Not Found" });
+      const rest = repoRoute[3] ?? "";
+      if (rest === "") return json(res, 200, { full_name: fullName });
+      if (rest === "/branches") return json(res, 200, (installation.branches?.[fullName] ?? ["main"]).map((name) => ({ name, commit: { sha: crypto.createHash("sha1").update(name).digest("hex") } })));
+      if (rest.startsWith("/git/trees/")) return json(res, 200, { truncated: false, tree: Object.keys(installation.files?.[fullName] ?? {}).map((path) => ({ path, type: "blob" })) });
+      if (rest.startsWith("/contents/")) {
+        const file = installation.files?.[fullName]?.[decodeURIComponent(rest.slice("/contents/".length))];
+        if (file === undefined) return json(res, 404, { message: "Not Found" });
+        return json(res, 200, { type: "file", encoding: "base64", content: Buffer.from(file).toString("base64") });
+      }
     }
     return json(res, 404, { message: "Not Found" });
   }

@@ -75,6 +75,8 @@ import {
 import { removeIngressNetwork } from "../../modules/ingress/networks";
 import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
+import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
+import { GithubAppError } from "../../modules/github/app";
 import { assignNetworkGroup, getNetworkGroupView, NetworkGroupError } from "../../modules/deployments/networkGroupAssignment";
 import multer from "multer";
 
@@ -683,6 +685,45 @@ router.get("/:id/ingress-health", requireAuth, async (req: Request<{ id: string 
   res.json(await checkProjectIngress(id));
 });
 
+/** Moves a project between a token and the GitHub App (Phase B). Moving to the App first proves, with a real call, that
+ *  the App can read the repository; the token is kept on the project, so moving back loses nothing. */
+router.put("/:id/github-auth", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  if (actionRegistry.get(projectRepoKey(id))?.status === "running") { res.status(409).json({ error: "An action is running for this project. Try again when it has finished." }); return; }
+  const mode: unknown = req.body?.mode;
+  try {
+    if (mode === "token") {
+      unbindProjectFromApp(id);
+      auditLog(req.user ?? "unknown", "project.github-auth", String(id), "ok", { mode: "token" });
+      res.json({ githubAuthMode: null });
+      return;
+    }
+    if (mode !== "app") { res.status(400).json({ error: "mode must be \"app\" or \"token\"" }); return; }
+    if (!project.githubRepo) { res.status(400).json({ error: "This project has no GitHub repository." }); return; }
+    let installationId: unknown = req.body?.installationId;
+    let repositoryId: unknown = req.body?.repositoryId;
+    if (installationId === undefined || repositoryId === undefined) {
+      const matches = candidatesForRepo(project.githubRepo);
+      if (matches.length === 0) { res.status(404).json({ error: `No connected installation can use ${project.githubRepo}. Install the App on its owner and connect the account in Settings > GitHub.` }); return; }
+      if (matches.length > 1) { res.status(409).json({ error: `More than one installation can use ${project.githubRepo}. Choose one.`, candidates: matches.map((m) => ({ installationId: m.installationId, repositoryId: m.repositoryId })) }); return; }
+      installationId = matches[0].installationId;
+      repositoryId = matches[0].repositoryId;
+    }
+    const repository = resolveAppRepository(installationId, repositoryId);
+    if (repository.fullName.toLowerCase() !== project.githubRepo.toLowerCase()) { res.status(400).json({ error: `That repository is ${repository.fullName}, not ${project.githubRepo}.` }); return; }
+    await verifyRepositoryAccess(repository);
+    bindProjectToApp(id, repository);
+    auditLog(req.user ?? "unknown", "project.github-auth", String(id), "ok", { mode: "app", installationId: repository.installationId });
+    res.json({ githubAuthMode: "app", githubInstallationId: repository.installationId, githubRepositoryId: repository.repositoryId });
+  } catch (err) {
+    if (err instanceof GithubAppError) { res.status(err.status).json({ error: err.message }); return; }
+    throw err;
+  }
+});
+
 const isolationSwitches = new Set<number>();
 
 /** Moves a project onto a network of its own, or back onto the shared one (P7). The switch checks that the new
@@ -1203,12 +1244,20 @@ router.post("/:id/actions/cancel", requireAuth, (req: Request<{ id: string }>, r
 router.post("/", requireAuth, (req: Request, res: Response): void => {
   let project;
   try {
-    project = adminCreateProject(req.body as Record<string, unknown>);
+    const input = { ...(req.body as Record<string, unknown>) };
+    // A project that deploys through the GitHub App is created from a repository the App can use, never a typed name.
+    const app = input["githubApp"] as { installationId?: unknown; repositoryId?: unknown } | undefined;
+    delete input["githubApp"];
+    const repository = app ? resolveAppRepository(app.installationId, app.repositoryId) : null;
+    if (repository) { input["githubRepo"] = repository.fullName; delete input["githubCredentialId"]; }
+    project = adminCreateProject(input);
+    if (repository) { bindProjectToApp(project.id, repository); project = getProjectById(project.id) ?? project; }
   } catch (err) {
     if (err instanceof ProjectAdminError) {
       res.status(err.statusCode).json({ error: err.message });
       return;
     }
+    if (err instanceof GithubAppError) { res.status(err.status).json({ error: err.message }); return; }
     throw err;
   }
 

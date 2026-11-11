@@ -44,6 +44,10 @@ export interface Project {
   autoRollbackUnhealthy: boolean;
   /** Services get Stackport's hardened defaults: no-new-privileges and default limits. */
   hardenedDefaults: boolean;
+  /** How this project reaches GitHub: through the GitHub App, or (null) with a token. */
+  githubAuthMode: "app" | null;
+  githubRepositoryId: number | null;
+  githubInstallationId: number | null;
   /** Routed services sit on a network of this project's own instead of the shared ingress network. */
   ingressIsolated: boolean;
   /** Resolved-config policy violations reject a deploy; off, they only warn. */

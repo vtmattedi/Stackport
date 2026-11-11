@@ -30,6 +30,7 @@ import { ActionSelect, AppSelect } from "../AppSelect";
 import { useConfirm } from "../ConfirmDialog";
 import { EnvManagerDialog } from "../EnvManagerDialog";
 import { GitHubTokenSelect } from "../GitHubTokenSelect";
+import { GithubAppRepositoryPicker } from "./GithubAppRepositoryPicker";
 import { ProjectGroupField } from "../ProjectGroupField";
 import { ProjectIngressSelect } from "../ProjectIngressSelect";
 import { Switch } from "../ui/switch";
@@ -75,6 +76,9 @@ interface WizardState {
   groupName: string;
   repo: string;
   credentialId: number | null;
+  /** How the repository is reached: with a token, or through the GitHub App. */
+  authMode: "token" | "app";
+  appRepo: { installationId: number; repositoryId: number } | null;
   composeUpload: File | null;
   supportFiles: SupportFile[];
   project: Project | null;
@@ -111,6 +115,8 @@ const INITIAL: WizardState = {
   groupName: "",
   repo: "",
   credentialId: null,
+  authMode: "token",
+  appRepo: null,
   composeUpload: null,
   supportFiles: [],
   project: null,
@@ -287,6 +293,10 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
       set({ error: "Choose a docker-compose.yml file first." });
       return;
     }
+    if (source === "github" && state.authMode === "app" && !state.appRepo) {
+      set({ error: "Choose a repository." });
+      return;
+    }
     const runId = ++runIdRef.current;
     set({ error: "", fetchStatus: "running", fetchLog: "" });
     let target = project;
@@ -294,9 +304,11 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
       if (!target) {
         target = await api.createProject(source === "upload"
           ? { name: state.name.trim(), groupName: state.groupName.trim() || null, sourceType: "upload" }
-          : { name: state.name.trim(), groupName: state.groupName.trim() || null, githubRepo: state.repo.trim(), githubCredentialId: state.credentialId ?? undefined });
+          : state.authMode === "app" && state.appRepo
+            ? { name: state.name.trim(), groupName: state.groupName.trim() || null, githubApp: state.appRepo }
+            : { name: state.name.trim(), groupName: state.groupName.trim() || null, githubRepo: state.repo.trim(), githubCredentialId: state.credentialId ?? undefined });
         refreshProjects();
-      } else if (isGithub && (target.githubRepo !== state.repo.trim() || target.githubCredentialId !== state.credentialId)) {
+      } else if (isGithub && target.githubAuthMode !== "app" && (target.githubRepo !== state.repo.trim() || target.githubCredentialId !== state.credentialId)) {
         // A failed clone is usually a typo in the repo or the wrong token: let a retry fix both.
         target = await api.updateProject(target.id, { githubRepo: state.repo.trim(), githubCredentialId: state.credentialId });
       }
@@ -636,7 +648,30 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
                   ))}
                 </div>
 
-                {isGithub && (
+                {isGithub && !sourceFilesLocked && (
+                  <div className="field field-wide">
+                    <label>How should Stackport reach GitHub?</label>
+                    <div style={{ display: "flex", gap: 16 }}>
+                      <label><input type="radio" name="auth-mode" checked={state.authMode === "token"} onChange={() => set({ authMode: "token", appRepo: null })} /> A token</label>
+                      <label><input type="radio" name="auth-mode" checked={state.authMode === "app"} onChange={() => set({ authMode: "app" })} /> The GitHub App</label>
+                    </div>
+                  </div>
+                )}
+
+                {isGithub && state.authMode === "app" && (
+                  <div className="form-row">
+                    <div className="field field-wide">
+                      <label>Repository <span className="hint mono">(from the GitHub App)</span></label>
+                      <GithubAppRepositoryPicker
+                        value={state.appRepo}
+                        disabled={sourceFilesLocked}
+                        onChange={(choice) => set((s) => ({ appRepo: choice ? { installationId: choice.installationId, repositoryId: choice.repositoryId } : null, repo: choice?.fullName ?? "", name: choice && !s.nameEdited ? nameFromRepo(choice.fullName) : s.name }))}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {isGithub && state.authMode === "token" && (
                   <div className="form-row">
                     <div className="field field-wide">
                       <label>GitHub repo <span className="hint mono">(owner/repo or link)</span></label>

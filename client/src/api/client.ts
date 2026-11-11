@@ -285,7 +285,8 @@ export const api = {
   renameRepoFolder: (projectId: number, folder: string) =>
     request<{ ok: boolean; message: string }>("/projects/repo-folder-scan/rename", { method: "POST", body: JSON.stringify({ projectId, folder }), headers: { "Content-Type": "application/json" } }),
   getProject: (id: number) => request<Project>(`/projects/${id}`),
-  createProject: (data: Omit<Partial<Project>, "id" | "createdAt" | "updatedAt" | "lastStatus" | "lastResponseMs" | "lastCheckedAt">) =>
+  /** `githubApp` creates the project from a repository the GitHub App can use, bound by id, with no token. */
+  createProject: (data: Omit<Partial<Project>, "id" | "createdAt" | "updatedAt" | "lastStatus" | "lastResponseMs" | "lastCheckedAt"> & { githubApp?: { installationId: number; repositoryId: number } }) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(data) }),
   updateProject: (id: number, data: Partial<Pick<Project, "name" | "groupName" | "internalPort" | "healthCheckEndpoint" | "healthCheckDomainId" | "healthCheckIntervalS" | "deployHealthGraceS" | "autoRollbackUnhealthy" | "githubRepo" | "credentialId" | "githubCredentialId" | "autoDeployBranch" | "nginxExtraConfig" | "nginxExtraBlocks">>) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
@@ -445,6 +446,10 @@ export const api = {
     request<HardeningDefaults>("/system/hardening-defaults", { method: "PUT", body: JSON.stringify(values) }),
   setProjectComposePolicyEnforcement: (projectId: number, enforced: boolean) =>
     request<{ composePolicyEnforced: boolean }>(`/projects/${projectId}/compose-policy-enforcement`, { method: "PUT", body: JSON.stringify({ enforced }) }),
+  getGithubRepositories: () =>
+    request<{ repositories: { repositoryId: number; installationId: number; fullName: string; defaultBranch: string | null; isPrivate: boolean }[] }>("/github-app/repositories"),
+  setProjectGithubAuth: (projectId: number, input: { mode: "app" | "token"; installationId?: number; repositoryId?: number }) =>
+    request<{ githubAuthMode: "app" | null }>(`/projects/${projectId}/github-auth`, { method: "PUT", body: JSON.stringify(input) }),
   getGithubSettings: () => request<GithubSettings>("/github-app"),
   startGithubManifest: (input: { modules: string[]; owner: string; isPublic: boolean }) =>
     request<GithubManifestStart>("/github-app/manifest/start", { method: "POST", body: JSON.stringify(input) }),

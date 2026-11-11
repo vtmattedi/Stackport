@@ -925,7 +925,16 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   }
 
   // The credential goes to Git in its environment, scoped to github.com, never in its arguments (see shared/gitAuth.ts).
-  const authHeader = gitAuthHeader(project);
+  let authHeader: string | null;
+  try {
+    authHeader = project.githubAuthMode === "app"
+      ? basicAuthHeader("x-access-token", await (await import("../github/binding")).appTokenForProject(project.id))
+      : gitAuthHeader(project);
+  } catch (err) {
+    // An App project never falls back to a token: say what is wrong with the App.
+    return [{ ok: false, output: `${err instanceof Error ? err.message : String(err)}
+`, stdout: "", command: "github app" }];
+  }
   if (authHeader) {
     const problem = await gitCredentialProblem();
     if (problem) return [{ ok: false, output: `${problem}\n`, stdout: "", command: "git" }];

@@ -117,3 +117,8 @@ export function defaultGithubClient(): GithubClient {
   shared ??= new GithubClient({ apiUrl: config.githubApiUrl, webUrl: config.githubWebUrl });
   return shared;
 }
+
+/** Tests only: replaces the shared client, so the real routes can be exercised against a fake GitHub. */
+export function setDefaultGithubClientForTests(client: GithubClient | null): void {
+  shared = client;
+}
