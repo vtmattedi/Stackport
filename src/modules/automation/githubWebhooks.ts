@@ -37,10 +37,10 @@ export interface WebhookDetails {
 export function webhookBaseUrl(): { url: string | null; reason: string | null } {
   const app = getNginxAppConfig();
   if (!app.enabled || !app.domain) {
-    return { url: null, reason: "Stackport isn't published on a domain. Set one up in Host > Nginx to use webhooks." };
+    return { url: null, reason: "Stackport isn't published on a domain. Set it up in Settings > Domains to use webhooks." };
   }
   if (!app.useSsl) {
-    return { url: null, reason: `Stackport is served over plain HTTP at ${app.domain}. Turn on SSL in Host > Nginx to use webhooks.` };
+    return { url: null, reason: `Stackport is served over plain HTTP at ${app.domain}. Turn on HTTPS in Settings > Domains to use webhooks.` };
   }
   return { url: `https://${app.domain}`, reason: null };
 }

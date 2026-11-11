@@ -9,7 +9,7 @@ import { HARNESS_PASSWORD, HARNESS_USER, startHarness } from "./harness";
  *
  *   npm run ui:shots                                  every default page at 1440, 1024 and 390 px
  *   npm run ui:shots -- --pages /settings/mcp          only these (comma separated)
- *   npm run ui:shots -- --pages "projects>Add new project>The GitHub App"   click through: each `>` clicks the button, link or radio of that name
+ *   npm run ui:shots -- --pages "projects>Add new project>The GitHub App"   click through: each `>` clicks the button, link, tab or radio of that name
  *   npm run ui:shots -- --widths 1280 --out some/dir   other widths, other folder (default: ui-shots/)
  *   npm run ui:shots -- --wait 5000                    wait longer for slow pages (default 1200 ms after load)
  *   npm run ui:shots -- --url http://localhost:3000    an already running Stackport (logs in with --user and --password)
@@ -62,7 +62,11 @@ async function main(): Promise<void> {
     const page = await context.newPage();
     const problems: string[] = [];
     page.on("pageerror", (err) => problems.push(`page error: ${err.message}`));
-    page.on("console", (msg: ConsoleMessage) => { if (msg.type() === "error") problems.push(`console: ${msg.text()}`); });
+    page.on("console", (msg: ConsoleMessage) => {
+      // A failed request is reported once, with its address, by the response handler below; the console line for it says nothing more.
+      if (msg.type() === "error" && !/Failed to load resource/.test(msg.text())) problems.push(`console: ${msg.text()}`);
+    });
+    page.on("response", (response) => { if (response.status() >= 400) problems.push(`${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`); });
 
     await page.goto(base);
     try {
@@ -84,7 +88,7 @@ async function main(): Promise<void> {
         await page.goto(`${base}${route}`, { waitUntil: "load" });
         await page.waitForTimeout(wait); // data arrives over the socket and fetches after load
         for (const name of clicks) {
-          await page.getByRole("button", { name }).or(page.getByRole("link", { name })).or(page.getByRole("radio", { name })).first().click({ timeout: 5_000 });
+          await page.getByRole("button", { name }).or(page.getByRole("link", { name })).or(page.getByRole("radio", { name })).or(page.getByRole("tab", { name })).first().click({ timeout: 5_000 });
           await page.waitForTimeout(600);
         }
         const file = path.join(out, `${slug(target)}-${width}.png`);

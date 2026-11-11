@@ -1,10 +1,11 @@
 import cp from "child_process";
+import util from "util";
 
 /**
  * A stand-in for the `docker` and `openssl` commands, so pages that read Docker, Nginx and Certbot show something in the screenshot
  * harness: a few Compose stacks, a running Nginx container, certificates that are valid, expiring, expired and missing. It replaces
  * `child_process.execFile` inside the harness process only, before the app is imported. Commands it does not know answer "not found",
- * except `network` and `info`, which go to the real Docker if there is one (the Networks page is built from them).
+ * including the network commands (the Networks page is built from them).
  *
  * UI_HARNESS_DOCKER=real turns it off and shows whatever the machine's own Docker has.
  */
@@ -20,24 +21,37 @@ interface FakeContainer { id: string; name: string; image: string; state: "runni
 const CONTAINERS: FakeContainer[] = [
   { id: "a1b2c3d4e5f6", name: "stackport", image: "stackport:1.3.10", state: "running", status: "Up 3 days (healthy)", ports: "127.0.0.1:3000->3000/tcp", project: "stackport", service: "stackport", cpu: "0.4%", mem: "182MiB / 3.8GiB", memPct: "4.6%" },
   { id: "b2c3d4e5f6a1", name: "stackport-nginx", image: "nginx:1.27-alpine", state: "running", status: "Up 3 days", ports: "0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp", project: "stackport", service: "nginx", cpu: "0.1%", mem: "12MiB / 3.8GiB", memPct: "0.3%" },
-  { id: "c3d4e5f6a1b2", name: "shop-web-1", image: "shop-web", state: "running", status: "Up 2 days (healthy)", ports: "127.0.0.1:8101->3000/tcp", project: "shop", service: "web", cpu: "1.2%", mem: "96MiB / 3.8GiB", memPct: "2.4%" },
-  { id: "d4e5f6a1b2c3", name: "shop-db-1", image: "postgres:17-alpine", state: "running", status: "Up 2 days (healthy)", ports: "", project: "shop", service: "db", cpu: "0.3%", mem: "64MiB / 3.8GiB", memPct: "1.6%" },
-  { id: "e5f6a1b2c3d4", name: "shop-api-api-1", image: "shop-api", state: "running", status: "Up 2 days", ports: "127.0.0.1:8102->8080/tcp", project: "shop-api", service: "api", cpu: "0.8%", mem: "120MiB / 3.8GiB", memPct: "3.1%" },
-  { id: "f6a1b2c3d4e5", name: "shop-staging-web-1", image: "shop-web", state: "exited", status: "Exited (0) 4 days ago", ports: "", project: "shop-staging", service: "web", cpu: "--", mem: "--", memPct: "--" },
-  { id: "0a1b2c3d4e5f", name: "blog-blog-1", image: "ghost:5-alpine", state: "running", status: "Up 6 hours", ports: "127.0.0.1:8103->2368/tcp", project: "blog", service: "blog", cpu: "0.2%", mem: "210MiB / 3.8GiB", memPct: "5.4%" },
+  { id: "c3d4e5f6a1b2", name: "1-shop-web-1", image: "shop-web", state: "running", status: "Up 2 days (healthy)", ports: "127.0.0.1:8101->3000/tcp", project: "1-shop", service: "web", cpu: "1.2%", mem: "96MiB / 3.8GiB", memPct: "2.4%" },
+  { id: "d4e5f6a1b2c3", name: "1-shop-db-1", image: "postgres:17-alpine", state: "running", status: "Up 2 days (healthy)", ports: "", project: "1-shop", service: "db", cpu: "0.3%", mem: "64MiB / 3.8GiB", memPct: "1.6%" },
+  { id: "e5f6a1b2c3d4", name: "2-shop-api-api-1", image: "shop-api", state: "running", status: "Up 2 days", ports: "127.0.0.1:8102->8080/tcp", project: "2-shop-api", service: "api", cpu: "0.8%", mem: "120MiB / 3.8GiB", memPct: "3.1%" },
+  { id: "f6a1b2c3d4e5", name: "3-shop-staging-web-1", image: "shop-web", state: "exited", status: "Exited (0) 4 days ago", ports: "", project: "3-shop-staging", service: "web", cpu: "--", mem: "--", memPct: "--" },
+  { id: "0a1b2c3d4e5f", name: "4-blog-blog-1", image: "ghost:5-alpine", state: "running", status: "Up 6 hours", ports: "127.0.0.1:8103->2368/tcp", project: "4-blog", service: "blog", cpu: "0.2%", mem: "210MiB / 3.8GiB", memPct: "5.4%" },
   { id: "1b2c3d4e5f6a", name: "watchtower", image: "containrrr/watchtower", state: "running", status: "Up 9 days", ports: "", project: null, service: "", cpu: "0.0%", mem: "8MiB / 3.8GiB", memPct: "0.2%" },
 ];
 
 const STACKS = [
   { Name: "stackport", Status: "running(2)", ConfigFiles: "/opt/stackport/docker-compose.yml" },
-  { Name: "shop", Status: "running(2)", ConfigFiles: "/srv/stackport/repos/shop/docker-compose.yml" },
-  { Name: "shop-api", Status: "running(1)", ConfigFiles: "/srv/stackport/repos/shop-api/docker-compose.yml" },
-  { Name: "shop-staging", Status: "exited(1)", ConfigFiles: "/srv/stackport/repos/shop-staging/docker-compose.yml" },
-  { Name: "blog", Status: "running(1)", ConfigFiles: "/srv/stackport/repos/blog/docker-compose.yml" },
+  { Name: "1-shop", Status: "running(2)", ConfigFiles: "/srv/stackport/repos/1-shop/docker-compose.yml" },
+  { Name: "2-shop-api", Status: "running(1)", ConfigFiles: "/srv/stackport/repos/2-shop-api/docker-compose.yml" },
+  { Name: "3-shop-staging", Status: "exited(1)", ConfigFiles: "/srv/stackport/repos/3-shop-staging/docker-compose.yml" },
+  { Name: "4-blog", Status: "running(1)", ConfigFiles: "/srv/stackport/repos/4-blog/docker-compose.yml" },
 ];
 
 /** days until expiry per hostname the harness seeds; absent means no certificate yet. */
 const CERT_DAYS: Record<string, number> = { "shop.example.com": 61, "shop-api.example.com": 12, "shop-staging.example.com": -3 };
+
+interface FakeNetwork { id: string; name: string; driver: string; subnet: string | null; project: string | null; attached: string[] }
+const NETWORKS: FakeNetwork[] = [
+  { id: "n1".padEnd(64, "0"), name: "bridge", driver: "bridge", subnet: "172.17.0.0/16", project: null, attached: [] },
+  { id: "n2".padEnd(64, "0"), name: "host", driver: "host", subnet: null, project: null, attached: [] },
+  { id: "n3".padEnd(64, "0"), name: "none", driver: "null", subnet: null, project: null, attached: [] },
+  { id: "n4".padEnd(64, "0"), name: "stackport_default", driver: "bridge", subnet: "172.18.0.0/16", project: "stackport", attached: ["stackport", "stackport-nginx"] },
+  { id: "n5".padEnd(64, "0"), name: "1-shop_default", driver: "bridge", subnet: "172.19.0.0/16", project: "1-shop", attached: ["1-shop-web-1", "1-shop-db-1"] },
+  { id: "n6".padEnd(64, "0"), name: "2-shop-api_default", driver: "bridge", subnet: "172.20.0.0/16", project: "2-shop-api", attached: ["2-shop-api-api-1"] },
+  { id: "n7".padEnd(64, "0"), name: "3-shop-staging_default", driver: "bridge", subnet: "172.21.0.0/16", project: "3-shop-staging", attached: [] },
+  { id: "n8".padEnd(64, "0"), name: "4-blog_default", driver: "bridge", subnet: "172.22.0.0/16", project: "4-blog", attached: ["4-blog-blog-1"] },
+  { id: "n9".padEnd(64, "0"), name: "old-experiment_default", driver: "bridge", subnet: "172.23.0.0/16", project: "old-experiment", attached: [] },
+];
 
 const ndjson = (rows: unknown[]): string => rows.map((row) => JSON.stringify(row)).join("\n");
 
@@ -87,7 +101,22 @@ function answer(cmd: string, args: string[]): Answer | null {
   }
   if (a === "run" && args.includes("certbot/certbot") && args.includes("--version")) return { out: "certbot 3.0.1\n" };
   if (a === "info" && args.join(" ").includes("DockerRootDir")) return { out: JSON.stringify("/var/lib/docker") };
-  if (a === "network" || a === "info") return null; // the real Docker, when there is one
+  if (a === "info" && args.join(" ").includes("DefaultAddressPools")) return { out: "null" };
+  if (a === "network" && b === "ls") return { out: NETWORKS.map((n) => n.id).join("\n") };
+  if (a === "network" && b === "inspect") {
+    if (args.join(" ").includes("{{json .}}")) {
+      return {
+        out: ndjson(NETWORKS.map((n) => ({
+          Id: n.id, Name: n.name, Driver: n.driver, Scope: "local", Internal: false, Created: "2026-10-01T10:00:00Z",
+          IPAM: { Config: n.subnet ? [{ Subnet: n.subnet }] : [] },
+          Containers: Object.fromEntries(n.attached.map((name, i) => ["c" + i, { Name: name }])),
+          Labels: n.project ? { "com.docker.compose.project": n.project } : {},
+        }))),
+      };
+    }
+    return { out: NETWORKS.filter((n) => n.subnet).map((n) => n.subnet + "\n").join("") };
+  }
+  if (a === "network") return { out: "" };
   return { fail: true };
 }
 
@@ -105,5 +134,9 @@ export function installFakeDocker(): void {
     });
     return { kill: () => true, on: () => undefined, stdout: null, stderr: null };
   }) as unknown as typeof cp.execFile;
+  // `promisify(execFile)` resolves { stdout, stderr } through this hook on the real function; the replacement needs the same.
+  (patched as unknown as Record<symbol, unknown>)[util.promisify.custom] = (cmd: string, args: string[] = [], options?: unknown) => new Promise((resolve, reject) => {
+    (patched as unknown as (...a: unknown[]) => unknown)(cmd, args, options ?? {}, (err: Error | null, stdout: string, stderr: string) => (err ? reject(Object.assign(err, { stdout, stderr })) : resolve({ stdout, stderr })));
+  });
   cp.execFile = patched;
 }

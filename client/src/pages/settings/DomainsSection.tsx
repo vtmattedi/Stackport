@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Stack } from "../../components/ui/stack";
+import { StackportAddress } from "../system/StackportAddress";
 import { Hint, Prose } from "../../components/ui/text";
 import { notify } from "../../lib/notify";
 
@@ -48,6 +49,8 @@ export default function DomainsSection() {
 
   return (
     <Stack gap={4}>
+      <StackportAddress />
+
       <div className="card mb-0!">
         <div className="card-title"><Globe size={13} />Base domains</div>
         <Stack gap={4}>

@@ -46,7 +46,7 @@ export interface Preflight {
 export async function preflight(deps: PreflightDeps): Promise<Preflight> {
   const app = deps.appConfig();
   const problems: string[] = [];
-  if (!app.enabled || !app.domain) problems.push("Set the Stackport domain first (Settings > General). GitHub has to reach this server by name.");
+  if (!app.enabled || !app.domain) problems.push("Set the Stackport domain first (Settings > Domains). GitHub has to reach this server by name.");
   else {
     if (!app.useSsl) problems.push("The Stackport domain has to use HTTPS: GitHub only sends webhooks to HTTPS URLs it can verify.");
     else if (!(await deps.hasCertificate(app.domain))) problems.push(`There is no certificate for ${app.domain} yet. Issue one first; a self-signed certificate is not accepted by GitHub.`);

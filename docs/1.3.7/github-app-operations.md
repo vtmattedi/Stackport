@@ -46,7 +46,7 @@ others. At most 100 repositories are looked at, and 50 imported, at a time.
 
 ## Before you start
 
-- The Stackport domain is set (Settings > General), served over HTTPS with a certificate GitHub trusts, reachable from the internet. The page says what is missing.
+- The Stackport domain is set (Settings > Domains), served over HTTPS with a certificate GitHub trusts, reachable from the internet. The page says what is missing.
 - **Anyone who can push to a connected repository controls what runs on this host.** S11 (Docker socket containment) is not done.
 
 ## Registering and connecting
