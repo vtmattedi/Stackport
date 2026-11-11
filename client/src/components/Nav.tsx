@@ -2,14 +2,13 @@ import { useEffect, useState } from "react";
 import { NavLink, Link, useNavigate, useLocation } from "react-router-dom";
 import { HoverCard } from "radix-ui";
 import {
-  ScrollText, FolderDot, Gauge, LogOut, Settings as SettingsIcon,
-  ShieldCheck, Cpu, ChevronLeft, ChevronRight,
-  Layers, Box, Loader, BarChart2, Star, Menu, Search,
+  ScrollText, FolderDot, LogOut, Settings as SettingsIcon, Cpu, ChevronLeft, ChevronRight, Loader, BarChart2, Star, Menu, Search,
 } from "lucide-react";
 import { api, markSignedOut } from "../api/client";
 import { useSocket } from "../context/SocketContext";
 import { useSystem } from "../context/SystemContext";
 import { cn } from "../lib/utils";
+import { HOST_SECTIONS } from "../lib/hostSections";
 import { deriveProjectStatus, findProjectStack, projectStatusLabel, type ProjectStatusKind } from "../lib/projectStatus";
 import { StackPortBrand } from "../logo/StackPortBrand";
 import styles from "./Nav.module.scss";
@@ -26,12 +25,6 @@ const SUBMENU_OPEN_DELAY_MS = 500;
 
 type TriState = boolean | null;
 
-const SYSTEM_TABS: { tab: string; label: string; icon: typeof Layers }[] = [
-  { tab: "nginx", label: "Nginx", icon: Layers },
-  { tab: "docker", label: "Docker", icon: Box },
-  { tab: "certbot", label: "Certbot", icon: ShieldCheck },
-  { tab: "hardware", label: "Hardware", icon: Gauge },
-];
 
 function dockerHasRunning(docker: SystemData["docker"]): boolean {
   const containers = [...docker.stacks.flatMap((stack) => stack.containers), ...docker.standalone];
@@ -61,7 +54,7 @@ function SystemSubmenu({ system }: { system: SystemData | null }) {
     <>
       <div className={styles.submenuHeader}>Host</div>
       <div className={styles.submenuList}>
-        {SYSTEM_TABS.map(({ tab, label, icon: Icon }) => (
+        {HOST_SECTIONS.map(({ tab, label, icon: Icon }) => (
           <Link key={tab} to={`/host/${tab}`} className={styles.submenuItem}>
             <Icon size={14} className={tabIconClass(states[tab])} />
             <span className={styles.submenuItemLabel}>{label}</span>

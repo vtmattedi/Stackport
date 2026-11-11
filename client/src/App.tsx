@@ -23,12 +23,9 @@ const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
 const GeneralSection = lazy(() => import("./pages/settings/GeneralSection"));
 const DeployTriggersSection = lazy(() => import("./pages/settings/DeployTriggersSection"));
 const NotificationsSection = lazy(() => import("./pages/settings/NotificationsSection"));
-const StorageSection = lazy(() => import("./pages/settings/StorageSection"));
-const HardeningSection = lazy(() => import("./pages/settings/HardeningSection"));
-const EnforcementSection = lazy(() => import("./pages/settings/EnforcementSection"));
+const ProtectionsSection = lazy(() => import("./pages/settings/ProtectionsSection"));
 const DomainsSection = lazy(() => import("./pages/settings/DomainsSection"));
 const GithubSection = lazy(() => import("./pages/settings/GithubSection"));
-const MaintenanceSection = lazy(() => import("./pages/settings/MaintenanceSection"));
 const EncryptionSection = lazy(() => import("./pages/settings/encryption/EncryptionSection"));
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
 const InsightsLayout = lazy(() => import("./pages/insights/InsightsLayout"));
@@ -96,12 +93,14 @@ export default function App() {
               <Route path="notifications" element={<NotificationsSection />} />
               <Route path="credentials" element={<Credentials />} />
               <Route path="mcp" element={<McpSection />} />
-              <Route path="storage" element={<StorageSection />} />
-              <Route path="hardening" element={<HardeningSection />} />
-              <Route path="enforcement" element={<EnforcementSection />} />
+              <Route path="protections" element={<ProtectionsSection />} />
+              {/* Pages that moved: Container defaults and Project protections became Protections; Storage and Maintenance went to Host. */}
+              <Route path="hardening" element={<Navigate to="/settings/protections" replace />} />
+              <Route path="enforcement" element={<Navigate to="/settings/protections" replace />} />
+              <Route path="storage" element={<Navigate to="/host/docker" replace />} />
+              <Route path="maintenance" element={<Navigate to="/host/docker" replace />} />
               <Route path="domains" element={<DomainsSection />} />
               <Route path="github" element={<GithubSection />} />
-              <Route path="maintenance" element={<MaintenanceSection />} />
               <Route path="encryption" element={<EncryptionSection />} />
               <Route path="*" element={<Navigate to="general" replace />} />
             </Route>

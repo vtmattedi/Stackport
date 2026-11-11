@@ -1,10 +1,7 @@
 import { lazy, Suspense, useState, useEffect } from "react";
 import { Navigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  Cpu, RefreshCw, Loader, Box, Layers, AlertCircle,
-  RotateCw, Play, Square, Hammer, ChevronDown, ChevronRight, X, FileText, Save, Eye, Settings,
-  ShieldCheck, ShieldX, KeyRound, Trash2, Mail,
-  SquareTerminal, Radio, Gauge,
+  Cpu, RefreshCw, Loader, Box, Layers, AlertCircle, RotateCw, Play, Square, Hammer, ChevronDown, ChevronRight, X, FileText, Save, Eye, Settings, ShieldCheck, ShieldX, KeyRound, Trash2, Mail, SquareTerminal, Radio,
 } from "lucide-react";
 import NginxCode from "../components/NginxCode";
 // The terminal dialogs pull in xterm (~90 KB gzipped); load it only when one opens.
@@ -36,6 +33,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { notify } from "../lib/notify";
 import { StackPortWordmark } from "../logo/StackPortBrand";
 import { NetworkHeadroomNotice } from "./system/NetworkHeadroomNotice";
+import MaintenanceSection from "./settings/MaintenanceSection";
+import StorageSection from "./settings/StorageSection";
+import { HOST_SECTIONS, isHostTab, type HostTab } from "../lib/hostSections";
 
 // ── Shared UI helpers ─────────────────────────────────────────────────────────
 
@@ -222,7 +222,6 @@ function ContainerTable({ containers }: { containers: ContainerInfo[] }) {
 
 type ComposeOp = "up" | "down" | "build";
 type CertbotOp = "issue" | "renew" | "delete";
-type SystemTab = "nginx" | "docker" | "certbot" | "hardware";
 
 const STACK_COLLAPSE_KEY = "stackport_system_collapsed_stacks";
 const NGINX_DOC_KEY = "stackport_system_nginx_doc";
@@ -234,10 +233,6 @@ function readCollapsedStacks(): Record<string, boolean> {
   } catch {
     return {};
   }
-}
-
-function isSystemTab(value: string): value is SystemTab {
-  return value === "docker" || value === "nginx" || value === "certbot" || value === "hardware";
 }
 
 function readNginxDocumentKind(): NginxDocumentKind {
@@ -372,13 +367,13 @@ export default function System() {
   if (tab === "github") return <Navigate to="/settings/deploy-triggers" replace />;
   // The firewall tab was the Hostinger firewall, since removed.
   if (tab === "firewall") return <Navigate to="/host" replace />;
-  if (!section || !isSystemTab(section)) {
-    return <Navigate to={`/host/${tab && isSystemTab(tab) ? tab : "nginx"}`} replace />;
+  if (!section || !isHostTab(section)) {
+    return <Navigate to={`/host/${tab && isHostTab(tab) ? tab : "hardware"}`} replace />;
   }
   return <SystemPage activeTab={section} />;
 }
 
-function SystemPage({ activeTab }: { activeTab: SystemTab }) {
+function SystemPage({ activeTab }: { activeTab: HostTab }) {
   const {
     system: data, refreshSystem: refresh,
     applyNginx, updateNginxAppConfig, certbotAction,
@@ -1210,7 +1205,7 @@ function SystemPage({ activeTab }: { activeTab: SystemTab }) {
             {docker && <StatusChip ok={!!docker.available} labels={["available", "unavailable"]} />}
           </>
         }
-        description="Compose stacks and standalone containers."
+        description="Compose stacks and standalone containers, Docker's disk usage and cleanup, and the deploy folder."
       />
     ),
     certbot: (
@@ -1231,19 +1226,25 @@ function SystemPage({ activeTab }: { activeTab: SystemTab }) {
     ),
   };
 
-  const panels = { nginx: nginxPanel, docker: dockerPanel, certbot: certbotPanel };
+  // Disk usage and the deploy-folder scan used to be Settings pages; they are about this machine, so they sit with Docker.
+  const dockerWithHousekeeping = (
+    <div style={{ display: "grid", gap: 16 }}>
+      {dockerPanel}
+      <StorageSection />
+      <MaintenanceSection />
+    </div>
+  );
+  const panels = { nginx: nginxPanel, docker: dockerWithHousekeeping, certbot: certbotPanel };
 
   return (
     <SubShell
       title="Host"
       icon={Cpu}
       basePath="/host"
-      sections={[
-        { path: "nginx", label: "Nginx", icon: Layers, status: sectionStatus(nginxSelectorOk) },
-        { path: "docker", label: "Docker", icon: Box, status: sectionStatus(dockerSelectorOk) },
-        { path: "certbot", label: "Certbot", icon: ShieldCheck, status: sectionStatus(certbotSelectorOk) },
-        { path: "hardware", label: "Hardware", icon: Gauge },
-      ]}
+      sections={HOST_SECTIONS.map(({ tab, label, icon }) => ({
+        path: tab, label, icon,
+        status: tab === "nginx" ? sectionStatus(nginxSelectorOk) : tab === "docker" ? sectionStatus(dockerSelectorOk) : tab === "certbot" ? sectionStatus(certbotSelectorOk) : undefined,
+      }))}
       // Hardware has its own data and Refresh; this one reloads the system snapshot.
       actions={activeTab === "hardware" ? undefined : (
         <Button type="button" variant="outline" size="xs" onClick={refresh} disabled={loading}>

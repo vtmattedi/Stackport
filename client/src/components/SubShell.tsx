@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -11,6 +11,8 @@ export interface SubShellSection {
   /** Tints the section icon green/red; leave unset while unknown. */
   status?: "ok" | "fail";
   badge?: ReactNode;
+  /** A heading shown above this section when it starts a new group in the list. */
+  group?: string;
 }
 
 interface SubShellProps {
@@ -40,16 +42,18 @@ export default function SubShell({ title, icon: TitleIcon, basePath, sections, a
       </div>
       <div className={styles.shell}>
         <nav className={styles.sectionNav} aria-label={`${title} sections`}>
-          {sections.map(({ path, label, icon: Icon, status, badge }) => (
-            <NavLink
-              key={path}
-              to={`${basePath}/${path}`}
-              className={({ isActive }) => cn(styles.sectionLink, isActive && styles.sectionLinkActive)}
-            >
-              <Icon size={14} className={cn(status === "ok" && styles.statusOk, status === "fail" && styles.statusFail)} />
-              <span className={styles.sectionLabel}>{label}</span>
-              {badge}
-            </NavLink>
+          {sections.map(({ path, label, icon: Icon, status, badge, group }, index) => (
+            <Fragment key={path}>
+              {group && group !== sections[index - 1]?.group && <div className={styles.sectionGroup}>{group}</div>}
+              <NavLink
+                to={`${basePath}/${path}`}
+                className={({ isActive }) => cn(styles.sectionLink, isActive && styles.sectionLinkActive)}
+              >
+                <Icon size={14} className={cn(status === "ok" && styles.statusOk, status === "fail" && styles.statusFail)} />
+                <span className={styles.sectionLabel}>{label}</span>
+                {badge}
+              </NavLink>
+            </Fragment>
           ))}
         </nav>
         <div className={styles.body}>

@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState, type ComponentType, type Keyboard
 import { useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import {
-  BarChart2, Box, FolderDot, Gauge, Globe, History, Layers, Rocket, ScrollText,
-  Search, ShieldCheck, SlidersHorizontal,
+  BarChart2, FolderDot, Globe, History, Rocket, ScrollText, Search, SlidersHorizontal,
 } from "lucide-react";
 import { useSystem } from "../context/SystemContext";
 import { SETTINGS_SECTIONS } from "../pages/settings/SettingsLayout";
+import { HOST_SECTIONS } from "../lib/hostSections";
 import { useDeployWithPreview } from "./RevisionPreview";
 import styles from "./CommandPalette.module.scss";
 
@@ -45,13 +45,6 @@ function score(command: Command, query: string): number | null {
   }
   return 1;
 }
-
-const HOST_SECTIONS = [
-  { tab: "nginx", label: "Nginx", icon: Layers },
-  { tab: "docker", label: "Docker", icon: Box },
-  { tab: "certbot", label: "Certbot", icon: ShieldCheck },
-  { tab: "hardware", label: "Hardware", icon: Gauge },
-] as const;
 
 const PROJECT_TABS = [
   { tab: "deploys", label: "deploys", icon: History },
