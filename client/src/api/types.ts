@@ -484,6 +484,17 @@ export interface HostnameOverview {
   containerPort: number | null;
   useSsl: boolean;
   certificate: { status: string; expiresAt: string | null } | null;
+  dnsStatus: ManagedDomain["dnsStatus"];
+  dnsCheckedAt: string | null;
+  dnsDetail: string | null;
+}
+
+/** This server's public address, which DNS checks compare against. */
+export interface ServerAddress {
+  address: string | null;
+  source: "setting" | "detected" | "none";
+  setting: string | null;
+  detected: string | null;
 }
 
 /** The outcome of renaming a hostname. */
@@ -745,7 +756,7 @@ export interface NotificationConfig {
   updatedAt: string | null;
 }
 
-export type PushEventType = "health_check" | "deploy_blocked" | "deploy_unhealthy" | "rollback_failed" | "rollback_recovered" | "system_update_failed";
+export type PushEventType = "health_check" | "deploy_blocked" | "deploy_unhealthy" | "rollback_failed" | "rollback_recovered" | "system_update_failed" | "certificate_expiring" | "certificate_renewal_failed";
 export interface PushConfig {
   identityError?: string | null;
   supported: boolean;

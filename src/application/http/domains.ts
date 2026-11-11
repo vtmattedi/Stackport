@@ -3,6 +3,7 @@ import { requireAuth } from "../../modules/identity/middleware/session";
 import { auditLog } from "../../shared/logger";
 import { ProjectDomainError } from "../../modules/ingress/domains";
 import { getCertbotStatus } from "../../modules/ingress/certificates/operations";
+import { getServerAddress, runDnsChecks, setServerAddress } from "../../modules/ingress/dnsCheck";
 import { addManagedDomain, listHostnames, listManagedDomains, removeManagedDomain, setDefaultManagedDomain } from "../../modules/ingress/managedDomains";
 
 /** The base domains Stackport manages. Only an admin session reaches these: an API token cannot add, remove or default one. */
@@ -26,6 +27,28 @@ router.get("/hostnames", requireAuth, async (_req: Request, res: Response): Prom
       return { ...h, certificate: cert ? { status: cert.status, expiresAt: cert.expiresAt } : null };
     }),
   });
+});
+
+/** This server's public address, which every DNS check compares against: the saved one, else the one detected. */
+router.get("/settings", requireAuth, (_req: Request, res: Response): void => {
+  res.json({ server: getServerAddress() });
+});
+
+router.put("/settings", requireAuth, (req: Request, res: Response): void => {
+  try { setServerAddress(req.body?.publicAddress ?? null); }
+  catch (err) { res.status(400).json({ error: err instanceof Error ? err.message : "Invalid address" }); return; }
+  auditLog(req.user ?? "unknown", "domain.server-address", "-", "ok");
+  res.json({ server: getServerAddress() });
+});
+
+/** Checks the base domain (a wildcard record?) and every hostname on it against this server's address. */
+router.post("/:id/check", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const result = await runDnsChecks(id);
+  if (!result) { res.status(404).json({ error: "Domain not found" }); return; }
+  auditLog(req.user ?? "unknown", "domain.check", String(id), "ok", { status: result.domain.status });
+  res.json({ ...result, domains: listManagedDomains() });
 });
 
 router.post("/", requireAuth, (req: Request, res: Response): void => {

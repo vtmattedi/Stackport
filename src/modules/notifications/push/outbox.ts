@@ -32,7 +32,7 @@ export function enqueuePushEventTx(db: Database.Database, event: DurablePushEven
     || !PUSH_EVENT_TYPES.includes(event.type) || !event.eventKey.startsWith(`${event.type}:`)) throw new Error("Invalid push event identity");
   if (!["info", "warning", "error"].includes(event.severity)) throw new Error("Invalid push severity");
   // eslint-disable-next-line security/detect-unsafe-regex -- measured: stays linear on a 200 000 character adversarial input (under 1 ms).
-  if (!/^\/(?:projects(?:\/[1-9]\d*(?:\/[a-z-]+)?)?|settings\/(?:general|notifications))$/.test(event.url)) throw new Error("Invalid push navigation path");
+  if (!/^\/(?:projects(?:\/[1-9]\d*(?:\/[a-z-]+)?)?|settings\/(?:general|notifications|domains))$/.test(event.url)) throw new Error("Invalid push navigation path");
   if (event.projectId !== undefined && (!Number.isSafeInteger(event.projectId) || event.projectId <= 0)) throw new Error("Invalid push project ID");
   const created = Date.parse(event.createdAt);
   const expires = Math.min(created + PUSH_LIFETIME_MS[event.type], event.expiresAt ? Date.parse(event.expiresAt) : Infinity);

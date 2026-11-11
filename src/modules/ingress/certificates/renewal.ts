@@ -3,6 +3,7 @@ import { pollingCadenceS } from "../../../config/pollingCadence";
 import { auditLog } from "../../../shared/logger";
 import { reloadNginx, CERTBOT_WEBROOT_PATH } from "../nginx/configWriter";
 import { invalidateCertCaches } from "./operations";
+import { notifyAboutCertificates } from "./notify";
 
 /** Periodically renew all due certificates in a temporary Certbot container. */
 class CertbotRenewalMonitor {
@@ -42,6 +43,8 @@ class CertbotRenewalMonitor {
         if (!reload.ok) auditLog("system", "system.certbot-auto-renew-reload", "nginx", "fail", {output: reload.output.slice(0, 2000)});
       }
       auditLog("system", "system.certbot-auto-renew", "certbot", result.ok ? "ok" : "fail", { output: result.output.slice(0, 2000) });
+      // A failed sweep, or a certificate still close to expiry after it, is told to the admin once per certificate and day.
+      await notifyAboutCertificates(!result.ok);
     } catch {
       // best-effort background maintenance — a failed check just tries again next tick
     } finally {

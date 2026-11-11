@@ -211,15 +211,18 @@ export interface HostnameOverview {
   service: string;
   containerPort: number | null;
   useSsl: boolean;
+  dnsStatus: DnsStatus;
+  dnsCheckedAt: string | null;
+  dnsDetail: string | null;
 }
 
 /** Every hostname with its project and route, for the central Domains page. */
 export function listHostnames(): HostnameOverview[] {
   const rows = getDatabase().prepare(
-    `SELECT p.id, p.project_id, pr.name AS project_name, p.domain, p.label, p.redirect_apex, p.service, p.container_port, p.use_ssl, d.name AS base_name
+    `SELECT p.id, p.project_id, pr.name AS project_name, p.domain, p.label, p.redirect_apex, p.service, p.container_port, p.use_ssl, p.dns_status, p.dns_checked_at, p.dns_detail, d.name AS base_name
        FROM project_domains p JOIN projects pr ON pr.id = p.project_id LEFT JOIN managed_domains d ON d.id = p.managed_domain_id
       ORDER BY lower(p.domain)`,
-  ).all() as { id: number; project_id: number; project_name: string; domain: string; label: string | null; redirect_apex: number; service: string; container_port: number | null; use_ssl: number; base_name: string | null }[];
+  ).all() as { id: number; project_id: number; project_name: string; domain: string; label: string | null; redirect_apex: number; service: string; container_port: number | null; use_ssl: number; dns_status: string; dns_checked_at: string | null; dns_detail: string | null; base_name: string | null }[];
   const all = new Set(rows.map((r) => r.domain.toLowerCase()));
   return rows.map((r) => {
     const host = r.domain.toLowerCase();
@@ -229,6 +232,7 @@ export function listHostnames(): HostnameOverview[] {
     return {
       id: r.id, projectId: r.project_id, projectName: r.project_name, domain: r.domain, baseDomain: r.base_name, label: r.label, alsoAnswers,
       service: r.service, containerPort: r.container_port, useSsl: r.use_ssl === 1,
+      dnsStatus: (["unknown", "ok", "not-resolving", "points-elsewhere"] as const).find((s) => s === r.dns_status) ?? "unknown", dnsCheckedAt: r.dns_checked_at, dnsDetail: r.dns_detail,
     };
   });
 }

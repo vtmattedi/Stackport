@@ -75,6 +75,7 @@ import {
 import { removeIngressNetwork } from "../../modules/ingress/networks";
 import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
+import { dnsGate } from "../../modules/ingress/dnsCheck";
 import { addManagedProjectDomain, getManagedDomain, renameProjectHostname, reserveHostnameForProject, validateLabel } from "../../modules/ingress/managedDomains";
 import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
 import { GithubAppError } from "../../modules/github/app";
@@ -957,7 +958,12 @@ router.post("/:id/domains/:domainId/rename", requireAuth, async (req: Request<{ 
     try {
       outcome = await renameProjectHostname(id, domainId, { managedDomainId, label, canonical: canonical === "www" ? "www" : "apex" }, {
         applyNginx: async () => { await ensureProjectProxyNetwork(id); const result = await writeNginxConfig(); return { ok: result.ok, message: result.output ?? "" }; },
-        issueCertificate: async (domain) => { const cert = await runCertbotAction(domain, "issue"); return { ok: cert.ok, message: cert.output }; },
+        issueCertificate: async (domain) => {
+          const gate = await dnsGate(domain);
+          if (!gate.ok) return { ok: false, message: gate.reason ?? "DNS does not point here yet." };
+          const cert = await runCertbotAction(domain, "issue");
+          return { ok: cert.ok, message: cert.output };
+        },
       });
       return { ok: outcome.ok, output: [...outcome.steps, ...(outcome.reason ? [outcome.reason] : [])].join("\n") };
     } finally { finished(); }
@@ -1040,6 +1046,12 @@ router.post("/:id/domains/:domainId/ssl/issue", requireAuth, (req: Request<{ id:
   const user = req.user ?? "unknown";
   const key = projectSslKey(id, domainId);
   const started = actionRegistry.tryStart(key, "ssl-issue", { projectId: id, domainId, domain: domainRow.domain }, async () => {
+    // A hostname on a managed domain has to resolve here before a certificate is asked for (see dnsCheck.ts).
+    const gate = await dnsGate(domainRow.domain);
+    if (!gate.ok) {
+      auditLog(user, "project.ssl-issue", `${project.name}:${domainRow.domain}`, "fail", { reason: "dns" });
+      return { ok: false, output: gate.reason ?? "DNS does not point here yet." };
+    }
     const flowId = nginxFlowId("project.ssl-issue", id);
     emitNginxFlow({
       id: flowId,
