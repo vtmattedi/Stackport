@@ -31,10 +31,12 @@ function realPathAllowingMissing(target: string): string | null {
   let current = target;
   for (;;) {
     try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- this module is the containment check: it inspects the path it is asked about.
       return path.join(fs.realpathSync(current), ...missing.reverse());
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
       // realpath fails with ENOENT for a link whose target is missing as well as for a missing name.
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- this module is the containment check: it inspects the path it is asked about.
       if (fs.lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) return null;
       const parent = path.dirname(current);
       if (parent === current) return null;

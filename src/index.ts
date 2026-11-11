@@ -26,8 +26,8 @@ import { logger } from "./shared/logger";
  *  then the TCP proxies, then the per-project networks 1.3.0 left behind. */
 async function startIngress(): Promise<void> {
   await reconcileIngressNetworks();
-  await ensureAppIngress().catch((err: unknown) => console.error("[ingress] nginx config at start-up failed:", err));
-  await reconcileAllTcpExposures().catch((err: unknown) => console.error("[ingress] TCP exposures at start-up failed:", err));
+  await ensureAppIngress().catch((err: unknown) => logger.error({ err }, "ingress: nginx config at start-up failed"));
+  await reconcileAllTcpExposures().catch((err: unknown) => logger.error({ err }, "ingress: TCP exposures at start-up failed"));
   await removeLegacyIngressNetworks();
 }
 
@@ -79,7 +79,7 @@ try {
       process.exit(0);
     }); });
     setTimeout(() => {
-      console.error("[server] shutdown timeout - forcing exit");
+      logger.error("shutdown timeout, forcing exit");
       process.exit(1);
     }, 10_000).unref();
   }
@@ -96,6 +96,6 @@ try {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT",  () => shutdown("SIGINT"));
 } catch (err: unknown) {
-  console.error("[db] failed to initialize:", err);
+  logger.error({ err }, "database failed to initialize");
   process.exit(1);
 }

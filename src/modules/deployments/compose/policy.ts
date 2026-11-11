@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- keys come from a fixed list of Compose fields, or are our own network name. */
 import * as fs from "fs";
 import * as path from "path";
 import { splitPortSpec } from "./yaml";
@@ -140,6 +141,7 @@ export interface ResolvedPolicyContext {
 function isInsideProject(target: string, projectDir: string): boolean {
   const relative = relativeInside(target, projectDir);
   if (relative === null) return false;
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- paths are inside a project's checkout: its directory plus a Compose file name picked from the files found there; any path a project supplies goes through resolveContainedPath first.
   if (path.isAbsolute(projectDir) && fs.existsSync(projectDir)) return resolveContainedPath(projectDir, relative) !== null;
   return true;
 }

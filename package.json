@@ -18,8 +18,8 @@
     "build:dry": "npm run build:dry:api && npm run build:dry:client",
     "mcp": "node dist/mcp/server.js",
     "start": "node dist/index.js",
-    "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix",
+    "lint": "eslint \"src/**/*.ts\" --max-warnings 0",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
     "typecheck": "tsc --noEmit && tsc -p tests",
     "test": "node --import tsx --import ./tests/setup.ts --test \"tests/**/*.test.ts\""
   },

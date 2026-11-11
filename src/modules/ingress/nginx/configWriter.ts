@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- paths come from Stackport's own configuration (environment and data directories), never from request input. */
 import { getNginxAppConfig, type NginxAppConfig } from "./appConfig";
 export { getNginxAppConfig, setNginxAppConfig, type NginxAppConfig } from "./appConfig";
 export { DOMAIN_RE } from "../domainName";
@@ -516,6 +517,7 @@ async function renderDomainBlock(template: string, target: NginxTarget): Promise
     includeWwwRedirect: target.includeWwwRedirect ? "true" : "false",
   };
 
+  // eslint-disable-next-line security/detect-object-injection -- the key is one of the placeholder names the regular expression is limited to.
   return template.replace(/\{\{(name|domain|wwwDomain|service|containerPort|upstreamUrl|url|certBase|locationBlock|wwwHttpRedirectBlock|httpServerBlock|httpsServerBlock|wwwHttpsRedirectBlock|hasCertificate|includeWwwRedirect)\}\}/g, (_match, key: string) => values[key] ?? "");
 }
 

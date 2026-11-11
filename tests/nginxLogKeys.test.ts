@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseNginxContent } from "../src/modules/observability/routes/metrics";
+import { parseNginxContent, periodKeyOf } from "../src/modules/observability/routes/metrics";
 
 function line(method: string, requestPath: string): string {
   const when = new Date().toUTCString();
@@ -19,4 +19,10 @@ test("request methods and paths taken from the log are counted as data, whatever
   assert.equal(result.methodCounts["__proto__"], 1);
   assert.deepEqual(result.topPaths.map((p) => [p.path, p.count]).sort(), [["/", 2], ["__proto__", 1], ["toString", 1]]);
   assert.equal(typeof result.methodCounts["constructor"], "number");
+});
+
+test("only the real periods are accepted, not names every object inherits", () => {
+  assert.equal(periodKeyOf("7d"), "7d");
+  assert.equal(periodKeyOf("30d"), "30d");
+  for (const bad of ["constructor", "__proto__", "toString", "1y", undefined, ["7d"]]) assert.equal(periodKeyOf(bad), "24h");
 });

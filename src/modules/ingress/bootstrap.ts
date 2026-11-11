@@ -4,6 +4,7 @@ import { getNginxAppConfig, setNginxAppConfig, writeNginxConfig } from "./nginx/
 import { runCertbotAction } from "./certificates/operations";
 import { ensureSelfSignedCert } from "./nginx/selfSignedCert";
 import { execFile } from "child_process";
+import { logger } from "../../shared/logger";
 
 /** Reconcile the admin route at boot, then bootstrap certificates when needed. */
 export async function ensureAppIngress(): Promise<void> {
@@ -17,7 +18,7 @@ export async function ensureAppIngress(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   if (!nginxReady) {
-    console.error("[appIngress] nginx did not become ready; restart Stackport after fixing nginx");
+    logger.error("appIngress: nginx did not become ready; restart Stackport after fixing nginx");
     return;
   }
   const app = getNginxAppConfig();
@@ -27,7 +28,7 @@ export async function ensureAppIngress(): Promise<void> {
   if (app.domain && !pending) {
     // Reconcile generated config on restart without changing the operator's SSL choice.
     const apply = await writeNginxConfig();
-    if (!apply.ok) console.error("[appIngress] nginx reconciliation failed:", apply.output);
+    if (!apply.ok) logger.error({ output: apply.output }, "appIngress: nginx reconciliation failed");
     return;
   }
 

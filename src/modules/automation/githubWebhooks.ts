@@ -6,6 +6,7 @@ import { rowToProject, type Project, type ProjectRow } from "../projects/types";
 import { getNginxAppConfig } from "../ingress/nginx/configWriter";
 import { tokenForProject } from "./githubPolling";
 import { emitProjectDataUpdate } from "../../application/realtime";
+import { logger } from "../../shared/logger";
 
 /** Deliveries kept per project for the "Recent deliveries" list. */
 const MAX_DELIVERIES_PER_PROJECT = 50;
@@ -272,5 +273,5 @@ export function moveWebhookIfRepoChanged(projectId: number, oldRepo: string | nu
         emit(projectId);
       });
     }
-  })().catch((err) => console.error("[webhooks] moving hook after repo change failed:", err));
+  })().catch((err: unknown) => logger.error({ err, projectId }, "webhooks: moving the hook after a repo change failed"));
 }

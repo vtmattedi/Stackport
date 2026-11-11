@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- keys are our own network name or names read from the same object; the lookups only read or write own entries. */
 import * as fs from "fs/promises";
 import * as path from "path";
 import { loadYamlDoc, dumpYamlDoc } from "./yaml";
@@ -73,6 +74,7 @@ export async function applyStackportProxyNetwork(
   const filePath = path.join(repoPath, composeFile);
   let raw: string;
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- paths are inside a project's checkout: its directory plus a Compose file name picked from the files found there; any path a project supplies goes through resolveContainedPath first.
     raw = await fs.readFile(filePath, "utf8");
   } catch (err) {
     return { ok: false, message: `${err instanceof Error ? err.message : String(err)}\n` };
@@ -143,6 +145,7 @@ export async function applyStackportProxyNetwork(
   if (!changed) return { ok: true, message: "" };
 
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- paths are inside a project's checkout: its directory plus a Compose file name picked from the files found there; any path a project supplies goes through resolveContainedPath first.
     await fs.writeFile(filePath, dumpYamlDoc(doc), "utf8");
     return { ok: true, message: "" };
   } catch (err) {

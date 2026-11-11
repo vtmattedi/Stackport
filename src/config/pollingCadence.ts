@@ -19,6 +19,7 @@ import "./env";
  */
 
 function envSeconds(key: string, fallbackS: number): number {
+  // eslint-disable-next-line security/detect-object-injection -- the key is a variable name chosen in code.
   const raw = process.env[key];
   if (!raw) return fallbackS;
   const parsed = Number(raw);

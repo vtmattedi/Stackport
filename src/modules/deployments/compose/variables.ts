@@ -77,6 +77,7 @@ export function findUnresolvedStackportVariables(
 ): string[] {
   return refs
     .map((ref) => ref.name)
+    // eslint-disable-next-line security/detect-object-injection -- a read of the process environment by variable name.
     .filter((name) => !definedByProject.has(name) && !passedToCompose(name) && stackportEnv[name] !== undefined);
 }
 

@@ -19,6 +19,7 @@ export async function checkComposeFileReferences(projectDir: string, composeFile
     seen.add(key);
 
     let doc: unknown;
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- paths are inside a project's checkout: its directory plus a Compose file name picked from the files found there; any path a project supplies goes through resolveContainedPath first.
     try { doc = loadYamlDoc(await fs.readFile(next.file, "utf8")); } catch { continue; }
 
     const baseDir = path.dirname(next.file);

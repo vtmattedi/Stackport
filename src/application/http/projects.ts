@@ -4,7 +4,7 @@ import { previewDeploy, previewRollback } from "../../modules/deployments/previe
 import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../../config/database";
 import { requireAuth } from "../../modules/identity/middleware/session";
-import { auditLog } from "../../shared/logger";
+import { auditLog, logger } from "../../shared/logger";
 import { rowToProject, DEPLOY_TRIGGERS, type DeployTrigger, type ProjectRow } from "../../modules/projects/types";
 import { clearPendingAutoDeploy } from "../../modules/automation/autoDeploy";
 import { disableWebhook, enableWebhook, getWebhookDetails, pingWebhook, reinstallWebhook, webhookBaseUrl } from "../../modules/automation/githubWebhooks";
@@ -427,6 +427,7 @@ router.post("/:id/upload", requireAuth, handleUpload, (req: Request<{ id: string
     const result = await stageAndApplyUpload(
       id,
       { relativePath: composeFiles[0].originalname, buffer: composeFiles[0].buffer },
+      // eslint-disable-next-line security/detect-object-injection -- index into a parallel array from the same .map.
       supportFiles.map((file, index) => ({ relativePath: supportPaths[index], buffer: file.buffer })),
       { deploy },
     );
@@ -1293,7 +1294,7 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   }
   if (row.github_hook_id != null) {
     const warning = await disableWebhook(id);
-    if (warning) console.warn(`[webhooks] ${row.name}: ${warning}`);
+    if (warning) logger.warn({ project: row.name, warning }, "webhook");
   }
   // Action rows go with the project (ON DELETE CASCADE); their log files don't.
   deleteProjectActionLogs(id);
@@ -1366,7 +1367,7 @@ function setProjectPaused(req: Request<{ id: string }>, res: Response, paused: b
     clearPendingAutoDeploy(id);
   } else {
     healthChecker.schedule(project);
-    healthChecker.check(id).catch(console.error);
+    healthChecker.check(id).catch((err: unknown) => logger.error({ err, projectId: id }, "health check failed"));
   }
   auditLog(req.user ?? "unknown", paused ? "project.pause" : "project.resume", project.name, "ok");
   res.json(project);

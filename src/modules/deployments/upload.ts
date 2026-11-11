@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- every target is built by resolveContainedPath inside a staging directory of ours, which returns null for a path that escapes it. */
 import * as fs from "fs/promises";
 import * as path from "path";
 import { randomUUID } from "crypto";

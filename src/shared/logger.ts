@@ -27,6 +27,7 @@ export function buildLogger(options: LoggerOptions): pino.Logger {
       return pino({ level: options.logLevel });
     }
   }
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- paths come from Stackport's own configuration (environment and data directories), never from request input.
   fs.mkdirSync(options.logDir, { recursive: true });
   const file = pino.destination({ dest: path.join(options.logDir, "app.log"), sync: false });
   return pino(

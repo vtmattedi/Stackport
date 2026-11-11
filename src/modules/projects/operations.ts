@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-object-injection -- keys come from a fixed list of project fields. */
 import { getDatabase } from "../../config/database";
 import { rowToCredential, type Credential, type CredentialRow } from "../credentials/types";
 import { rowToProject, type Project, type ProjectRow } from "./types";

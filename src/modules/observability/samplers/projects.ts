@@ -50,6 +50,7 @@ function parseSizeToMb(raw: string): number {
     tb: 1024 * 1024,
     tib: 1024 * 1024,
   };
+  // eslint-disable-next-line security/detect-object-injection -- a read of a unit table with a default.
   return value * (multipliers[unit] ?? 1);
 }
 

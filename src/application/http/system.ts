@@ -7,7 +7,7 @@ import { Router, Request, Response } from "express";
 import { execFile } from "child_process";
 import { getDatabase } from "../../config/database";
 import { requireAuth } from "../../modules/identity/middleware/session";
-import { auditLog } from "../../shared/logger";
+import { auditLog, logger } from "../../shared/logger";
 import { decryptSecret } from "../../shared/crypto";
 import { emitGlobalEvent } from "../realtime";
 import {
@@ -252,7 +252,7 @@ router.post("/update", requireAuth, async (req: Request, res: Response): Promise
     res.json(result);
   } catch (error) {
     const busy = error instanceof SelfUpdateBusyError;
-    if (!busy) console.error("[selfUpdate] launch failed:", error instanceof Error ? error.message : "unknown error");
+    if (!busy) logger.error({ reason: error instanceof Error ? error.message : "unknown error" }, "self-update launch failed");
     res.status(busy ? 409 : 500).json({error: busy ? error.message : "Cannot start the Stackport updater. Check Docker access and the installed host CLI."});
   }
 });

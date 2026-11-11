@@ -68,6 +68,7 @@ async function getDockerData() {
   const statsMap: Record<string, { cpu: string; mem: string; memPerc: string; netIO: string; blockIO: string }> = {};
   parseNdjson(statsRes.stdout).forEach((s) => {
     const id = String(s.ID ?? "").slice(0, 12);
+    // eslint-disable-next-line security/detect-object-injection -- keys are Docker container ids.
     statsMap[id] = {
       cpu:     String(s.CPUPerc ?? "—"),
       mem:     String(s.MemUsage ?? "—"),
@@ -104,6 +105,7 @@ async function getDockerData() {
       ports:          String(c.Ports ?? ""),
       composeProject: labels["com.docker.compose.project"] ?? null,
       healthCheckIgnored: labelIsTrue(labels["com.stackport.health.ignore"]),
+      // eslint-disable-next-line security/detect-object-injection -- keys are Docker container ids.
       stats:          statsMap[id] ?? null,
     };
   });
@@ -194,7 +196,7 @@ async function getNginxData() {
 }
 
 // ── Exported snapshot for socket manager ─────────────────────────────────────
-export async function getSystemSnapshot() {
+async function buildSystemSnapshot() {
   const [docker, nginx, certbot, version] = await Promise.allSettled([getDockerData(), getNginxData(), getCertbotStatus(), getAppVersion()]);
   return {
     docker: docker.status === "fulfilled" ? docker.value : { available: false, reason: String(docker.reason) },
@@ -202,4 +204,10 @@ export async function getSystemSnapshot() {
     certbot: certbot.status === "fulfilled" ? certbot.value : { available: false, reason: String(certbot.reason), entries: [] },
     version: version.status === "fulfilled" ? version.value : null,
   };
+}
+
+export type SystemSnapshot = Awaited<ReturnType<typeof buildSystemSnapshot>>;
+
+export function getSystemSnapshot(): Promise<SystemSnapshot> {
+  return buildSystemSnapshot();
 }

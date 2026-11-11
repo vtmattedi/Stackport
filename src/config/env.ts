@@ -9,6 +9,7 @@ function positiveNumber(value: string | undefined, fallback: number): number {
 }
 
 function require_env(key: string): string {
+  // eslint-disable-next-line security/detect-object-injection -- the key is a variable name chosen in code.
   const value = process.env[key];
   if (!value) {
     throw new Error(`Missing required environment variable: ${key}`);

@@ -38,6 +38,7 @@ async function inspectUpdater(): Promise<UpdaterContainer | null> {
   try {
     const {stdout} = await docker(["inspect", NAME]);
     const info = JSON.parse(stdout)[0] as UpdaterContainer;
+    // eslint-disable-next-line security/detect-object-injection -- a read of a label by a constant name.
     if (info.Config?.Labels?.[LABEL] !== "true") throw new Error("Updater container name is already in use.");
     return info;
   } catch (error) {

@@ -1,3 +1,4 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- paths are inside a project's checkout: its directory plus a Compose file name picked from the files found there; any path a project supplies goes through resolveContainedPath first. */
 import { listProjectEnvFiles, normalizeEnvRelativePath, type ProjectEnvFile } from "../projects/envFiles";
 export { listProjectEnvFiles, createProjectEnvFile, updateProjectEnvFile, deleteProjectEnvFile, normalizeEnvRelativePath, parseEnvVariables, type EnvVariable, type ProjectEnvFile, type ProjectEnvFileRow } from "../projects/envFiles";
 import { deployRoot, projectRepoDir, slugify, expectedComposeProjectName } from "../projects/workspace";
@@ -97,11 +98,11 @@ export async function reconcileIngressNetworks(): Promise<number[]> {
     catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       failed.push(id);
-      console.error(`[ingress] project ${id} could not be put on the ingress network: ${reason}`);
       logger.warn({ projectId: id, reason }, "ingress.reconcile.failed");
     }
   }
-  console.log(`[ingress] ${rows.length - failed.length} of ${rows.length} projects checked, ${failed.length} failed`);
+  logger.info({ checked: rows.length, failed: failed.length }, "ingress.reconcile.done");
+  if (failed.length) logger.warn({ projectIds: failed }, `ingress: ${failed.length} of ${rows.length} projects could not be put on the ingress network`);
   return failed;
 }
 
@@ -245,7 +246,7 @@ export async function getProjectComposeVariables(projectId: number, selectedFile
   );
   const repoEnvPath = resolveContainedPath(repoPath, ".env");
   // A path resolveContainedPath kept inside the checkout.
-  // eslint-disable-next-line security/detect-non-literal-fs-filename
+   
   const repoText = repoEnvPath ? await fs.readFile(repoEnvPath, "utf8").catch(() => "") : "";
   const repository = dotenvKeys(repoText);
   return refs.map((ref) => ({
@@ -275,6 +276,7 @@ export function buildDockerEnv(source: NodeJS.ProcessEnv, defaultConfigDir: stri
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
     // Windows env names are case-insensitive ("Path"); keep the original spelling.
+    // eslint-disable-next-line security/detect-object-injection -- the keys are environment variable names that pass an allowlist, or names read from the same object.
     if (value !== undefined && DOCKER_ENV_ALLOWLIST.has(key.toUpperCase())) env[key] = value;
   }
   env["DOCKER_CONFIG"] ??= defaultConfigDir;
@@ -295,6 +297,7 @@ async function warnUnresolvedStackportVariables(projectId: number, action: Proje
       refs,
       new Set(refs.filter((ref) => ref.definedIn !== null).map((ref) => ref.name)),
       process.env,
+      // eslint-disable-next-line security/detect-object-injection -- the keys are environment variable names that pass an allowlist, or names read from the same object.
       (name) => passed[name] !== undefined,
     );
     if (missing.length) {
