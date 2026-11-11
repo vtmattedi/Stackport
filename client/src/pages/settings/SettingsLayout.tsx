@@ -9,7 +9,7 @@ export const SETTINGS_SECTIONS = [
   { path: "domains", label: "Domains", icon: Globe, description: "The base domains Stackport manages, and every hostname on them: project, route, SSL and certificate." },
   { path: "github", label: "GitHub", icon: Plug, description: "The GitHub App this instance registers: deploy from repositories without a personal access token." },
   { path: "credentials", label: "Credentials", icon: ShieldCheck, description: "GitHub tokens, API keys and webhook secrets, stored encrypted." },
-  { path: "mcp", label: "MCP", icon: KeyRound, description: "API tokens for the read-only MCP endpoint." },
+  { path: "mcp", label: "MCP", icon: KeyRound, description: "The tools Claude and other clients get, and the tokens that unlock them." },
   { path: "storage", label: "Storage", icon: HardDrive, description: "Docker disk usage, build-cache cleanup and the free-space thresholds that gate builds." },
   { path: "hardening", label: "Container defaults", icon: Shield, description: "Memory and process limits that projects with hardened defaults give every service." },
   { path: "enforcement", label: "Project protections", icon: ShieldAlert, description: "Which projects still lack the Compose policy, managed volumes or hardened defaults." },

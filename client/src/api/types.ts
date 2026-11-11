@@ -461,6 +461,17 @@ export interface DockerDiskUsageEntry {
   reclaimable: string;
 }
 
+/** A tool the MCP endpoint offers (Settings > MCP > Tools). */
+export interface McpToolInfo {
+  name: string;
+  title: string;
+  description: string;
+  scope: "read" | "write";
+  destructive: boolean;
+  twoStep: boolean;
+  parameters: { name: string; type: string; required: boolean; description: string }[];
+}
+
 /** A base domain Stackport manages. Hostnames are a label on one of them, or the bare domain itself. */
 export interface ManagedDomain {
   id: number;
