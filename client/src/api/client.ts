@@ -43,6 +43,7 @@ import type {
   GithubScanEntry,
   GithubImportOutcome,
   ManagedDomain,
+  McpToolInfo,
   HostnameRenameResult,
   HostnameOverview,
   NetworkGroupView,
@@ -412,6 +413,7 @@ export const api = {
   getProjectDeploys: (projectId: number) =>
     request<ProjectDeploy[]>(`/projects/${projectId}/deploys`),
   listApiTokens: () => request<ApiToken[]>("/api-tokens"),
+  listMcpTools: () => request<{ tools: McpToolInfo[] }>("/api-tokens/tools"),
   createApiToken: (name: string, expiresInDays: number | null, scope: "read" | "write" = "read", projectGroup: string | null = null) =>
     request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays, scope, projectGroup }) }),
   revokeApiToken: (id: number) => request<void>(`/api-tokens/${id}`, { method: "DELETE" }),

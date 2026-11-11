@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { Copy, KeyRound, Loader, Plus, Trash2 } from "lucide-react";
+import { Copy, KeyRound, Loader, Plus, Search, Trash2, Wrench } from "lucide-react";
 import { AppSelect } from "../../components/AppSelect";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { TimeAgo } from "../../components/TimeAgo";
 import { api } from "../../api/client";
-import type { ApiToken } from "../../api/types";
+import type { ApiToken, McpToolInfo } from "../../api/types";
 import { useSystemSelector } from "../../context/SystemContext";
 import { notify } from "../../lib/notify";
 import styles from "../Settings.module.scss";
+import mcp from "./McpSection.module.scss";
 
 const EXPIRY_OPTIONS = [
   { value: "30", label: "30 days" },
@@ -47,7 +48,95 @@ function tokenState(token: ApiToken): string {
   return "Active";
 }
 
-/** API tokens for the MCP endpoint at /mcp: read-only, or with write tools for deploy, rollback, restart and stop. */
+type ToolFilter = "all" | "read" | "write";
+
+/** The tools the endpoint offers, read back from the server so the list is what a client really gets. */
+function ToolExplorer() {
+  const [tools, setTools] = useState<McpToolInfo[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<ToolFilter>("all");
+
+  useEffect(() => {
+    let live = true;
+    api.listMcpTools().then(({ tools: list }) => { if (live) setTools(list); }).catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, []);
+
+  const needle = query.trim().toLowerCase();
+  const shown = (tools ?? []).filter((tool) =>
+    (filter === "all" || tool.scope === filter)
+    && (!needle || `${tool.name} ${tool.title} ${tool.description}`.toLowerCase().includes(needle)));
+  const counts = { read: (tools ?? []).filter((t) => t.scope === "read").length, write: (tools ?? []).filter((t) => t.scope === "write").length };
+
+  return (
+    <div className="card">
+      <div className="card-title"><Wrench size={13} />Tools</div>
+      <p className="hint" style={{ maxWidth: "80ch" }}>
+        What a client sees on <span className="mono">/mcp</span>. A <strong>read</strong> token gets the read tools; a <strong>read and write</strong> token also gets the write tools.
+        Every write tool takes two calls: the first only says what would happen, and the change runs only when the second presents the confirmation it returned.
+      </p>
+      {failed ? (
+        <div className={mcp.empty}>The tool list could not be loaded.</div>
+      ) : !tools ? (
+        <div className={mcp.empty}>Loading…</div>
+      ) : (
+        <>
+          <div className={mcp.explorerBar}>
+            <div className={mcp.explorerSearch} style={{ position: "relative" }}>
+              <Search size={13} style={{ position: "absolute", left: 10, top: 11, color: "var(--dim)" }} />
+              <input type="text" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search tools" aria-label="Search tools" style={{ paddingLeft: 30, width: "100%" }} />
+            </div>
+            <div className={mcp.filters} role="group" aria-label="Filter tools">
+              {([["all", `All ${tools.length}`], ["read", `Read ${counts.read}`], ["write", `Write ${counts.write}`]] as const).map(([value, label]) => (
+                <button key={value} type="button" className={mcp.filter} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>
+              ))}
+            </div>
+          </div>
+          {shown.length === 0 ? (
+            <div className={mcp.empty}>No tool matches.</div>
+          ) : (
+            <div className={mcp.tools}>
+              {shown.map((tool) => (
+                <details key={tool.name} className={mcp.tool}>
+                  <summary>
+                    <span className={mcp.toolName}>{tool.name}</span>
+                    <span className={`${mcp.badge} ${tool.scope === "write" ? mcp.badgeWrite : mcp.badgeRead}`}>{tool.scope === "write" ? "write token" : "read token"}</span>
+                    {tool.twoStep && <span className={mcp.badge}>two calls</span>}
+                    <span className={mcp.toolTitle}>{tool.title}</span>
+                  </summary>
+                  <div className={mcp.toolBody}>
+                    <p>{tool.description}</p>
+                    {tool.parameters.length === 0 ? (
+                      <span className={mcp.empty}>No parameters.</span>
+                    ) : (
+                      <div className={mcp.paramsWrap}>
+                        <table className={mcp.params}>
+                          <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+                          <tbody>
+                            {tool.parameters.map((param) => (
+                              <tr key={param.name}>
+                                <td>{param.name}{param.required ? <span title="required" style={{ color: "var(--warning, #d29922)" }}> *</span> : null}</td>
+                                <td className="mono">{param.type}</td>
+                                <td>{param.description}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** API tokens for the MCP endpoint at /mcp, and the tools they unlock. */
 export default function McpSection() {
   const confirm = useConfirm();
   const [tokens, setTokens] = useState<ApiToken[]>([]);
@@ -117,17 +206,12 @@ export default function McpSection() {
     : "";
 
   return (
-    <>
+    <div className={styles.sectionStack}>
+      <ToolExplorer />
       <div className="card">
         <div className="card-title"><KeyRound size={13} />API tokens</div>
         <p className="hint" style={{ marginBottom: 12, maxWidth: "80ch" }}>
-          Tokens give access to <span className="mono">{endpoint}</span>: project status, repository, branch,
-          health, recent deployments, containers, network groups, managed domains and the GitHub repositories the App can use. They never expose credentials, env files or logs.
-          A <strong>read and write</strong> token can also deploy, roll back, restart and stop projects, change which projects can reach which services (network groups),
-          change a project's hostname, and create a project from a GitHub repository, in all projects or
-          in one project group (a project it creates goes into that group). Every one of those takes two calls: the first only says what would happen, and the action
-          runs only when the second call presents the confirmation it returned. Each call is written to the audit log.
-          Works with Claude Code and Claude Desktop. claude.ai connectors need OAuth, which isn't supported yet.
+          A token gives access to <span className="mono">{endpoint}</span>. Read tokens never expose credentials, env files or logs. A <strong>read and write</strong> token can change things in all projects or in one project group (a project it creates goes into that group). Every change is written to the audit log. Works with Claude Code and Claude Desktop; claude.ai connectors need OAuth, which isn't supported yet.
         </p>
 
         {created && (
@@ -146,8 +230,8 @@ export default function McpSection() {
           </div>
         )}
 
-        <form className={styles.settingsForm} onSubmit={(e) => void create(e)}>
-          <div className="field">
+        <form className={mcp.createForm} onSubmit={(e) => void create(e)}>
+          <div className={`field ${mcp.createName}`}>
             <label>Name</label>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. laptop Claude Code" maxLength={80} required />
           </div>
@@ -213,6 +297,6 @@ export default function McpSection() {
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }

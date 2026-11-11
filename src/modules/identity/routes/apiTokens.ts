@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { requireAuth } from "../middleware/session";
 import { auditLog } from "../../../shared/logger";
 import { ApiTokenError, createApiToken, listApiTokens, revokeApiToken } from "../apiTokens";
+import { listMcpTools } from "../../../transports/mcp/catalog";
 
 /** Admin management of API tokens (session auth). The token value is returned only by
  *  POST, once; nothing else ever returns it. */
@@ -9,6 +10,11 @@ const router = Router();
 
 router.get("/", requireAuth, (_req: Request, res: Response): void => {
   res.json(listApiTokens());
+});
+
+/** What the MCP endpoint offers, read back from a real server: every tool, the token scope it needs, and its parameters. */
+router.get("/tools", requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  res.json({ tools: await listMcpTools() });
 });
 
 router.post("/", requireAuth, (req: Request, res: Response): void => {
