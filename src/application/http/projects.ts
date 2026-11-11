@@ -75,7 +75,7 @@ import {
 import { removeIngressNetwork } from "../../modules/ingress/networks";
 import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
-import { addManagedProjectDomain, getManagedDomain, validateLabel } from "../../modules/ingress/managedDomains";
+import { addManagedProjectDomain, getManagedDomain, renameProjectHostname, reserveHostnameForProject, validateLabel } from "../../modules/ingress/managedDomains";
 import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
 import { GithubAppError } from "../../modules/github/app";
 import { assignNetworkGroup, getNetworkGroupView, NetworkGroupError } from "../../modules/deployments/networkGroupAssignment";
@@ -939,6 +939,37 @@ router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, re
   void runProjectNginxFlow("project.domain-add", project);
 });
 
+/** Renames a managed hostname: the new one is added, routed and (if the old one had SSL) certified first, and only then is
+ *  the old one removed, which stops answering at once with no redirect. Runs in the project's action slot. */
+router.post("/:id/domains/:domainId/rename", requireAuth, async (req: Request<{ id: string; domainId: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  const domainId = Number(req.params.domainId);
+  if (!Number.isInteger(id) || id < 1 || !Number.isInteger(domainId) || domainId < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  const project = getProjectById(id);
+  if (!project) { res.status(404).json({ error: "Project not found" }); return; }
+  if (!getProjectDomain(id, domainId)) { res.status(404).json({ error: "Domain not found" }); return; }
+  const { managedDomainId, label, canonical } = req.body as Record<string, unknown>;
+
+  let outcome: Awaited<ReturnType<typeof renameProjectHostname>> | null = null;
+  let finished!: () => void;
+  const done = new Promise<void>((resolve) => { finished = resolve; });
+  const started = actionRegistry.tryStart(projectRepoKey(id), "domain-rename", { projectId: id, triggeredBy: "manual" }, async () => {
+    try {
+      outcome = await renameProjectHostname(id, domainId, { managedDomainId, label, canonical: canonical === "www" ? "www" : "apex" }, {
+        applyNginx: async () => { await ensureProjectProxyNetwork(id); const result = await writeNginxConfig(); return { ok: result.ok, message: result.output ?? "" }; },
+        issueCertificate: async (domain) => { const cert = await runCertbotAction(domain, "issue"); return { ok: cert.ok, message: cert.output }; },
+      });
+      return { ok: outcome.ok, output: [...outcome.steps, ...(outcome.reason ? [outcome.reason] : [])].join("\n") };
+    } finally { finished(); }
+  });
+  if (started === null) { res.status(409).json({ ok: false, error: "An action is running for this project. Try again when it has finished." }); return; }
+  await done;
+  const result = outcome as Awaited<ReturnType<typeof renameProjectHostname>> | null;
+  auditLog(req.user ?? "unknown", "project.domain-rename", project.name, result?.ok ? "ok" : "fail", { reason: result?.reason });
+  healthChecker.schedule(project);
+  res.json(result ?? { ok: false, steps: [], reason: "The rename did not finish." });
+});
+
 router.patch("/:id/domains/:domainId/route", requireAuth, async (req: Request<{ id: string; domainId: string }>, res: Response): Promise<void> => {
   const id = parseInt(req.params.id, 10);
   const domainId = parseInt(req.params.domainId, 10);
@@ -1287,6 +1318,10 @@ router.post("/", requireAuth, (req: Request, res: Response): void => {
   }
 
   healthChecker.schedule(project);
+  // With a default base domain, the project reserves <name>.<domain> at once. It has no route until the Compose file says
+  // where it goes. A failure here never fails the creation: the hostname can be added by hand.
+  try { reserveHostnameForProject(project.id, project.name); }
+  catch (err) { logger.warn({ err, projectId: project.id }, "domains: could not reserve a hostname for the new project"); }
   auditLog(req.user ?? "unknown", "project.create", project.name, "ok");
   res.status(201).json(project);
   void runProjectNginxFlow("project.create", project);

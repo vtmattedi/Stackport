@@ -35,6 +35,10 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
   const [label, setLabel] = useState("");
   const [canonical, setCanonical] = useState<"apex" | "www">("apex");
   const [typeFull, setTypeFull] = useState(false);
+  const [renaming, setRenaming] = useState<ProjectDomain | null>(null);
+  const [renameLabel, setRenameLabel] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameResult, setRenameResult] = useState<{ ok: boolean; steps: string[]; reason?: string } | null>(null);
   useEffect(() => {
     let live = true;
     api.getManagedDomains().then(({ domains: list }) => { if (live) { setManaged(list); setBaseId((current) => current ?? list.find((d) => d.isDefault)?.id ?? list[0]?.id ?? null); } }).catch(() => undefined);
@@ -92,6 +96,33 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
       setDomainError(err instanceof ApiError ? err.message : "Failed to add domain");
     } finally {
       setAddingDomain(false);
+    }
+  }
+
+  async function renameDomain() {
+    if (!project || !renaming || baseId === null || !renameLabel.trim()) return;
+    const ok = await confirm({
+      title: `Rename ${renaming.domain}?`,
+      description: "The new hostname is added, routed and, if this one has SSL, given a certificate first. Only then is this one removed: it stops answering at once, with no redirect.",
+      confirmLabel: "Rename",
+      destructive: true,
+    });
+    if (!ok) return;
+    setRenameBusy(true);
+    setRenameResult(null);
+    try {
+      const result = await api.renameProjectHostname(project.id, renaming.id, { managedDomainId: baseId, label: renameLabel.trim(), canonical: renameLabel.trim() === "@" ? canonical : undefined });
+      setRenameResult(result);
+      if (result.ok) {
+        setDomains(await api.listProjectDomains(project.id));
+        setRenaming(null);
+        setRenameLabel("");
+        notify.success("Hostname renamed.");
+      }
+    } catch (err) {
+      notify.error(err, "Could not rename the hostname");
+    } finally {
+      setRenameBusy(false);
     }
   }
 
@@ -251,6 +282,25 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
               <label><input type="checkbox" checked={typeFull} onChange={(e) => setTypeFull(e.target.checked)} /> other hostname</label>
             </div>
           )}
+          {renaming && (
+            <div className="row-actions">
+              <span className="muted-text">Rename <code className="mono">{renaming.domain}</code> to</span>
+              <Input type="text" placeholder="label, or @" value={renameLabel} onChange={(e) => setRenameLabel(e.target.value)} className={styles.domainInput} aria-label="New label" />
+              <select value={baseId ?? ""} onChange={(e) => setBaseId(Number(e.target.value))} aria-label="New base domain">
+                {managed.map((d) => <option key={d.id} value={d.id}>.{d.name}</option>)}
+              </select>
+              <Button type="button" size="default" disabled={renameBusy || !renameLabel.trim()} onClick={() => void renameDomain()}>
+                {renameBusy ? <Loader size={12} className="spin" /> : null} Rename
+              </Button>
+              <Button type="button" variant="outline" size="default" disabled={renameBusy} onClick={() => { setRenaming(null); setRenameResult(null); }}>Cancel</Button>
+            </div>
+          )}
+          {renameResult && (
+            <div role="status" className="muted-text">
+              {renameResult.reason && <strong>{renameResult.reason}</strong>}
+              <ul>{renameResult.steps.map((step, i) => <li key={i}>{step}</li>)}</ul>
+            </div>
+          )}
           {domainError && <div className={styles.inlineError}>{domainError}</div>}
           {domains.length === 0 ? (
             <div className="muted-text">No domains routed to this project.</div>
@@ -267,6 +317,7 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
                   onIssue={() => void issueDomainSsl(domain)}
                   onCertAction={(action) => void handleCertAction(domain.domain, action)}
                   onRemove={() => void removeDomainRow(domain)}
+                  onRename={domain.managedDomainId !== null && managed.length > 0 ? () => { setRenaming(domain); setRenameLabel(""); setRenameResult(null); } : undefined}
                 />
               ))}
             </div>

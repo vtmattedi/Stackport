@@ -29,6 +29,8 @@ import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networ
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
 import { listRoutedServiceNames } from "../ingress/domains";
+import { findUnroutedManagedHostname, routeReservedHostname } from "../ingress/managedDomains";
+import { writeNginxConfig } from "../ingress/nginx/configWriter";
 import { ensureBuildCapacity } from "../maintenance/storage/operations";
 import { getActiveDeployment, markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./history";
 import { healthCheckUrl, probeHealth, type HealthProbe } from "./health";
@@ -641,8 +643,24 @@ async function runCompose(
     try { await applyProjectNetworkGroup(projectId); }
     catch (err) { emit(projectId, action, "stderr", `Warning — could not join the network group: ${err instanceof Error ? err.message : String(err)}
 `); }
+    // A hostname reserved at creation has no route until the Compose file says where it goes.
+    try { await routeReservedHostnameAfterUp(projectId); }
+    catch (err) { emit(projectId, action, "stderr", `Warning — could not route the reserved hostname: ${err instanceof Error ? err.message : String(err)}
+`); }
   }
   return result;
+}
+
+/** Routes the hostname reserved for a project (domain manager) once the stack is up and its Compose file declares exactly one
+ *  routable port. With several ports it is left for a person: guessing is how traffic reaches the wrong service. */
+async function routeReservedHostnameAfterUp(projectId: number): Promise<void> {
+  if (!findUnroutedManagedHostname(projectId)) return; // the cheap check first: most projects have nothing to route
+  const targets = await getProjectIngressTargets(projectId).catch(() => []);
+  const routed = routeReservedHostname(projectId, targets);
+  if (!routed) return;
+  await ensureProjectProxyNetwork(projectId);
+  await writeNginxConfig();
+  logger.info({ projectId, hostname: routed.domain, service: routed.service, port: routed.containerPort }, "domains: reserved hostname routed");
 }
 
 const COMPOSE_FILE_EXT_RE = /\.(ya?ml)$/i;

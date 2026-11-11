@@ -486,6 +486,14 @@ export interface HostnameOverview {
   certificate: { status: string; expiresAt: string | null } | null;
 }
 
+/** The outcome of renaming a hostname. */
+export interface HostnameRenameResult {
+  ok: boolean;
+  steps: string[];
+  reason?: string;
+  hostname?: ProjectDomain;
+}
+
 /** Settings > GitHub: the App this instance registered, and what it can reach. */
 export interface GithubAppInfo {
   appId: number;

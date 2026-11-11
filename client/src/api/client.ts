@@ -41,6 +41,7 @@ import type {
   GithubManifestStart,
   GithubDelivery,
   ManagedDomain,
+  HostnameRenameResult,
   HostnameOverview,
   NetworkGroupView,
   AppVersionInfo,
@@ -458,6 +459,8 @@ export const api = {
     request<{ repositories: { repositoryId: number; installationId: number; fullName: string; defaultBranch: string | null; isPrivate: boolean }[] }>("/github-app/repositories"),
   setProjectGithubAuth: (projectId: number, input: { mode: "app" | "token"; installationId?: number; repositoryId?: number }) =>
     request<{ githubAuthMode: "app" | null }>(`/projects/${projectId}/github-auth`, { method: "PUT", body: JSON.stringify(input) }),
+  renameProjectHostname: (projectId: number, domainId: number, input: { managedDomainId: number; label: string; canonical?: "apex" | "www" }) =>
+    request<HostnameRenameResult>(`/projects/${projectId}/domains/${domainId}/rename`, { method: "POST", body: JSON.stringify(input) }),
   getManagedDomains: () => request<{ domains: ManagedDomain[] }>("/domains"),
   getHostnames: () => request<{ hostnames: HostnameOverview[] }>("/domains/hostnames"),
   addManagedDomain: (name: string, isDefault = false) =>
