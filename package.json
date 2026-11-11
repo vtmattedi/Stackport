@@ -1,6 +1,6 @@
 {
   "name": "stackport",
-  "version": "1.3.8",
+  "version": "1.3.9",
   "description": "Small VPS manager for running multiple projects on one server",
   "main": "dist/index.js",
   "scripts": {
