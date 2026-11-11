@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, Loader, Save } from "lucide-react";
+import { AlertCircle, Container, Loader, Save } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { HardeningDefaults } from "../../api/types";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
+import { Field } from "../../components/ui/field";
+import { Stack } from "../../components/ui/stack";
+import { Hint, Prose } from "../../components/ui/text";
 import { NumberInput } from "../../components/NumberInput";
 import { notify } from "../../lib/notify";
 
@@ -41,23 +44,29 @@ export default function HardeningSection() {
   const dirty = draft.pidsLimit !== saved.pidsLimit || draft.memoryMb !== saved.memoryMb;
   return (
     <div className="card">
-      <p className="hint">
-        Projects with hardened defaults on give every service <code>no-new-privileges</code>, and these limits when the service's
-        own Compose file sets none. A service that declares a limit keeps it. Set a value to 0 to have no default for it.
-      </p>
-      <div className="field">
-        <label>Memory per service</label>
-        <NumberInput min={0} max={16_777_216} suffix="MB" aria-label="Default memory limit in megabytes" value={draft.memoryMb}
-          onValueChange={(value) => setDraft({ ...draft, memoryMb: value ?? 0 })} />
-      </div>
-      <div className="field">
-        <label>Processes per service</label>
-        <NumberInput min={0} max={4_194_304} aria-label="Default process limit" value={draft.pidsLimit}
-          onValueChange={(value) => setDraft({ ...draft, pidsLimit: value ?? 0 })} />
-      </div>
-      <Button type="button" size="sm" disabled={!dirty || saving} onClick={() => void save()}>
-        {saving ? <Loader size={14} className="spin" /> : <Save size={14} />} Save
-      </Button>
+      <div className="card-title"><Container size={13} />Container defaults</div>
+      <Stack gap={4}>
+        <Prose>
+          Projects with hardened defaults on give every service <code>no-new-privileges</code>, and these limits when the service's
+          own Compose file sets none. A service that declares a limit keeps it.
+        </Prose>
+        <div className="grid max-w-xl gap-4 sm:grid-cols-2">
+          <Field label="Memory per service" htmlFor="hardening-memory">
+            <NumberInput id="hardening-memory" min={0} max={16_777_216} suffix="MB" aria-label="Default memory limit in megabytes" value={draft.memoryMb}
+              onValueChange={(value) => setDraft({ ...draft, memoryMb: value ?? 0 })} />
+          </Field>
+          <Field label="Processes per service" htmlFor="hardening-pids">
+            <NumberInput id="hardening-pids" min={0} max={4_194_304} aria-label="Default process limit" value={draft.pidsLimit}
+              onValueChange={(value) => setDraft({ ...draft, pidsLimit: value ?? 0 })} />
+          </Field>
+        </div>
+        <Hint>Set a value to 0 to have no default for it.</Hint>
+        <div>
+          <Button type="button" size="sm" disabled={!dirty || saving} onClick={() => void save()}>
+            {saving ? <Loader size={14} className="spin" /> : <Save size={14} />} Save
+          </Button>
+        </div>
+      </Stack>
     </div>
   );
 }

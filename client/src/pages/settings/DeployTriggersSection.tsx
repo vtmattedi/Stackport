@@ -4,6 +4,9 @@ import { ChevronDown, ChevronRight, GitBranch, KeyRound, Loader, RefreshCw, Save
 import { AppSelect } from "../../components/AppSelect";
 import { GitHubTokenSelect } from "../../components/GitHubTokenSelect";
 import { Button } from "../../components/ui/button";
+import { Field, CheckRow } from "../../components/ui/field";
+import { Stack } from "../../components/ui/stack";
+import { Hint } from "../../components/ui/text";
 import { Switch } from "../../components/ui/switch";
 import { api } from "../../api/client";
 import type { Credential, GitHubPollerConfig } from "../../api/types";
@@ -140,30 +143,24 @@ export default function DeployTriggersSection() {
           <Loader size={18} className="spin" />
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap" }}>
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 500, fontSize: "0.85rem", cursor: "pointer" }}>
-              <Switch
-                checked={ghEnabledDraft}
-                onCheckedChange={(v) => setGhEnabledDraft(v)}
-              />
-              {ghEnabledDraft ? "Enabled" : "Disabled"}
-            </label>
-
-            <div className="field" style={{ margin: 0 }}>
-              <label>Poll interval</label>
+        <Stack gap={4}>
+          <Hint>Each project picks its trigger on its own page: Poller, Webhook or Manual. The poller checks projects set to Poller on this interval.</Hint>
+          <CheckRow
+            control={<Switch checked={ghEnabledDraft} onCheckedChange={(v) => setGhEnabledDraft(v)} />}
+            title={<span className="font-medium">{ghEnabledDraft ? "Poller enabled" : "Poller disabled"}</span>}
+          />
+          <div className="grid gap-4 sm:grid-cols-2 lg:max-w-3xl">
+            <Field label="Poll interval">
               <AppSelect
                 value={ghIntervalDraft}
                 onValueChange={setGhIntervalDraft}
                 options={POLL_INTERVALS.map((opt) => ({ value: opt.value, label: opt.label }))}
               />
-            </div>
-
-            <div className="field" style={{ margin: 0, minWidth: 200 }}>
-              <label>
-                <KeyRound size={12} />
-                GitHub credential
-              </label>
+            </Field>
+            <Field
+              label={<><KeyRound size={12} className="self-center" />GitHub credential</>}
+              hint={ghCredentials.length === 0 ? <>Add a GitHub credential on the <Link className="ext-link" to="/settings/credentials">Credentials</Link> page first.</> : undefined}
+            >
               <GitHubTokenSelect
                 credentials={ghCredentials}
                 value={ghCredentialIdDraft}
@@ -171,32 +168,21 @@ export default function DeployTriggersSection() {
                 placeholder="None (public repos only)"
                 noneLabel="None (public repos only)"
               />
-              {ghCredentials.length === 0 && (
-                <div style={{ fontSize: "0.75rem", color: "var(--dim)", marginTop: 3 }}>
-                  Add a GitHub credential on the <Link className="ext-link" to="/settings/credentials">Credentials</Link> first.
-                </div>
-              )}
-            </div>
+            </Field>
           </div>
 
-          <p className="muted-text" style={{ margin: 0, fontSize: "0.82rem" }}>
-            Each project picks its trigger on its own page: Poller, Webhook or Manual. The poller checks projects set to Poller on this interval.
-          </p>
-
-          <div className={styles.webhookSettings}>
+          <div className={cn(styles.webhookSettings, "gap-2.5!")}>
             <strong>Webhooks</strong>
             {ghConfig?.webhookBaseUrl ? (
-              <span className="muted-text">GitHub will call <span className="mono">{ghConfig.webhookBaseUrl}/api/hooks/github/…</span></span>
+              <Hint>GitHub will call <span className="mono">{ghConfig.webhookBaseUrl}/api/hooks/github/…</span></Hint>
             ) : (
               <span className={styles.webhookUnavailable}>{ghConfig?.webhookUnavailableReason ?? "Webhooks are unavailable."}</span>
             )}
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: "0.85rem", cursor: "pointer" }}>
-              <Switch checked={safetyDraft} onCheckedChange={setSafetyDraft} />
-              Safety check webhook projects every 30 minutes
-            </label>
-            <span className="muted-text" style={{ fontSize: "0.78rem" }}>
-              Catches pushes whose delivery was lost while Stackport was down. Runs with the poller, so the poller must be enabled.
-            </span>
+            <CheckRow
+              control={<Switch checked={safetyDraft} onCheckedChange={setSafetyDraft} />}
+              title="Safety check webhook projects every 30 minutes"
+              hint="Catches pushes whose delivery was lost while Stackport was down. Runs with the poller, so the poller must be enabled."
+            />
           </div>
 
           {ghConfig && (
@@ -240,7 +226,7 @@ export default function DeployTriggersSection() {
               )}
             </div>
           )}
-        </div>
+        </Stack>
       )}
     </section>
   );

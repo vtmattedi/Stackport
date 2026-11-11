@@ -93,7 +93,8 @@ async function seed(): Promise<void> {
   createApiToken({ name: "laptop Claude Code", expiresInDays: 90, scope: "read" });
   createApiToken({ name: "ci deploy (production only)", expiresInDays: 30, scope: "write", projectGroup: "production" });
   createApiToken({ name: "old token", expiresInDays: null, scope: "write" });
-  seedGithubApp(github);
+  // UI_HARNESS_GITHUB=none leaves the App unregistered, which is what Settings > GitHub shows on a fresh server.
+  if (process.env["UI_HARNESS_GITHUB"] !== "none") seedGithubApp(github);
 }
 
 /** A registered GitHub App with one connected account and a list of repositories, so Settings > GitHub and the new-project

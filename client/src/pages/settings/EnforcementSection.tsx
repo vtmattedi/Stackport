@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertCircle, Check, Loader, X } from "lucide-react";
+import { AlertCircle, Check, Loader, ShieldCheck, X } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { ProjectEnforcement } from "../../api/types";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
+import { Stack } from "../../components/ui/stack";
+import { Hint, Prose } from "../../components/ui/text";
 import { notify } from "../../lib/notify";
 
 function Flag({ on }: { on: boolean }) {
@@ -46,38 +48,44 @@ export default function EnforcementSection() {
   const incomplete = projects.filter((p) => !p.composePolicyEnforced || !p.volumesManaged || !p.hardenedDefaults);
   return (
     <div className="card">
-      <p className="hint">
-        New projects start with every protection on. A project created before 1.3 keeps its old behaviour until you switch
-        it. Enforcing the policy and hardened defaults are per-project switches on the project's Settings tab. Managed
-        volumes apply to new projects only: the page that copied an older project's data over was removed in 1.3.9, so
-        a project that still lists them as off keeps its current mounts.
-      </p>
-      {incomplete.length === 0 ? (
-        <p>Every project has all three protections on.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr><th>Project</th><th>Compose policy</th><th>Managed volumes</th><th>Hardened defaults</th><th /></tr>
-          </thead>
-          <tbody>
-            {incomplete.map((project) => (
-              <tr key={project.id}>
-                <td><Link to={`/projects/${project.id}/settings`}>{project.name}</Link></td>
-                <td><Flag on={project.composePolicyEnforced} /></td>
-                <td><Flag on={project.volumesManaged} /></td>
-                <td><Flag on={project.hardenedDefaults} /></td>
-                <td>
-                  {!project.composePolicyEnforced && (
-                    <Button type="button" size="sm" disabled={busyId === project.id} onClick={() => void enforce(project)}>
-                      {busyId === project.id ? <Loader size={14} className="spin" /> : null} Enforce policy
-                    </Button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <div className="card-title"><ShieldCheck size={13} />Projects and their protections</div>
+      <Stack gap={4}>
+        <Stack gap={2}>
+          <Prose>New projects start with every protection on. A project created before 1.3 keeps its old behaviour until you switch it.</Prose>
+          <Hint>
+            Enforcing the policy and hardened defaults are per-project switches on the project's Settings tab. Managed volumes apply to new projects only: the page that
+            copied an older project's data over was removed in 1.3.9, so a project that still lists them as off keeps its current mounts.
+          </Hint>
+        </Stack>
+        {incomplete.length === 0 ? (
+          <div className="flex items-center gap-2 text-[13px] text-[var(--success)]"><Check size={14} />Every project has all three protections on.</div>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Project</th><th>Compose policy</th><th>Managed volumes</th><th>Hardened defaults</th><th /></tr>
+              </thead>
+              <tbody>
+                {incomplete.map((project) => (
+                  <tr key={project.id}>
+                    <td><Link to={`/projects/${project.id}/settings`}>{project.name}</Link></td>
+                    <td><Flag on={project.composePolicyEnforced} /></td>
+                    <td><Flag on={project.volumesManaged} /></td>
+                    <td><Flag on={project.hardenedDefaults} /></td>
+                    <td className="text-right">
+                      {!project.composePolicyEnforced && (
+                        <Button type="button" size="sm" disabled={busyId === project.id} onClick={() => void enforce(project)}>
+                          {busyId === project.id ? <Loader size={14} className="spin" /> : null} Enforce policy
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Stack>
     </div>
   );
 }

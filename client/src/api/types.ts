@@ -511,6 +511,7 @@ export interface GithubAppInfo {
   name: string;
   ownerLogin: string;
   ownerType: string;
+  isPublic: boolean;
   htmlUrl: string;
   /** The origin the App's URLs were registered with. */
   registeredOrigin: string;

@@ -8,6 +8,8 @@ import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { CheckRow } from "../../components/ui/field";
+import { Stack } from "../../components/ui/stack";
+import { Hint, Prose } from "../../components/ui/text";
 import { SubShellSectionHeader } from "../../components/SubShell";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { notify } from "../../lib/notify";
@@ -140,24 +142,26 @@ export function NetworksSection() {
         <ul className={styles.pools} aria-label="Docker's address pools">
           {summarizePools(headroom.pools).map((line) => <li key={line} className="mono">{line}</li>)}
         </ul>
-        <p className="hint" style={{ marginTop: 8 }}>
-          {headroom.poolsKnown ? "The pools Docker hands networks out of." : "Docker's own settings could not be read, so its defaults are assumed."}
-          {headroom.advice ? ` ${headroom.advice}` : ""}
-        </p>
+        <Stack gap={2} className="mt-3">
+          <Hint>{headroom.poolsKnown ? "The pools Docker hands networks out of." : "Docker's own settings could not be read, so its defaults are assumed."}</Hint>
+          {headroom.advice && <Hint>{headroom.advice}</Hint>}
+        </Stack>
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-title">Enlarge the address pool</div>
-        <p className="hint" style={{ maxWidth: "80ch" }}>
-          Docker's pools hold {headroom.capacity} networks, and every project and network group takes one. This is done on the server, because it changes Docker's own configuration and
-          needs a Docker restart, which stops every container until it starts again:
-        </p>
-        <p><span className="mono">sudo stackport network-pool set --base 10.20.0.0/14 --size 24</span></p>
-        <p className="hint" style={{ maxWidth: "80ch" }}>
-          That makes room for 1024 networks. The command checks the range against the machine's own routes first, backs up <span className="mono">daemon.json</span>, lists the containers that
-          will not restart by themselves, asks before restarting Docker, and puts the old file back if Docker does not come up. Networks that exist keep their ranges.
-          <span className="mono"> sudo stackport network-pool</span> shows where things stand.
-        </p>
+        <Stack gap={3}>
+          <Prose>
+            Docker's pools hold {headroom.capacity} networks, and every project and network group takes one. Enlarging them is done on the server, because it changes
+            Docker's own configuration and needs a Docker restart, which stops every container until it starts again.
+          </Prose>
+          <code className="mono block w-fit max-w-full overflow-x-auto rounded-md border border-border bg-background px-3 py-2 text-xs">sudo stackport network-pool set --base 10.20.0.0/14 --size 24</code>
+          <Hint>
+            That makes room for 1024 networks. The command checks the range against the machine's own routes first, backs up <span className="mono">daemon.json</span>, lists the containers that
+            will not restart by themselves, asks before restarting Docker, and puts the old file back if Docker does not come up. Networks that exist keep their ranges.
+          </Hint>
+          <Hint>Run <span className="mono">sudo stackport network-pool</span> with no arguments to see where things stand.</Hint>
+        </Stack>
       </div>
 
       <div className="card">
