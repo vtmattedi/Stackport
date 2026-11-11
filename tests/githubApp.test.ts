@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { getDatabase, initializeDatabase } from "../src/config/database";
 import { GithubClient, GithubError } from "../src/modules/github/client";
+import { encryptSecret } from "../src/shared/crypto";
 import { signAppJwt } from "../src/modules/github/jwt";
 import {
   appJwt, buildManifest, completeLink, completeManifest, forgetInstallationTokens, installationToken, preflight, refreshRepositories, startLink, startManifest,
@@ -206,6 +207,28 @@ test("token: a suspended installation is marked so, and a vanished one is marked
   fake.installations = fake.installations.filter((i) => i.id !== 604);
   await assert.rejects(installationToken(604, client), GithubError);
   assert.equal(getInstallation(604)?.status, "removed");
+});
+
+test("token: a failure is not remembered, a changed status stops a cached token at once, and a rejected key does not mark installations removed", async () => {
+  await linkedInstallations({ id: 605, account: { id: 13, login: "jo", type: "User" }, repositories: [] });
+  // Unlinked first: the failure must not stick once it is linked.
+  getDatabase().prepare("UPDATE github_app_installations SET status = 'unlinked' WHERE installation_id = 605").run();
+  await assert.rejects(installationToken(605, client), /not linked/);
+  getDatabase().prepare("UPDATE github_app_installations SET status = 'linked' WHERE installation_id = 605").run();
+  const token = await installationToken(605, client);
+  assert.match(token, /^ghs_/);
+
+  // Cached, then suspended by a webhook: the cached token is no longer served.
+  getDatabase().prepare("UPDATE github_app_installations SET status = 'suspended' WHERE installation_id = 605").run();
+  await assert.rejects(installationToken(605, client), /not linked/);
+  getDatabase().prepare("UPDATE github_app_installations SET status = 'linked' WHERE installation_id = 605").run();
+
+  // The App's JWT rejected (a wrong key): that says nothing about the installation.
+  forgetInstallationTokens();
+  const keys = crypto.generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
+  getDatabase().prepare("UPDATE github_app SET private_key_enc = ? WHERE id = 1").run(encryptSecret(keys.privateKey));
+  await assert.rejects(installationToken(605, client), /rejected the App's credentials/);
+  assert.equal(getInstallation(605)?.status, "linked", "a 401 does not remove the installation");
 });
 
 // ---- repositories

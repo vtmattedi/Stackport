@@ -204,27 +204,39 @@ const tokenInFlight = new Map<number, Promise<string>>();
 const REFRESH_BEFORE_MS = 60_000;
 
 /** An installation token: kept in memory only, refreshed a minute before it expires, one request at a time per
- *  installation. It is never written to the database, a log or a git remote. */
+ *  installation. It is never written to the database, a log or a git remote.
+ *
+ *  The installation's status is checked first, every time, so a suspended or removed installation stops at once even
+ *  while a token for it is still cached. */
 export async function installationToken(installationId: number, client: GithubClient = defaultGithubClient(), nowMs: number = Date.now()): Promise<string> {
+  const installation = getInstallation(installationId);
+  if (!installation || installation.status !== "linked") {
+    tokenCache.delete(installationId);
+    throw new GithubAppError("This installation is not linked to Stackport, so its repositories cannot be used.", 403);
+  }
   const cached = tokenCache.get(installationId);
   if (cached && cached.expiresAt - REFRESH_BEFORE_MS > nowMs) return cached.token;
   const pending = tokenInFlight.get(installationId);
   if (pending) return pending;
-  const fetching = (async (): Promise<string> => {
-    const installation = getInstallation(installationId);
-    if (!installation || installation.status !== "linked") throw new GithubAppError("This installation is not linked to Stackport, so its repositories cannot be used.", 403);
+
+  const request = async (): Promise<string> => {
     try {
       const { body } = await client.request<{ token: string; expires_at: string }>({ method: "POST", path: `/app/installations/${installationId}/access_tokens`, bearer: appJwt(nowMs) });
       tokenCache.set(installationId, { token: body.token, expiresAt: Date.parse(body.expires_at) });
       return body.token;
     } catch (err) {
-      if (err instanceof GithubError && (err.status === 404 || err.status === 401)) setInstallationStatus(installationId, "removed");
-      if (err instanceof GithubError && err.status === 403) setInstallationStatus(installationId, "suspended");
+      if (err instanceof GithubError) {
+        // 404: the installation is gone. 401 is about the App's own key or clock, not about this installation, so it
+        // changes nothing here. 403 only means suspended when GitHub says so.
+        if (err.status === 404) setInstallationStatus(installationId, "removed");
+        else if (err.status === 403 && /suspend/i.test(err.message)) setInstallationStatus(installationId, "suspended");
+        else if (err.status === 401) throw new GithubAppError("GitHub rejected the App's credentials. Check the private key (Settings > GitHub > Rotate credentials) and this server's clock.", 502);
+      }
       throw err;
-    } finally {
-      tokenInFlight.delete(installationId);
     }
-  })();
+  };
+  // Cleared whenever it settles, however it fails: a failure must not be served to the next caller.
+  const fetching: Promise<string> = request().finally(() => { if (tokenInFlight.get(installationId) === fetching) tokenInFlight.delete(installationId); });
   tokenInFlight.set(installationId, fetching);
   return fetching;
 }
