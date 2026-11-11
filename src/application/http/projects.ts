@@ -75,6 +75,7 @@ import {
 import { removeIngressNetwork } from "../../modules/ingress/networks";
 import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
+import { addManagedProjectDomain, getManagedDomain, validateLabel } from "../../modules/ingress/managedDomains";
 import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
 import { GithubAppError } from "../../modules/github/app";
 import { assignNetworkGroup, getNetworkGroupView, NetworkGroupError } from "../../modules/deployments/networkGroupAssignment";
@@ -910,13 +911,23 @@ router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, re
   const project = getProjectById(id);
   if (!project) { res.status(404).json({ error: "Project not found" }); return; }
 
-  const { domain, service, containerPort } = req.body as Record<string, unknown>;
+  const { domain, service, containerPort, managedDomainId, label, canonical } = req.body as Record<string, unknown>;
+  if (managedDomainId !== undefined) {
+    // The name is checked first, so a bad label is reported as one rather than as a missing service.
+    const chosen = typeof managedDomainId === "number" ? getManagedDomain(managedDomainId) : null;
+    if (!chosen) { res.status(400).json({ error: "Choose one of the managed domains." }); return; }
+    try { validateLabel(label, chosen.name); }
+    catch (err) { if (err instanceof ProjectDomainError) { res.status(err.statusCode).json({ error: err.message }); return; } throw err; }
+  }
   const route = await validateDomainRoute(project, service, containerPort);
   if (!route.ok) { res.status(400).json({ error: route.error }); return; }
 
   let created;
   try {
-    created = addProjectDomain(id, domain, false, route.service, route.containerPort);
+    // A hostname is a label (or @, the bare domain) on a managed base domain; a full hostname is for what is not on one.
+    created = managedDomainId !== undefined
+      ? addManagedProjectDomain(id, managedDomainId, label, route.service, route.containerPort, canonical === "www" ? "www" : "apex")
+      : addProjectDomain(id, domain, false, route.service, route.containerPort);
   } catch (err) {
     if (err instanceof ProjectDomainError) { res.status(err.statusCode).json({ error: err.message }); return; }
     throw err;

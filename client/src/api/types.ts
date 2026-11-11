@@ -97,6 +97,12 @@ export interface ProjectDomain {
   useSsl: boolean;
   service: string;
   containerPort: number | null;
+  /** The managed base domain and label this hostname was made from; null for an unmanaged hostname. */
+  managedDomainId: number | null;
+  /** `@` for the bare domain, otherwise the label in front of the base domain. */
+  label: string | null;
+  /** A `www.` hostname that is the canonical name: the bare domain redirects to it. */
+  redirectApex: boolean;
   createdAt: string;
   updatedAt: string;
 }

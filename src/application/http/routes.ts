@@ -13,6 +13,7 @@ import hardwareRouter from "../../modules/observability/routes/hardware";
 import apiTokensRouter from "../../modules/identity/routes/apiTokens";
 import actionsRouter from "../../modules/actions/routes";
 import githubAppRouter from "./githubApp";
+import domainsRouter from "./domains";
 import legacyMigrationsRouter from "../../modules/maintenance/migrations/routes"; // TEMPORARY, see modules/maintenance/migrations/types.ts
 
 const router = Router();
@@ -31,6 +32,7 @@ router.use("/hardware", hardwareRouter);
 router.use("/api-tokens", apiTokensRouter);
 router.use("/actions", actionsRouter);
 router.use("/github-app", githubAppRouter);
+router.use("/domains", domainsRouter);
 router.use("/legacy-migrations", legacyMigrationsRouter); // TEMPORARY
 
 export default router;

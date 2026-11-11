@@ -211,6 +211,8 @@ interface NginxTarget {
   containerPort: number;
   useSsl: boolean;
   includeWwwRedirect: boolean;
+  /** This is a `www.` hostname and the bare domain redirects to it (domain manager: www is the canonical name). */
+  redirectApex?: boolean;
   /** Raw directives appended inside the proxying `location /` block — e.g. client_max_body_size, proxy_read_timeout. */
   extraConfig: string;
   /** Raw server-level blocks (e.g. additional `location` blocks) appended after `location /`, HTTPS server only. Supports `{{PORT}}`, substituted with containerPort. */
@@ -387,7 +389,10 @@ ${body}
 }`;
 }
 
+/** The other name that redirects to this hostname: `www.` in front of a bare domain, or the bare domain behind a canonical
+ *  `www.` hostname. Both use the same redirect blocks and the same certificate, which has to list both names. */
 function wwwDomain(target: NginxTarget): string | null {
+  if (target.redirectApex && target.domain.startsWith("www.")) return target.domain.slice(4);
   if (!target.includeWwwRedirect || target.domain.startsWith("www.")) return null;
   return `www.${target.domain}`;
 }
@@ -499,7 +504,7 @@ function wwwHttpsRedirectBlock(target: NginxTarget): string {
 async function renderDomainBlock(template: string, target: NginxTarget): Promise<string> {
   const domain = target.domain;
   const hasCertificate = target.useSsl && domain ? await certificateExists(domain) : false;
-  const wwwRedirect = target.includeWwwRedirect ? wwwDomain(target) ?? "" : "";
+  const wwwRedirect = wwwDomain(target) ?? "";
   const upstreamUrl = `http://${upstreamHost(target)}:${target.containerPort}`;
   const values: Record<string, string> = {
     name: target.name,
@@ -569,7 +574,8 @@ function projectRouteTargets(projects: Project[], domainsByProject: Map<number, 
       service: pd.service,
       containerPort: pd.containerPort,
       useSsl: pd.useSsl,
-      includeWwwRedirect: apexDomains.has(pd.domain) && !allDomains.includes(`www.${pd.domain}`),
+      includeWwwRedirect: !pd.redirectApex && apexDomains.has(pd.domain) && !allDomains.includes(`www.${pd.domain}`),
+      redirectApex: pd.redirectApex && pd.domain.startsWith("www.") && !allDomains.includes(pd.domain.slice(4)),
       extraConfig: project.nginxExtraConfig ?? "",
       extraBlocks: project.nginxExtraBlocks ?? "",
     }))
