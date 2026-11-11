@@ -1,5 +1,6 @@
 /* eslint-disable security/detect-object-injection -- the keys are module names from a fixed union type, or Docker-style ids and names this module wrote itself. */
 import { defaultGithubClient, GithubClient, GithubError } from "./client";
+import { logger } from "../../shared/logger";
 import { signAppJwt } from "./jwt";
 import {
   consumeState, createState, getApp, getAppSecrets, getInstallation, replaceRepositories, saveApp, setInstallationStatus, listInstallations, updateAppSecrets, upsertInstallation,
@@ -294,7 +295,13 @@ export async function completeLink(code: unknown, state: unknown, client: Github
     }
     if (body.installations.length < 100) break;
   }
-  return linked;
+  // Read what each can use now, so the wizard and the project switch work straight away. A failure here does not undo
+  // the link: the installation's Refresh button does the same later.
+  for (const installation of linked) {
+    try { await refreshRepositories(installation.installationId, client); }
+    catch (err) { logger.warn({ err, installationId: installation.installationId }, "github-app: repositories could not be read right after linking"); }
+  }
+  return linked.map((i) => getInstallation(i.installationId) ?? i);
 }
 
 /** Reads the App's installations from GitHub with the App's own JWT. New ones are recorded as `unlinked`, so they

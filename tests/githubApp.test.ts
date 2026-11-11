@@ -147,10 +147,28 @@ test("link: a code GitHub did not issue gives no access", async () => {
 test("sync: an installation GitHub shows us but nobody linked is unlinked and cannot mint a token", async () => {
   await registerApp();
   fake.installations = [{ id: 404, account: { id: 4, login: "carol", type: "User" }, repositories: [{ id: 44, full_name: "carol/app" }] }];
+  const issuedBefore = fake.tokensIssued;
   const installations = await syncInstallations(client);
   assert.deepEqual(installations.map((i) => [i.installationId, i.status]), [[404, "unlinked"]]);
   await assert.rejects(installationToken(404, client), (err: unknown) => err instanceof GithubAppError && err.status === 403);
-  assert.equal(fake.tokensIssued, 0, "nothing was asked of GitHub for an unlinked installation");
+  assert.equal(fake.tokensIssued, issuedBefore, "nothing was asked of GitHub for an unlinked installation");
+});
+
+test("link: the installation's repositories are read at once, so the wizard and the project switch work straight away", async () => {
+  await registerApp();
+  fake.installations = [{ id: 111, account: { id: 21, login: "fresh", type: "Organization" }, repositories: [{ id: 3001, full_name: "fresh/api", default_branch: "main" }, { id: 3002, full_name: "fresh/web" }] }];
+  const linked = await completeLink(fake.issueCode("oauth"), new URL(startLink("admin", client).authorizeUrl).searchParams.get("state")!, client);
+  assert.deepEqual(listRepositories(111).map((r) => r.fullName), ["fresh/api", "fresh/web"]);
+  assert.equal(linked[0].repositoryCount, 2, "the returned installation already counts them");
+});
+
+test("link: GitHub failing to list repositories does not undo the link", async () => {
+  await registerApp();
+  fake.installations = [{ id: 112, account: { id: 22, login: "flaky", type: "User" }, repositories: [] }];
+  fake.rateLimit = { prefix: "/app/installations/112", remaining: 10 };
+  const linked = await completeLink(fake.issueCode("oauth"), new URL(startLink("admin", client).authorizeUrl).searchParams.get("state")!, client);
+  assert.deepEqual(linked.map((i) => [i.installationId, i.status]), [[112, "linked"]]);
+  assert.equal(listRepositories(112).length, 0, "empty until Refresh works");
 });
 
 test("sync: an installation that is gone is marked removed, and one that comes back stays linked", async () => {
@@ -172,6 +190,8 @@ async function linkedInstallations(...installations: FakeGithub["installations"]
   await registerApp();
   fake.installations = installations;
   await completeLink(fake.issueCode("oauth"), new URL(startLink("admin", client).authorizeUrl).searchParams.get("state")!, client);
+  // Linking reads the repositories, which mints a token; the token tests start from nothing cached.
+  forgetInstallationTokens();
 }
 
 test("token: it is cached, refreshed a minute before it expires, and never written to the database", async () => {
