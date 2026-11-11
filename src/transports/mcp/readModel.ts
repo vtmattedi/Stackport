@@ -9,6 +9,7 @@ import { expectedComposeProjectName } from "../../modules/projects/workspace";
 import { listNetworkGroups } from "../../modules/projects/networkGroups";
 import { getNetworkGroupView, type NetworkGroupView } from "../../modules/deployments/networkGroupAssignment";
 import { groupAlias } from "../../shared/networkGroups";
+import { checkProjectIngress, type IngressStatus } from "../../modules/ingress/health";
 
 /**
  * What the read-only MCP tools return. Every field is picked by name here, never by
@@ -177,6 +178,27 @@ export function listNetworkGroupsView(): NetworkGroupsView {
 export async function getProjectNetworkView(id: number): Promise<(NetworkGroupView & { projectId: number }) | null> {
   if (!loadProject(id)) return null;
   return { projectId: id, ...(await getNetworkGroupView(id)) };
+}
+
+export interface IngressHealthView {
+  projectId: number;
+  status: IngressStatus;
+  summary: string;
+  nginx: { running: boolean; onSharedNetwork: boolean };
+  routes: { domain: string; service: string; port: number; reachable: boolean; failure: string | null }[];
+}
+
+/** Whether nginx can reach each routed service of a project, picked field by field. */
+export async function getProjectIngressHealthView(id: number): Promise<IngressHealthView | null> {
+  if (!loadProject(id)) return null;
+  const health = await checkProjectIngress(id);
+  return {
+    projectId: id,
+    status: health.status,
+    summary: health.summary,
+    nginx: { running: health.nginx.running, onSharedNetwork: health.nginx.onSharedNetwork },
+    routes: health.routes.map((r) => ({ domain: r.domain, service: r.service, port: r.port, reachable: r.reachable, failure: r.failure })),
+  };
 }
 
 export interface StatusView {

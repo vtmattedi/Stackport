@@ -85,7 +85,7 @@ test("an API token is not accepted by the admin API", async () => {
 test("only the read-only tools exist", async () => {
   const client = await connect(token);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_get_project", "stackport_get_project_network_group", "stackport_list_network_groups", "stackport_list_projects", "stackport_status"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_get_project", "stackport_get_project_ingress_health", "stackport_get_project_network_group", "stackport_list_network_groups", "stackport_list_projects", "stackport_status"]);
   assert.ok(tools.every((t) => t.annotations?.readOnlyHint === true));
   await client.close();
 });
@@ -113,6 +113,15 @@ test("get_project returns exactly the allowlisted fields", async () => {
     "branch", "composeFile", "containers", "deployTrigger", "deployments", "domains", "group", "health", "id",
     "lastCommit", "name", "paused", "pendingDeploySha", "repo", "runningAction", "sourceType",
   ]);
+  await client.close();
+});
+
+test("ingress health returns exactly the allowlisted fields, and an unknown project is a tool error", async () => {
+  const client = await connect(token);
+  const health = payload(await client.callTool({ name: "stackport_get_project_ingress_health", arguments: { projectId } }));
+  assert.deepEqual(Object.keys(health).sort(), ["nginx", "projectId", "routes", "status", "summary"]);
+  assert.deepEqual(Object.keys(health.nginx as object).sort(), ["onSharedNetwork", "running"]);
+  assert.equal((await client.callTool({ name: "stackport_get_project_ingress_health", arguments: { projectId: 999999 } })).isError, true);
   await client.close();
 });
 

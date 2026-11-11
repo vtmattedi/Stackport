@@ -447,6 +447,15 @@ export interface DockerDiskUsageEntry {
   reclaimable: string;
 }
 
+/** Whether nginx can reach a project's routed services. */
+export interface IngressHealth {
+  projectId: number;
+  status: "ok" | "degraded" | "down" | "no-routes" | "nginx-unavailable";
+  summary: string;
+  nginx: { running: boolean; onSharedNetwork: boolean };
+  routes: { domain: string; service: string; port: number; alias: string; reachable: boolean; failure: string | null; detail: string }[];
+}
+
 /** How many more Docker networks fit in the daemon's address pools. */
 export interface NetworkHeadroom {
   capacity: number;

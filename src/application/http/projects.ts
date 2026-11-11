@@ -41,6 +41,7 @@ import {
   validateComposeFileChoice,
 } from "../../modules/deployments/operations";
 import { setComposePolicyEnforced } from "../../modules/deployments/compose/enforcement";
+import { checkProjectIngress } from "../../modules/ingress/health";
 import { getProjectBranches } from "../../modules/automation/githubPolling";
 import { runCertbotAction } from "../../modules/ingress/certificates/operations";
 import { actionRegistry, DEPLOY_KINDS_SQL, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../../modules/actions/registry";
@@ -669,6 +670,15 @@ router.get("/:id/compose-policy", requireAuth, async (req: Request<{ id: string 
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   try { res.json(await getProjectComposePolicy(id)); }
   catch { res.json({ composeFile: null, violations: [], resolved: { checked: false, violations: [] }, enforced: true }); }
+});
+
+/** Whether nginx can reach each of the project's routed services right now (P2): the name resolves on the
+ *  shared network and the port accepts a connection, asked from inside the nginx container. */
+router.get("/:id/ingress-health", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
+  res.json(await checkProjectIngress(id));
 });
 
 /** Rejects (true) or only warns about (false) resolved-config policy violations (S1) for one

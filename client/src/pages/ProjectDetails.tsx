@@ -53,6 +53,7 @@ import { DeploymentsCard } from "./project/DeploymentsCard";
 import { SettingsTab } from "./project/SettingsTab";
 import { DomainsTab } from "./project/DomainsTab";
 import { DetailRow } from "./project/shared";
+import { IngressHealthCard } from "./project/IngressHealthCard";
 
 
 
@@ -1079,6 +1080,7 @@ export default function ProjectDetails() {
               </>
             )}
 
+            {tab === "domains" && <IngressHealthCard projectId={project.id} />}
             {tab === "domains" && (
               <DomainsTab project={project} setProject={setProject} domains={domains} setDomains={setDomains} />
             )}

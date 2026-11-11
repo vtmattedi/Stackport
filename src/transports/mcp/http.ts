@@ -7,7 +7,7 @@ import { z } from "zod";
 import { requireApiToken } from "../../modules/identity/middleware/apiToken";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
-import { getProjectNetworkView, getProjectView, getStatusView, listNetworkGroupsView, listProjectsView } from "./readModel";
+import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listNetworkGroupsView, listProjectsView } from "./readModel";
 import { registerWriteTools } from "./writeTools";
 import { packageVersion } from "../../modules/maintenance/version";
 
@@ -105,6 +105,21 @@ export function buildMcpServer(token: ApiToken): McpServer {
     async ({ projectId }) => {
       audit("stackport_get_project_network_group", { projectId });
       const view = await getProjectNetworkView(projectId);
+      return view ? result(view) : notFound(`No project with id ${projectId}.`);
+    }
+  );
+
+  server.registerTool(
+    "stackport_get_project_ingress_health",
+    {
+      title: "Get project ingress health",
+      description: "Whether nginx can reach each of one project's routed services right now: for every domain, whether the service's name resolves on the shared network and its port accepts a connection, with what to check when it does not. It says nothing about what the application answers.",
+      inputSchema: { projectId: z.number().int().positive() },
+      annotations: READ_ONLY,
+    },
+    async ({ projectId }) => {
+      audit("stackport_get_project_ingress_health", { projectId });
+      const view = await getProjectIngressHealthView(projectId);
       return view ? result(view) : notFound(`No project with id ${projectId}.`);
     }
   );
