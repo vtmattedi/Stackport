@@ -62,7 +62,7 @@ test("a first call only describes the rename; the confirmed call runs exactly th
   assert.equal(preview.isError, false);
   assert.match(String(preview.body?.["summary"]), /Rename the hostname old\.example\.com of "mcp-h1" to fresh\.example\.com/);
   assert.match(String(preview.body?.["summary"]), /stops answering at once, with no redirect/);
-  assert.deepEqual(h.started, [], "nothing ran");
+  assert.equal(h.started.length, 0, "nothing ran");
   assert.deepEqual(listProjectDomains(id).map((d) => d.domain), ["old.example.com"]);
 
   const confirmationId = String(preview.body?.["confirmationId"]);
