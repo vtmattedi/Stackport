@@ -9,6 +9,7 @@ import { HARNESS_PASSWORD, HARNESS_USER, startHarness } from "./harness";
  *
  *   npm run ui:shots                                  every default page at 1440, 1024 and 390 px
  *   npm run ui:shots -- --pages /settings/mcp          only these (comma separated)
+ *   npm run ui:shots -- --pages "projects>Add new project>The GitHub App"   click through: each `>` clicks the button, link or radio of that name
  *   npm run ui:shots -- --widths 1280 --out some/dir   other widths, other folder (default: ui-shots/)
  *   npm run ui:shots -- --wait 5000                    wait longer for slow pages (default 1200 ms after load)
  *   npm run ui:shots -- --url http://localhost:3000    an already running Stackport (logs in with --user and --password)
@@ -17,9 +18,10 @@ import { HARNESS_PASSWORD, HARNESS_USER, startHarness } from "./harness";
  */
 
 const DEFAULT_PAGES = [
-  "/projects", "/projects/1/domains", "/logs", "/host/hardware", "/insights/overview",
-  "/settings/general", "/settings/deploy-triggers", "/settings/notifications", "/settings/credentials", "/settings/mcp",
-  "/settings/storage", "/settings/hardening", "/settings/enforcement", "/settings/domains", "/settings/github", "/settings/maintenance",
+  "/projects", "/projects>Add new project", "/projects/1/domains", "/projects/1/settings", "/logs",
+  "/host/hardware", "/host/docker", "/host/networks", "/host/nginx", "/host/certbot", "/host/power",
+  "/insights/overview", "/settings/general", "/settings/notifications", "/settings/deploy-triggers", "/settings/domains", "/settings/protections",
+  "/settings/github", "/settings/credentials", "/settings/mcp", "/settings/encryption",
 ];
 
 function option(name: string): string | undefined {
@@ -28,6 +30,12 @@ function option(name: string): string | undefined {
 }
 
 const slug = (page: string): string => page.replace(/^\/+/, "").replace(/[^a-z0-9]+/gi, "-").replace(/-+$/g, "") || "home";
+
+/** `projects>Add new project` is the page /projects after clicking the button or link called "Add new project"; more `>` click on. */
+function splitTarget(target: string): { path: string; clicks: string[] } {
+  const [path, ...clicks] = target.split(">").map((part) => part.trim());
+  return { path, clicks };
+}
 
 async function main(): Promise<void> {
   // A leading slash is optional: Git Bash on Windows rewrites "/settings/mcp" into a path on disk, so "settings/mcp" is the safe spelling there.
@@ -72,8 +80,13 @@ async function main(): Promise<void> {
       for (const width of widths) {
         problems.length = 0;
         await page.setViewportSize({ width, height: 900 });
-        await page.goto(`${base}${target}`, { waitUntil: "load" });
+        const { path: route, clicks } = splitTarget(target);
+        await page.goto(`${base}${route}`, { waitUntil: "load" });
         await page.waitForTimeout(wait); // data arrives over the socket and fetches after load
+        for (const name of clicks) {
+          await page.getByRole("button", { name }).or(page.getByRole("link", { name })).or(page.getByRole("radio", { name })).first().click({ timeout: 5_000 });
+          await page.waitForTimeout(600);
+        }
         const file = path.join(out, `${slug(target)}-${width}.png`);
         await page.screenshot({ path: file, fullPage: true });
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
