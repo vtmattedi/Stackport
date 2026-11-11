@@ -13,6 +13,11 @@ import { groupAlias } from "../../shared/networkGroups";
 import { ensureDomainAvailable, listProjectDomains, ProjectDomainError } from "../../modules/ingress/domains";
 import { realRenameDeps } from "../../modules/ingress/hostnameOps";
 import { addManagedProjectDomain, hostnameFor, listManagedDomains, renameProjectHostname, validateLabel, type Canonical } from "../../modules/ingress/managedDomains";
+import { GithubAppError } from "../../modules/github/app";
+import type { AppRepository } from "../../modules/github/binding";
+import { createAppProject, IMPORT_WARNING, projectForRepository, uniqueProjectName } from "../../modules/github/importer";
+import { getInstallation, listRepositories } from "../../modules/github/store";
+import { parseProjectGroupName } from "../../modules/projects/operations";
 
 /**
  * Write tools for the HTTP MCP endpoint (S5): deploy, roll back, restart and stop. A token
@@ -23,7 +28,7 @@ import { addManagedProjectDomain, hostnameFor, listManagedDomains, renameProject
  * act on a first call. Every call is audited, with the token as the actor.
  */
 
-export type WriteKind = "deploy" | "rollback" | "restart" | "stop" | "network_group" | "hostname";
+export type WriteKind = "deploy" | "rollback" | "restart" | "stop" | "network_group" | "hostname" | "repository";
 
 export interface ProjectLike { id: number; name: string; groupName: string | null; lastStatus: string; autoDeployBranch: string | null }
 
@@ -400,6 +405,97 @@ function registerHostnameTool(server: McpServer, token: ApiToken, deps: WriteDep
   );
 }
 
+// ---- create a project from a GitHub App repository
+
+export interface RepositoryPlan { repository: AppRepository; name: string; groupName: string | null }
+
+export interface RepositoryInput { repository: string; name?: string; group?: string }
+
+/** What the repository tool needs from the rest of Stackport (replaceable in tests). */
+export interface RepositoryDeps {
+  /** Validates the request against what the App can use. Throws GithubAppError with a reason. */
+  preview(input: RepositoryInput, token: Pick<ApiToken, "projectGroup">): RepositoryPlan;
+  create(plan: RepositoryPlan): { projectId: number; name: string; hostname: string | null };
+}
+
+export function defaultRepositoryDeps(): RepositoryDeps {
+  return {
+    preview: (input, token) => {
+      const wanted = input.repository.trim().toLowerCase();
+      const match = listRepositories().find((r) => r.fullName.toLowerCase() === wanted && getInstallation(r.installationId)?.status === "linked");
+      if (!match) {
+        const some = listRepositories().slice(0, 15).map((r) => r.fullName).join(", ");
+        throw new GithubAppError(`"${input.repository}" is not a repository the GitHub App can use.${some ? ` Some that it can: ${some}.` : " No account is connected."}`, 404);
+      }
+      const existing = projectForRepository(match.repositoryId);
+      if (existing) throw new GithubAppError(`${match.fullName} already deploys as the project "${existing.name}" (id ${existing.id}).`, 409);
+      let groupName: string | null = input.group?.trim() || null;
+      if (token.projectGroup !== null) {
+        // A token limited to a group creates projects inside it, so the project stays within what the token may act on.
+        if (groupName !== null && groupName !== token.projectGroup) throw new GithubAppError(`This token may only create projects in the group "${token.projectGroup}".`, 403);
+        groupName = token.projectGroup;
+      }
+      try { parseProjectGroupName(groupName); } catch (err) { throw new GithubAppError(err instanceof Error ? err.message : "Invalid group.", 400); }
+      return { repository: { installationId: match.installationId, repositoryId: match.repositoryId, fullName: match.fullName, defaultBranch: match.defaultBranch }, name: uniqueProjectName(input.name?.trim() || match.fullName.split("/")[1] || match.fullName), groupName };
+    },
+    create: (plan) => {
+      const project = createAppProject(plan.repository, { name: plan.name, groupName: plan.groupName });
+      const host = listProjectDomains(project.id)[0];
+      return { projectId: project.id, name: project.name, hostname: host?.domain ?? null };
+    },
+  };
+}
+
+function registerRepositoryTool(server: McpServer, token: ApiToken, repos: RepositoryDeps, store: ConfirmationStore): void {
+  const actor = `token:${token.name}#${token.id}`;
+  const tool = "stackport_create_project_from_repository";
+  server.registerTool(
+    tool,
+    {
+      title: "Create project from a GitHub repository (destructive)",
+      description: "DESTRUCTIVE: creates a project that pulls code from a repository the GitHub App can use and, once someone deploys it, runs that code on this host. Anyone who can push to the repository controls what runs. The project is bound to the repository, on its default branch, and reserves a hostname when a default domain is set; nothing is cloned or deployed by this call. Use stackport_list_github_repositories to see what is available. A token limited to a project group creates the project inside that group. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to create it.",
+      inputSchema: {
+        repository: z.string().min(3).max(200).describe("owner/name, as listed by stackport_list_github_repositories."),
+        name: z.string().min(1).max(100).optional().describe("The project's name. Default: the repository's name."),
+        group: z.string().max(100).optional().describe("The project group. A token limited to a group always uses its own."),
+        confirmationId: z.string().uuid().optional(),
+      },
+      annotations: DESTRUCTIVE,
+    },
+    async (input: { repository: string; name?: string; group?: string; confirmationId?: string }) => {
+      const refuse = (reason: string, message: string): CallToolResult => {
+        auditLog(actor, "mcp.write", tool, "fail", { tokenId: token.id, repository: input.repository, reason });
+        return text(message, true);
+      };
+      let plan: RepositoryPlan;
+      try { plan = repos.preview({ repository: input.repository, name: input.name, group: input.group }, token); }
+      catch (err) {
+        if (err instanceof GithubAppError) return refuse("invalid", err.message);
+        throw err;
+      }
+      // The confirmation is for exactly this repository, name and group.
+      const params: WriteParams = { hostname: `${plan.repository.repositoryId}|${plan.name}|${plan.groupName ?? ""}` };
+      if (!input.confirmationId) {
+        const { id, expiresAt } = store.issue(token.id, "repository", plan.repository.repositoryId, params);
+        auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, repository: plan.repository.fullName });
+        return data({
+          requiresConfirmation: true,
+          summary: `Create the project "${plan.name}"${plan.groupName ? ` in the group "${plan.groupName}"` : ""} from ${plan.repository.fullName}${plan.repository.defaultBranch ? ` (branch ${plan.repository.defaultBranch})` : ""}. Nothing is cloned or deployed yet. ${IMPORT_WARNING}`,
+          confirmationId: id,
+          expiresAt: new Date(expiresAt).toISOString(),
+          next: `Nothing has been created. To proceed, call ${tool} again with the same arguments and this confirmationId.`,
+        });
+      }
+      if (!store.consume(input.confirmationId, token.id, "repository", plan.repository.repositoryId, params)) {
+        return refuse("bad-confirmation", "That confirmationId is unknown, expired, already used, or was issued for different arguments. Call the tool without it to get a new one.");
+      }
+      const created = repos.create(plan);
+      auditLog(actor, "mcp.write", tool, "ok", { tokenId: token.id, repository: plan.repository.fullName, projectId: created.projectId });
+      return data({ created: true, projectId: created.projectId, name: created.name, hostname: created.hostname, note: "The project exists but has not been deployed. Deploy it with stackport_deploy_project." });
+    },
+  );
+}
+
 export function registerWriteTools(
   server: McpServer,
   token: ApiToken,
@@ -407,10 +503,12 @@ export function registerWriteTools(
   store: ConfirmationStore = confirmations,
   net: NetworkDeps = defaultNetworkDeps(),
   hosts: HostnameDeps = defaultHostnameDeps(),
+  repos: RepositoryDeps = defaultRepositoryDeps(),
 ): void {
   const actor = `token:${token.name}#${token.id}`;
   registerNetworkGroupTool(server, token, deps, net, store);
   registerHostnameTool(server, token, deps, hosts, store);
+  registerRepositoryTool(server, token, repos, store);
 
   for (const spec of SPECS) {
     server.registerTool(

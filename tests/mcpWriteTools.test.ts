@@ -55,7 +55,7 @@ test("the four write tools are registered, marked destructive", async () => {
     await Promise.all([server.connect(b), client.connect(a)]);
     return (await client.listTools()).tools;
   })());
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_deploy_project", "stackport_restart_project", "stackport_rollback_project", "stackport_set_network_group", "stackport_set_project_hostname", "stackport_stop_project"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_create_project_from_repository", "stackport_deploy_project", "stackport_restart_project", "stackport_rollback_project", "stackport_set_network_group", "stackport_set_project_hostname", "stackport_stop_project"]);
   assert.ok(tools.every((t) => t.annotations?.destructiveHint === true));
   await h.close();
 });
@@ -288,7 +288,7 @@ test("every write tool says it is destructive, in its description and in its ann
   const client = new Client({ name: "c", version: "1" });
   await Promise.all([server.connect(b), client.connect(a)]);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 6);
+  assert.equal(tools.length, 7);
   for (const tool of tools) {
     assert.match(tool.description ?? "", /^DESTRUCTIVE/, tool.name);
     assert.equal(tool.annotations?.destructiveHint, true, tool.name);

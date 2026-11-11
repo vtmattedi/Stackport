@@ -7,7 +7,7 @@ import { z } from "zod";
 import { requireApiToken } from "../../modules/identity/middleware/apiToken";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
-import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listManagedDomainsView, listNetworkGroupsView, listProjectsView } from "./readModel";
+import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listGithubRepositoriesView, listManagedDomainsView, listNetworkGroupsView, listProjectsView } from "./readModel";
 import { registerWriteTools } from "./writeTools";
 import { packageVersion } from "../../modules/maintenance/version";
 
@@ -106,6 +106,19 @@ export function buildMcpServer(token: ApiToken): McpServer {
       audit("stackport_get_project_network_group", { projectId });
       const view = await getProjectNetworkView(projectId);
       return view ? result(view) : notFound(`No project with id ${projectId}.`);
+    }
+  );
+
+  server.registerTool(
+    "stackport_list_github_repositories",
+    {
+      title: "List GitHub repositories",
+      description: "The repositories the GitHub App can use (from the accounts connected in Settings > GitHub), with their account, visibility and default branch, and the project each one already deploys as, if any. Use it to choose a repository for stackport_create_project_from_repository.",
+      annotations: READ_ONLY,
+    },
+    () => {
+      audit("stackport_list_github_repositories");
+      return result(listGithubRepositoriesView());
     }
   );
 

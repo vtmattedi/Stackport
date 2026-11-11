@@ -12,6 +12,7 @@ import { GithubError } from "../../modules/github/client";
 import { getApp, getInstallation, listInstallations, listRepositories } from "../../modules/github/store";
 import { inspectRepository, listRepositoryBranches, resolveAppRepository } from "../../modules/github/binding";
 import { listDeliveries, replayDelivery } from "../../modules/github/webhook";
+import { IMPORT_WARNING, importRepositories, scanInstallation } from "../../modules/github/importer";
 
 /**
  * Settings > GitHub. The three browser callbacks (`/manifest/callback`, `/oauth/callback`, `/setup`) are the only
@@ -140,6 +141,25 @@ router.put("/credentials", requireAuth, async (req: Request, res: Response): Pro
     auditLog(req.user ?? "unknown", "github-app.rotate", "-", "fail");
     fail(res, err);
   }
+});
+
+/** Which of an installation's repositories have a Compose file on their default branch, and which are projects already. */
+router.post("/import/scan", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const installationId = Number(req.body?.installationId);
+  if (!Number.isInteger(installationId) || installationId < 1) { res.status(400).json({ error: "Choose an installation." }); return; }
+  try { res.json({ ...(await scanInstallation(installationId)), warning: IMPORT_WARNING }); }
+  catch (err) { fail(res, err); }
+});
+
+/** Creates a project for each chosen repository. Nothing is cloned or deployed. */
+router.post("/import", requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const installationId = Number(req.body?.installationId);
+  if (!Number.isInteger(installationId) || installationId < 1) { res.status(400).json({ error: "Choose an installation." }); return; }
+  try {
+    const outcomes = await importRepositories(installationId, req.body?.repositoryIds);
+    auditLog(req.user ?? "unknown", "github-app.import", String(installationId), "ok", { created: outcomes.filter((o) => o.status === "created").length, skipped: outcomes.filter((o) => o.status === "skipped").length });
+    res.json({ outcomes });
+  } catch (err) { fail(res, err); }
 });
 
 router.get("/deliveries", requireAuth, (req: Request, res: Response): void => {

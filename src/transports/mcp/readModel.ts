@@ -6,6 +6,8 @@ import { getContainerListCached } from "../../integrations/docker/statusCache";
 import { listProjectDeployments } from "../../modules/deployments/history";
 import { listProjectDomains } from "../../modules/ingress/domains";
 import { listManagedDomains } from "../../modules/ingress/managedDomains";
+import { listInstallations, listRepositories as listGithubAppRepositories } from "../../modules/github/store";
+import { projectForRepository } from "../../modules/github/importer";
 import { expectedComposeProjectName } from "../../modules/projects/workspace";
 import { listNetworkGroups } from "../../modules/projects/networkGroups";
 import { getNetworkGroupView, type NetworkGroupView } from "../../modules/deployments/networkGroupAssignment";
@@ -212,6 +214,20 @@ export interface ManagedDomainsView {
 /** The base domains Stackport manages, picked field by field. */
 export function listManagedDomainsView(): ManagedDomainsView {
   return { domains: listManagedDomains().map((d) => ({ name: d.name, isDefault: d.isDefault, hostnameCount: d.hostnameCount, dnsStatus: d.dnsStatus, dnsCheckedAt: d.dnsCheckedAt })) };
+}
+
+export interface GithubRepositoriesView {
+  repositories: { fullName: string; account: string; private: boolean; archived: boolean; defaultBranch: string | null; project: { id: number; name: string } | null }[];
+}
+
+/** The repositories the GitHub App can use, and which are projects already, picked field by field. */
+export function listGithubRepositoriesView(): GithubRepositoriesView {
+  const accounts = new Map(listInstallations().map((i) => [i.installationId, i]));
+  return {
+    repositories: listGithubAppRepositories()
+      .filter((r) => accounts.get(r.installationId)?.status === "linked")
+      .map((r) => ({ fullName: r.fullName, account: accounts.get(r.installationId)?.accountLogin ?? "", private: r.isPrivate, archived: r.archived, defaultBranch: r.defaultBranch, project: projectForRepository(r.repositoryId) })),
+  };
 }
 
 export interface StatusView {

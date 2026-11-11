@@ -102,14 +102,14 @@ const ENV_EXAMPLE = /(^|\/)\.env\.(example|sample|template)$/i;
 const MAX_FILES = 20;
 
 /** Looks at a branch before cloning: which Compose files it has, and the variable *names* an `.env.example` lists. */
-export async function inspectRepository(repository: AppRepository, branch: string, client: GithubClient = defaultGithubClient()): Promise<RepositoryInspection> {
+export async function inspectRepository(repository: AppRepository, branch: string, client: GithubClient = defaultGithubClient(), options: { readEnv?: boolean } = {}): Promise<RepositoryInspection> {
   const token = await installationToken(repository.installationId, client);
   const { body: tree } = await client.request<{ tree: { path: string; type: string }[]; truncated?: boolean }>({
     path: `/repos/${repository.fullName}/git/trees/${encodeURIComponent(branch)}?recursive=1`, bearer: token,
   });
   const files = tree.tree.filter((entry) => entry.type === "blob").map((entry) => entry.path);
   const composeFiles = files.filter((path) => COMPOSE_NAME.test(path)).slice(0, MAX_FILES);
-  const envFile = files.find((path) => ENV_EXAMPLE.test(path) && !path.includes("/node_modules/"));
+  const envFile = options.readEnv === false ? undefined : files.find((path) => ENV_EXAMPLE.test(path) && !path.includes("/node_modules/"));
   const names = new Set<string>();
   if (envFile) {
     const { body } = await client.request<{ content?: string; encoding?: string }>({ path: `/repos/${repository.fullName}/contents/${envFile.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(branch)}`, bearer: token });
