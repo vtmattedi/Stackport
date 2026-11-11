@@ -239,8 +239,10 @@ export function findProjectByHookId(publicId: string): ProjectRow | undefined {
 /** Constant-time check of GitHub's X-Hub-Signature-256 header against the raw body. */
 export function verifySignature(row: ProjectRow, rawBody: Buffer, header: string | undefined): boolean {
   if (!row.hook_secret_enc || !header || !header.startsWith("sha256=")) return false;
-  const expected = "sha256=" + crypto.createHmac("sha256", decryptSecret(row.hook_secret_enc)).update(rawBody).digest("hex");
-  return header.length === expected.length && crypto.timingSafeEqual(Buffer.from(header), Buffer.from(expected));
+  const expected = Buffer.from("sha256=" + crypto.createHmac("sha256", decryptSecret(row.hook_secret_enc)).update(rawBody).digest("hex"));
+  const given = Buffer.from(header);
+  // Compared as bytes: a header of the right character count can still be longer in bytes, and timingSafeEqual throws on that.
+  return given.length === expected.length && crypto.timingSafeEqual(given, expected);
 }
 
 export function hasDelivery(deliveryId: string): boolean {

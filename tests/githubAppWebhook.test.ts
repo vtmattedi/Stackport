@@ -93,6 +93,17 @@ test("a delivery with a wrong or missing signature is refused and stores nothing
   assert.equal(verifyAppSignature(SECRET, Buffer.from(body), sign(body + " ")), false, "the signature is over the exact bytes");
 });
 
+test("a signature header that is the right length in characters but not in bytes is refused, not a crash", async () => {
+  world();
+  const body = JSON.stringify({ zen: "x" });
+  const good = sign(body);
+  const tricky = "sha256=" + "é".repeat(good.length - "sha256=".length); // same character count, twice the bytes
+  assert.equal(tricky.length, good.length);
+  assert.equal(verifyAppSignature(SECRET, Buffer.from(body), tricky), false);
+  const res = await fetch(`${base}/api/hooks/github/app`, { method: "POST", headers: { "content-type": "application/json", "x-github-delivery": newId(), "x-github-event": "ping", "x-hub-signature-256": Buffer.from(tricky, "utf8").toString("latin1") }, body });
+  assert.equal(res.status, 401);
+});
+
 test("a malformed delivery id or body is refused, and with no App registered the endpoint says so", () => {
   world();
   const body = JSON.stringify({ zen: "x" });

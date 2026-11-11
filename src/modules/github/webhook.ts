@@ -42,8 +42,10 @@ const clip = (value: unknown): string | null => (typeof value === "string" ? val
 /** Constant-time check of `X-Hub-Signature-256` against the raw body. */
 export function verifyAppSignature(secret: string, rawBody: Buffer, header: string | undefined): boolean {
   if (!header || !header.startsWith("sha256=")) return false;
-  const expected = "sha256=" + crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-  return header.length === expected.length && crypto.timingSafeEqual(Buffer.from(header), Buffer.from(expected));
+  const expected = Buffer.from("sha256=" + crypto.createHmac("sha256", secret).update(rawBody).digest("hex"));
+  const given = Buffer.from(header);
+  // Compared as bytes: a header of the right character count can still be longer in bytes, and timingSafeEqual throws on that.
+  return given.length === expected.length && crypto.timingSafeEqual(given, expected);
 }
 
 type Json = Record<string, unknown>;
