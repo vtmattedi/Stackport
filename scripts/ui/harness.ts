@@ -91,7 +91,8 @@ async function seed(): Promise<void> {
     { name: "shop-staging", groupName: "staging" },
     { name: "blog", groupName: null },
   ];
-  for (const input of projects) {
+  // UI_HARNESS_PROJECTS=none leaves the list empty, which is what a fresh server shows.
+  for (const input of process.env["UI_HARNESS_PROJECTS"] === "none" ? [] : projects) {
     const project = createProject({ ...input, sourceType: "upload" });
     try {
       reserveHostnameForProject(project.id, project.name);
