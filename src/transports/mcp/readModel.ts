@@ -5,6 +5,7 @@ import { getAppVersion } from "../../modules/maintenance/version";
 import { getContainerListCached } from "../../integrations/docker/statusCache";
 import { listProjectDeployments } from "../../modules/deployments/history";
 import { listProjectDomains } from "../../modules/ingress/domains";
+import { listManagedDomains } from "../../modules/ingress/managedDomains";
 import { expectedComposeProjectName } from "../../modules/projects/workspace";
 import { listNetworkGroups } from "../../modules/projects/networkGroups";
 import { getNetworkGroupView, type NetworkGroupView } from "../../modules/deployments/networkGroupAssignment";
@@ -202,6 +203,15 @@ export async function getProjectIngressHealthView(id: number): Promise<IngressHe
     nginx: { running: health.nginx.running, onSharedNetwork: health.nginx.onSharedNetwork },
     routes: health.routes.map((r) => ({ domain: r.domain, service: r.service, port: r.port, reachable: r.reachable, failure: r.failure })),
   };
+}
+
+export interface ManagedDomainsView {
+  domains: { name: string; isDefault: boolean; hostnameCount: number; dnsStatus: string; dnsCheckedAt: string | null }[];
+}
+
+/** The base domains Stackport manages, picked field by field. */
+export function listManagedDomainsView(): ManagedDomainsView {
+  return { domains: listManagedDomains().map((d) => ({ name: d.name, isDefault: d.isDefault, hostnameCount: d.hostnameCount, dnsStatus: d.dnsStatus, dnsCheckedAt: d.dnsCheckedAt })) };
 }
 
 export interface StatusView {

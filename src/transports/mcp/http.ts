@@ -7,7 +7,7 @@ import { z } from "zod";
 import { requireApiToken } from "../../modules/identity/middleware/apiToken";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
-import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listNetworkGroupsView, listProjectsView } from "./readModel";
+import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listManagedDomainsView, listNetworkGroupsView, listProjectsView } from "./readModel";
 import { registerWriteTools } from "./writeTools";
 import { packageVersion } from "../../modules/maintenance/version";
 
@@ -106,6 +106,19 @@ export function buildMcpServer(token: ApiToken): McpServer {
       audit("stackport_get_project_network_group", { projectId });
       const view = await getProjectNetworkView(projectId);
       return view ? result(view) : notFound(`No project with id ${projectId}.`);
+    }
+  );
+
+  server.registerTool(
+    "stackport_list_managed_domains",
+    {
+      title: "List managed domains",
+      description: "The base domains Stackport manages (a project's hostname is a label on one, or the bare domain itself), which is the default, how many hostnames use each, and the result of the last DNS check. Use it to choose a managedDomain for stackport_set_project_hostname.",
+      annotations: READ_ONLY,
+    },
+    () => {
+      audit("stackport_list_managed_domains");
+      return result(listManagedDomainsView());
     }
   );
 

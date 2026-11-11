@@ -76,6 +76,7 @@ import { removeIngressNetwork } from "../../modules/ingress/networks";
 import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
 import { dnsGate } from "../../modules/ingress/dnsCheck";
+import { realRenameDeps } from "../../modules/ingress/hostnameOps";
 import { addManagedProjectDomain, getManagedDomain, renameProjectHostname, reserveHostnameForProject, validateLabel } from "../../modules/ingress/managedDomains";
 import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
 import { GithubAppError } from "../../modules/github/app";
@@ -956,15 +957,7 @@ router.post("/:id/domains/:domainId/rename", requireAuth, async (req: Request<{ 
   const done = new Promise<void>((resolve) => { finished = resolve; });
   const started = actionRegistry.tryStart(projectRepoKey(id), "domain-rename", { projectId: id, triggeredBy: "manual" }, async () => {
     try {
-      outcome = await renameProjectHostname(id, domainId, { managedDomainId, label, canonical: canonical === "www" ? "www" : "apex" }, {
-        applyNginx: async () => { await ensureProjectProxyNetwork(id); const result = await writeNginxConfig(); return { ok: result.ok, message: result.output ?? "" }; },
-        issueCertificate: async (domain) => {
-          const gate = await dnsGate(domain);
-          if (!gate.ok) return { ok: false, message: gate.reason ?? "DNS does not point here yet." };
-          const cert = await runCertbotAction(domain, "issue");
-          return { ok: cert.ok, message: cert.output };
-        },
-      });
+      outcome = await renameProjectHostname(id, domainId, { managedDomainId, label, canonical: canonical === "www" ? "www" : "apex" }, realRenameDeps(id));
       return { ok: outcome.ok, output: [...outcome.steps, ...(outcome.reason ? [outcome.reason] : [])].join("\n") };
     } finally { finished(); }
   });
