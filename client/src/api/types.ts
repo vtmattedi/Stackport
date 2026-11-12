@@ -1189,7 +1189,8 @@ export interface StatusStreamInfo {
   path: string;
   /** A name for this Stackport an adapter can use in its topics. */
   instance: string;
-  limits: { maxConnections: number; maxConnectionsPerToken: number };
+  /** What the server enforces. */
+  limits: { maxConnections: number; maxConnectionsPerToken: number; maxFailuresPerAddress: number; lockoutMinutes: number; revalidateSeconds: number; heartbeatSeconds: number };
   /** Live status tokens that are still valid. */
   tokens: number;
   connections: { tokenName: string; address: string; since: string; group: string | null }[];

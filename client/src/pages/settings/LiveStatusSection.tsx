@@ -110,7 +110,7 @@ export default function LiveStatusSection() {
   async function revoke(token: ApiToken) {
     const ok = await confirm({
       title: `Revoke "${token.name}"?`,
-      description: "An adapter using this token is disconnected within about 30 seconds and cannot reconnect. This can't be undone.",
+      description: `An adapter using this token is disconnected within about ${info?.limits.revalidateSeconds ?? 30} seconds and cannot reconnect. This can't be undone.`,
       confirmLabel: "Revoke",
       destructive: true,
     });
@@ -232,8 +232,8 @@ export default function LiveStatusSection() {
           <ul className="grid list-disc gap-1.5 pl-5 text-xs text-[var(--dim)]">
             <li>Only over HTTPS. The token goes in the Authorization header; an address with a token in it is refused.</li>
             <li>Browsers are refused (any Origin header). The server ignores anything the adapter sends and closes the connection if it sends data.</li>
-            <li>A revoked, expired or out-of-scope token ends its connection within about 30 seconds. Failed attempts lock an address out for 15 minutes after {10}.</li>
-            <li>Send nothing for 60 seconds and Nginx drops an idle connection; the server's heartbeat every 30 seconds prevents that.</li>
+            <li>A revoked or expired token ends its connection within about {info.limits.revalidateSeconds} seconds. {info.limits.maxFailuresPerAddress} failed attempts lock an address out for {info.limits.lockoutMinutes} minutes.</li>
+            <li>Nginx drops a connection that is silent for 60 seconds; the server's heartbeat every {info.limits.heartbeatSeconds} seconds prevents that, and says how old the data is.</li>
           </ul>
         </Stack>
       </Disclosure>

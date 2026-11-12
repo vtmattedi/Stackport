@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { evaluateAlerts, type AlertInput } from "../src/modules/status/alerts";
+import { nginxRunningFrom } from "../src/modules/status/collect";
 import { deriveProjectState, healthOf, containerCounts } from "../src/modules/status/projectState";
 import { normalizeHost, percentile, summarizeRequests, type LoggedRequest } from "../src/modules/status/requestStats";
 import { scopeSnapshot } from "../src/modules/status/scope";
@@ -154,17 +155,19 @@ const snapshot: StatusSnapshot = {
   ],
 };
 
+const groupsOf = (s: StatusSnapshot): Map<number, string | null> => new Map(s.projects.map((p) => [p.id, p.group]));
+
 test("a token with no group sees everything", () => {
-  assert.equal(scopeSnapshot(snapshot, { group: null }), snapshot);
+  assert.equal(scopeSnapshot(snapshot, { group: null }, groupsOf(snapshot)), snapshot);
 });
 
 test("a token limited to a group sees only that group, and no host data", () => {
-  const scoped = scopeSnapshot(snapshot, { group: "staging" });
+  const scoped = scopeSnapshot(snapshot, { group: "staging" }, groupsOf(snapshot));
   assert.equal(scoped.host, null);
   assert.deepEqual(scoped.projects.map((p) => p.id), [2]);
   assert.deepEqual(scoped.actions.map((a) => a.id), ["b"], "not production's action, not the host's");
   assert.deepEqual(scoped.alerts.map((a) => a.id), ["project_down:2"], "not the host's alert");
-  const none = scopeSnapshot(snapshot, { group: "nonexistent" });
+  const none = scopeSnapshot(snapshot, { group: "nonexistent" }, groupsOf(snapshot));
   assert.deepEqual([none.host, none.projects, none.actions, none.alerts], [null, [], [], []]);
 });
 
@@ -183,7 +186,7 @@ const emptySnapshot = (): StatusSnapshot => ({ host: null, projects: [], actions
 const downCondition = { id: "project_down:1", severity: "critical" as const, code: "project_down" as const, scope: "project" as const, projectId: 1, subject: "shop", message: "m", value: null, unit: null };
 
 test("the hub sends each section once, then only the sections that changed, and keeps an alert's since while it holds", async () => {
-  let state: CollectedState = { snapshot: emptySnapshot(), conditions: [] };
+  let state: CollectedState = { snapshot: emptySnapshot(), conditions: [], groups: new Map() };
   const hub = new StatusHub(async () => state);
   const seen: SectionUpdate[] = [];
   const unsubscribe = hub.subscribe((update) => seen.push(update));
@@ -195,7 +198,7 @@ test("the hub sends each section once, then only the sections that changed, and 
   await hub.refresh();
   assert.deepEqual(seen, [], "nothing changed, nothing is said");
 
-  state = { snapshot: emptySnapshot(), conditions: [downCondition] };
+  state = { snapshot: emptySnapshot(), conditions: [downCondition], groups: new Map() };
   await hub.refresh();
   assert.deepEqual((seen as SectionUpdate[]).map((u) => u.section), ["alerts"]);
   const since = ((seen as SectionUpdate[])[0]!.data as { since: string }[])[0]!.since;
@@ -206,10 +209,10 @@ test("the hub sends each section once, then only the sections that changed, and 
   assert.deepEqual(seen, [], "the same condition again, with the same since, is not news");
   assert.equal((hub.peek()!.alerts[0])!.since, since);
 
-  state = { snapshot: emptySnapshot(), conditions: [] };
+  state = { snapshot: emptySnapshot(), conditions: [], groups: new Map() };
   await hub.refresh();
   assert.deepEqual(((seen as SectionUpdate[])[0]!.data as unknown[]).length, 0, "cleared");
-  state = { snapshot: emptySnapshot(), conditions: [downCondition] };
+  state = { snapshot: emptySnapshot(), conditions: [downCondition], groups: new Map() };
   await new Promise((resolve) => setTimeout(resolve, 5));
   await hub.refresh();
   assert.notEqual(hub.peek()!.alerts[0]!.since, since, "a condition that came back is a new one");
@@ -219,7 +222,7 @@ test("the hub sends each section once, then only the sections that changed, and 
 test("the hub watches only while somebody listens, and a failing collection keeps the last good state", async () => {
   let calls = 0;
   let fail = false;
-  const hub = new StatusHub(async () => { calls += 1; if (fail) throw new Error("docker is down"); return { snapshot: emptySnapshot(), conditions: [] }; });
+  const hub = new StatusHub(async () => { calls += 1; if (fail) throw new Error("docker is down"); return { snapshot: emptySnapshot(), conditions: [], groups: new Map() }; });
   assert.equal(hub.peek(), null);
   const unsubscribe = hub.subscribe(() => undefined);
   await hub.current();
@@ -229,4 +232,92 @@ test("the hub watches only while somebody listens, and a failing collection keep
   assert.ok(hub.peek(), "the last good state is kept");
   unsubscribe();
   assert.equal(hub.peek(), null, "the last listener leaving drops it");
+});
+
+// ---- found in review
+
+test("a group is matched as stored, not as cut for the wire: a long name still works, and two names that clean to the same text stay apart", () => {
+  const long = "g".repeat(90);
+  const cut = clean(long);
+  const snap: StatusSnapshot = {
+    host: null,
+    projects: [
+      { id: 1, name: "long", group: cut, state: "ready", containers: { running: 1, total: 1 }, health: "ok", lastCheckedAt: null, traffic: null },
+      { id: 2, name: "spaced", group: "Team A", state: "ready", containers: { running: 1, total: 1 }, health: "ok", lastCheckedAt: null, traffic: null },
+    ],
+    actions: [], alerts: [],
+  };
+  const stored = new Map<number, string | null>([[1, long], [2, "Team  A"]]);
+  assert.deepEqual(scopeSnapshot(snap, { group: long }, stored).projects.map((p) => p.id), [1], "the stored 90-character name matches although the wire shows 80");
+  assert.deepEqual(scopeSnapshot(snap, { group: cut }, stored).projects, [], "the cut name is a different group");
+  assert.deepEqual(scopeSnapshot(snap, { group: "Team  A" }, stored).projects.map((p) => p.id), [2]);
+  assert.deepEqual(scopeSnapshot(snap, { group: "Team A" }, stored).projects, [], "same text once cleaned, but not the same group");
+});
+
+test("with Docker out of reach a project is not said to have 0 of 0 containers running", () => {
+  const alerts = evaluateAlerts({
+    now: NOW,
+    projects: [project({ state: "down", containers: { running: 0, total: 0 } })],
+    host: { dockerAvailable: false, nginxRunning: null, disk: { state: "normal", freePct: 50 } },
+  });
+  const forProject = alerts.filter((a) => a.scope === "project");
+  assert.deepEqual(forProject.map((a) => a.code), ["project_unhealthy"], "it is the health check that said so");
+  assert.doesNotMatch(forProject[0]!.message, /0 of 0/);
+  assert.match(forProject[0]!.message, /Docker is not reachable/);
+  assert.ok(alerts.some((a) => a.code === "host_docker_down"));
+});
+
+test("Nginx is not running only when Docker says the container is missing or stopped; a failed check is unknown", () => {
+  assert.equal(nginxRunningFrom({ ok: true, stdout: "true\n", stderr: "" }), true);
+  assert.equal(nginxRunningFrom({ ok: true, stdout: "false\n", stderr: "" }), false);
+  assert.equal(nginxRunningFrom({ ok: false, stdout: "", stderr: "Error: No such object: stackport-nginx" }), false);
+  assert.equal(nginxRunningFrom({ ok: false, stdout: "", stderr: "Error response from daemon: No such container: stackport-nginx" }), false);
+  assert.equal(nginxRunningFrom({ ok: false, stdout: "", stderr: "" }), null, "a timeout says nothing");
+  assert.equal(nginxRunningFrom({ ok: false, stdout: "", stderr: "Cannot connect to the Docker daemon" }), null);
+});
+
+test("the hub does not report an empty system when it could not look: current() fails and there is no data age", async () => {
+  const hub = new StatusHub(async () => { throw new Error("database is busy"); });
+  const unsubscribe = hub.subscribe(() => undefined);
+  await assert.rejects(hub.current(), /could not be collected/);
+  assert.equal(hub.peek(), null);
+  assert.equal(hub.ageSeconds(), null);
+  unsubscribe();
+});
+
+test("the data age grows while the collector fails, and the last good state is kept", async () => {
+  let fail = false;
+  const hub = new StatusHub(async () => { if (fail) throw new Error("down"); return { snapshot: emptySnapshot(), conditions: [], groups: new Map() }; });
+  const unsubscribe = hub.subscribe(() => undefined);
+  await hub.current();
+  assert.equal(hub.ageSeconds(), 0);
+  fail = true;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  await hub.refresh();
+  assert.ok((hub.ageSeconds() ?? 0) >= 1, "older, not refreshed");
+  assert.ok(hub.peek(), "still the last good state");
+  unsubscribe();
+});
+
+test("a listener that throws does not stop the other listeners or the sections after it", async () => {
+  const hub = new StatusHub(async () => ({ snapshot: emptySnapshot(), conditions: [downCondition], groups: new Map() }));
+  const heard: string[] = [];
+  const unsubscribeBad = hub.subscribe(() => { throw new Error("a broken connection"); });
+  const unsubscribeGood = hub.subscribe((update) => heard.push(update.section));
+  await hub.refresh();
+  assert.deepEqual(heard.sort(), ["actions", "alerts", "host", "projects"], "every section still reached the healthy listener, alerts last of all");
+  unsubscribeBad();
+  unsubscribeGood();
+});
+
+test("a collection that never finishes is given up on, and the next one is not blocked behind it", async () => {
+  let calls = 0;
+  const hub = new StatusHub(() => { calls += 1; return calls === 1 ? new Promise<CollectedState>(() => undefined) : Promise.resolve({ snapshot: emptySnapshot(), conditions: [], groups: new Map() }); }, 30);
+  const unsubscribe = hub.subscribe(() => undefined);
+  await hub.refresh();
+  assert.equal(hub.peek(), null, "nothing was collected");
+  await hub.refresh();
+  assert.ok(hub.peek(), "the next collection ran");
+  assert.equal(calls, 2);
+  unsubscribe();
 });

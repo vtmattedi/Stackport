@@ -50,7 +50,10 @@ export function evaluateAlerts(input: AlertInput): Condition[] {
   for (const project of input.projects) {
     if (project.state === "paused" || project.state === "not-deployed") continue;
     const name = project.name;
-    if (project.state === "down") {
+    if (project.state === "down" && !input.host.dockerAvailable) {
+      // The state came from the last health check, not from containers: say that, and do not claim a count that was never read.
+      out.push(projectAlert(project, "project_unhealthy", "critical", `${name}'s last health check failed (Docker is not reachable, so its containers cannot be checked).`));
+    } else if (project.state === "down") {
       out.push(projectAlert(project, "project_down", "critical", `${name} is down: ${project.containers.running} of ${project.containers.total} containers are running.`));
     } else if (project.state === "problem" && project.health === "failing") {
       out.push(projectAlert(project, "project_unhealthy", "critical", `${name} is running but its health check is failing.`));

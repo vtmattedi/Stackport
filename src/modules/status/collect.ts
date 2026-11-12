@@ -41,6 +41,16 @@ function readHost(): HostStatus | null {
 
 interface ContainerRow extends ContainerFacts { name: string; composeProject: string | null }
 
+/**
+ * Whether the Nginx container is running, from the result of `docker inspect`. A container that does not exist makes inspect fail, and that
+ * is "not running"; an inspect that failed for another reason (a timeout, Docker busy) says nothing, so the answer is unknown (null) and no
+ * alert is raised on it.
+ */
+export function nginxRunningFrom(result: { ok: boolean; stdout: string; stderr: string }): boolean | null {
+  if (result.ok) return result.stdout.trim() === "true";
+  return /no such (object|container)/i.test(result.stderr) ? false : null;
+}
+
 async function readContainers(): Promise<{ available: boolean; containers: ContainerRow[]; nginxRunning: boolean | null }> {
   const version = await getDockerVersionCached();
   if (!version.ok) return { available: false, containers: [], nginxRunning: null };
@@ -54,7 +64,7 @@ async function readContainers(): Promise<{ available: boolean; containers: Conta
       composeProject: labels["com.docker.compose.project"] ?? null,
     };
   });
-  return { available: true, containers, nginxRunning: nginx.ok ? nginx.stdout.trim() === "true" : false };
+  return { available: true, containers, nginxRunning: nginxRunningFrom(nginx) };
 }
 
 /** The containers of one project: the Compose project named after its folder, or (older stacks) containers whose names start with it. */
@@ -78,6 +88,8 @@ export interface CollectedState {
   snapshot: StatusSnapshot;
   /** The alert conditions, before `since` is attached. */
   conditions: Omit<Alert, "since">[];
+  /** Each project's group as stored. The snapshot's `group` is cut for the wire, which would make a long group name match nothing. */
+  groups: Map<number, string | null>;
 }
 
 export async function collectStatus(now: number = Date.now()): Promise<CollectedState> {
@@ -127,5 +139,6 @@ export async function collectStatus(now: number = Date.now()): Promise<Collected
       alerts: [],
     },
     conditions,
+    groups: new Map(projectRows.map((project) => [project.id, project.groupName])),
   };
 }

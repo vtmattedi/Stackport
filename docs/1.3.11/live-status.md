@@ -24,10 +24,13 @@ Every frame is one JSON object from the server. The client sends nothing; a data
 | `hello` | first | `v` (protocol version, 1), `instance` (a random name for this Stackport, good for topics), `sections`, `scope` (`all` or `group`) |
 | `snapshot` | right after hello, once | `seq`, `at`, `data`: all four sections |
 | `update` | when a section changes | `seq`, `at`, `section` (`host`, `projects`, `actions`, `alerts`), `data`: that whole section |
-| `heartbeat` | every 30 s | `seq`, `at` |
+| `heartbeat` | every 30 s | `seq`, `at`, `dataAgeS` |
 
 `seq` rises by one per message after hello, per connection. A gap means a message was lost (the server never drops one on purpose; a reader too
 slow to keep up is disconnected instead): reconnect and use the new snapshot. An update replaces its section; it is not a patch.
+
+**A heartbeat proves the connection, not the data.** `dataAgeS` is how old the data behind the stream is: a few seconds normally. If it keeps rising, Stackport cannot collect (Docker or the database is failing) and what you hold is stale:
+raise your own alarm on it. If Stackport cannot collect at all when you connect, the connection is closed with 1011 instead of sending an empty snapshot, which would read as "no projects, nothing wrong".
 The server looks every 10 s while anyone is connected, so a change shows up within about that time.
 
 ### Data
@@ -49,13 +52,13 @@ alerts:   [{ id, severity, code, scope, projectId, subject, message, since, valu
 | `code` | Severity | When |
 |---|---|---|
 | `project_down` | critical | a container that counts is not running |
-| `project_unhealthy` | critical | everything runs, the health check fails |
+| `project_unhealthy` | critical | everything runs, the health check fails; also a project whose last health check failed while Docker is unreachable (its containers cannot be checked, so it is not reported as "down") |
 | `project_deploy_failed` | warning | the project's latest deploy failed, in the last 24 h |
 | `project_error_rate` | warning at 1%, critical at 5% | 5xx share of the last 5 minutes (at least 20 requests) |
 | `project_latency` | warning at 2 s, critical at 5 s | p95 response time over the last 5 minutes (at least 20 requests) |
 | `host_disk_low` | warning or critical | Docker's disk is under the storage thresholds (Host > Docker > Disk and cleanup) |
 | `host_docker_down` | critical | Docker is not reachable |
-| `host_nginx_down` | critical | the Nginx container is not running |
+| `host_nginx_down` | critical | Docker says the Nginx container is missing or stopped (a check that merely failed, such as a timeout, raises nothing) |
 
 Paused and not-deployed projects raise nothing. The thresholds are fixed in code for now.
 
@@ -66,7 +69,7 @@ What the stream guarantees, and the test that holds each one (`tests/statusStrea
 | Risk | What is done |
 |---|---|
 | An endpoint nobody needs | **Off by default**; while off it answers 404, the same as a page that was never there. Turning it off disconnects everyone at once. |
-| A stolen or guessed token | Tokens are 256 random bits, stored only as a SHA-256 hash, looked up by hash. A token is checked again every 30 s, so a **revoked or expired token loses its connection** (4001) within that time. Failed attempts lock an address out for 15 minutes after 10 (a good token from a locked-out address is refused too). |
+| A stolen or guessed token | Tokens are 256 random bits, stored only as a SHA-256 hash, looked up by hash. A group-limited token matches a project's group exactly as stored. A token is checked again every 30 s, so a **revoked or expired token loses its connection** (4001) within that time. Failed attempts lock an address out for 15 minutes after 10 (a good token from a locked-out address is refused too). |
 | A token in a log | The token is accepted **only in the Authorization header**. An address with a query string is refused outright, so a token cannot be written to an access log by accident. The token and the stored hash are never in a message or an audit entry. |
 | The wrong kind of token | A `status` token is its own scope. It does **not** include `read`, so it cannot call MCP; read and write tokens cannot open the stream. (`tests/apiTokenScopes.test.ts`) |
 | More access than needed | A status token can be limited to a **project group**: it then sees only that group's projects, their actions and their alerts, and **no host data** (host numbers include other groups' load). (`tests/statusLogic.test.ts`) |

@@ -15,9 +15,13 @@ Started 12 November 2026, from 1.3.10 (this branch is stacked on it: merge 1.3.1
   including ones a later deploy fixed); that is a deliberate difference.
 - **Project state moved to the server** for the stream; a test runs the web UI's own function on the same facts, so the two cannot drift.
 
+## Review
+
+A code review of the stream found, and this release fixes: a request such as `GET //h:99999` with an Upgrade header made `new URL` throw in the server-wide `upgrade` listener, which would have ended the process (the test now sends such targets and fails on any uncaught exception, and was run against the old code to confirm it fails there); an empty snapshot sent when nothing could be collected (now closes with 1011, and the heartbeat carries `dataAgeS`); a throwing listener or a stalled collector stopping later updates; the revalidation timer throwing on a closed database; a group name longer than 80 characters (or with extra spaces) matching nothing; a failed Nginx check raising a critical alert; and "0 of 0 containers" with Docker down.
+
 ## Tested
 
-- `tests/statusStream.test.ts` (18): every refusal and limit above, against a real HTTP server and a real WebSocket client; the hub (`tests/statusLogic.test.ts`, 27: project state against the UI's, request statistics, alerts, scoping, what is sent and when).
+- `tests/statusStream.test.ts` (23): every refusal and limit above, against a real HTTP server and a real WebSocket client; the hub (`tests/statusLogic.test.ts`, 34: project state against the UI's, request statistics, alerts, scoping, what is sent and when).
 - `npm run e2e:status` starts the real `src/index.ts` and drives the real admin API and a real WebSocket: off by default, enable, token, refusals, data, Socket.IO still working beside it, off disconnects.
 
 ## Not verified

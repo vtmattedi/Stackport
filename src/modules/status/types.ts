@@ -99,7 +99,8 @@ export type StatusMessage =
   | { type: "hello"; v: typeof STATUS_PROTOCOL_VERSION; instance: string; sections: StatusSection[]; scope: "all" | "group" }
   | { type: "snapshot"; v: typeof STATUS_PROTOCOL_VERSION; seq: number; at: string; data: StatusSnapshot }
   | { type: "update"; v: typeof STATUS_PROTOCOL_VERSION; seq: number; at: string; section: StatusSection; data: StatusSnapshot[StatusSection] }
-  | { type: "heartbeat"; v: typeof STATUS_PROTOCOL_VERSION; seq: number; at: string };
+  /** `dataAgeS` is how old the data behind the stream is. A heartbeat only proves the connection; a rising age proves the collector is failing. */
+  | { type: "heartbeat"; v: typeof STATUS_PROTOCOL_VERSION; seq: number; at: string; dataAgeS: number | null };
 
 /** A string from a person, safe to put on the wire: control characters removed, cut to `max` characters. */
 export function clean(value: string, max = 80): string {

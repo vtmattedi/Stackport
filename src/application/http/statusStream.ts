@@ -16,7 +16,15 @@ function describe() {
     enabled: isStatusStreamEnabled(),
     path: STREAM_PATH,
     instance: statusStreamInstanceId(),
-    limits: { maxConnections: DEFAULT_LIMITS.maxConnections, maxConnectionsPerToken: DEFAULT_LIMITS.maxConnectionsPerToken },
+    // What the server enforces, so the page never states numbers of its own.
+    limits: {
+      maxConnections: DEFAULT_LIMITS.maxConnections,
+      maxConnectionsPerToken: DEFAULT_LIMITS.maxConnectionsPerToken,
+      maxFailuresPerAddress: DEFAULT_LIMITS.maxFailuresPerAddress,
+      lockoutMinutes: Math.round(DEFAULT_LIMITS.failureWindowMs / 60_000),
+      revalidateSeconds: Math.round(DEFAULT_LIMITS.revalidateMs / 1000),
+      heartbeatSeconds: Math.round(DEFAULT_LIMITS.heartbeatMs / 1000),
+    },
     tokens: tokens.length,
     connections: (getStatusStream()?.connections() ?? []).map((connection) => ({ tokenName: connection.tokenName, address: connection.address, since: connection.since, group: connection.group })),
   };

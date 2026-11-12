@@ -2,7 +2,7 @@ import type { ProjectState, ProjectStatus } from "./types";
 
 /**
  * A project's state, from Docker and its health check. This is the same decision the web UI makes (client/src/lib/projectStatus.ts), so the
- * stream and the Projects page never disagree; tests/statusProjectState.test.ts pins the cases the two share.
+ * stream and the Projects page never disagree; tests/statusLogic.test.ts pins the cases the two share.
  *
  *  paused        the project is stopped on purpose: health checks and auto-deploy are off
  *  not-deployed  no stack, or no container that counts

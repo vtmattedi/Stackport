@@ -60,7 +60,7 @@ export interface StreamDeps {
   isEnabled?: () => boolean;
   verifyToken?: (raw: string) => ApiToken | null;
   isTokenActive?: (id: number) => boolean;
-  hub?: Pick<StatusHub, "subscribe" | "current" | "peek">;
+  hub?: Pick<StatusHub, "subscribe" | "current" | "peek" | "rawGroups" | "ageSeconds">;
   instance?: () => string;
   limits?: Partial<StreamLimits>;
 }
@@ -80,6 +80,9 @@ let active: StatusStream | null = null;
 export function getStatusStream(): StatusStream | null {
   return active;
 }
+
+/** The most addresses whose failed attempts are remembered at once. */
+const MAX_TRACKED_ADDRESSES = 10_000;
 
 const BEARER = /^Bearer (spk_[A-Za-z0-9_-]{16,128})$/;
 
@@ -130,12 +133,21 @@ export function attachStatusStream(server: Server, deps: StreamDeps): StatusStre
   const open = new Map<WebSocket, StreamConnection>();
   const failures = new Map<string, { count: number; resetAt: number }>();
 
-  function failuresFor(address: string, now: number): { count: number; resetAt: number } {
+  /** How many failed attempts this address has made in the window. Reading creates nothing: only a failure is recorded. */
+  function failureCount(address: string, now: number): number {
     const entry = failures.get(address);
-    if (entry && entry.resetAt > now) return entry;
-    const fresh = { count: 0, resetAt: now + limits.failureWindowMs };
-    failures.set(address, fresh);
-    return fresh;
+    return entry && entry.resetAt > now ? entry.count : 0;
+  }
+
+  function recordFailure(address: string, now: number): void {
+    const entry = failures.get(address);
+    if (entry && entry.resetAt > now) { entry.count += 1; return; }
+    if (failures.size >= MAX_TRACKED_ADDRESSES) {
+      for (const [key, value] of failures) if (value.resetAt <= now) failures.delete(key);
+      // Still full: remember nothing new rather than grow without bound under a flood of addresses.
+      if (failures.size >= MAX_TRACKED_ADDRESSES) return;
+    }
+    failures.set(address, { count: 1, resetAt: now + limits.failureWindowMs });
   }
 
   // The table of failures must not grow without bound under a flood from many addresses.
@@ -146,28 +158,31 @@ export function attachStatusStream(server: Server, deps: StreamDeps): StatusStre
   prune.unref();
 
   function onUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
-    const url = new URL(req.url ?? "/", "http://placeholder");
-    if (url.pathname !== STREAM_PATH) return; // not ours: Socket.IO and the rest handle their own paths
+    // The path is cut off by hand: this listener sees every upgrade request on the server, and `new URL` throws on a target such as "//h:99999",
+    // which an unauthenticated client could send to bring the process down.
+    const target = req.url ?? "/";
+    const queryAt = target.indexOf("?");
+    const pathname = queryAt === -1 ? target : target.slice(0, queryAt);
+    if (pathname !== STREAM_PATH) return; // not ours: Socket.IO and the rest handle their own paths
     socket.on("error", () => socket.destroy());
 
     if (req.method !== "GET") return reject(socket, 405, "Method Not Allowed");
     if (!isEnabled()) return reject(socket, 404, "Not Found");
     // A query string has no business here, and a token in one would be written to every access log on the way.
-    if (url.search) return reject(socket, 400, "Bad Request");
+    if (queryAt !== -1) return reject(socket, 400, "Bad Request");
     if (req.headers.origin !== undefined) return reject(socket, 403, "Forbidden");
     if (!isSecureTransport(req, deps.trustProxy)) return reject(socket, 403, "Forbidden");
 
     const address = clientAddress(req, deps.trustProxy);
     const now = Date.now();
-    const failed = failuresFor(address, now);
-    if (failed.count >= limits.maxFailuresPerAddress) return reject(socket, 429, "Too Many Requests");
+    if (failureCount(address, now) >= limits.maxFailuresPerAddress) return reject(socket, 429, "Too Many Requests");
     if (open.size >= limits.maxConnections) return reject(socket, 503, "Service Unavailable");
 
     const header = req.headers.authorization;
     const raw = typeof header === "string" ? BEARER.exec(header)?.[1] : undefined;
     const token = raw ? verifyToken(raw) : null;
     if (!token) {
-      failed.count += 1;
+      recordFailure(address, now);
       auditLog("status-stream", "status-stream.connect", address, "fail", { reason: raw ? "token" : "header" });
       return reject(socket, 401, "Unauthorized");
     }
@@ -200,7 +215,7 @@ export function attachStatusStream(server: Server, deps: StreamDeps): StatusStre
     const sendSection = (section: StatusSection): void => {
       const full = hub.peek();
       if (!full) return;
-      const data = scopeSection(full, section, scope);
+      const data = scopeSection(full, section, scope, hub.rawGroups());
       const serialized = JSON.stringify(data);
       if (lastSent.get(section) === serialized) return;
       lastSent.set(section, serialized);
@@ -214,7 +229,7 @@ export function attachStatusStream(server: Server, deps: StreamDeps): StatusStre
     send({ type: "hello", v: STATUS_PROTOCOL_VERSION, instance: instance(), sections: [...STATUS_SECTIONS], scope: scope.group === null ? "all" : "group" });
     void hub.current().then((full) => {
       if (ws.readyState !== ws.OPEN) return;
-      const data = scopeSnapshot(full, scope);
+      const data = scopeSnapshot(full, scope, hub.rawGroups());
       // eslint-disable-next-line security/detect-object-injection -- the key is one of the fixed section names.
       for (const section of STATUS_SECTIONS) lastSent.set(section, JSON.stringify(data[section]));
       seq += 1;
@@ -235,10 +250,15 @@ export function attachStatusStream(server: Server, deps: StreamDeps): StatusStre
         alive = false;
         ws.ping();
       }, limits.pingMs),
-      setInterval(() => { seq += 1; send({ type: "heartbeat", v: STATUS_PROTOCOL_VERSION, seq, at: at() }); }, limits.heartbeatMs),
+      setInterval(() => { seq += 1; send({ type: "heartbeat", v: STATUS_PROTOCOL_VERSION, seq, at: at(), dataAgeS: hub.ageSeconds() }); }, limits.heartbeatMs),
       setInterval(() => {
-        if (!isEnabled()) ws.close(1001, "stream disabled");
-        else if (!isTokenActive(token.id)) ws.close(4001, "token revoked or expired");
+        // These read the database. A failure here (busy, closed during shutdown) must end this connection, not surface as an uncaught exception from a timer.
+        try {
+          if (!isEnabled()) ws.close(1001, "stream disabled");
+          else if (!isTokenActive(token.id)) ws.close(4001, "token revoked or expired");
+        } catch {
+          ws.close(1011, "unavailable");
+        }
       }, limits.revalidateMs),
     ];
     for (const timer of timers) timer.unref();
@@ -257,7 +277,9 @@ export function attachStatusStream(server: Server, deps: StreamDeps): StatusStre
     close() {
       server.off("upgrade", onUpgrade);
       clearInterval(prune);
-      for (const ws of open.keys()) ws.close(1001, "server stopping");
+      // Terminated, not asked to close: a close handshake can take seconds, and each connection's timers run until it is over.
+      for (const ws of open.keys()) ws.terminate();
+      open.clear();
       wss.close();
       if (active === stream) active = null;
     },

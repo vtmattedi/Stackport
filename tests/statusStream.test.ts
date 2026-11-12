@@ -1,7 +1,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server } from "http";
-import type { AddressInfo } from "net";
+import net, { type AddressInfo } from "net";
 import WebSocket from "ws";
 import { getDatabase, initializeDatabase } from "../src/config/database";
 import { createApiToken, revokeApiToken, verifyApiToken } from "../src/modules/identity/apiTokens";
@@ -30,7 +30,13 @@ class FakeHub {
   listeners = new Set<(update: SectionUpdate) => void>();
   subscribe(listener: (update: SectionUpdate) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   peek(): StatusSnapshot { return this.snapshot; }
-  current(): Promise<StatusSnapshot> { return Promise.resolve(this.snapshot); }
+  /** How old the data is, as the hub reports it; the heartbeat carries it. */
+  age: number | null = 7;
+  /** Makes the first look fail, as when nothing could be collected. */
+  failCurrent = false;
+  rawGroups(): Map<number, string | null> { return new Map(this.snapshot.projects.map((project) => [project.id, project.group])); }
+  ageSeconds(): number | null { return this.age; }
+  current(): Promise<StatusSnapshot> { return this.failCurrent ? Promise.reject(new Error("nothing collected")) : Promise.resolve(this.snapshot); }
   push<S extends keyof StatusSnapshot>(section: S, data: StatusSnapshot[S]): void {
     this.snapshot = { ...this.snapshot, [section]: data };
     for (const listener of this.listeners) listener({ section, data } as SectionUpdate);
@@ -99,7 +105,7 @@ function open(headers: Record<string, string> = {}, target = url): Promise<Clien
 const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 const connected = async (headers: Record<string, string>): Promise<Client> => {
   const result = await open(headers);
-  assert.ok("ws" in result, `expected a connection, got ${JSON.stringify(result)}`);
+  if (!("ws" in result)) assert.fail(`expected a connection, got ${JSON.stringify(result)}`);
   return result;
 };
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -311,4 +317,93 @@ test("a snapshot is built field by field: a project's secrets and paths are not 
     assert.equal(wire.includes(secret), false, `${secret} must not reach the stream`);
   }
   assert.deepEqual(Object.keys(snapshot).sort(), ["actions", "alerts", "host", "projects"]);
+});
+
+// ---- found in review
+
+/** Starts a second, separate stream for a test that needs different limits or dependencies. */
+async function withStream<T>(deps: Partial<Parameters<typeof attachStatusStream>[1]>, run: (target: string) => Promise<T>): Promise<T> {
+  const second = createServer();
+  const handle = attachStatusStream(second, { trustProxy: () => false, isEnabled: () => true, hub, ...deps });
+  await new Promise<void>((resolve) => second.listen(0, "127.0.0.1", resolve));
+  try {
+    return await run(`ws://127.0.0.1:${(second.address() as AddressInfo).port}${STREAM_PATH}`);
+  } finally {
+    handle.close();
+    await new Promise<void>((resolve) => second.close(() => resolve()));
+  }
+}
+
+test("an upgrade request with a target that is not a valid address cannot bring the process down", async () => {
+  const port = (server.address() as AddressInfo).port;
+  const crashes: Error[] = [];
+  const onCrash = (error: Error): void => { crashes.push(error); };
+  process.on("uncaughtException", onCrash);
+  // `new URL` throws on these; this listener sees every upgrade on the server, before any check. Each was a way to crash the process.
+  for (const target of ["//h:99999", "http://[", "//[::1", "*", "//", "/status/ws/%zz", "http://x:abc/"]) {
+    await new Promise<void>((resolve) => {
+      const socket = net.connect(port, "127.0.0.1", () => {
+        socket.write(`GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`);
+        setTimeout(() => { socket.destroy(); resolve(); }, 30);
+      });
+      socket.on("error", () => resolve());
+    });
+  }
+  await sleep(50);
+  process.off("uncaughtException", onCrash);
+  assert.deepEqual(crashes.map((error) => error.message), [], "an exception from the upgrade listener is an uncaught exception: the process would be gone");
+  const client = await connected(bearer(statusToken));
+  await client.next("snapshot");
+  client.ws.close();
+});
+
+test("the heartbeat says how old the data is, so a collector that keeps failing does not look healthy", async () => {
+  hub.age = 42;
+  try {
+    await withStream({ limits: { heartbeatMs: 30 } }, async (target) => {
+      const result = await open(bearer(statusToken), target);
+      assert.ok("ws" in result);
+      const beat = await result.next("heartbeat");
+      assert.equal(beat["dataAgeS"], 42);
+      result.ws.close();
+    });
+  } finally { hub.age = 7; }
+});
+
+test("when nothing can be collected, the connection ends with an error instead of an empty snapshot", async () => {
+  hub.failCurrent = true;
+  try {
+    const client = await connected(bearer(statusToken));
+    assert.equal((await client.closed).code, 1011);
+    assert.equal(client.messages.some((m) => m.type === "snapshot"), false, "an empty answer would read as all clear");
+  } finally { hub.failCurrent = false; }
+});
+
+test("a database error during the token check ends that connection, and nothing else", async () => {
+  await withStream({ isTokenActive: () => { throw new Error("database is closed"); }, limits: { revalidateMs: 20 } }, async (target) => {
+    const client = await connected_at(bearer(statusToken), target);
+    assert.equal((await client.closed).code, 1011);
+  });
+});
+
+async function connected_at(headers: Record<string, string>, target: string): Promise<Client> {
+  const result = await open(headers, target);
+  if (!("ws" in result)) assert.fail(`expected a connection, got ${JSON.stringify(result)}`);
+  return result;
+}
+
+test("closing the stream ends every connection at once, so no timer outlives the server", async () => {
+  const second = createServer();
+  const handle = attachStatusStream(second, { trustProxy: () => false, isEnabled: () => true, hub });
+  await new Promise<void>((resolve) => second.listen(0, "127.0.0.1", resolve));
+  try {
+    const client = await connected_at(bearer(statusToken), `ws://127.0.0.1:${(second.address() as AddressInfo).port}${STREAM_PATH}`);
+    await client.next("snapshot");
+    handle.close();
+    const ended = await Promise.race([client.closed, sleep(1_000).then(() => "still open" as const)]);
+    assert.notEqual(ended, "still open", "terminated, not left to a close handshake");
+    assert.deepEqual(handle.connections(), []);
+  } finally {
+    await new Promise<void>((resolve) => second.close(() => resolve()));
+  }
 });
