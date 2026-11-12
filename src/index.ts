@@ -6,6 +6,8 @@ import { config } from "./config/env";
 import { closeDatabase, initializeDatabase } from "./config/database";
 import { healthChecker } from "./modules/deployments/health";
 import { SocketManager } from "./transports/socket/manager";
+import { attachStatusStream } from "./transports/status/stream";
+import { statusStreamInstanceId } from "./modules/status/settings";
 import { githubPoller } from "./modules/automation/githubPolling";
 import { resetPendingAutoDeploys } from "./modules/automation/autoDeploy";
 import { hardwareSampler } from "./modules/observability/samplers/hardware";
@@ -77,11 +79,14 @@ try {
   });
 
   const socketManager = new SocketManager(io);
+  // The live status stream (a WebSocket that only sends). It is off until an admin turns it on; see transports/status/stream.ts.
+  const statusStream = attachStatusStream(httpServer, { trustProxy: trustedProxy.trust, instance: statusStreamInstanceId });
 
   function shutdown(signal: string): void {
     // eslint-disable-next-line no-console
     console.log(`[server] ${signal} received - shutting down gracefully`);
     io.close();
+    statusStream.close();
     socketManager.stop();
     githubPoller.stop();
     hardwareSampler.stop();

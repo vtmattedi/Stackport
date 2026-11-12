@@ -22,6 +22,7 @@
     "lint:fix": "eslint \"src/**/*.ts\" --fix",
     "typecheck": "tsc --noEmit && tsc -p tests",
     "test": "node --import tsx --import ./tests/setup.ts --test \"tests/**/*.test.ts\"",
+    "e2e:status": "tsx scripts/e2e-status-stream.ts",
     "ui:shots": "tsx scripts/ui/screenshots.ts"
   },
   "keywords": [],
