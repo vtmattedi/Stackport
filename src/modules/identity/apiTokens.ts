@@ -2,8 +2,11 @@ import crypto from "crypto";
 import { getDatabase } from "../../config/database";
 
 /** Scopes a token can carry. `write` lets it deploy, roll back, restart and stop projects
- *  over MCP (S5), within its project group; it includes everything `read` allows. */
-export const API_TOKEN_SCOPES = ["read", "write"] as const;
+ *  over MCP (S5), within its project group; it includes everything `read` allows.
+ *
+ *  `status` is for the live status stream (a WebSocket that only ever sends data out) and is separate on purpose: it does not include `read`,
+ *  so a stream token cannot call MCP, and a `read` or `write` token cannot open the stream. Within a project group it sees only that group. */
+export const API_TOKEN_SCOPES = ["read", "write", "status"] as const;
 export type ApiTokenScope = (typeof API_TOKEN_SCOPES)[number];
 
 const TOKEN_PREFIX = "spk_";
@@ -17,7 +20,7 @@ export interface ApiToken {
   /** The first characters of the token, so the admin can tell tokens apart. */
   prefix: string;
   scopes: ApiTokenScope[];
-  /** A `write` token acts only on projects in this group; null means every project. */
+  /** A `write` or `status` token acts on (or sees) only the projects in this group; null means every project. */
   projectGroup: string | null;
   createdAt: string;
   lastUsedAt: string | null;
@@ -81,13 +84,13 @@ export function createApiToken(input: { name: unknown; expiresInDays?: unknown; 
   }
 
   const scope = input.scope ?? "read";
-  if (scope !== "read" && scope !== "write") throw new ApiTokenError(400, 'scope must be "read" or "write"');
+  if (scope !== "read" && scope !== "write" && scope !== "status") throw new ApiTokenError(400, 'scope must be "read", "write" or "status"');
   let projectGroup: string | null = null;
   if (input.projectGroup !== undefined && input.projectGroup !== null && input.projectGroup !== "") {
     if (typeof input.projectGroup !== "string" || input.projectGroup.length > MAX_NAME_LENGTH) {
       throw new ApiTokenError(400, `projectGroup must be a group name of at most ${MAX_NAME_LENGTH} characters, or empty for every project`);
     }
-    if (scope !== "write") throw new ApiTokenError(400, "projectGroup only applies to write tokens");
+    if (scope === "read") throw new ApiTokenError(400, "projectGroup only applies to write and status tokens");
     projectGroup = input.projectGroup;
   }
 
@@ -95,7 +98,7 @@ export function createApiToken(input: { name: unknown; expiresInDays?: unknown; 
   const db = getDatabase();
   const result = db.prepare(
     "INSERT INTO api_tokens (name, token_hash, prefix, scopes, project_group, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(name, hashToken(token), token.slice(0, TOKEN_PREFIX.length + 6), scope === "write" ? "read,write" : "read", projectGroup, new Date().toISOString(), expiresAt);
+  ).run(name, hashToken(token), token.slice(0, TOKEN_PREFIX.length + 6), scope === "write" ? "read,write" : scope, projectGroup, new Date().toISOString(), expiresAt);
   const row = db.prepare("SELECT * FROM api_tokens WHERE id = ?").get(result.lastInsertRowid) as ApiTokenRow;
   return { token, record: rowToToken(row) };
 }
@@ -129,4 +132,11 @@ export function verifyApiToken(raw: string, scope: ApiTokenScope): ApiToken | nu
     db.prepare("UPDATE api_tokens SET last_used_at = ? WHERE id = ?").run(new Date(now).toISOString(), row.id);
   }
   return record;
+}
+
+/** Whether a token that was valid when a connection opened still is: not revoked, not expired. Reads only (no last-used write), so a stream can check it often. */
+export function isApiTokenActive(id: number): boolean {
+  const row = getDatabase().prepare("SELECT expires_at, revoked_at FROM api_tokens WHERE id = ?").get(id) as { expires_at: string | null; revoked_at: string | null } | undefined;
+  if (!row || row.revoked_at) return false;
+  return !row.expires_at || Date.parse(row.expires_at) > Date.now();
 }

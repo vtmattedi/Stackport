@@ -38,3 +38,19 @@ test("a group on a read token, an unknown scope and a bad group are refused", ()
     assert.throws(() => createApiToken(input), ApiTokenError);
   }
 });
+
+test("a status token only opens the live status stream: it is not a read token, and read and write tokens are not status tokens", () => {
+  const status = createApiToken({ name: "bridge", scope: "status" });
+  assert.deepEqual(status.record.scopes, ["status"]);
+  assert.ok(verifyApiToken(status.token, "status"));
+  assert.equal(verifyApiToken(status.token, "read"), null, "no MCP with it");
+  assert.equal(verifyApiToken(status.token, "write"), null);
+  assert.equal(verifyApiToken(createApiToken({ name: "r" }).token, "status"), null);
+  assert.equal(verifyApiToken(createApiToken({ name: "w", scope: "write" }).token, "status"), null);
+});
+
+test("a status token can be limited to a project group, a read token cannot", () => {
+  assert.equal(createApiToken({ name: "g", scope: "status", projectGroup: "staging" }).record.projectGroup, "staging");
+  assert.throws(() => createApiToken({ name: "bad", scope: "read", projectGroup: "staging" }), /only applies to write and status tokens/);
+  assert.throws(() => createApiToken({ name: "bad", scope: "admin" }), /scope must be/);
+});
