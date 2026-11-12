@@ -15,6 +15,13 @@ Started 12 November 2026, from 1.3.10 (this branch is stacked on it: merge 1.3.1
   including ones a later deploy fixed); that is a deliberate difference.
 - **Project state moved to the server** for the stream; a test runs the web UI's own function on the same facts, so the two cannot drift.
 
+- **MCP can read container logs, for tokens created with log access.** The MCP page has always said read tokens never expose logs, because an app can print anything. So this is opt-in per token
+  (a switch when the token is created; existing tokens gain nothing), adds one tool, `stackport_get_project_logs`, and a token limited to a project group reads only that group (a project outside it
+  gets the same answer as one that does not exist). Secrets Stackport manages (stored credentials and the project's env values) are masked before the text is cut to size, so a secret straddling the
+  cut cannot survive in half; terminal escape sequences and control characters are removed; the output is capped (10 to 500 lines per container, 64 KiB, the most recent kept); the service name is checked against
+  Compose's naming rules before it reaches a command line; a token may read logs 10 times a minute; every call is audited with the token as actor (the log text never is). The result says the text is data
+  written by the app, not instructions. Masking cannot catch a secret an app prints that Stackport does not manage; the switch's hint says so.
+
 ## Review
 
 A code review of the stream found, and this release fixes: a request such as `GET //h:99999` with an Upgrade header made `new URL` throw in the server-wide `upgrade` listener, which would have ended the process (the test now sends such targets and fails on any uncaught exception, and was run against the old code to confirm it fails there); an empty snapshot sent when nothing could be collected (now closes with 1011, and the heartbeat carries `dataAgeS`); a throwing listener or a stalled collector stopping later updates; the revalidation timer throwing on a closed database; a group name longer than 80 characters (or with extra spaces) matching nothing; a failed Nginx check raising a critical alert; and "0 of 0 containers" with Docker down.
@@ -30,6 +37,7 @@ A code review of the stream found, and this release fixes: a request such as `GE
 - **The p95 and 5xx numbers against a real access log.** They are computed by the same parser Insights uses and tested on lines I wrote; the numbers from a server under traffic have not been compared with Insights'.
 - **Slow consumers.** The buffer cap is in the code; it is not exercised by a test (it needs a client that stops reading).
 - The Live status page was looked at in the screenshot harness only.
+- **The log tool against a real Docker Compose project.** Its logic is tested with the log source replaced (masking, caps, scope, rate, service checks, who gets the tool); the real `docker compose logs` call is the one the project page already uses, and was not run through MCP here.
 
 ## Planned, not built
 
