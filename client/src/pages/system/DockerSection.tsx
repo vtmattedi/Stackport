@@ -147,9 +147,11 @@ function ContainerTable({ containers }: { containers: ContainerInfo[] }) {
 
 /** One Compose stack: its state on one line, its containers when opened. A Stackport project's stack links to the project (its Compose
  *  up, stop and build live there); a stack that is not a project's keeps those buttons here. */
-function StackRow({ stack, project, onAction, activeOp, result, onDismissResult, open, onToggle }: {
+function StackRow({ stack, project, matched, onAction, activeOp, result, onDismissResult, open, onToggle }: {
   stack: ComposeStack;
   project: Project | null;
+  /** What the search matched inside a project's stack: a project's containers are shown on its own page, so the row only says which ones matched. */
+  matched: string[];
   onAction: (stack: string, action: ComposeOp) => Promise<void>;
   activeOp: ComposeOp | null;
   result: Result | null;
@@ -166,9 +168,11 @@ function StackRow({ stack, project, onAction, activeOp, result, onDismissResult,
   return (
     <Card className={styles.stackCard}>
       <CardHeader className={styles.stackHeader}>
-        <Button type="button" variant="ghost" size="icon-xs" onClick={onToggle} title={open ? "Collapse" : "Expand"} aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${stack.name}`}>
-          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        </Button>
+        {!project && (
+          <Button type="button" variant="ghost" size="icon-xs" onClick={onToggle} title={open ? "Collapse" : "Expand"} aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${stack.name}`}>
+            {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </Button>
+        )}
         <CardTitle className={cn("mono", styles.stackTitle)}>{project ? project.name : stack.name}</CardTitle>
         <StatusChip ok={allRunning} labels={[`${runningCount}/${totalCount} running`, anyRunning ? `${runningCount}/${totalCount} running` : "stopped"]} />
         {!project && stack.configFiles[0] && <span className={cn("mono", styles.stackPath)}>{stack.configFiles[0]}</span>}
@@ -191,7 +195,8 @@ function StackRow({ stack, project, onAction, activeOp, result, onDismissResult,
         </div>
       </CardHeader>
       {result && <CardContent className={styles.stackResult}><OutputBlock output={result.output} ok={result.ok} onDismiss={onDismissResult} /></CardContent>}
-      {open && <CardContent className={styles.stackBody}><ContainerTable containers={stack.containers} /></CardContent>}
+      {project && matched.length > 0 && <CardContent className={styles.stackResult}><span className="text-xs text-[var(--dim)]">Matches <span className="mono">{matched.join(", ")}</span>. Logs, shell and Compose actions are on the project page.</span></CardContent>}
+      {!project && open && <CardContent className={styles.stackBody}><ContainerTable containers={stack.containers} /></CardContent>}
     </Card>
   );
 }
@@ -248,6 +253,7 @@ export function DockerSection() {
       key={stack.name}
       stack={stack}
       project={projectOfStack(stack, known)}
+      matched={needle ? stack.containers.filter(containerMatches).map((c) => c.service ?? c.name) : []}
       onAction={composeAction}
       activeOp={ops[stack.name]?.op ?? null}
       result={ops[stack.name]?.result ?? null}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { KeyRound, Loader, Mail, RotateCw, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { Link } from "react-router-dom";
+import { ArrowUpRight, KeyRound, Loader, Mail, RotateCw, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { CertbotEntry } from "../../api/types";
 import { useConfirm } from "../../components/ConfirmDialog";
@@ -56,7 +57,7 @@ function expiryText(entry: CertbotEntry): string {
 /** Host > Certbot: which hostnames have a certificate and when it ends. Certificates are issued when a hostname is routed and renewed by
  *  a background check, so the buttons here are for when one needs a hand. */
 export function CertbotSection() {
-  const { system: data, refreshSystem: refresh, certbotAction } = useSystem();
+  const { system: data, projects, refreshSystem: refresh, certbotAction } = useSystem();
   const confirm = useConfirm();
   const certbot = data?.certbot;
   const [ops, setOps] = useState<Record<string, { op: Op | null; result: { ok: boolean; output: string } | null }>>({});
@@ -74,6 +75,14 @@ export function CertbotSection() {
   );
   const counts = entries.reduce<Record<State, number>>((acc, entry) => { acc[stateOf(entry)] += 1; return acc; }, { expired: 0, expiring: 0, missing: 0, unknown: 0, valid: 0 });
 
+  // Who manages a hostname: a project (its Domains tab has Issue, Renew and Delete), Stackport itself (Settings > Domains), or nobody.
+  // Only hostnames nobody manages get those buttons here; the bulk buttons below work on all of them.
+  const appDomain = data?.nginx.layer?.app.enabled ? data.nginx.layer.app.domain : "";
+  const ownerOf = (domain: string): { to: string; label: string } | null => {
+    const project = (projects ?? []).find((candidate) => candidate.domains?.some((d) => d.domain === domain));
+    if (project) return { to: `/projects/${project.id}/domains`, label: project.name };
+    return appDomain && domain === appDomain ? { to: "/settings/domains", label: "Stackport" } : null;
+  };
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "attention" | "missing" | "valid">("all");
   const needsHand = entries.filter((entry) => stateOf(entry) === "expired" || stateOf(entry) === "expiring");
@@ -230,6 +239,11 @@ export function CertbotSection() {
                               {expiryText(entry)}{entry.issuer ? ` · ${entry.issuer}` : ""}
                             </div>
                           </div>
+                          {ownerOf(entry.domain) ? (
+                            <Button type="button" size="xs" variant="outline" asChild>
+                              <Link to={ownerOf(entry.domain)!.to} title={`Manage it on ${ownerOf(entry.domain)!.label}`}>Manage on {ownerOf(entry.domain)!.label}<ArrowUpRight size={12} /></Link>
+                            </Button>
+                          ) : (
                           <div className="flex gap-1.5">
                             {state === "missing" ? (
                               <Button type="button" size="xs" disabled={busy || !certbot.emailConfigured} title={certbot.emailConfigured ? undefined : "Set a certificate email first"} onClick={() => void run(entry.domain, "issue")}>
@@ -246,6 +260,7 @@ export function CertbotSection() {
                               </>
                             )}
                           </div>
+                          )}
                         </div>
                         {current.result && (
                           <div className="mt-2">
