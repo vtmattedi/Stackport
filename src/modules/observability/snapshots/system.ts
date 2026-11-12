@@ -5,7 +5,7 @@ import { getStorageState, getStorageThresholds } from "../../maintenance/storage
 import { getCertbotStatus } from "../../ingress/certificates/operations";
 import { getAppVersion } from "../../maintenance/version";
 
-function parseNdjson(s: string): Record<string, unknown>[] {
+export function parseNdjson(s: string): Record<string, unknown>[] {
   return s
     .trim()
     .split("\n")
@@ -17,7 +17,7 @@ function parseNdjson(s: string): Record<string, unknown>[] {
 }
 
 // "key1=val1,key2=val2=with=equals" → { key1: "val1", key2: "val2=with=equals" }
-function parseLabels(s: string): Record<string, string> {
+export function parseLabels(s: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (!s) return out;
   for (const kv of s.split(",")) {
@@ -27,7 +27,7 @@ function parseLabels(s: string): Record<string, string> {
   return out;
 }
 
-function labelIsTrue(value: string | undefined): boolean {
+export function labelIsTrue(value: string | undefined): boolean {
   return value !== undefined && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 

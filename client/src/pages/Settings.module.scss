@@ -12,6 +12,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   legend { padding: 0 6px; font-size: 13px; color: var(--dim); }
+  @media (min-width: 900px) { grid-template-columns: 1fr 1fr; column-gap: 24px; legend { grid-column: 1 / -1; } }
 }
 .push-browser { display: grid; gap: 12px; padding-block: 16px; border-block: 1px solid var(--border); }
 .push-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

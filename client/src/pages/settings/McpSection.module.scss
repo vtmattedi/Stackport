@@ -15,25 +15,6 @@
 .filter[aria-pressed="true"] { color: var(--text, inherit); border-color: var(--accent, currentColor); background: rgba(99, 102, 241, 0.12); }
 
 .tools { display: grid; gap: 8px; }
-.tool { border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
-.tool > summary {
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  padding: 10px 12px;
-  cursor: pointer;
-}
-.tool > summary::-webkit-details-marker { display: none; }
-.tool[open] > summary { border-bottom: 1px solid var(--border); }
-.tool-name { font-family: var(--mono, ui-monospace, monospace); font-size: 13px; overflow-wrap: anywhere; }
-.tool-title { color: var(--dim); font-size: 13px; flex: 1 1 200px; min-width: 0; }
-.badge { font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
-.badge-write { color: var(--warning, #d29922); border-color: var(--warning, #d29922); }
-.badge-read { color: var(--success, #3fb950); border-color: var(--success, #3fb950); }
-.tool-body { display: grid; gap: 10px; padding: 12px; min-width: 0; }
-.tool-body p { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
 .params { width: 100%; border-collapse: collapse; font-size: 13px; }
 .params th, .params td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
 .params th { color: var(--dim); font-weight: 500; font-size: 12px; }

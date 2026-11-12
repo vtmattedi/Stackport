@@ -138,7 +138,12 @@ function pct(sortedArr: number[], p: number): number {
   return sortedArr[Math.max(0, idx)];
 }
 
-function parseNginxLine(line: string) {
+export interface ParsedNginxLine {
+  ip: string; date: Date | null; method: string; path: string; status: number; bytes: number;
+  ua: string | null; host: string | null; requestTimeMs: number | null;
+}
+
+export function parseNginxLine(line: string): ParsedNginxLine | null {
   // Extended stackport format: ...'"agent" "host" rt'
   const ext = line.match(/^(\S+) - \S+ \[([^\]]+)\] "(\S+) (\S+)[^"]*" (\d+) (\d+) "[^"]*" "([^"]*)" "([^"]*)" (\S+)/);
   if (ext) {

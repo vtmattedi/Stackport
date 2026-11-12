@@ -4,6 +4,10 @@ import { AlertCircle, AlertTriangle, Loader, Power, RefreshCw } from "lucide-rea
 import { api, ApiError } from "../../api/client";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
+import { Checkbox } from "../../components/ui/checkbox";
+import { CheckRow } from "../../components/ui/field";
+import { Stack } from "../../components/ui/stack";
+import { Hint, Prose } from "../../components/ui/text";
 import { AppSelect } from "../../components/AppSelect";
 import { SubShellSectionHeader } from "../../components/SubShell";
 import { notify } from "../../lib/notify";
@@ -134,28 +138,29 @@ export function PowerSection() {
               <AlertDescription>{state.unavailableReason}</AlertDescription>
             </Alert>
           ) : (
-            <>
-              <p className="hint" style={{ maxWidth: "80ch" }}>
-                A reboot stops Stackport and every project, then brings back what Docker restarts by itself. Containers whose Compose file sets no <span className="mono">restart:</span> policy stay stopped until someone starts them.
-                {" "}{preflight.dockerRead ? `${preflight.runningContainers} containers are running now.` : "Docker could not be read, so the lists below are incomplete."}
-              </p>
+            <Stack gap={4}>
+              <Stack gap={2}>
+                <Prose>A reboot stops Stackport and every project, then brings back what Docker restarts by itself.</Prose>
+                <Hint>
+                  Containers whose Compose file sets no <span className="mono">restart:</span> policy stay stopped until someone starts them.
+                  {" "}{preflight.dockerRead ? `${preflight.runningContainers} containers are running now.` : "Docker could not be read, so the lists below are incomplete."}
+                </Hint>
+              </Stack>
 
               {preflight.containersWithoutRestart.length > 0 && (
-                <Alert style={{ marginBottom: 12 }}>
+                <Alert>
                   <AlertTriangle size={14} />
                   <AlertTitle>{preflight.containersWithoutRestart.length} running {preflight.containersWithoutRestart.length === 1 ? "container has" : "containers have"} no restart policy</AlertTitle>
                   <AlertDescription><span className="mono">{preflight.containersWithoutRestart.join(", ")}</span> will stay stopped after the reboot.</AlertDescription>
                 </Alert>
               )}
               {actionsRunning > 0 && (
-                <Alert variant="destructive" style={{ marginBottom: 12 }}>
+                <Alert variant="destructive">
                   <AlertTriangle size={14} />
                   <AlertTitle>{actionsRunning} {actionsRunning === 1 ? "action is" : "actions are"} running</AlertTitle>
                   <AlertDescription>
                     <p>{preflight.runningActions.map((action) => `${action.kind} (${action.key})`).join(", ")}. A reboot cuts them off, which can leave a deploy half done.</p>
-                    <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input type="checkbox" checked={interrupt} onChange={(e) => setInterrupt(e.target.checked)} /> They may be interrupted
-                    </label>
+                    <CheckRow className="mt-2" control={<Checkbox checked={interrupt} onCheckedChange={(checked) => setInterrupt(checked === true)} />} title="They may be interrupted" />
                   </AlertDescription>
                 </Alert>
               )}
@@ -173,16 +178,17 @@ export function PowerSection() {
                   {busy ? <Loader size={14} className="spin" /> : <Power size={14} />} Reboot
                 </Button>
               </div>
-            </>
+            </Stack>
           )}
         </div>
 
         <div className="card">
           <div className="card-title">From the server</div>
-          <p className="hint" style={{ maxWidth: "80ch" }}>
-            The same thing over SSH, which also works when Stackport is down: <span className="mono">sudo stackport reboot --in 5</span>. It lists the containers that will not come back,
-            then asks you to type REBOOT.
-          </p>
+          <Stack gap={2}>
+            <Prose>The same thing over SSH, which also works when Stackport is down.</Prose>
+            <code className="mono block w-fit max-w-full overflow-x-auto rounded-md border border-border bg-background px-3 py-2 text-xs">sudo stackport reboot --in 5</code>
+            <Hint>It lists the containers that will not come back, then asks you to type REBOOT.</Hint>
+          </Stack>
         </div>
       </div>
     </>

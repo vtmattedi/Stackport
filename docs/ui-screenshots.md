@@ -13,6 +13,10 @@ npm run ui:shots -- --pages settings/mcp --widths 1440,390
 npm run ui:shots -- --url http://localhost:3000 --user admin --password ...   # an instance that is already running
 ```
 
+- A page can be followed by clicks, each after a `>`: `--pages "projects>Add new project>The GitHub App"` opens the new-project wizard and picks the
+  GitHub App. A click finds a button, link or radio by its name.
+- The harness seeds a registered GitHub App with two connected accounts and ten repositories (no network is used), and resets the global
+  rate limit every second so a long run is not answered with 429.
 - Write pages without the leading slash on Windows with Git Bash, which rewrites `/settings/mcp` into a path on disk.
 - `ui-shots/` is ignored by git. A page that has a `!` in front of it in the output has a problem worth opening.
 - The data comes from `scripts/ui/harness.ts`; add what a page needs to show there.

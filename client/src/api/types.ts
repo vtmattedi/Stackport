@@ -511,6 +511,7 @@ export interface GithubAppInfo {
   name: string;
   ownerLogin: string;
   ownerType: string;
+  isPublic: boolean;
   htmlUrl: string;
   /** The origin the App's URLs were registered with. */
   registeredOrigin: string;
@@ -532,6 +533,15 @@ export interface GithubSettings {
   /** The saved domain no longer matches the one the App was registered with. */
   domainDrift: boolean;
   installations: GithubInstallation[];
+}
+
+/** What a branch of a repository holds before it is cloned (GET /github-app/repositories/:id/inspect). */
+export interface GithubRepositoryInspection {
+  composeFiles: string[];
+  /** Names only, from .env.example; values are never read. */
+  envVariableNames: string[];
+  /** GitHub cut the file list short, so more Compose files may exist than are listed. */
+  truncated: boolean;
 }
 
 export interface GithubDelivery {
@@ -1171,6 +1181,19 @@ export interface ProjectResourcesTimeseries {
   buckets: string[];
   granularity: "5m" | "day";
   series: ProjectResourceTimeseriesSeries[];
+}
+
+/** Settings > Live status (GET and PUT /status-stream). */
+export interface StatusStreamInfo {
+  enabled: boolean;
+  path: string;
+  /** A name for this Stackport an adapter can use in its topics. */
+  instance: string;
+  /** What the server enforces. */
+  limits: { maxConnections: number; maxConnectionsPerToken: number; maxFailuresPerAddress: number; lockoutMinutes: number; revalidateSeconds: number; heartbeatSeconds: number };
+  /** Live status tokens that are still valid. */
+  tokens: number;
+  connections: { tokenName: string; address: string; since: string; group: string | null }[];
 }
 
 /** An API token for the MCP endpoint. The token value itself is only returned once, on creation. */

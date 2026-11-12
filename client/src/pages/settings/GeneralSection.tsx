@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { KeyRound, Check, Loader, GitPullRequestArrow, Boxes, RefreshCw, GitBranch, ChevronRight } from "lucide-react";
+import { KeyRound, Check, Loader, GitPullRequestArrow, Boxes, RefreshCw, GitBranch } from "lucide-react";
 import { api, ApiError } from "../../api/client";
 import type { AppUpdateCheck, AppVersionInfo, CommitInfo, SelfUpdateStatus } from "../../api/types";
+import { Disclosure } from "../../components/Disclosure";
 import { Button } from "../../components/ui/button";
+import { Stack } from "../../components/ui/stack";
+import { Hint } from "../../components/ui/text";
 import { formatShortDateTime } from "../../lib/format";
 import { cn } from "../../lib/utils";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
@@ -144,27 +147,19 @@ export default function GeneralSection() {
             <div className="alert alert-error" style={{ marginTop: 12 }}>{updateCheck.error}</div>
           )}
           {updateCheck?.ok && (updateCheck.available.length > 0 ? (
-            <details className={styles.updateGroup}>
-              <summary>
-                <ChevronRight size={13} className={styles.summaryChevron} />
-                {updateCheck.available.length} update{updateCheck.available.length === 1 ? "" : "s"} ready on <code>{updateCheck.branch}</code>
-              </summary>
+            <Disclosure className="mt-3" title={<>{updateCheck.available.length} update{updateCheck.available.length === 1 ? "" : "s"} ready on <code>{updateCheck.branch}</code></>}>
               {commitList(updateCheck.available)}
-            </details>
+            </Disclosure>
           ) : (
             <p className={cn("muted-text", styles.upToDate)}>Up to date with <code>{updateCheck.branch}</code>.</p>
           ))}
           {updateCheck?.ok && updateCheck.pending.length > 0 && (
-            <details className={styles.updateGroup}>
-              <summary>
-                <ChevronRight size={13} className={styles.summaryChevron} />
-                <span className="muted-text">
-                  {updateCheck.pending.length} newer commit{updateCheck.pending.length === 1 ? "" : "s"} on <code>main</code>, not released yet
-                </span>
-              </summary>
-              <p className="muted-text">They reach <code>{updateCheck.branch}</code> once CI and the upgrade test pass.</p>
-              {commitList(updateCheck.pending)}
-            </details>
+            <Disclosure className="mt-3" title={<span className="font-normal text-[var(--dim)]">{updateCheck.pending.length} newer commit{updateCheck.pending.length === 1 ? "" : "s"} on <code>main</code>, not released yet</span>}>
+              <Stack gap={3}>
+                <Hint>They reach <code>{updateCheck.branch}</code> once CI and the upgrade test pass.</Hint>
+                {commitList(updateCheck.pending)}
+              </Stack>
+            </Disclosure>
           )}
           <div className={cn("row-actions", styles.versionActions)} style={{ marginTop: 14 }}>
             <button

@@ -1,13 +1,19 @@
 import { useEffect, useState } from "react";
-import { Copy, KeyRound, Loader, Plus, Search, Trash2, Wrench } from "lucide-react";
+import { Copy, KeyRound, Loader, Plus, Search, Wrench } from "lucide-react";
 import { AppSelect } from "../../components/AppSelect";
 import { useConfirm } from "../../components/ConfirmDialog";
-import { TimeAgo } from "../../components/TimeAgo";
+import { Disclosure } from "../../components/Disclosure";
+import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
+import { Field } from "../../components/ui/field";
+import { Input } from "../../components/ui/input";
+import { Stack } from "../../components/ui/stack";
+import { Hint, Prose } from "../../components/ui/text";
+import { ApiTokenRow, copyText } from "../../components/ApiTokenRow";
 import { api } from "../../api/client";
 import type { ApiToken, McpToolInfo } from "../../api/types";
 import { useSystemSelector } from "../../context/SystemContext";
 import { notify } from "../../lib/notify";
-import styles from "../Settings.module.scss";
 import mcp from "./McpSection.module.scss";
 
 const EXPIRY_OPTIONS = [
@@ -33,24 +39,9 @@ function accessLabel(token: ApiToken): string {
   return token.projectGroup ? `Read and write: group "${token.projectGroup}"` : "Read and write: all projects";
 }
 
-async function copy(text: string, what: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    notify.success(`${what} copied.`);
-  } catch (err) {
-    notify.error(err, `Couldn't copy ${what.toLowerCase()}`);
-  }
-}
-
-function tokenState(token: ApiToken): string {
-  if (token.revokedAt) return "Revoked";
-  if (token.expiresAt && Date.parse(token.expiresAt) <= Date.now()) return "Expired";
-  return "Active";
-}
-
 type ToolFilter = "all" | "read" | "write";
 
-/** The tools the endpoint offers, read back from the server so the list is what a client really gets. */
+/** The tools the endpoint offers, read back from the server so the list is what a client really gets. Closed by default: it is reference material. */
 function ToolExplorer() {
   const [tools, setTools] = useState<McpToolInfo[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -70,69 +61,76 @@ function ToolExplorer() {
   const counts = { read: (tools ?? []).filter((t) => t.scope === "read").length, write: (tools ?? []).filter((t) => t.scope === "write").length };
 
   return (
-    <div className="card">
-      <div className="card-title"><Wrench size={13} />Tools</div>
-      <p className="hint" style={{ maxWidth: "80ch" }}>
-        What a client sees on <span className="mono">/mcp</span>. A <strong>read</strong> token gets the read tools; a <strong>read and write</strong> token also gets the write tools.
-        Every write tool takes two calls: the first only says what would happen, and the change runs only when the second presents the confirmation it returned.
-      </p>
-      {failed ? (
-        <div className={mcp.empty}>The tool list could not be loaded.</div>
-      ) : !tools ? (
-        <div className={mcp.empty}>Loading…</div>
-      ) : (
-        <>
-          <div className={mcp.explorerBar}>
-            <div className={mcp.explorerSearch} style={{ position: "relative" }}>
-              <Search size={13} style={{ position: "absolute", left: 10, top: 11, color: "var(--dim)" }} />
-              <input type="text" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search tools" aria-label="Search tools" style={{ paddingLeft: 30, width: "100%" }} />
+    <Disclosure
+      title={<span className="flex items-center gap-2"><Wrench size={13} />Tools a client gets</span>}
+      meta={tools ? `${tools.length} tools · ${counts.read} read · ${counts.write} write` : failed ? "could not be loaded" : "loading…"}
+    >
+      <Stack gap={4}>
+        <Hint>
+          What a client sees on <span className="mono">/mcp</span>. A <strong>read</strong> token gets the read tools; a <strong>read and write</strong> token also gets the write tools.
+          Every write tool takes two calls: the first only says what would happen, and the change runs only when the second presents the confirmation it returned.
+        </Hint>
+        {failed ? (
+          <div className={mcp.empty}>The tool list could not be loaded.</div>
+        ) : !tools ? (
+          <div className={mcp.empty}>Loading…</div>
+        ) : (
+          <>
+            <div className={mcp.explorerBar} style={{ margin: 0 }}>
+              <div className={mcp.explorerSearch} style={{ position: "relative" }}>
+                <Search size={13} style={{ position: "absolute", left: 10, top: 11, color: "var(--dim)" }} />
+                <Input type="text" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search tools" aria-label="Search tools" className="pl-8" />
+              </div>
+              <div className={mcp.filters} role="group" aria-label="Filter tools">
+                {([["all", `All ${tools.length}`], ["read", `Read ${counts.read}`], ["write", `Write ${counts.write}`]] as const).map(([value, label]) => (
+                  <button key={value} type="button" className={mcp.filter} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>
+                ))}
+              </div>
             </div>
-            <div className={mcp.filters} role="group" aria-label="Filter tools">
-              {([["all", `All ${tools.length}`], ["read", `Read ${counts.read}`], ["write", `Write ${counts.write}`]] as const).map(([value, label]) => (
-                <button key={value} type="button" className={mcp.filter} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>
-              ))}
-            </div>
-          </div>
-          {shown.length === 0 ? (
-            <div className={mcp.empty}>No tool matches.</div>
-          ) : (
-            <div className={mcp.tools}>
-              {shown.map((tool) => (
-                <details key={tool.name} className={mcp.tool}>
-                  <summary>
-                    <span className={mcp.toolName}>{tool.name}</span>
-                    <span className={`${mcp.badge} ${tool.scope === "write" ? mcp.badgeWrite : mcp.badgeRead}`}>{tool.scope === "write" ? "write token" : "read token"}</span>
-                    {tool.twoStep && <span className={mcp.badge}>two calls</span>}
-                    <span className={mcp.toolTitle}>{tool.title}</span>
-                  </summary>
-                  <div className={mcp.toolBody}>
-                    <p>{tool.description}</p>
-                    {tool.parameters.length === 0 ? (
-                      <span className={mcp.empty}>No parameters.</span>
-                    ) : (
-                      <div className={mcp.paramsWrap}>
-                        <table className={mcp.params}>
-                          <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
-                          <tbody>
-                            {tool.parameters.map((param) => (
-                              <tr key={param.name}>
-                                <td>{param.name}{param.required ? <span title="required" style={{ color: "var(--warning, #d29922)" }}> *</span> : null}</td>
-                                <td className="mono">{param.type}</td>
-                                <td>{param.description}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+            {shown.length === 0 ? (
+              <div className={mcp.empty}>No tool matches.</div>
+            ) : (
+              <div className={mcp.tools}>
+                {shown.map((tool) => (
+                  <Disclosure
+                    key={tool.name}
+                    title={(
+                      <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                        <span className="font-mono text-[13px] break-all">{tool.name}</span>
+                        <Badge variant="outline" className={tool.scope === "write" ? "border-[var(--warning,#d29922)] text-[var(--warning,#d29922)]" : "border-[var(--success)] text-[var(--success)]"}>{tool.scope === "write" ? "write token" : "read token"}</Badge>
+                        {tool.twoStep && <Badge variant="outline">two calls</Badge>}
+                      </span>
                     )}
-                  </div>
-                </details>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-    </div>
+                  >
+                    <Stack gap={3}>
+                      <Prose>{tool.title}. {tool.description}</Prose>
+                      {tool.parameters.length === 0 ? (
+                        <span className={mcp.empty}>No parameters.</span>
+                      ) : (
+                        <div className={mcp.paramsWrap}>
+                          <table className={mcp.params}>
+                            <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+                            <tbody>
+                              {tool.parameters.map((param) => (
+                                <tr key={param.name}>
+                                  <td>{param.name}{param.required ? <span title="required" style={{ color: "var(--warning, #d29922)" }}> *</span> : null}</td>
+                                  <td className="mono">{param.type}</td>
+                                  <td>{param.description}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </Stack>
+                  </Disclosure>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </Stack>
+    </Disclosure>
   );
 }
 
@@ -154,7 +152,8 @@ export default function McpSection() {
 
   async function load() {
     try {
-      setTokens(await api.listApiTokens());
+      // Live status tokens belong to the Live status page; this page is for the tokens that open /mcp.
+      setTokens((await api.listApiTokens()).filter((token) => !token.scopes.includes("status")));
     } catch (err) {
       notify.error(err, "Couldn't load API tokens");
     } finally {
@@ -206,97 +205,66 @@ export default function McpSection() {
     : "";
 
   return (
-    <div className={styles.sectionStack}>
-      <ToolExplorer />
-      <div className="card">
+    <Stack gap={4}>
+      <div className="card mb-0!">
         <div className="card-title"><KeyRound size={13} />API tokens</div>
-        <p className="hint" style={{ marginBottom: 12, maxWidth: "80ch" }}>
-          A token gives access to <span className="mono">{endpoint}</span>. Read tokens never expose credentials, env files or logs. A <strong>read and write</strong> token can change things in all projects or in one project group (a project it creates goes into that group). Every change is written to the audit log. Works with Claude Code and Claude Desktop; claude.ai connectors need OAuth, which isn't supported yet.
-        </p>
+        <Stack gap={4}>
+          <Stack gap={2}>
+            <Prose>A token gives access to <span className="mono">{endpoint}</span>. It works with Claude Code and Claude Desktop; claude.ai connectors need OAuth, which isn't supported yet.</Prose>
+            <Hint>
+              Read tokens never expose credentials, env files or logs. A <strong>read and write</strong> token can change things in all projects or in one project group (a project it creates goes
+              into that group). Every change is written to the audit log.
+            </Hint>
+          </Stack>
 
-        {created && (
-          <div className="alert alert-success" style={{ display: "grid", gap: 8 }}>
-            <strong>Token "{created.name}" created. Copy it now: it won't be shown again.</strong>
-            <code className="mono" style={{ wordBreak: "break-all" }}>{created.token}</code>
-            <div className="row-actions" style={{ justifyContent: "flex-start" }}>
-              <button type="button" className="btn btn-ghost" onClick={() => void copy(created.token, "Token")}>
-                <Copy size={13} />Copy token
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={() => void copy(command, "Command")}>
-                <Copy size={13} />Copy Claude Code command
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={() => setCreated(null)}>Done</button>
-            </div>
-          </div>
-        )}
-
-        <form className={mcp.createForm} onSubmit={(e) => void create(e)}>
-          <div className={`field ${mcp.createName}`}>
-            <label>Name</label>
-            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. laptop Claude Code" maxLength={80} required />
-          </div>
-          <div className="field" style={{ minWidth: 150, flex: "none" }}>
-            <label>Access</label>
-            <AppSelect value={scope} onValueChange={setScope} options={SCOPE_OPTIONS} />
-          </div>
-          {scope === "write" && (
-            <div className="field" style={{ minWidth: 170, flex: "none" }}>
-              <label>Projects</label>
-              <AppSelect
-                value={group}
-                onValueChange={setGroup}
-                options={[{ value: ALL_PROJECTS, label: "All projects" }, ...groups.map((name) => ({ value: name, label: `Group: ${name}` }))]}
-              />
+          {created && (
+            <div className="alert alert-success mb-0!" style={{ display: "grid", gap: 8 }}>
+              <strong>Token "{created.name}" created. Copy it now: it won't be shown again.</strong>
+              <code className="mono" style={{ wordBreak: "break-all" }}>{created.token}</code>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => void copyText(created.token, "Token")}><Copy size={13} />Copy token</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => void copyText(command, "Command")}><Copy size={13} />Copy Claude Code command</Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setCreated(null)}>Done</Button>
+              </div>
             </div>
           )}
-          <div className="field" style={{ minWidth: 140, flex: "none" }}>
-            <label>Expires</label>
-            <AppSelect value={expiry} onValueChange={setExpiry} options={EXPIRY_OPTIONS} />
-          </div>
-          <div className="row-actions">
-            <button type="submit" className="btn btn-primary" disabled={creating || !name.trim()}>
+
+          <form className={mcp.createForm} style={{ marginTop: 0 }} onSubmit={(e) => void create(e)}>
+            <Field label="Name" htmlFor="mcp-token-name" className={mcp.createName}>
+              <Input id="mcp-token-name" type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. laptop Claude Code" maxLength={80} required />
+            </Field>
+            <Field label="Access" className="w-40 flex-none">
+              <AppSelect value={scope} onValueChange={setScope} options={SCOPE_OPTIONS} />
+            </Field>
+            {scope === "write" && (
+              <Field label="Projects" className="w-44 flex-none">
+                <AppSelect
+                  value={group}
+                  onValueChange={setGroup}
+                  options={[{ value: ALL_PROJECTS, label: "All projects" }, ...groups.map((name) => ({ value: name, label: `Group: ${name}` }))]}
+                />
+              </Field>
+            )}
+            <Field label="Expires" className="w-36 flex-none">
+              <AppSelect value={expiry} onValueChange={setExpiry} options={EXPIRY_OPTIONS} />
+            </Field>
+            <Button type="submit" disabled={creating || !name.trim()}>
               {creating ? <Loader size={13} className="spin" /> : <Plus size={13} />}
               Create token
-            </button>
-          </div>
-        </form>
+            </Button>
+          </form>
 
-        {loading ? (
-          <div className="muted-text">Loading…</div>
-        ) : tokens.length === 0 ? (
-          <div className="muted-text">No tokens yet.</div>
-        ) : (
-          <div className="table-wrap" style={{ marginTop: 16 }}>
-            <table>
-              <thead>
-                <tr><th>Name</th><th>Token</th><th>Access</th><th>State</th><th>Last used</th><th>Expires</th><th /></tr>
-              </thead>
-              <tbody>
-                {tokens.map((token) => {
-                  const state = tokenState(token);
-                  return (
-                    <tr key={token.id}>
-                      <td>{token.name}</td>
-                      <td className="mono">{token.prefix}…</td>
-                      <td>{accessLabel(token)}</td>
-                      <td style={{ color: state === "Active" ? "var(--success)" : "var(--dim)" }}>{state}</td>
-                      <td>{token.lastUsedAt ? <TimeAgo ts={token.lastUsedAt} /> : "Never"}</td>
-                      <td>{token.expiresAt ? new Date(token.expiresAt).toLocaleDateString() : "Never"}</td>
-                      <td>
-                        {state === "Active" && (
-                          <button type="button" className="btn btn-ghost" onClick={() => void revoke(token)} aria-label={`Revoke ${token.name}`}>
-                            <Trash2 size={13} />Revoke
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+          {loading ? (
+            <Hint>Loading…</Hint>
+          ) : tokens.length === 0 ? (
+            <Hint>No tokens yet.</Hint>
+          ) : (
+            <ul>{tokens.map((token) => <ApiTokenRow key={token.id} token={token} access={accessLabel(token)} onRevoke={(t) => void revoke(t)} />)}</ul>
+          )}
+        </Stack>
       </div>
-    </div>
+
+      <ToolExplorer />
+    </Stack>
   );
 }

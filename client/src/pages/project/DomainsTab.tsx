@@ -4,10 +4,16 @@ import { api, ApiError } from "../../api/client";
 import type { ActionRecord, ManagedDomain, Project, ProjectDomain, TcpExposure } from "../../api/types";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { ExpandableCard } from "../../components/ExpandableCard";
+import { AppSelect } from "../../components/AppSelect";
 import { NumberInput } from "../../components/NumberInput";
 import { ProjectIngressSelect } from "../../components/ProjectIngressSelect";
 import { Button } from "../../components/ui/button";
+import { Checkbox } from "../../components/ui/checkbox";
+import { CheckRow } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
+import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
+import { Stack } from "../../components/ui/stack";
+import { Hint } from "../../components/ui/text";
 import { jsonEqual, useSystemActions, useSystemSelector } from "../../context/SystemContext";
 import { notify } from "../../lib/notify";
 import styles from "../ProjectDetails.module.scss";
@@ -46,6 +52,7 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
   }, []);
   const useManaged = managed.length > 0 && !typeFull && baseId !== null;
   const chosenBase = managed.find((d) => d.id === baseId) ?? null;
+  const baseOptions = managed.map((d) => ({ value: String(d.id), label: `.${d.name}` }));
   const bareDomain = label.trim() === "@";
   const previewHostname = !chosenBase || !label.trim() ? "" : bareDomain ? (canonical === "www" ? `www.${chosenBase.name}` : chosenBase.name) : `${label.trim().toLowerCase()}.${chosenBase.name}`;
   const [newDomainService, setNewDomainService] = useState("");
@@ -240,9 +247,7 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
                   className={styles.domainInput}
                   aria-label="Hostname label"
                 />
-                <select value={baseId ?? ""} onChange={(e) => setBaseId(Number(e.target.value))} aria-label="Base domain">
-                  {managed.map((d) => <option key={d.id} value={d.id}>.{d.name}</option>)}
-                </select>
+                <AppSelect value={baseId === null ? "" : String(baseId)} onValueChange={(value) => setBaseId(Number(value))} options={baseOptions} placeholder="Base domain" triggerClassName="w-[180px]! flex-none!" />
               </>
             ) : (
               <Input
@@ -270,25 +275,22 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
             </Button>
           </div>
           {managed.length > 0 && (
-            <div className="muted-text" style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-              {previewHostname && <span>Hostname: <code className="mono">{previewHostname}</code></span>}
+            <Stack gap={2}>
+              {previewHostname && <Hint>Hostname: <code className="mono">{previewHostname}</code></Hint>}
               {useManaged && bareDomain && chosenBase && (
-                <span>
-                  Canonical name:{" "}
-                  <label><input type="radio" name="canonical" checked={canonical === "apex"} onChange={() => setCanonical("apex")} /> {chosenBase.name} (www redirects to it)</label>{" "}
-                  <label><input type="radio" name="canonical" checked={canonical === "www"} onChange={() => setCanonical("www")} /> www.{chosenBase.name} ({chosenBase.name} redirects to it)</label>
-                </span>
+                <RadioGroup value={canonical} onValueChange={(value) => setCanonical(value as "apex" | "www")} aria-label="Canonical name">
+                  <CheckRow control={<RadioGroupItem value="apex" />} title={chosenBase.name} hint="www redirects to it" />
+                  <CheckRow control={<RadioGroupItem value="www" />} title={`www.${chosenBase.name}`} hint={`${chosenBase.name} redirects to it`} />
+                </RadioGroup>
               )}
-              <label><input type="checkbox" checked={typeFull} onChange={(e) => setTypeFull(e.target.checked)} /> other hostname</label>
-            </div>
+              <CheckRow control={<Checkbox checked={typeFull} onCheckedChange={(checked) => setTypeFull(checked === true)} />} title="Type the whole hostname" hint="For a hostname that is not under one of your base domains." />
+            </Stack>
           )}
           {renaming && (
             <div className="row-actions">
               <span className="muted-text">Rename <code className="mono">{renaming.domain}</code> to</span>
               <Input type="text" placeholder="label, or @" value={renameLabel} onChange={(e) => setRenameLabel(e.target.value)} className={styles.domainInput} aria-label="New label" />
-              <select value={baseId ?? ""} onChange={(e) => setBaseId(Number(e.target.value))} aria-label="New base domain">
-                {managed.map((d) => <option key={d.id} value={d.id}>.{d.name}</option>)}
-              </select>
+              <AppSelect value={baseId === null ? "" : String(baseId)} onValueChange={(value) => setBaseId(Number(value))} options={baseOptions} placeholder="Base domain" triggerClassName="w-[180px]! flex-none!" />
               <Button type="button" size="default" disabled={renameBusy || !renameLabel.trim()} onClick={() => void renameDomain()}>
                 {renameBusy ? <Loader size={12} className="spin" /> : null} Rename
               </Button>

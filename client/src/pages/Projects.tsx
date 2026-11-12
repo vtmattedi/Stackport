@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
+  AlertTriangle,
   FolderDot,
   GitBranch,
   Loader,
@@ -14,6 +15,7 @@ import {
 import styles from "./Projects.module.scss";
 import { ProjectPicker } from "../components/ProjectPicker";
 import { useLocalStorageState } from "../hooks/useLocalStorageState";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { NewProjectWizard } from "../components/project-wizard/NewProjectWizard";
 import {
@@ -29,6 +31,7 @@ import { deriveProjectStatus, explainProjectStatus, findProjectStack, projectSta
 import { notify } from "../lib/notify";
 import { cn } from "../lib/utils";
 import { TimeAgo } from "../components/TimeAgo";
+import { FirstRun } from "./projects/FirstRun";
 
 const STATUS_PILL_CLASS: Record<ProjectStatusKind, string> = {
   ready: styles.statusReady,
@@ -131,6 +134,12 @@ export default function Projects() {
     setSearchParams((params) => { params.delete("setup"); return params; }, { replace: true });
   }, [setupProject, setSearchParams]);
 
+  // The projects that are down or whose health check fails, named above the list so they are not found by scanning the table.
+  const dockerUp = system?.docker?.available ?? false;
+  const needAttention = projects
+    .map((project) => ({ project, status: deriveProjectStatus(project, system?.docker ? findProjectStack(project, system.docker.stacks) : null, dockerUp) }))
+    .filter(({ status }) => status === "down" || status === "problem");
+
   return (
     <>
       <main className="main">
@@ -141,6 +150,20 @@ export default function Projects() {
             Add new project
           </button>
         </div>
+
+        {needAttention.length > 0 && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertTriangle size={14} />
+            <AlertTitle>{needAttention.length} {needAttention.length === 1 ? "project needs" : "projects need"} attention</AlertTitle>
+            <AlertDescription>
+              <span className="flex flex-wrap gap-x-4 gap-y-1">
+                {needAttention.map(({ project, status }) => (
+                  <Link key={project.id} to={`/projects/${project.id}`} className="ext-link">{project.name} <span className="text-[var(--dim)]">· {projectStatusLabel(status).toLowerCase()}</span></Link>
+                ))}
+              </span>
+            </AlertDescription>
+          </Alert>
+        )}
 
         <TooltipProvider>
           <div className="card">
@@ -160,7 +183,7 @@ export default function Projects() {
             {loading ? (
               <div className="empty">Loading...</div>
             ) : visibleProjects.length === 0 ? (
-              <div className="empty">{!projects.length ? "No projects yet." : searchTerm ? `No projects match "${search.trim()}".` : "No projects in this selection."}</div>
+              !projects.length ? <FirstRun onAdd={() => openWizard()} /> : <div className="empty">{searchTerm ? `No projects match "${search.trim()}".` : "No projects in this selection."}</div>
             ) : (
               <div className="table-wrap">
                 <table className={styles.projectTable}>

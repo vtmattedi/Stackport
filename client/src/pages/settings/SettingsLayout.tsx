@@ -1,5 +1,5 @@
 import { Outlet, useLocation } from "react-router-dom";
-import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, KeyRound, ShieldCheck, Lock, Shield, Plug, Globe } from "lucide-react";
+import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, KeyRound, ShieldCheck, Lock, Shield, Plug, Globe, Radio } from "lucide-react";
 import SubShell, { SubShellSectionHeader } from "../../components/SubShell";
 
 export const SETTINGS_SECTIONS = [
@@ -11,6 +11,7 @@ export const SETTINGS_SECTIONS = [
   { path: "github", label: "GitHub", icon: Plug, group: "Integrations", description: "The GitHub App this instance registers: deploy from repositories without a personal access token." },
   { path: "credentials", label: "Credentials", icon: ShieldCheck, group: "Integrations", description: "GitHub tokens, API keys and webhook secrets, stored encrypted." },
   { path: "mcp", label: "MCP", icon: KeyRound, group: "Integrations", description: "The tools Claude and other clients get, and the tokens that unlock them." },
+  { path: "live-status", label: "Live status", icon: Radio, group: "Integrations", description: "A secured WebSocket that streams host metrics, project status, running actions and alerts to an adapter you run." },
   { path: "encryption", label: "Encryption", icon: Lock, group: "Security", description: "Re-encrypt the stored secrets under the current key, to finish a key rotation." },
 ] as const;
 
