@@ -103,6 +103,12 @@ async function seed(): Promise<void> {
   createApiToken({ name: "laptop Claude Code", expiresInDays: 90, scope: "read" });
   createApiToken({ name: "ci deploy (production only)", expiresInDays: 30, scope: "write", projectGroup: "production" });
   createApiToken({ name: "old token", expiresInDays: null, scope: "write" });
+  // UI_HARNESS_LIVE_STATUS=on shows Settings > Live status with the stream enabled and two tokens.
+  if (process.env["UI_HARNESS_LIVE_STATUS"] === "on") {
+    (await import("../../src/modules/status/settings")).setStatusStreamEnabled(true);
+    createApiToken({ name: "mqtt bridge", expiresInDays: 90, scope: "status" });
+    createApiToken({ name: "staging dashboard", expiresInDays: 30, scope: "status", projectGroup: "staging" });
+  }
   // UI_HARNESS_GITHUB=none leaves the App unregistered, which is what Settings > GitHub shows on a fresh server.
   if (process.env["UI_HARNESS_GITHUB"] !== "none") seedGithubApp(github);
 }

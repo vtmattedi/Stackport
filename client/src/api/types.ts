@@ -1183,6 +1183,18 @@ export interface ProjectResourcesTimeseries {
   series: ProjectResourceTimeseriesSeries[];
 }
 
+/** Settings > Live status (GET and PUT /status-stream). */
+export interface StatusStreamInfo {
+  enabled: boolean;
+  path: string;
+  /** A name for this Stackport an adapter can use in its topics. */
+  instance: string;
+  limits: { maxConnections: number; maxConnectionsPerToken: number };
+  /** Live status tokens that are still valid. */
+  tokens: number;
+  connections: { tokenName: string; address: string; since: string; group: string | null }[];
+}
+
 /** An API token for the MCP endpoint. The token value itself is only returned once, on creation. */
 export interface ApiToken {
   id: number;

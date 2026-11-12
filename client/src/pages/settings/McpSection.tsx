@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy, KeyRound, Loader, Plus, Search, Trash2, Wrench } from "lucide-react";
+import { Copy, KeyRound, Loader, Plus, Search, Wrench } from "lucide-react";
 import { AppSelect } from "../../components/AppSelect";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { Disclosure } from "../../components/Disclosure";
@@ -9,7 +9,7 @@ import { Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { Stack } from "../../components/ui/stack";
 import { Hint, Prose } from "../../components/ui/text";
-import { TimeAgo } from "../../components/TimeAgo";
+import { ApiTokenRow, copyText } from "../../components/ApiTokenRow";
 import { api } from "../../api/client";
 import type { ApiToken, McpToolInfo } from "../../api/types";
 import { useSystemSelector } from "../../context/SystemContext";
@@ -37,21 +37,6 @@ function sameGroups(a: (string | null)[], b: (string | null)[]): boolean {
 function accessLabel(token: ApiToken): string {
   if (!token.scopes.includes("write")) return "Read only";
   return token.projectGroup ? `Read and write: group "${token.projectGroup}"` : "Read and write: all projects";
-}
-
-async function copy(text: string, what: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    notify.success(`${what} copied.`);
-  } catch (err) {
-    notify.error(err, `Couldn't copy ${what.toLowerCase()}`);
-  }
-}
-
-function tokenState(token: ApiToken): string {
-  if (token.revokedAt) return "Revoked";
-  if (token.expiresAt && Date.parse(token.expiresAt) <= Date.now()) return "Expired";
-  return "Active";
 }
 
 type ToolFilter = "all" | "read" | "write";
@@ -149,30 +134,6 @@ function ToolExplorer() {
   );
 }
 
-/** One token: what it is on the first line, when it was last used and when it expires on the second, so it reads at any width. */
-function TokenRow({ token, onRevoke }: { token: ApiToken; onRevoke: (token: ApiToken) => void }) {
-  const state = tokenState(token);
-  return (
-    <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border py-3 last:border-b-0">
-      <div className="grid min-w-0 flex-1 basis-64 gap-1">
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-          <span className="text-[13px] font-medium break-words">{token.name}</span>
-          <Badge variant="outline" className={state === "Active" ? "border-[var(--success)] text-[var(--success)]" : "text-[var(--dim)]"}>{state}</Badge>
-          <span className="mono">{token.prefix}…</span>
-        </div>
-        <div className="text-xs text-[var(--dim)]">
-          {accessLabel(token)} · last used {token.lastUsedAt ? <TimeAgo ts={token.lastUsedAt} /> : "never"} · expires {token.expiresAt ? new Date(token.expiresAt).toLocaleDateString() : "never"}
-        </div>
-      </div>
-      {state === "Active" && (
-        <Button type="button" variant="outline" size="sm" onClick={() => onRevoke(token)} aria-label={`Revoke ${token.name}`}>
-          <Trash2 size={13} />Revoke
-        </Button>
-      )}
-    </li>
-  );
-}
-
 /** API tokens for the MCP endpoint at /mcp, and the tools they unlock. */
 export default function McpSection() {
   const confirm = useConfirm();
@@ -191,7 +152,8 @@ export default function McpSection() {
 
   async function load() {
     try {
-      setTokens(await api.listApiTokens());
+      // Live status tokens belong to the Live status page; this page is for the tokens that open /mcp.
+      setTokens((await api.listApiTokens()).filter((token) => !token.scopes.includes("status")));
     } catch (err) {
       notify.error(err, "Couldn't load API tokens");
     } finally {
@@ -260,8 +222,8 @@ export default function McpSection() {
               <strong>Token "{created.name}" created. Copy it now: it won't be shown again.</strong>
               <code className="mono" style={{ wordBreak: "break-all" }}>{created.token}</code>
               <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={() => void copy(created.token, "Token")}><Copy size={13} />Copy token</Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => void copy(command, "Command")}><Copy size={13} />Copy Claude Code command</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => void copyText(created.token, "Token")}><Copy size={13} />Copy token</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => void copyText(command, "Command")}><Copy size={13} />Copy Claude Code command</Button>
                 <Button type="button" variant="ghost" size="sm" onClick={() => setCreated(null)}>Done</Button>
               </div>
             </div>
@@ -297,7 +259,7 @@ export default function McpSection() {
           ) : tokens.length === 0 ? (
             <Hint>No tokens yet.</Hint>
           ) : (
-            <ul>{tokens.map((token) => <TokenRow key={token.id} token={token} onRevoke={(t) => void revoke(t)} />)}</ul>
+            <ul>{tokens.map((token) => <ApiTokenRow key={token.id} token={token} access={accessLabel(token)} onRevoke={(t) => void revoke(t)} />)}</ul>
           )}
         </Stack>
       </div>

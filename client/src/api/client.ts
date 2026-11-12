@@ -45,6 +45,7 @@ import type {
   GithubManifestStart,
   GithubDelivery,
   GithubRepositoryInspection,
+  StatusStreamInfo,
   GithubScanEntry,
   GithubImportOutcome,
   ManagedDomain,
@@ -419,9 +420,11 @@ export const api = {
     request<ProjectDeploy[]>(`/projects/${projectId}/deploys`),
   listApiTokens: () => request<ApiToken[]>("/api-tokens"),
   listMcpTools: () => request<{ tools: McpToolInfo[] }>("/api-tokens/tools"),
-  createApiToken: (name: string, expiresInDays: number | null, scope: "read" | "write" = "read", projectGroup: string | null = null) =>
+  createApiToken: (name: string, expiresInDays: number | null, scope: "read" | "write" | "status" = "read", projectGroup: string | null = null) =>
     request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays, scope, projectGroup }) }),
   revokeApiToken: (id: number) => request<void>(`/api-tokens/${id}`, { method: "DELETE" }),
+  getStatusStream: () => request<StatusStreamInfo>("/status-stream"),
+  setStatusStream: (enabled: boolean) => request<StatusStreamInfo>("/status-stream", { method: "PUT", body: JSON.stringify({ enabled }) }),
   getProjectDeploymentRevisions: (projectId: number) =>
     request<ProjectDeploymentRevision[]>(`/projects/${projectId}/deployments`),
   /** Without `deploymentId`, the server picks the newest earlier revision not rolled back from. */
