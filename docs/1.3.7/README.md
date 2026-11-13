@@ -1,6 +1,6 @@
 # Stackport 1.3.7
 
-Branch `1.3.7`, from `main` after 1.3.5. Release order: **1.3.1** (done) → **1.3.5** (done) → **1.3.7** → **1.4**. There is no 1.3.6.
+Branch `1.3.7`, from `main` after 1.3.5. Historical release order: **1.3.1** → **1.3.5** → **1.3.7**. There is no 1.3.6. The current future plans are [1.4](../1.4/README.md) and [1.5](../1.5/README.md).
 
 1.3.7 was planned as two features, the GitHub App and the domain manager. It now also carries the follow-ups that 1.3.5 listed but did not build (G2 to G4 and P2 to P8 of the [1.3.0 postmortem](../1.3.5/postmortem-1.3.0-ingress-networks.md)). The **domain manager** ([domain-manager.md](domain-manager.md)) and the **GitHub App modules M1 to M3, bulk import and the MCP repository tools** are built too.
 
@@ -24,7 +24,7 @@ Branch `1.3.7`, from `main` after 1.3.5. Release order: **1.3.1** (done) → **1
 
 | GitHub App M1 to M3, import, MCP | Report each deploy to GitHub; deploy after CI passes or on a published release; scan and import repositories; list repositories and create a project from one over MCP ([github-app-operations.md](github-app-operations.md)) | tests against the fake of GitHub. **Not run against github.com** |
 
-P1 (regression report and restore point) and the database backup stay in 1.4 ([../1.4/README.md](../1.4/README.md)).
+**Roadmap update (November 2026):** portable backup/restore is included in [1.4](../1.4/README.md); P1 (update regression report and infrastructure restore points) is planned for [1.5](../1.5/README.md). Scheduled off-host backups are deferred.
 
 ## Not done
 
