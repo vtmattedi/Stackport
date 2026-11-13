@@ -1,6 +1,6 @@
 # Stackport 1.3.5
 
-Branch `1.3.5`, started from `1.3`. Release order: 1.3.1 (done) → 1.3.5 → 1.3.7 (GitHub App) → 1.4. Three jobs, one of which has moved to 1.3.7 (below).
+Branch `1.3.5`, started from `1.3`. Historical release order when drafted: 1.3.1 → 1.3.5 → 1.3.7 (GitHub App). For the current future release scope, see [1.4](../1.4/README.md) and [1.5](../1.5/README.md). Three jobs, one of which has moved to 1.3.7 (below).
 
 1. **Inventory** what 1.3 missed, deferred or left unverified.
 2. ~~**GitHub App** integration~~ **Moved to 1.3.7.** Plan: [../1.3.7/github-app.md](../1.3.7/github-app.md).
@@ -10,7 +10,7 @@ Ratings follow [../1.3/README.md](../1.3/README.md): 🔴 fix first, 🟠 soon, 
 
 PR #33 is merged. `stable` (1.3.1, the incident fix) was merged into this branch on 7 November, so the branch carries the fix and `main` gets it with this PR.
 
-**Incident:** 1.3.0 took routed projects down on 7 November 2026 when per-project networks exhausted Docker's address pool; fixed by 1.3.1. See [postmortem-1.3.0-ingress-networks.md](postmortem-1.3.0-ingress-networks.md). Its open follow-ups (P1 to P8) belong to this release. P1 is a regression report plus a restore point and Restore action, not an automatic rollback, and it is planned for 1.4 ([../1.4/README.md](../1.4/README.md)); the rest are for 1.3.5.
+**Incident:** 1.3.0 took routed projects down on 7 November 2026 when per-project networks exhausted Docker's address pool; fixed by 1.3.1. See [postmortem-1.3.0-ingress-networks.md](postmortem-1.3.0-ingress-networks.md). The follow-ups were identified in this release's review. P1 is a regression report plus a restore point and Restore action, not an automatic rollback; it is now planned for 1.5 ([../1.5/README.md](../1.5/README.md)); P2–P8 were 1.3.5/1.3.7 work.
 
 ## 1. Inventory: what 1.3 missed
 
@@ -90,7 +90,7 @@ Settled defaults from §12 of the plan, unless you say otherwise:
 
 ## 3. Leftovers to clear
 
-**Moved or changed after the 1.3.0 incident:** the follow-ups P2 to P8 are 1.3.5 work; P1 (regression report, restore point, Restore) and database backup and restore are 1.4 ([../1.4/README.md](../1.4/README.md)). The Working On It board has a task for each (#380 to #388).
+**Roadmap update (November 2026):** P2–P8 belonged to 1.3.x; first-class portable backup/restore is now in [1.4](../1.4/README.md), while P1 (update regression report, infrastructure restore point, Restore) moved to [1.5](../1.5/README.md). Scheduled off-host backups are deferred to 1.5 or later. Historical Working On It tasks #380–#388 are unchanged.
 
 | ID | Item | Size | Notes |
 |---|---|---|---|
