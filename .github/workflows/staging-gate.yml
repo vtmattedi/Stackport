@@ -1,7 +1,7 @@
 name: Staging gate
 
 # A pull request that touches Docker networks, mounts or start-up order has to say it was run on a real host
-# (docs/staging-gate.md). The rules live in scripts/ci/staging-gate.sh.
+# (docs/engineering/staging-gate.md). The rules live in scripts/ci/staging-gate.sh.
 on:
   pull_request:
     branches: [main]

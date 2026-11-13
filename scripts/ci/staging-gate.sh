@@ -35,7 +35,7 @@ fi
 
 cat <<'MSG'
 
-Add these two lines to the pull request description (see docs/staging-gate.md):
+Add these two lines to the pull request description (see docs/engineering/staging-gate.md):
 
   Staging host: <host and date the change was run on>
   Result: <what you checked and what happened>

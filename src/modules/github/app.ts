@@ -8,7 +8,7 @@ import {
 } from "./store";
 
 /**
- * Registering the App from a manifest, linking installations to it, and the tokens it uses (docs/1.3.7/github-app.md).
+ * Registering the App from a manifest, linking installations to it, and the tokens it uses (docs/operations/github-app.md).
  * Nothing here reads a request's `Host`: every URL is built from the saved domain setting.
  */
 
