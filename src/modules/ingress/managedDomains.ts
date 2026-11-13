@@ -4,7 +4,7 @@ import { getNginxAppConfig } from "./nginx/appConfig";
 import { addProjectDomain, ensureDomainAvailable, getProjectDomain, listProjectDomains, ProjectDomainError, removeProjectDomain, setProjectDomainRoute, setProjectDomainSsl, type ProjectDomain } from "./domains";
 
 /**
- * The domain manager (docs/1.3.7/domain-manager.md): the base domains Stackport manages, and hostnames made as a label on one
+ * The domain manager (see Stackport.md, domain routing model): the base domains Stackport manages, and hostnames made as a label on one
  * of them. `project_domains.domain` stays the full hostname, so nginx, Certbot and the health checker do not change.
  */
 

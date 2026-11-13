@@ -1,7 +1,7 @@
 # Operator runbook
 
 What to look at, in order, when something is wrong on a Stackport host. Written after the
-[1.3.0 routing outage](1.3.5/postmortem-1.3.0-ingress-networks.md), where diagnosis lost time to a log command
+[1.3.0 routing outage](../incidents/1.3.0-network-outage.md), where diagnosis lost time to a log command
 that looked in the wrong place.
 
 Run the host commands as root (`sudo`). Container names are fixed: `stackport` (the app) and

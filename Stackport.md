@@ -2,13 +2,13 @@
 
 StackPort is a self-hosted DevOps control plane: a Node/Express backend + React client that deploys GitHub-repo or manually-uploaded projects via `docker compose`, fronts them with its own containerized nginx reverse proxy, issues Let's Encrypt certificates, and monitors the host — all from a single admin UI/API. (The optional Hostinger VPS fleet and firewall integration was removed in October 2026; its database tables are kept, unused, so `stackport rollback` still works.)
 
-StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today; see `docs/deprecated/` for the design docs that shaped it (kept as historical record, not current reference) and `.agents/skills/stackport/SKILL.md` for the agent skill used to prepare a repository for deployment.
+StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today. Superseded architecture drafts are retained in Git history; see `.agents/skills/stackport/SKILL.md` for the deployment preparation skill.
 
 ---
 
 ## 1. Architecture
 
-The backend uses [capability-owned modules](docs/backend-modules.md). Implementations
+The backend uses [capability-owned modules](docs/engineering/backend-modules.md). Implementations
 live at their canonical module paths; the former `src/services` directory has been removed.
 
 ### 1.1 System plane vs. workload plane
@@ -38,7 +38,7 @@ Managed projects never publish a host port. Routed services join `stackport-prox
 
 ### 1.3 Domain routing model
 
-A domain doesn't route to "a project" — it routes to a specific `(service, container_port)` pair within that project's compose file (`project_domains.service` / `project_domains.container_port`). One project can have several domains, each pointing at a different service if it needs to (e.g. a public web frontend on one domain, an admin API on another). `src/modules/ingress/nginx/configWriter.ts`'s `generateNginxConfig()` builds one nginx server block per routed domain, proxying to `http://<service>:<containerPort>` — see `docs/deprecated/stackport_yml.md` for the original design rationale.
+A domain doesn't route to "a project" — it routes to a specific `(service, container_port)` pair within that project's compose file (`project_domains.service` / `project_domains.container_port`). One project can have several domains, each pointing at a different service if it needs to (e.g. a public web frontend on one domain, an admin API on another). `src/modules/ingress/nginx/configWriter.ts`'s `generateNginxConfig()` builds one nginx server block per routed domain, proxying to `http://<service>:<containerPort>` — the historical Compose design is available in Git history.
 
 ### 1.4 Compose security policy
 
@@ -81,11 +81,11 @@ Unbounded image/build-cache growth on a long-running host is a real failure mode
 
 ## 2. Installation and host lifecycle — `stackport.sh`
 
-See [the first-install postmortem](docs/first-install-postmortem.md) for the
+See [the first-install postmortem](docs/incidents/first-install.md) for the
 bootstrap fixes, regression runner, and replacement-VPS checklist. Installation
 waits for HTTPS through nginx before reporting completion.
 
-Installation and ongoing host management go through one script, `stackport.sh`, which also installs itself as `/usr/local/bin/stackport`. Full command semantics live in `docs/deprecated/stackport_host_lifecycle.md` (the original design doc — commands below match what's actually implemented).
+Installation and ongoing host management go through one script, `stackport.sh`, which also installs itself as `/usr/local/bin/stackport`. Current command semantics are described below and in the [operator runbook](docs/operations/runbook.md); the superseded host-lifecycle design remains available in Git history.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vtmattedi/Stackport/main/stackport.sh -o stackport.sh
@@ -261,7 +261,7 @@ Signing keys are generated automatically at startup and preserved in `push_confi
 
 Push messages contain only concise operational metadata. Clicking a notification focuses or opens Stackport at the relevant project or Settings page. Browser push runs in the service worker even when the tab is closed; delivery depends on browser permission and the browser's push service. Expired subscriptions are removed automatically, temporary failures remain registered, and delivery failures cannot fail a deploy or health check. The shared delivery log records email and browser push separately without exposing subscription endpoints or keys.
 
-Automatic alerts are first committed to a SQLite outbox, atomically with their health/deployment classification wherever they share the database. One in-process worker polls every five seconds and submits at most four requests concurrently. Each browser has its own delivery state and retry schedule; restarts and container replacement recover pending work and expired leases. Transient failures retry with bounded backoff, jitter and Retry-After handling. Recovered health incidents, disabled preferences and removed browsers cancel unsent work; re-enabling never replays incidents skipped while disabled. Failure events expire after one to twenty-four hours depending on their type, and terminal history is retained for thirty days with bounded cleanup. See [the reliability contract](docs/web-push-reliability.md) for exact policies.
+Automatic alerts are first committed to a SQLite outbox, atomically with their health/deployment classification wherever they share the database. One in-process worker polls every five seconds and submits at most four requests concurrently. Each browser has its own delivery state and retry schedule; restarts and container replacement recover pending work and expired leases. Transient failures retry with bounded backoff, jitter and Retry-After handling. Recovered health incidents, disabled preferences and removed browsers cancel unsent work; re-enabling never replays incidents skipped while disabled. Failure events expire after one to twenty-four hours depending on their type, and terminal history is retained for thirty days with bounded cleanup. See [the reliability contract](docs/engineering/web-push-reliability.md) for exact policies.
 
 Provider success means **accepted by the push service**, not displayed or read. Submission is at least once: a crash after acceptance but before committing the result can cause another attempt. Retries share an incident tag while separate incidents have separate tags. A request already in flight cannot be unsent after cancellation. Settings shows pending/retry/failure counts, the worker's last poll and provider acceptance, and diagnoses a signing identity that cannot be decrypted. Its Refresh action reconciles the browser's real subscription after local storage loss or database restore. Removing a browser disables server submissions first, then removes the local capability, with a recovery button for partial failure.
 

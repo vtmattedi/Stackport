@@ -1,7 +1,7 @@
 import { config } from "../../config/env";
 
 /**
- * Calls to GitHub, with what the plan requires of every one (§7 of docs/1.3.7/github-app.md):
+ * Calls to GitHub, with what the plan requires of every one (the current GitHub App operations guide (docs/operations/github-app.md)):
  * a timeout, at most two in flight per instance, and backoff when GitHub says to slow down (403 with a
  * rate-limit message, or 429). The base URLs come from the environment only.
  */

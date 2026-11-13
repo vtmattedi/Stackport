@@ -244,7 +244,7 @@ export async function getProjectComposePolicy(projectId: number): Promise<Projec
 export interface ComposeVariableStatus extends ComposeVariableRef {
   /** Where Compose would find it: the managed root `.env`, a `.env` in the repository,
    *  or neither (then it falls back to its default, or Stackport's own environment;
-   *  see docs/plan.md S14). */
+   *  see Compose environment isolation / security policy). */
   definedIn: "managed" | "repository" | null;
 }
 

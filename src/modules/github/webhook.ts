@@ -7,7 +7,7 @@ import { defaultGithubClient, type GithubClient } from "./client";
 import { deployRelease, holdForCi, settleRepository } from "./ci";
 
 /**
- * The one webhook endpoint of the GitHub App (Phase C, docs/1.3.7/github-app.md §7).
+ * The one webhook endpoint of the GitHub App (see docs/operations/github-app.md).
  *
  * The order matters: the signature is checked against the raw bytes first; the delivery is then written to the
  * database, and only after that does the endpoint answer 2xx, so a delivery GitHub believes was received is not lost
