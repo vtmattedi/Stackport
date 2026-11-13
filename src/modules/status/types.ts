@@ -56,8 +56,14 @@ export interface ActionStatus {
   projectId: number | null;
   projectName: string | null;
   startedAt: string;
-  /** 0 to 100 for actions that report a build estimate; null otherwise. */
-  progress: number | null;
+  /** The Docker build phase (`preparing`, `pulling`, `building`, `deploying`, `starting`) for actions that run one; null for the rest. */
+  phase: string | null;
+  /** An estimate, 0 to 95 while the action runs; null when there is nothing to base one on (no build phase, and fewer than 3 earlier runs to compare with). */
+  percent: number | null;
+  /** Estimated seconds left; null when unknown. */
+  etaSeconds: number | null;
+  /** What the estimate rests on: `steps` (a build's "step n of m"), `phase` (where the build is), or `time` (how long earlier runs took). */
+  basis: "steps" | "phase" | "time" | null;
 }
 
 export type AlertSeverity = "warning" | "critical";

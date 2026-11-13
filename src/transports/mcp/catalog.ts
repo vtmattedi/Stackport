@@ -20,8 +20,8 @@ export interface McpToolInfo {
   name: string;
   title: string;
   description: string;
-  /** The least a token needs: `write` for a tool a read-only token does not get. */
-  scope: "read" | "write";
+  /** The least a token needs: `write` for a tool a read-only token does not get, `logs` for one that needs log access. */
+  scope: "read" | "write" | "logs";
   /** Marked destructive: it changes or interrupts something. Every write tool is. */
   destructive: boolean;
   /** Takes two calls: the first only says what would happen, the second (with the id it returned) does it. */
@@ -50,9 +50,12 @@ async function listFor(scopes: ApiToken["scopes"]) {
   finally { await client.close(); await server.close(); }
 }
 
+const order = { read: 0, logs: 1, write: 2 } as const;
+
 export async function listMcpTools(): Promise<McpToolInfo[]> {
   const readNames = new Set((await listFor(["read"])).map((tool) => tool.name));
-  const all = await listFor(["read", "write"]);
+  const logNames = new Set((await listFor(["read", "logs"])).map((tool) => tool.name).filter((name) => !readNames.has(name)));
+  const all = await listFor(["read", "write", "logs"]);
   return all.map((tool) => {
     const schema = tool.inputSchema as { properties?: Record<string, JsonSchemaProperty>; required?: string[] };
     const properties = schema.properties ?? {};
@@ -62,11 +65,11 @@ export async function listMcpTools(): Promise<McpToolInfo[]> {
       name: tool.name,
       title: tool.title ?? tool.annotations?.title ?? tool.name,
       description: tool.description ?? "",
-      scope: readNames.has(tool.name) ? "read" as const : "write" as const,
+      scope: readNames.has(tool.name) ? "read" as const : logNames.has(tool.name) ? "logs" as const : "write" as const,
       destructive: tool.annotations?.destructiveHint === true,
       twoStep,
       // The confirmation id is the same on every two-step tool and is explained by `twoStep`, so it is not listed as a parameter.
       parameters: Object.entries(properties).filter(([name]) => name !== "confirmationId").map(([name, property]) => ({ name, type: describeType(property), required: required.has(name), description: property.description ?? "" })),
     };
-  }).sort((a, b) => (a.scope === b.scope ? a.name.localeCompare(b.name) : a.scope === "read" ? -1 : 1));
+  }).sort((a, b) => (a.scope === b.scope ? a.name.localeCompare(b.name) : order[a.scope] - order[b.scope]));
 }

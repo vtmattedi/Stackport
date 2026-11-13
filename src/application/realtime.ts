@@ -1,6 +1,7 @@
 import { Server as SocketIOServer } from "socket.io";
 import type { Project } from "../modules/projects/types";
 import { actionRegistry, projectRepoKey, type ActionRecord } from "../modules/actions/registry";
+import type { ActionProgressEvent } from "../modules/actions/progressTicker";
 import { buildProgressTracker, type BuildPhase } from "../modules/actions/progress";
 
 let io: SocketIOServer | null = null;
@@ -24,6 +25,9 @@ export interface ProjectBuildProgressEvent {
   projectId: number;
   phase: BuildPhase;
   progress: number;
+  /** The estimator's percentage (0 to 95 while running) and time left; absent on events that come straight from the output parser. */
+  percent?: number;
+  etaSeconds?: number | null;
   done?: boolean;
   ok?: boolean;
 }
@@ -55,6 +59,15 @@ export function setRealtimeServer(server: SocketIOServer): void {
 
 function emitProjectBuildProgress(event: ProjectBuildProgressEvent): void {
   io?.to(`deploy:${event.projectId}`).emit("project:build-progress", event);
+}
+
+/** The estimator's latest percentage for a running action, sent to every client (the status strip and running-actions list show it for any action); the
+ *  project's own progress event, which its toast listens to, carries it too when the action is a Docker build. */
+export function emitActionProgress(event: ActionProgressEvent): void {
+  io?.emit("action:progress", event);
+  if (event.projectId !== null && event.phase !== null) {
+    emitProjectBuildProgress({ projectId: event.projectId, phase: event.phase, progress: event.stepRatio ?? 0, percent: event.percent, etaSeconds: event.etaSeconds });
+  }
 }
 
 export function emitProjectDeploy(event: ProjectDeployEvent): void {

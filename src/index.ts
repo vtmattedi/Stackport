@@ -7,6 +7,8 @@ import { closeDatabase, initializeDatabase } from "./config/database";
 import { healthChecker } from "./modules/deployments/health";
 import { SocketManager } from "./transports/socket/manager";
 import { attachStatusStream } from "./transports/status/stream";
+import { startProgressTicker } from "./modules/actions/progressTicker";
+import { emitActionProgress } from "./application/realtime";
 import { statusStreamInstanceId } from "./modules/status/settings";
 import { githubPoller } from "./modules/automation/githubPolling";
 import { resetPendingAutoDeploys } from "./modules/automation/autoDeploy";
@@ -79,6 +81,7 @@ try {
   });
 
   const socketManager = new SocketManager(io);
+  const stopProgressTicker = startProgressTicker(emitActionProgress);
   // The live status stream (a WebSocket that only sends). It is off until an admin turns it on; see transports/status/stream.ts.
   const statusStream = attachStatusStream(httpServer, { trustProxy: trustedProxy.trust, instance: statusStreamInstanceId });
 
@@ -87,6 +90,7 @@ try {
     console.log(`[server] ${signal} received - shutting down gracefully`);
     io.close();
     statusStream.close();
+    stopProgressTicker();
     socketManager.stop();
     githubPoller.stop();
     hardwareSampler.stop();

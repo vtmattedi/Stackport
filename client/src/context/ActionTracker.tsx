@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
-import type { ActionRecord, ActionSummary } from "../api/types";
+import type { ActionProgressEvent, ActionRecord, ActionSummary } from "../api/types";
 import { queryClient } from "../lib/queryClient";
 import { queryKeys } from "../lib/queryKeys";
 import { useSocket } from "./SocketContext";
@@ -39,6 +39,16 @@ class ActionTracker {
 
   runningActions(): ActionSummary[] {
     return [...this.running.values()];
+  }
+
+  /** Merges the server's latest estimate into a running action. Ignored when the action is not known to be running (it ended, or this tab has not seen it start). */
+  progressed(event: ActionProgressEvent): void {
+    const record = this.running.get(event.id);
+    if (!record) return;
+    const before = record.estimate;
+    if (before && before.percent === event.percent && before.etaSeconds === event.etaSeconds) return;
+    this.running.set(event.id, { ...record, estimate: { percent: event.percent, etaSeconds: event.etaSeconds, basis: event.basis } });
+    this.publishRunning();
   }
 
   started(record: ActionSummary): void {
@@ -140,10 +150,13 @@ export function ActionTrackerBridge() {
     const started = (record: ActionSummary) => actionTracker.started(record);
     const finished = (record: ActionSummary) => actionTracker.ended(record);
     on<ActionSummary>("action:started", started);
+    const progressed = (event: ActionProgressEvent) => actionTracker.progressed(event);
     on<ActionSummary>("action:finished", finished);
+    on<ActionProgressEvent>("action:progress", progressed);
     return () => {
       off<ActionSummary>("action:started", started);
       off<ActionSummary>("action:finished", finished);
+      off<ActionProgressEvent>("action:progress", progressed);
     };
   }, [on, off]);
 

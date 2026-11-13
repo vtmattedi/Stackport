@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { formatElapsed } from "../lib/format";
+import { formatElapsed, formatEta } from "../lib/format";
 import { useSocket } from "../context/SocketContext";
 import type { BuildPhase, ProjectActionsSnapshot, ProjectBuildProgressEvent } from "../api/types";
 
@@ -43,6 +43,8 @@ export function BuildProgressToast({ projectId, title, initialPhase, initialProg
   const { emit, on, off } = useSocket();
   const [phase, setPhase] = useState(initialPhase);
   const [progress, setProgress] = useState(initialProgress);
+  // The estimator's own percentage and time left, once the server has sent them (they come with project:build-progress every few seconds).
+  const [estimate, setEstimate] = useState<{ percent: number; etaSeconds: number | null } | null>(null);
   const [elapsedMs, setElapsedMs] = useState(() => Date.now() - new Date(startedAt).getTime());
   const doneFiredRef = useRef(false);
   const onDoneRef = useRef(onDone);
@@ -66,7 +68,9 @@ export function BuildProgressToast({ projectId, title, initialPhase, initialProg
       if (event.projectId !== projectId) return;
       setPhase(event.phase);
       setProgress(event.progress);
-      if (event.done) fireDone(event.ok ?? false);
+      if (event.percent !== undefined) setEstimate({ percent: event.percent, etaSeconds: event.etaSeconds ?? null });
+      // The estimate stops at 95 while running; the final event is the parser's own (100% on success), so the estimate steps aside for it.
+      if (event.done) { setEstimate(null); fireDone(event.ok ?? false); }
     };
     const syncHandler = (snap: ProjectActionsSnapshot) => {
       const record = snap.repo;
@@ -89,7 +93,9 @@ export function BuildProgressToast({ projectId, title, initialPhase, initialProg
     };
   }, [projectId, emit, on, off]);
 
-  const pct = progress != null ? Math.round(progress * 100) : null;
+  // The estimator weighs the whole build (pulling, building, deploying, starting); the raw step fraction only covers the build step, so it is the fallback.
+  const pct = estimate ? estimate.percent : progress != null ? Math.round(progress * 100) : null;
+  const eta = estimate ? formatEta(estimate.etaSeconds) : null;
 
   return (
     <div className="build-progress-toast">
@@ -102,7 +108,7 @@ export function BuildProgressToast({ projectId, title, initialPhase, initialProg
           <div className="build-progress-toast-bar-fill" style={{ width: `${pct ?? 0}%` }} />
         </div>
         <span className="build-progress-toast-pct mono">
-          {PHASE_LABELS[phase ?? "preparing"]}{pct != null ? ` ~${pct}%` : ""}
+          {PHASE_LABELS[phase ?? "preparing"]}{pct != null ? ` ~${pct}%` : ""}{eta ? ` · ${eta}` : ""}
         </span>
       </div>
     </div>

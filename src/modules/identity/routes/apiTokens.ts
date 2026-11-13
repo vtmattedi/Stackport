@@ -19,7 +19,7 @@ router.get("/tools", requireAuth, async (_req: Request, res: Response): Promise<
 
 router.post("/", requireAuth, (req: Request, res: Response): void => {
   try {
-    const { token, record } = createApiToken({ name: req.body?.name, expiresInDays: req.body?.expiresInDays, scope: req.body?.scope, projectGroup: req.body?.projectGroup });
+    const { token, record } = createApiToken({ name: req.body?.name, expiresInDays: req.body?.expiresInDays, scope: req.body?.scope, projectGroup: req.body?.projectGroup, logs: req.body?.logs });
     auditLog(req.user ?? "unknown", "api-token.create", record.name, "ok", { tokenId: record.id, expiresAt: record.expiresAt, scopes: record.scopes, projectGroup: record.projectGroup });
     res.status(201).json({ token, record });
   } catch (err) {

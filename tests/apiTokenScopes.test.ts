@@ -51,6 +51,6 @@ test("a status token only opens the live status stream: it is not a read token, 
 
 test("a status token can be limited to a project group, a read token cannot", () => {
   assert.equal(createApiToken({ name: "g", scope: "status", projectGroup: "staging" }).record.projectGroup, "staging");
-  assert.throws(() => createApiToken({ name: "bad", scope: "read", projectGroup: "staging" }), /only applies to write and status tokens/);
+  assert.throws(() => createApiToken({ name: "bad", scope: "read", projectGroup: "staging" }), /only applies to write, status and log tokens/);
   assert.throws(() => createApiToken({ name: "bad", scope: "admin" }), /scope must be/);
 });

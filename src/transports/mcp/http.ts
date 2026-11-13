@@ -8,6 +8,7 @@ import { requireApiToken } from "../../modules/identity/middleware/apiToken";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
 import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listDockerNetworksView, listGithubRepositoriesView, listManagedDomainsView, listNetworkGroupsView, listProjectsView } from "./readModel";
+import { registerLogTools } from "./logTools";
 import { registerWriteTools } from "./writeTools";
 import { packageVersion } from "../../modules/maintenance/version";
 
@@ -165,6 +166,8 @@ export function buildMcpServer(token: ApiToken): McpServer {
   );
 
   if (token.scopes.includes("write")) registerWriteTools(server, token);
+  // Only a token made with log access sees the tool; for every other token it does not exist.
+  if (token.scopes.includes("logs")) registerLogTools(server, token);
 
   return server;
 }

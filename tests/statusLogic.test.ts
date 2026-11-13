@@ -145,9 +145,9 @@ const snapshot: StatusSnapshot = {
     { id: 2, name: "shop-staging", group: "staging", state: "down", containers: { running: 0, total: 1 }, health: "failing", lastCheckedAt: null, traffic: null },
   ],
   actions: [
-    { id: "a", kind: "deploy", projectId: 1, projectName: "shop", startedAt: "x", progress: 10 },
-    { id: "b", kind: "deploy", projectId: 2, projectName: "shop-staging", startedAt: "x", progress: null },
-    { id: "c", kind: "nginx-apply", projectId: null, projectName: null, startedAt: "x", progress: null },
+    { id: "a", kind: "deploy", projectId: 1, projectName: "shop", startedAt: "x", phase: null, percent: 10, etaSeconds: null, basis: "time" },
+    { id: "b", kind: "deploy", projectId: 2, projectName: "shop-staging", startedAt: "x", phase: null, percent: null, etaSeconds: null, basis: null },
+    { id: "c", kind: "nginx-apply", projectId: null, projectName: null, startedAt: "x", phase: null, percent: null, etaSeconds: null, basis: null },
   ],
   alerts: [
     { id: "project_down:2", severity: "critical", code: "project_down", scope: "project", projectId: 2, subject: "shop-staging", message: "m", since: "x", value: null, unit: null },

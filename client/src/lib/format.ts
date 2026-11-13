@@ -21,6 +21,14 @@ export function formatShortDate(ts: string): string {
   return formatShortDateTime(ts).split(",")[0] ?? "";
 }
 
+/** "about 2 min left", "about 40 s left", or "almost done" when little is left; null when there is no estimate (including when the action is already taking longer than usual). */
+export function formatEta(seconds: number | null | undefined): string | null {
+  if (seconds === null || seconds === undefined) return null;
+  if (seconds <= 2) return "almost done";
+  if (seconds < 90) return `about ${Math.round(seconds / 5) * 5 || 5} s left`;
+  return `about ${Math.round(seconds / 60)} min left`;
+}
+
 /** MM:ss, computed client-side from a startedAt timestamp — never streamed from the
  *  backend. Minutes keep counting past 59 for very long-running builds rather than
  *  rolling into an hours segment. */

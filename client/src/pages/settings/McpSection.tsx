@@ -5,9 +5,10 @@ import { useConfirm } from "../../components/ConfirmDialog";
 import { Disclosure } from "../../components/Disclosure";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import { Field } from "../../components/ui/field";
+import { CheckRow, Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { Stack } from "../../components/ui/stack";
+import { Switch } from "../../components/ui/switch";
 import { Hint, Prose } from "../../components/ui/text";
 import { ApiTokenRow, copyText } from "../../components/ApiTokenRow";
 import { api } from "../../api/client";
@@ -35,11 +36,14 @@ function sameGroups(a: (string | null)[], b: (string | null)[]): boolean {
 }
 
 function accessLabel(token: ApiToken): string {
-  if (!token.scopes.includes("write")) return "Read only";
-  return token.projectGroup ? `Read and write: group "${token.projectGroup}"` : "Read and write: all projects";
+  const logs = token.scopes.includes("logs");
+  const scope = token.scopes.includes("write") ? "Read and write" : "Read only";
+  const where = token.projectGroup ? `group "${token.projectGroup}"` : null;
+  if (!token.scopes.includes("write")) return `${scope}${logs ? ", with container logs" : ""}${where ? `: ${where}` : ""}`;
+  return `${scope}${logs ? ", with container logs" : ""}: ${where ?? "all projects"}`;
 }
 
-type ToolFilter = "all" | "read" | "write";
+type ToolFilter = "all" | "read" | "logs" | "write";
 
 /** The tools the endpoint offers, read back from the server so the list is what a client really gets. Closed by default: it is reference material. */
 function ToolExplorer() {
@@ -58,16 +62,16 @@ function ToolExplorer() {
   const shown = (tools ?? []).filter((tool) =>
     (filter === "all" || tool.scope === filter)
     && (!needle || `${tool.name} ${tool.title} ${tool.description}`.toLowerCase().includes(needle)));
-  const counts = { read: (tools ?? []).filter((t) => t.scope === "read").length, write: (tools ?? []).filter((t) => t.scope === "write").length };
+  const counts = { read: (tools ?? []).filter((t) => t.scope === "read").length, logs: (tools ?? []).filter((t) => t.scope === "logs").length, write: (tools ?? []).filter((t) => t.scope === "write").length };
 
   return (
     <Disclosure
       title={<span className="flex items-center gap-2"><Wrench size={13} />Tools a client gets</span>}
-      meta={tools ? `${tools.length} tools · ${counts.read} read · ${counts.write} write` : failed ? "could not be loaded" : "loading…"}
+      meta={tools ? `${tools.length} tools · ${counts.read} read · ${counts.logs} logs · ${counts.write} write` : failed ? "could not be loaded" : "loading…"}
     >
       <Stack gap={4}>
         <Hint>
-          What a client sees on <span className="mono">/mcp</span>. A <strong>read</strong> token gets the read tools; a <strong>read and write</strong> token also gets the write tools.
+          What a client sees on <span className="mono">/mcp</span>. A <strong>read</strong> token gets the read tools; a <strong>read and write</strong> token also gets the write tools; the logs tool needs a token created with log access.
           Every write tool takes two calls: the first only says what would happen, and the change runs only when the second presents the confirmation it returned.
         </Hint>
         {failed ? (
@@ -82,7 +86,7 @@ function ToolExplorer() {
                 <Input type="text" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search tools" aria-label="Search tools" className="pl-8" />
               </div>
               <div className={mcp.filters} role="group" aria-label="Filter tools">
-                {([["all", `All ${tools.length}`], ["read", `Read ${counts.read}`], ["write", `Write ${counts.write}`]] as const).map(([value, label]) => (
+                {([["all", `All ${tools.length}`], ["read", `Read ${counts.read}`], ["logs", `Logs ${counts.logs}`], ["write", `Write ${counts.write}`]] as const).map(([value, label]) => (
                   <button key={value} type="button" className={mcp.filter} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>
                 ))}
               </div>
@@ -97,7 +101,7 @@ function ToolExplorer() {
                     title={(
                       <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
                         <span className="font-mono text-[13px] break-all">{tool.name}</span>
-                        <Badge variant="outline" className={tool.scope === "write" ? "border-[var(--warning,#d29922)] text-[var(--warning,#d29922)]" : "border-[var(--success)] text-[var(--success)]"}>{tool.scope === "write" ? "write token" : "read token"}</Badge>
+                        <Badge variant="outline" className={tool.scope === "write" ? "border-[var(--warning,#d29922)] text-[var(--warning,#d29922)]" : tool.scope === "logs" ? "border-[var(--warning,#d29922)] text-[var(--warning,#d29922)]" : "border-[var(--success)] text-[var(--success)]"}>{tool.scope === "write" ? "write token" : tool.scope === "logs" ? "log access" : "read token"}</Badge>
                         {tool.twoStep && <Badge variant="outline">two calls</Badge>}
                       </span>
                     )}
@@ -142,6 +146,7 @@ export default function McpSection() {
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState("90");
   const [scope, setScope] = useState("read");
+  const [logs, setLogs] = useState(false);
   const [group, setGroup] = useState(ALL_PROJECTS);
   const groupNames = useSystemSelector((snap) => (snap.projects ?? []).map((project) => project.groupName), sameGroups);
   const groups = [...new Set(groupNames.filter((name): name is string => !!name))].sort((a, b) => a.localeCompare(b));
@@ -171,7 +176,8 @@ export default function McpSection() {
         name.trim(),
         expiry === "never" ? null : Number(expiry),
         scope === "write" ? "write" : "read",
-        scope === "write" && group !== ALL_PROJECTS ? group : null,
+        (scope === "write" || logs) && group !== ALL_PROJECTS ? group : null,
+        logs,
       );
       setCreated({ token: result.token, name: result.record.name });
       setName("");
@@ -212,7 +218,7 @@ export default function McpSection() {
           <Stack gap={2}>
             <Prose>A token gives access to <span className="mono">{endpoint}</span>. It works with Claude Code and Claude Desktop; claude.ai connectors need OAuth, which isn't supported yet.</Prose>
             <Hint>
-              Read tokens never expose credentials, env files or logs. A <strong>read and write</strong> token can change things in all projects or in one project group (a project it creates goes
+              Read tokens never expose credentials or env files, and container logs only to a token created with log access (below): existing tokens cannot read logs. A <strong>read and write</strong> token can change things in all projects or in one project group (a project it creates goes
               into that group). Every change is written to the audit log.
             </Hint>
           </Stack>
@@ -236,7 +242,7 @@ export default function McpSection() {
             <Field label="Access" className="w-40 flex-none">
               <AppSelect value={scope} onValueChange={setScope} options={SCOPE_OPTIONS} />
             </Field>
-            {scope === "write" && (
+            {(scope === "write" || logs) && (
               <Field label="Projects" className="w-44 flex-none">
                 <AppSelect
                   value={group}
@@ -248,6 +254,13 @@ export default function McpSection() {
             <Field label="Expires" className="w-36 flex-none">
               <AppSelect value={expiry} onValueChange={setExpiry} options={EXPIRY_OPTIONS} />
             </Field>
+            <div className="basis-full">
+              <CheckRow
+                control={<Switch checked={logs} onCheckedChange={setLogs} />}
+                title="Allow reading container logs"
+                hint="Adds one tool that returns a project's recent logs. Secrets Stackport manages are masked, but an app can print others (a user's address, a connection string in a stack trace). With a group chosen above it reads only that group's logs; the read tools still list every project."
+              />
+            </div>
             <Button type="submit" disabled={creating || !name.trim()}>
               {creating ? <Loader size={13} className="spin" /> : <Plus size={13} />}
               Create token
