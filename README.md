@@ -104,6 +104,8 @@ rejected. See [`.agents/skills/stackport/SKILL.md`](.agents/skills/stackport/SKI
   model, and how deploys, rollback, nginx and certificates work.
 - [`.agents/skills/stackport/SKILL.md`](.agents/skills/stackport/SKILL.md): the agent skill for preparing a repository for deployment (also exposed as an MCP resource).
 - [`docs/plan.md`](docs/plan.md): development plan and historical implementation notes.
+- [`docs/1.4/README.md`](docs/1.4/README.md): planned three-level backup/restore, Stackport Control between peers, and two-VPS validation.
+- [`docs/1.5/README.md`](docs/1.5/README.md): future update regression/restore-point work; scheduled off-host backups remain a deferred candidate.
 
 ## Development
 
