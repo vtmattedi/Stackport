@@ -1,4 +1,8 @@
-# Shipped in 1.2, not yet verified on a real host
+# Historical real-host verification checklist (1.2–1.3)
+
+> This is a preserved checklist of older release verification gaps, **not** a current UI runbook. Some paths and migration pages changed or were removed in later 1.3.x releases. Reconcile any unchecked row against current code before performing it on production.
+
+## Shipped in 1.2, not yet verified on a real host
 
 These work in tests and in a local run, but the local environment lacked something
 real (Docker, a GitHub token, production data). Check each on a deployed install after

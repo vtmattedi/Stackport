@@ -1,7 +1,6 @@
 # GitHub App: operating it
 
-What an admin needs after the App is registered. The design is in [github-app.md](github-app.md); this is what was built
-and what is left to a person.
+What an admin needs after the App is registered. The earlier 1.3.7 implementation design remains available in Git history; this guide describes the operational behavior and what still requires an operator.
 
 ## What exists
 
@@ -73,7 +72,7 @@ do that after the new one is accepted.
 deliveries refused with 401 (GitHub's *Recent Deliveries* tab on the App shows them). Use a value of at least 16 characters.
 
 **The encryption key (`ENCRYPTION_KEY`):** the App's three secrets are on the re-encryption list, so Settings > Encryption > Re-encrypt moves them with the
-rest. Rotate that key as described in [../1.3/security.md](../1.3/security.md) (S7); the App needs no extra step, and `tests/githubAppHardening.test.ts` rotates them and signs with the result.
+rest. Rotate that key as described in [../1.3/security.md](../engineering/security-boundaries.md) (S7); the App needs no extra step, and `tests/githubAppHardening.test.ts` rotates them and signs with the result.
 
 ## When the domain changes
 
