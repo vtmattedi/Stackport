@@ -25,7 +25,7 @@ retain responsibility for their own configuration, data, and security.
 
 ## Architecture and design decisions
 
-Backend source is grouped by capability; see the [backend module map](docs/backend-modules.md)
+Backend source is grouped by capability; see the [backend module map](docs/engineering/backend-modules.md)
 for ownership, import rules, and compatibility paths.
 
 **Separate management and workload stacks.** Stackport and its nginx proxy run
@@ -103,7 +103,9 @@ rejected. See [`.agents/skills/stackport/SKILL.md`](.agents/skills/stackport/SKI
 - [`Stackport.md`](Stackport.md): architecture, install and host lifecycle, security
   model, and how deploys, rollback, nginx and certificates work.
 - [`.agents/skills/stackport/SKILL.md`](.agents/skills/stackport/SKILL.md): the agent skill for preparing a repository for deployment (also exposed as an MCP resource).
-- [`docs/plan.md`](docs/plan.md): development plan and historical implementation notes.
+- [Documentation index](docs/README.md): current guides, operational references and release roadmap.
+- [1.4 roadmap](docs/roadmap/1.4.md): planned three-level backup/restore, peer control and two-VPS validation.
+- [1.5 roadmap](docs/roadmap/1.5.md): update regression/restore-point work; scheduled off-host backups remain a deferred candidate.
 
 ## Development
 

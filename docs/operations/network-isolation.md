@@ -4,11 +4,11 @@ Opt-in, per project, reversible. Project > Settings > **Network isolation**.
 
 ## Why
 
-Since 1.3.1 every routed service of every project is on one network, `stackport-proxy`, with nginx. One
+By default since 1.3.1, routed project services join the shared `stackport-proxy` network with Nginx; a project can now opt into the separate isolated network described below. One
 project's services can therefore reach another's, by alias or by service name. 1.3.0 tried to fix that with a
 network per project and it took routed projects down: each network took a slice of Docker's default address
 pool, which holds about 31 networks for the whole host
-([postmortem](../1.3.5/postmortem-1.3.0-ingress-networks.md)).
+([postmortem](../incidents/1.3.0-network-outage.md)).
 
 ## What is different this time
 

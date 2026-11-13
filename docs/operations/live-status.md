@@ -4,7 +4,9 @@ A WebSocket at `/status/ws` that streams what an adapter needs to know about thi
 project's state and traffic; the actions running now; and alerts. It only ever sends. What the adapter does with it (publish to MQTT, draw a
 dashboard) is the adapter's business and is not in Stackport.
 
-Turn it on in **Settings > Live status**, make a token there, and connect with it.
+Turn it on in **Settings → Live status**, create a token with the dedicated `status` scope, and connect with it. A normal MCP `read` or `write` token cannot access this stream.
+
+The `hello.instance` value is a randomly generated, persisted **live-status stream identifier** (`status_stream_instance` in `app_meta`). It is useful for adapter topics, but is **not** the immutable `instance_id` plus synchronized friendly name planned for [Stackport Control in 1.4](../roadmap/1.4.md). This stream is read-only telemetry, not a peer management connection.
 
 ## Connecting
 
@@ -21,7 +23,7 @@ Every frame is one JSON object from the server. The client sends nothing; a data
 
 | `type` | When | Content |
 |---|---|---|
-| `hello` | first | `v` (protocol version, 1), `instance` (a random name for this Stackport, good for topics), `sections`, `scope` (`all` or `group`) |
+| `hello` | first | `v` (protocol version, 1), `instance` (a persisted random stream ID for topics), `sections`, `scope` (`all` or `group`) |
 | `snapshot` | right after hello, once | `seq`, `at`, `data`: all four sections |
 | `update` | when a section changes | `seq`, `at`, `section` (`host`, `projects`, `actions`, `alerts`), `data`: that whole section |
 | `heartbeat` | every 30 s | `seq`, `at`, `dataAgeS` |

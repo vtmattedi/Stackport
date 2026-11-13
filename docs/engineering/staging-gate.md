@@ -3,7 +3,7 @@
 Some changes cannot be proved by unit tests or by the clean-install run, because what they depend on is a real
 Docker daemon, a real nginx or a real host: how many networks exist, which address a container gets, what
 happens when a service starts before its network. 1.3.0 shipped a change like that with its verification row
-still unticked, and it took routed projects down ([postmortem](1.3.5/postmortem-1.3.0-ingress-networks.md)).
+still unticked, and it took routed projects down ([postmortem](../incidents/1.3.0-network-outage.md)).
 This gate makes the check part of the pull request.
 
 ## What counts
@@ -23,11 +23,11 @@ A pull request that changes any of these needs a result from a real host:
 every deploy-related PR would need a staging line and "not needed" would become a reflex. If a change to it touches network attachment or start-up order,
 add the lines anyway.
 
-The list is `GATED` in [scripts/ci/staging-gate.sh](../scripts/ci/staging-gate.sh); the workflow
+The list is `GATED` in [scripts/ci/staging-gate.sh](../../scripts/ci/staging-gate.sh); the workflow
 `.github/workflows/staging-gate.yml` runs it on every pull request to `main`. Change one place and the other
 stays true.
 
-Any row in [1.3/verification.md](1.3/verification.md) that the change touches is run as part of it.
+Any row in [1.3/verification.md](real-host-verification.md) that the change touches is run as part of it.
 
 ## What to run
 

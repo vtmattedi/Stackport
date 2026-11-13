@@ -2,18 +2,18 @@
 
 StackPort is a self-hosted DevOps control plane: a Node/Express backend + React client that deploys GitHub-repo or manually-uploaded projects via `docker compose`, fronts them with its own containerized nginx reverse proxy, issues Let's Encrypt certificates, and monitors the host — all from a single admin UI/API. (The optional Hostinger VPS fleet and firewall integration was removed in October 2026; its database tables are kept, unused, so `stackport rollback` still works.)
 
-StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today; see `docs/deprecated/` for the design docs that shaped it (kept as historical record, not current reference) and `.agents/skills/stackport/SKILL.md` for the agent skill used to prepare a repository for deployment.
+StackPort itself runs entirely in Docker. There is no host-installed nginx, Certbot, or Node.js runtime to manage — the only host-level footprint is Docker itself, the `stackport` management CLI, and a small amount of persistent state under `/etc/stackport` and `/var/lib/stackport`. This document describes the system as it exists today. Superseded architecture drafts are retained in Git history; see `.agents/skills/stackport/SKILL.md` for the deployment preparation skill.
 
 ---
 
 ## 1. Architecture
 
-The backend uses [capability-owned modules](docs/backend-modules.md). Implementations
+The backend uses [capability-owned modules](docs/engineering/backend-modules.md). Implementations
 live at their canonical module paths; the former `src/services` directory has been removed.
 
 ### 1.1 System plane vs. workload plane
 
-Everything StackPort itself needs to run — its own container, its own nginx, its own network — lives in one pinned Docker Compose project named `stackport` (`docker-compose.system.yml`). Every project an operator deploys through StackPort is a **separate** Compose project, isolated from the system plane and from each other. `src/integrations/docker/systemResources.ts` draws this line by checking a container's `com.docker.compose.project` label — "system" is exactly the containers belonging to the `stackport` project, everything else is a managed workload.
+Everything StackPort itself needs to run — its own container, its own nginx, its own network — lives in one pinned Docker Compose project named `stackport` (`docker-compose.system.yml`). Every project an operator deploys through StackPort is a **separate** Compose project. This separates lifecycle and Compose ownership; it does **not** by itself isolate applications from one another on Docker networks. Stackport's administration container stays off the shared project ingress network, and opt-in network isolation is available per project. `src/integrations/docker/systemResources.ts` draws this line by checking a container's `com.docker.compose.project` label — "system" is exactly the containers belonging to the `stackport` project, everything else is a managed workload.
 
 ```
 Host OS
@@ -32,24 +32,29 @@ Host OS
 
 ### 1.2 Networking — no host ports for managed apps
 
-Managed projects never publish a host port. Routed services join `stackport-proxy`, the network nginx is on (the system stack declares it, so nginx keeps it when it is recreated), under the alias `sp<project id>-<service>`. Every project's compose file gets an **ephemeral, never-committed** rewrite (`src/modules/deployments/compose/networking.ts`) attaching the routed service(s) to it with that alias. Nginx reaches a project by the alias (`http://sp<id>-<service>:<containerPort>`), not by the plain service name, because two projects often have a service called `web`; it is also not `127.0.0.1:<port>`. At start-up Stackport moves the running routed services onto the network under their alias, so an existing project switches over without a redeploy, and removes the per-project `stackport-ingress-<id>` networks that 1.3.0 created (they used up Docker's address pool). Projects can reach each other's routed services over this network; isolation between projects is planned for 1.3.5. Projects that must reach each other internally share a **network group**, set on the project's Settings tab (not in the Compose file, and separate from the list grouping): the services an admin switches on are connected to `stackport-group-<group>` with `docker network connect --alias <service>.p<project id>`, re-applied after every deploy and at start-up, and other projects in the group reach them by that name. Nothing is shared by default.
+Managed projects do not publish host ports in their Compose files. By default, routed services join the shared `stackport-proxy` network under a collision-resistant `sp<projectId>-<service>` alias. Nginx routes to that alias, not an arbitrary plain service name or `127.0.0.1:<port>`. Stackport augments the checked-out Compose file without committing the rewrite to the source repository, and reconciles running service attachments at startup. The shared network allows routed services from different projects to reach each other, so **it is not a project isolation boundary**.
 
-`docker-compose.system.yml`'s `nginx` service publishes the public HTTP/HTTPS ports (the app port is bound only to host loopback) — `80:80` and `443:443`. A managed project's compose file that includes a `ports:` entry (any form) or `network_mode: host` is **rejected outright** by `src/modules/deployments/compose/policy.ts` at deploy time, with an actionable error pointing at `expose:` instead. This is a hard, fail-closed invariant, not a default that can be silently bypassed: StackPort decides what the host exposes publicly, not the application being deployed.
+**Opt-in network isolation is implemented**, under Project → Settings → Network isolation. An isolated project gets a `stackport-iso-<id>` network and `iso<id>-<service>` aliases, with address space from `STACKPORT_ISOLATION_RANGE`. Stackport checks upstream reachability from Nginx before switching the route; the previous shared route is retained until the new one works. Network isolation is reversible and **off by default**. See the [isolation operations guide](docs/operations/network-isolation.md).
+
+Projects may also join an administrator-configured **network group**, independent of their visual project group and ingress-isolation setting. Selected services share a `stackport-group-<group>` network under names such as `db.p7`; no service is shared through a group automatically. Groups enable intentional cross-project communication, not strict service-to-service isolation.
+
+`docker-compose.system.yml`'s `nginx` service publishes the public HTTP/HTTPS ports (the app port is bound only to host loopback) — `80:80` and `443:443`. A managed project's Compose file that includes a `ports:` entry (any form), `network_mode: host` or other dangerous raw directives is **rejected outright** by `src/modules/deployments/compose/policy.ts` when deploying, with an actionable error pointing to safe alternatives such as `expose:`. Those raw checks apply even to older projects. The additional **resolved-Compose** policy is enforced fail-closed for protected projects; older projects not yet opted into enforcement receive warnings for violations found only after Compose resolution. Check the project's protection status before assuming all resolved-config restrictions are enforced.
 
 ### 1.3 Domain routing model
 
-A domain doesn't route to "a project" — it routes to a specific `(service, container_port)` pair within that project's compose file (`project_domains.service` / `project_domains.container_port`). One project can have several domains, each pointing at a different service if it needs to (e.g. a public web frontend on one domain, an admin API on another). `src/modules/ingress/nginx/configWriter.ts`'s `generateNginxConfig()` builds one nginx server block per routed domain, proxying to `http://<service>:<containerPort>` — see `docs/deprecated/stackport_yml.md` for the original design rationale.
+A domain routes to a specific `(service, container_port)` pair in a project's Compose configuration (`project_domains.service` / `project_domains.container_port`). A project may have multiple hostnames routed to different services. Nginx generates a server block for each routed hostname and uses Stackport's **project-specific network alias**, including its isolated-network alias when isolation is enabled (`src/modules/ingress/nginx/configWriter.ts`), rather than assuming a globally unique Compose service name.
+
+**Settings → Domains** is the central domain manager. It maintains base domains, one default, an overview of hostnames/routes/certificates, and support for canonical apex/`www` behavior. With a default base domain, a new project reserves an available `<project-name>.<base-domain>` hostname; Stackport routes it automatically only when the Compose configuration has one unambiguous target. A project can also have additional hostnames. DNS records must be configured externally; Stackport does not automatically provision DNS. Nginx/Certbot and a project's Domains tab manage routing and HTTP-01 certificates.
 
 ### 1.4 Compose security policy
 
-`composePolicy.ts` runs on every `docker compose up`/`config` invocation and rejects, with a specific actionable message per violation:
+Compose validation is implemented in `src/modules/deployments/compose/policy.ts`, with invocation and resolved-config handling in `src/modules/deployments/operations.ts`. On deploy and Compose configuration checks, Stackport validates the raw YAML, referenced file paths and, where resolvable, the effective Compose configuration.
 
-- `ports:` (short or long form) — no host port publication.
-- `network_mode: host` / `pid: host` / `ipc: host`.
-- Dangerous `cap_add` entries and `privileged: true`.
-- Bind-mounting dangerous host paths (`/`, `/etc`, the Docker socket, etc.).
+- **Always rejected from raw input:** host port publication (`ports:`), host network/PID/IPC modes, dangerous capabilities/privileged execution, prohibited host mounts, and source file references that could expose Stackport's own files.
+- **Resolved configuration:** path containment, other privilege and resource exposure checks. These are enforced fail-closed on projects with Compose policy enabled. Legacy projects that have not enabled the resolved policy may continue with **explicit warnings** rather than being silently migrated to a stricter mode.
+- **Never a silent rewrite to weaken a violation:** invalid raw Compose input blocks the operation; Stackport does not remove a prohibited `ports:` directive on the user's behalf.
 
-A rejected compose file blocks the deploy entirely — StackPort never silently rewrites a project's `ports:` into something "safe" the way earlier iterations of this system did (the retired `SP:AUTO`/port-hiding mechanisms). If your compose file needs a container-internal port reachable, use `expose:`, and register the public route via a domain (§1.3).
+Use a container-internal `expose:` port for routing, configured through a Stackport-managed project domain (§1.3). The Compose policy mitigates accidental exposure; access to the management container's Docker socket still makes Stackport's own management authority highly privileged. See [security boundaries](docs/engineering/security-boundaries.md).
 
 ### 1.5 Generic TCP exposure
 
@@ -71,21 +76,23 @@ Auto-deploys (poller and webhook) deploy the commit that triggered them, not wha
 
 ### 1.7 Docker storage management
 
-Unbounded image/build-cache growth on a long-running host is a real failure mode, so StackPort manages it actively (`src/modules/maintenance/storage/operations.ts`, `src/modules/maintenance/storage/monitor.ts`):
+Stackport monitors Docker-root storage pressure (`src/modules/maintenance/storage/operations.ts`, `monitor.ts`) with configurable warning and critical free-space thresholds:
 
-- A background monitor (`certbotRenewalMonitor.ts`) sweeps temporary Certbot containers daily and reloads nginx after successful renewal.
-- A pre-build disk-pressure guard runs before every build — if free space is critically low, the build is blocked with a clear message rather than being allowed to run the host out of disk mid-build.
-- Manual build-cache pruning is one click on the System → Docker tab.
+- A background monitor checks periodically (10 minutes by default). At warning or critical pressure it attempts to clear **Docker build cache only** and records the result. It does not prune project volumes.
+- Before a build-invoking command, a **critical** free-space result triggers a build-cache prune and a second check. If pressure remains critical, the build is refused with a diagnostic rather than running the host out of disk.
+- Host → Docker exposes storage status and an operator-triggered build-cache cleanup. General image, container or volume reclamation is **not** implied by the automatic build-cache guard.
+
+Certificate renewal is separate: `src/modules/ingress/certificates/renewal.ts` runs the daily Certbot renewal sweep and reloads Nginx when appropriate.
 
 ---
 
 ## 2. Installation and host lifecycle — `stackport.sh`
 
-See [the first-install postmortem](docs/first-install-postmortem.md) for the
+See [the first-install postmortem](docs/incidents/first-install.md) for the
 bootstrap fixes, regression runner, and replacement-VPS checklist. Installation
 waits for HTTPS through nginx before reporting completion.
 
-Installation and ongoing host management go through one script, `stackport.sh`, which also installs itself as `/usr/local/bin/stackport`. Full command semantics live in `docs/deprecated/stackport_host_lifecycle.md` (the original design doc — commands below match what's actually implemented).
+Installation and ongoing host management go through one script, `stackport.sh`, which also installs itself as `/usr/local/bin/stackport`. Current command semantics are described below and in the [operator runbook](docs/operations/runbook.md); the superseded host-lifecycle design remains available in Git history.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vtmattedi/Stackport/main/stackport.sh -o stackport.sh
@@ -151,7 +158,7 @@ StackPort is single-admin — there is no multi-user model. The identity lives i
 
 1. `stackport.sh` prints a one-time username/password (§2 step 4) when the install is genuinely fresh.
 2. Open the app — over HTTPS even with no domain configured (see §5.3 for how). The login page detects an uninitialized install (`GET /api/setup/status`) and shows a setup form instead of the normal login form.
-3. Enter the bootstrap credential. This exchanges it for a short-lived, single-purpose **setup session** (`src/routes/setup.ts`) — a separate JWT namespace from normal auth tokens, enforced server-side: a setup token can't reach any normal `/api/*` route, and a normal auth token can't reach the setup routes.
+3. Enter the bootstrap credential. This exchanges it for a short-lived, single-purpose **setup session** (`src/modules/identity/routes/setup.ts`) — a separate JWT namespace from normal auth tokens, enforced server-side: a setup token can't reach any normal `/api/*` route, and a normal auth token can't reach the setup routes.
 4. The setup session can only do one thing: `POST /api/setup/admin` with a chosen username + password. This writes the real admin identity, marks the install initialized, and consumes the bootstrap credential (it can never be used again).
 5. Normal login now works with the chosen credentials.
 
@@ -185,11 +192,11 @@ Nginx runs continuously in `stackport-nginx`, controlled through `docker exec`. 
 
 ### 5.2 Config generation, validation, and rollback
 
-StackPort owns one generated file, `<NGINX_PATH>/sites-available/default`, rebuilt from two editable templates (`templates/general.conf`, `templates/project.conf`) plus live project/domain state on every apply. Every apply validates the candidate (`nginx -t`, run inside `stackport-nginx`) **before** touching the live file; a validation failure leaves the live config untouched and saves the bad candidate to a "Failed" document for inspection. A successful validate-and-replace backs up the previous live file first; if the post-replace test or reload fails, the backup is restored automatically. Both templates are directly editable from System → Nginx.
+StackPort owns one generated file, `<NGINX_PATH>/sites-available/default`, rebuilt from two editable templates (`templates/general.conf`, `templates/project.conf`) plus live project/domain state on every apply. Every apply validates the candidate (`nginx -t`, run inside `stackport-nginx`) **before** touching the live file; a validation failure leaves the live config untouched and saves the bad candidate to a "Failed" document for inspection. A successful validate-and-replace backs up the previous live file first; if the post-replace test or reload fails, the backup is restored automatically. Both templates are directly editable from Host → Nginx.
 
 ### 5.3 HTTPS with no domain — self-signed bootstrap
 
-A raw-IP install (§2 step 3, blank domain) still needs HTTPS for the very first login. `src/modules/ingress/bootstrap.ts`'s `ensureAppIngress()` runs once at boot: if no app domain is configured and no domain was supplied, it generates a long-lived self-signed certificate (`src/modules/ingress/nginx/selfSignedCert.ts`, via an ephemeral `docker run` since the app's own `/etc/letsencrypt` mount is deliberately read-only) and nginx serves it as the HTTPS `default_server` — reachable at `https://<server-ip>/` with a browser trust warning, but encrypted. The moment a real app domain is configured (via System → Nginx, or `STACKPORT_DOMAIN` at install time), StackPort automatically runs the same three-stage HTTP→issue→HTTPS flow used for projects (below) and the self-signed fallback is superseded — no manual cleanup needed.
+A raw-IP install (§2 step 3, blank domain) still needs HTTPS for the very first login. `src/modules/ingress/bootstrap.ts`'s `ensureAppIngress()` runs once at boot: if no app domain is configured and no domain was supplied, it generates a long-lived self-signed certificate (`src/modules/ingress/nginx/selfSignedCert.ts`, via an ephemeral `docker run` since the app's own `/etc/letsencrypt` mount is deliberately read-only) and nginx serves it as the HTTPS `default_server` — reachable at `https://<server-ip>/` with a browser trust warning, but encrypted. The moment a real app domain is configured (via Settings → Domains, or `STACKPORT_DOMAIN` at install time), StackPort automatically runs the same three-stage HTTP→issue→HTTPS flow used for projects (below) and the self-signed fallback is superseded — no manual cleanup needed.
 
 ### 5.4 Per-project SSL issuance
 
@@ -199,7 +206,7 @@ Issuance is sequenced to avoid the chicken-and-egg problem of needing a live HTT
 2. Certificate issued.
 3. SSL flag flipped on, nginx applied again with the final HTTPS block.
 
-A background monitor (`certbotRenewalMonitor.ts`) sweeps temporary Certbot containers daily and reloads nginx after successful renewal.
+The Certbot renewal monitor (`src/modules/ingress/certificates/renewal.ts`) runs daily by default in a temporary Certbot container, refreshes certificate status, and reloads Nginx following successful renewal.
 
 ---
 
@@ -237,19 +244,21 @@ See `.agents/skills/stackport/SKILL.md` for the full operational checklist (this
 
 ### 6.3 Actions
 
-Pull, Docker Compose (no pull), Deploy (pull+build+up, what auto-deploy triggers), Force Recreate (`--force-recreate`), Force Rebuild (`build --no-cache` + `--force-recreate`), Stop, Stop & Delete Data (destructive, confirmation-gated), Pause/Resume (pausing drops the project from nginx routing without touching containers/data), and Rollback (§1.5). All stream live output over WebSocket and record deploy history.
+Pull, Docker Compose (no pull), Deploy (pull+build+up, what auto-deploy triggers), Force Recreate (`--force-recreate`), Force Rebuild (`build --no-cache` + `--force-recreate`), Stop, Stop & Delete Data (destructive, confirmation-gated), Pause/Resume (pausing drops the project from nginx routing without touching containers/data), and Rollback (§1.6). All stream live output over WebSocket and record deploy history.
 
 ### 6.4 Env files, auto-deploy, health checks
 
-Unchanged in shape from earlier versions of the system: named `.env` files per project (written to disk right before every build/deploy), an auto-deploy branch the GitHub poller watches, and a health-check endpoint/interval StackPort polls independently.
+Stackport manages named project `.env` files and materializes them in the project checkout before builds/deployments. **New and updated environment values are encrypted at rest** in `project_env_files.variables_enc`; the legacy `variables_json` column is retained for older rows and stores `[]` for new writes. Legacy plaintext values can still be read and need a compatible encryption-key recovery strategy. Project configuration and health-check settings are managed independently of that storage format.
 
 A project's health check is a path on one of its domains, fetched over HTTPS or HTTP to match the domain's SSL setting. With a path and a domain set, every deploy and rollback is verified: after `docker compose up` succeeds, Stackport polls the check every 3 seconds for the project's grace period (default 60 s, 5–600 s). If it never passes, the revision stays the running (`active`) one but is marked unhealthy (`health_failed_at`), the action reports failure, and a "deploy failed its health check" alert is sent when notifications are enabled. With **Roll back if unhealthy** turned on (off by default), a failed deploy then rolls back to the default rollback target; a rollback that fails its own check never triggers another. Without a health check path, a deploy counts as successful once its containers start, as before.
 
 **Deploy triggers.** Each GitHub project picks one: `webhook` (GitHub calls Stackport on every push; needs Stackport published on an HTTPS domain), `poller` (Stackport asks GitHub at the poll interval), or `manual`. New projects start on the webhook when it's available. With the poller's webhook safety check on (the default), webhook projects are also checked every 30 minutes, since a push sent while Stackport was down is never redelivered; if that check finds a commit the hook didn't deliver, the hook is marked failing and the project is polled at the normal interval until a delivery succeeds again.
 
+**GitHub App:** an independently registered App per Stackport instance supports repository discovery and import, signed shared webhooks, short-lived installation credentials, deployment status reporting, deploy-after-checks and published-release triggers. Projects can migrate between supported PAT and App access flows. Pull-request preview environments are **not implemented**. See the [GitHub App operating guide](docs/operations/github-app.md).
+
 ---
 
-## Browser push and email alerts
+## 7. Browser push and email alerts
 
 Configure both channels in **Settings → Notifications**. Browser push has its own enable switch, contact email or HTTPS URL, and per-event preferences for health failures, blocked automatic deployments, unhealthy deployments, failed automatic rollbacks and failed Stackport updates. An optional **Automatic rollback restored service** preference is off by default; enabling it sends a separate recovery alert after successful rollback without changing the original unhealthy-deployment alert. Email remains independently configurable through its existing provider and credential settings. Routine successful operations keep their existing in-app toasts.
 
@@ -257,45 +266,52 @@ After saving push settings, click **Enable on this browser** and accept the brow
 
 After login, the app passively checks browsers that opted in and shows a notice on any signed-in page if browser alerts need registration or permission repair. Checks repeat on focus, reconnect and once per minute while visible. The notice links to Notifications settings; it never requests permission or re-registers the browser automatically. Intentionally disabled browsers do not receive repair reminders.
 
-Signing keys are generated automatically at startup and preserved in `push_config` in the persistent SQLite database. The private key uses the same encryption as stored credentials and is never returned to clients. There are no push environment variables to configure. Back up the database **and** the host secrets containing `JWT_SECRET`; repair, updates, rollback and reinstall without purge preserve the identity and subscriptions.
+Signing keys are generated automatically at startup and preserved in `push_config` in the persistent SQLite database. The private key uses the same encryption as stored credentials and is never returned to clients. There are no push environment variables to configure. Back up the database **and the relevant host encryption secrets**: `ENCRYPTION_KEY` and any keys configured in `ENCRYPTION_KEY_PREVIOUS` for modern ciphertext, plus `JWT_SECRET` for legacy JWT-derived ciphertext. Repair, updates, rollback and reinstall without purge should preserve these secrets and the push identity.
 
 Push messages contain only concise operational metadata. Clicking a notification focuses or opens Stackport at the relevant project or Settings page. Browser push runs in the service worker even when the tab is closed; delivery depends on browser permission and the browser's push service. Expired subscriptions are removed automatically, temporary failures remain registered, and delivery failures cannot fail a deploy or health check. The shared delivery log records email and browser push separately without exposing subscription endpoints or keys.
 
-Automatic alerts are first committed to a SQLite outbox, atomically with their health/deployment classification wherever they share the database. One in-process worker polls every five seconds and submits at most four requests concurrently. Each browser has its own delivery state and retry schedule; restarts and container replacement recover pending work and expired leases. Transient failures retry with bounded backoff, jitter and Retry-After handling. Recovered health incidents, disabled preferences and removed browsers cancel unsent work; re-enabling never replays incidents skipped while disabled. Failure events expire after one to twenty-four hours depending on their type, and terminal history is retained for thirty days with bounded cleanup. See [the reliability contract](docs/web-push-reliability.md) for exact policies.
+Automatic alerts are first committed to a SQLite outbox, atomically with their health/deployment classification wherever they share the database. One in-process worker polls every five seconds and submits at most four requests concurrently. Each browser has its own delivery state and retry schedule; restarts and container replacement recover pending work and expired leases. Transient failures retry with bounded backoff, jitter and Retry-After handling. Recovered health incidents, disabled preferences and removed browsers cancel unsent work; re-enabling never replays incidents skipped while disabled. Failure events expire after one to twenty-four hours depending on their type, and terminal history is retained for thirty days with bounded cleanup. See [the reliability contract](docs/engineering/web-push-reliability.md) for exact policies.
 
 Provider success means **accepted by the push service**, not displayed or read. Submission is at least once: a crash after acceptance but before committing the result can cause another attempt. Retries share an incident tag while separate incidents have separate tags. A request already in flight cannot be unsent after cancellation. Settings shows pending/retry/failure counts, the worker's last poll and provider acceptance, and diagnoses a signing identity that cannot be decrypted. Its Refresh action reconciles the browser's real subscription after local storage loss or database restore. Removing a browser disables server submissions first, then removes the local capability, with a recovery button for partial failure.
 
 The custom Workbox worker retains asset precaching, old-cache cleanup, automatic activation and client claiming. Existing release polling and Socket.IO feedback continue unchanged. Detached self-update outcomes enqueue once per updater ID/outcome; launch failures are also reported. Host-only CLI operations do not create a detached updater and are not monitored by this channel. An older release can use the additive schema after rollback but cannot drain queued alerts until a worker-capable release returns. Restore must keep the matching database and host secret: a failed identity check is visible and never silently regenerates keys. Identity failures suspend queued deliveries without spending their provider retry budget; they resume automatically after repair if still eligible and unexpired.
 
-## 7. Security model summary
+## 8. Security model summary
 
 1. Single admin identity; bootstrap and recovery are the only ways to (re)set it, and both use short-lived, single-purpose sessions enforced server-side, never a frontend-only redirect (§3).
 2. Machine secrets (`JWT_SECRET`, `WEBHOOK_SECRET`) are generated once by `stackport.sh` and persisted — never regenerated on a normal `install`/`update`/`repair` rerun.
 3. Managed applications cannot publish host ports or use host networking — enforced at deploy time, fail-closed (§1.2, §1.4).
 4. StackPort owns all deliberate public ingress; a managed app never decides what the host exposes.
 5. Nginx config changes are always validated before being applied live, with automatic backup and rollback on failure (§5.2).
-6. Stored secrets (GitHub tokens, API keys, per-credential values) are AES-256-GCM encrypted at rest and never echoed back by any API response.
+6. Stored credentials and newly saved managed environment values use AES-256-GCM encryption at rest, with a separate `ENCRYPTION_KEY` and previous-key ring when configured. Legacy ciphertext can still depend on `JWT_SECRET`. Authorized administration views may return decrypted project environment values for editing; arbitrary public/MCP read tools do not.
 7. Admin-recovery credential generation requires local root (`docker exec` on the daemon socket) — there is no HTTP endpoint that can trigger it.
 8. `stackport uninstall` preserves state by default; `--purge` is explicit, strongly confirmed, and refuses to run non-interactively.
-9. API tokens for the MCP endpoint are stored only as SHA-256 hashes, shown once, scoped (`read` only today), revocable and optionally expiring. They are accepted only on `/mcp` and admin session tokens are never accepted there (§9).
-10. Action output is stored on disk, masked and time-limited (§10). Masking covers stored credentials and the project's managed env values; it can't cover secrets an app prints that Stackport doesn't manage. Note that managed env values themselves are stored in plain text in the database (`project_env_files.variables_json`), unlike credentials.
+9. API tokens are stored as SHA-256 hashes and shown once. Supported scopes are `read`, `write` (includes `read`), the independent `status` stream scope, and an optional `logs` add-on to a `read` or `write` token that adds the container-log MCP tool. MCP tokens are accepted on `/mcp`; `status` tokens, and not MCP read/write tokens, connect to `/status/ws`. Admin session tokens are not substitutes for either kind (§9).
+10. Action output is stored on disk, masked and time-limited (§11). Masking covers known credentials and managed project environment values, but cannot recognize untracked secrets an app prints. Managed `.env` values use encrypted storage for newly saved rows, while materialized `.env` files on disk still require filesystem protection.
 
 ---
 
-## 9. MCP (read-only, token auth)
+## 9. MCP and live status
 
-Stackport serves a Model Context Protocol endpoint at `https://<stackport-domain>/mcp` (Streamable HTTP, stateless, JSON responses), inside the app process, so it reads the same state the UI does and never writes.
+The embedded HTTP MCP endpoint at `https://<stackport-domain>/mcp` uses **Streamable HTTP**, stateless requests and API bearer tokens. Its read tools expose selected non-secret project and host metadata. With a token that has the `write` scope, the same endpoint also offers *authorized mutations*, not only read access.
 
-- **Tokens:** created, listed and revoked in Settings → MCP (`/api/api-tokens`, admin session required). Each token is shown once; only its hash and a short display prefix are stored. Every tool call is written to the audit log with the token id, and each token is rate-limited to 120 requests per minute on top of the per-IP limit.
-- **Tools:** `stackport_status` (version and project counts), `stackport_list_projects` (repository as `owner/name`, branch, deploy trigger, paused, health, last commit, pending deploy, domains), `stackport_get_project` (the same plus Compose file, last 10 deployments, containers and the running action), `stackport_get_project_ingress_health` (whether nginx can reach each routed service: name resolves and port answers). `stackport_list_managed_domains` (the base domains Stackport manages, the default, how many hostnames use each, the last DNS result). With the `write` scope, `stackport_set_project_hostname` renames a project's hostname (or adds one) to a label on a managed domain or to the bare domain; it is two-step like the other write tools, and a token limited to a project group can only change projects in its group.
-- **Never returned:** anything stored encrypted, credential ids, env files (names or values), nginx extra config, webhook slugs or secrets, build and action logs. Outputs are built field by field in `src/mcp/readModel.ts`; `tests/mcpHttp.test.ts` checks the exact key sets and that planted secrets never appear.
-- **Clients:** Claude Code (`claude mcp add --transport http stackport https://<domain>/mcp --header "Authorization: Bearer spk_…"`) and Claude Desktop. claude.ai custom connectors require OAuth, which is not supported yet.
+- **Tokens:** create, list and revoke in Settings → MCP (`/api/api-tokens`); the raw value is shown once, while the database stores only its hash and display prefix. Scopes are `read`, `write` (which includes read) and a **separate** `status` scope. Write, status and log-enabled tokens may be limited to a project group (for a log-enabled token the group limits the logs it reads, not what the read tools list); read-only MCP tokens without log access have no project-group filter. Token requests are audited and rate-limited.
+- **Read tools:** status, projects and project details, ingress health, managed domains, network groups and network assignments, Docker networks and connected GitHub App repositories. Each read response is assembled from an allowlisted view rather than exposing full database records.
+- **Write tools:** deploy, roll back, recreate/restart and stop projects; change a project's network group or hostname; and create a project from an authorized GitHub App repository. Mutations are restricted by token group where applicable, audited and use a **two-call preview/one-time confirmation** (expires after five minutes). Tools start operations through the existing action system rather than granting direct Docker access.
+- **Tool catalog:** Settings → MCP obtains the tool list and the required read/write scope from `GET /api/api-tokens/tools`; the catalog reflects the actual MCP server registration.
+- **Not exposed by the MCP read model:** encrypted credential values, managed environment-file contents/names, webhook secrets, extra Nginx configuration and raw action/build logs. Source: `src/transports/mcp/readModel.ts`. **Container logs** are offered only to a token created with log access, through `stackport_get_project_logs` (`src/transports/mcp/logTools.ts`): opt-in per token (existing tokens gain nothing), limited to the token's project group, with the secrets Stackport manages (stored credentials and the project's env values, multi-line values line by line) masked after the text is cleaned of escape codes, output capped (10 to 500 lines per container, 64 KiB), at most 2 concurrent reads per token and 10 per minute, every call audited without the log text. An app can still print secrets Stackport does not manage, and the tool's result says so. Do not mistake this for a complete remote management API.
+
+The HTTP server implementation lives in `src/transports/mcp/http.ts` and `writeTools.ts`. Claude Code and other Streamable HTTP clients can supply a bearer token; clients that require MCP OAuth cannot yet connect with their OAuth flow.
+
+### Live status WebSocket (separate from MCP)
+
+Settings → Live status can enable a **disabled-by-default, outbound-only** WebSocket stream at `/status/ws`. It requires a `status`-scope token in the Authorization header, secure or locally trusted transport, and excludes browser-origin upgrade requests. The stream sends host metrics, project status/traffic, running actions (each with an estimated `percent` and `etaSeconds` from the same estimator the web UI uses: Docker builds by phase and build step, other actions by how long earlier successful runs took, `null` when there is no basis) and active alerts; a group-scoped token is intended to see only that group. See the [protocol and deployment notes](docs/operations/live-status.md). **This is not** the planned Stackport-to-Stackport Control channel of [1.4](docs/roadmap/1.4.md); full remote configuration and deployment from one Stackport UI are not implemented.
 
 The older stdio server (`npm run mcp`, `src/mcp/server.ts`) is unchanged: it runs as a separate process with direct database access and write tools, and is only reachable by someone who can already run commands in the Stackport container.
 
 ---
 
-## 8. Directory layout reference
+## 10. Directory layout reference
 
 ```
 /etc/stackport/
@@ -317,7 +333,7 @@ The older stdio server (`npm run mcp`, `src/mcp/server.ts`) is unchanged: it run
 
 The application checkout (`/var/lib/stackport/app`) is disposable and rebuildable at any time via `stackport update`/`rollback`; persistent state never lives inside it or inside a container image.
 
-## 10. Actions and their logs
+## 11. Actions and their logs
 
 Every action (deploys, pulls, rollbacks, stops, SSL issuance, nginx applies, certbot runs, Docker prunes) goes through one runner, `src/modules/actions/registry.ts`, which allows one action per slot (a project's build/deploy slot, each domain's SSL slot, nginx, ...).
 
@@ -331,7 +347,7 @@ Every action (deploys, pulls, rollbacks, stops, SSL issuance, nginx applies, cer
 - **Deletion:** a project's log files are deleted when the project is deleted, after a successful Stop & Delete Data, and on request (`DELETE /api/projects/:id/action-logs`, the Clear logs button).
 - **Permissions:** the directory is `0700` and each file `0600`, owned by the app user.
 
-## Traffic and Docker logs
+## 12. Traffic and Docker logs
 
 Traffic uses authenticated `/api/metrics/nginx` and `/api/metrics/nginx/requests` endpoints to read `docker logs stackport-nginx`. Generated access logs include host, user agent and request duration for domain filters, health-check exclusion and response-time statistics. No host log mount or sudo is needed.
 
