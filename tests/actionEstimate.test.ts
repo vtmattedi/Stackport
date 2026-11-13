@@ -18,7 +18,7 @@ test("with no build phase and no history there is no number, not an invented one
 
 test("without a build phase it is elapsed over the typical duration, capped at 95 while running, with the time left", () => {
   assert.deepEqual(estimateProgress(input({ typicalMs: 20_000 })), { percent: 50, etaSeconds: 10, basis: "time" });
-  assert.deepEqual(estimateProgress(input({ typicalMs: 10_000, now: START + 30_000 })), { percent: 95, etaSeconds: 0, basis: "time" }, "slower than usual: nearly done, never done");
+  assert.deepEqual(estimateProgress(input({ typicalMs: 10_000, now: START + 30_000 })), { percent: 95, etaSeconds: null, basis: "time" }, "slower than usual: capped, and no time left to promise");
 });
 
 test("a docker build follows its phases, and its steps inside the build phase", () => {
@@ -47,6 +47,39 @@ test("an estimate never goes down", () => {
 test("with no history the time left comes from the pace of the steps, once there are enough of them to say", () => {
   assert.equal(estimateProgress(input({ phase: "building", stepRatio: 0.25, now: START + 30_000 })).etaSeconds, 90);
   assert.equal(estimateProgress(input({ phase: "building", stepRatio: 0.05, now: START + 30_000 })).etaSeconds, null, "five percent in is too early to extrapolate");
+});
+
+test("the time left agrees with the percentage: a slow build is not \"almost done\" while it is a third of the way through", () => {
+  // Typically 5 minutes; today it has taken 7 and is on step 3 of 9.
+  const slow = estimateProgress(input({ phase: "building", stepRatio: 3 / 9, typicalMs: 300_000, now: START + 420_000 }));
+  assert.equal(slow.basis, "steps");
+  assert.equal(slow.percent, 35);
+  assert.equal(slow.etaSeconds, 840, "today's pace, 7 minutes for a third, says 14 more");
+  // Before the steps say anything, history is the best there is.
+  assert.equal(estimateProgress(input({ phase: "pulling", typicalMs: 100_000, now: START + 10_000 })).etaSeconds, 90);
+  // The countdown moves in steps of five seconds, so it is not a change to send every second.
+  const ticks = [10_000, 10_400, 11_200, 12_000].map((ms) => estimateProgress(input({ typicalMs: 100_000, now: START + ms })).etaSeconds);
+  assert.ok(ticks.every((eta) => eta !== null && eta % 5 === 0), JSON.stringify(ticks));
+});
+
+test("a start time that cannot be read gives no estimate, not NaN", () => {
+  assert.deepEqual(estimateProgress(input({ startedAtMs: Number.NaN, typicalMs: 20_000 })), { percent: null, etaSeconds: null, basis: null });
+  const estimator = new ActionEstimator(() => [10_000, 10_000, 10_000], () => START + 5_000);
+  const broken = { id: "b", kind: "x", projectId: undefined, startedAt: "not a date", phase: null, progress: null };
+  assert.equal(estimator.estimate(broken).percent, null);
+  assert.equal(estimator.estimate(broken).percent, null, "and it did not poison its memory of the action");
+});
+
+test("typical durations that have gone stale are dropped, not kept for ever", () => {
+  let at = START;
+  let looks = 0;
+  const estimator = new ActionEstimator(() => { looks += 1; return [10_000, 10_000, 10_000]; }, () => at);
+  const record = { id: "t", kind: "x", projectId: undefined, startedAt: new Date(START).toISOString(), phase: null, progress: null };
+  estimator.estimate(record);
+  at = START + 120_000;
+  estimator.prune(new Set(["t"]));
+  estimator.estimate(record);
+  assert.equal(looks, 2, "after the prune the entry was gone and had to be looked up again");
 });
 
 test("median", () => {
@@ -89,7 +122,7 @@ test("the estimator needs at least three earlier runs, takes their median, and h
   const later = estimator.estimate(record);
   assert.equal(calls, 2, "a minute on, it looks again");
   assert.equal(later.percent, 95, "66 s elapsed against a typical 20 s (the median of 10, 20 and 30): capped");
-  assert.equal(later.etaSeconds, 0);
+  assert.equal(later.etaSeconds, null, "it has outlasted a typical run: no countdown");
 });
 
 test("the estimator forgets finished actions", () => {

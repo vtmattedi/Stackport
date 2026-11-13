@@ -59,6 +59,8 @@ export interface EstimateInput {
 const clamp = (value: number, low: number, high: number): number => Math.min(high, Math.max(low, value));
 
 export function estimateProgress(input: EstimateInput): ProgressEstimate {
+  // A start time that cannot be read would turn every number below into NaN.
+  if (!Number.isFinite(input.startedAtMs) || !Number.isFinite(input.now)) return NO_ESTIMATE;
   const elapsed = Math.max(0, input.now - input.startedAtMs);
   const timeShare = input.typicalMs && input.typicalMs > 0 ? (elapsed / input.typicalMs) * 100 : null;
 
@@ -81,13 +83,16 @@ export function estimateProgress(input: EstimateInput): ProgressEstimate {
 
   percent = Math.round(clamp(Math.max(percent, input.floor), 0, CAP_WHILE_RUNNING));
 
-  let etaSeconds: number | null = null;
-  if (input.typicalMs && input.typicalMs > 0) {
-    etaSeconds = Math.round(Math.max(0, input.typicalMs - elapsed) / 1000);
-  } else if (basis === "steps" && input.stepRatio !== null && input.stepRatio >= 0.1) {
-    // No history: the pace so far, extended to the remaining steps.
-    etaSeconds = Math.round((elapsed * (1 - input.stepRatio)) / input.stepRatio / 1000);
+  // The time left must agree with the percentage beside it. Once the build reports its steps, today's pace says more than history does. Otherwise it is the
+  // typical duration less what has passed; an action that has already outlasted a typical run has no estimate ("taking longer than usual"), not "0 seconds".
+  let remainingMs: number | null = null;
+  if (basis === "steps" && input.stepRatio !== null && input.stepRatio >= 0.1) {
+    remainingMs = (elapsed * (1 - input.stepRatio)) / input.stepRatio;
+  } else if (input.typicalMs && input.typicalMs > 0 && elapsed < input.typicalMs) {
+    remainingMs = input.typicalMs - elapsed;
   }
+  // In steps of 5 seconds: a countdown that changes every second would be a change to send every second.
+  const etaSeconds = remainingMs === null ? null : Math.round(remainingMs / 5_000) * 5;
   return { percent, etaSeconds, basis };
 }
 
@@ -145,9 +150,11 @@ export class ActionEstimator {
     return result;
   }
 
-  /** Forgets what it holds for actions that are no longer running. */
+  /** Forgets what it holds for actions that are no longer running, and typical durations that have gone stale. */
   prune(runningIds: Set<string>): void {
     for (const id of [...this.floors.keys()]) if (!runningIds.has(id)) this.floors.delete(id);
+    const now = this.clock();
+    for (const [key, entry] of [...this.typicals]) if (now - entry.at >= TYPICAL_TTL_MS) this.typicals.delete(key);
   }
 }
 

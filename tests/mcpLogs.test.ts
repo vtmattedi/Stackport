@@ -7,7 +7,7 @@ import { initializeDatabase } from "../src/config/database";
 import { ApiTokenError, createApiToken, verifyApiToken, type ApiToken } from "../src/modules/identity/apiTokens";
 import { buildMcpServer } from "../src/transports/mcp/http";
 import { listMcpTools } from "../src/transports/mcp/catalog";
-import { MAX_OUTPUT_CHARS, MAX_READS_PER_MINUTE, ReadLimiter, prepareLog, registerLogTools, sanitizeLog, type LogDeps } from "../src/transports/mcp/logTools";
+import { MAX_CONCURRENT_PER_TOKEN, MAX_OUTPUT_CHARS, MAX_READS_PER_MINUTE, ReadLimiter, expandSecrets, prepareLog, registerLogTools, sanitizeLog, type LogDeps } from "../src/transports/mcp/logTools";
 
 before(() => { initializeDatabase(); });
 
@@ -163,4 +163,63 @@ test("a token may read logs only a few times a minute", async () => {
   mcp.advance(61_000);
   assert.equal((await mcp.call({ projectId: 1 })).isError, false, "a minute later it works again");
   await mcp.close();
+});
+
+// ---- found in review
+
+test("a secret that an escape code or a CRLF splits is still masked: the text is cleaned first, then masked", () => {
+  const secret = "s3cr3t-token-value-123456";
+  const split = `token=${secret.slice(0, 8)}\u001b[0m${secret.slice(8)} end`;
+  assert.equal(prepareLog(split, [secret]).output.includes(secret), false, "an ANSI code between its characters");
+  assert.equal(prepareLog(split, [secret]).output.includes(secret.slice(8)), false);
+  const multi = "line-one-of-secret\nline-two-of-secret";
+  assert.equal(prepareLog("x line-one-of-secret\r\nline-two-of-secret y", [multi]).output.includes("line-one-of-secret"), false, "CRLF where the secret has LF");
+});
+
+test("a multi-line secret is masked although Compose puts a prefix in front of every line", () => {
+  const key = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nKgwggSmAgEAAoIBAQC7VJTUt9Us8cKj\n-----END PRIVATE KEY-----";
+  const printed = key.split("\n").map((line) => `web-1  | ${line}`).join("\n");
+  const { output } = prepareLog(`web-1  | starting\n${printed}\nweb-1  | ready`, [key]);
+  for (const line of key.split("\n")) assert.equal(output.includes(line), false, line);
+  assert.match(output, /starting/);
+  assert.match(output, /ready/);
+  // Short lines are not worth masking by themselves: "}" would blot out half of any log.
+  assert.deepEqual(expandSecrets(["{\n  \"a\": \"b\",\n}"]).filter((piece) => piece.length < 8), []);
+});
+
+test("only a few log reads run at once for a token, and one that fails gives its place back", async () => {
+  let release: () => void = () => undefined;
+  let fail = false;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const deps: LogDeps = {
+    getProject: () => ({ id: 1, name: "shop", groupName: null }),
+    readLogs: async () => { if (fail) throw new Error("docker exploded"); await gate; return { ok: true, output: "ok" }; },
+    secrets: () => [],
+    now: () => 1_000_000,
+  };
+  const server = new McpServer({ name: "t", version: "1" });
+  registerLogTools(server, tokenOf(), deps, new ReadLimiter(1_000, deps.now));
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "c", version: "1" });
+  await Promise.all([server.connect(b), client.connect(a)]);
+  const read = async () => {
+    const result = await client.callTool({ name: "stackport_get_project_logs", arguments: { projectId: 1 } });
+    return { isError: result.isError === true, text: (result.content as { text: string }[])[0]!.text };
+  };
+
+  const running = Array.from({ length: MAX_CONCURRENT_PER_TOKEN }, () => read());
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const refused = await read();
+  assert.equal(refused.isError, true);
+  assert.match(refused.text, /still running/);
+  release();
+  assert.ok((await Promise.all(running)).every((r) => !r.isError));
+  assert.equal((await read()).isError, false, "places are given back");
+
+  fail = true;
+  for (let i = 0; i < MAX_CONCURRENT_PER_TOKEN + 2; i += 1) await read().catch(() => undefined);
+  fail = false;
+  assert.equal((await read()).isError, false, "a read that threw did not keep its place");
+  await client.close();
+  await server.close();
 });

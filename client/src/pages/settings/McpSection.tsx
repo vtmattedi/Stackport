@@ -258,7 +258,7 @@ export default function McpSection() {
               <CheckRow
                 control={<Switch checked={logs} onCheckedChange={setLogs} />}
                 title="Allow reading container logs"
-                hint="Adds one tool that returns a project's recent logs. Secrets Stackport manages are masked, but an app can print others (a user's address, a connection string in a stack trace). Limited to the group chosen above, when there is one."
+                hint="Adds one tool that returns a project's recent logs. Secrets Stackport manages are masked, but an app can print others (a user's address, a connection string in a stack trace). With a group chosen above it reads only that group's logs; the read tools still list every project."
               />
             </div>
             <Button type="submit" disabled={creating || !name.trim()}>

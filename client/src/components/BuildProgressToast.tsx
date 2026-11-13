@@ -69,7 +69,8 @@ export function BuildProgressToast({ projectId, title, initialPhase, initialProg
       setPhase(event.phase);
       setProgress(event.progress);
       if (event.percent !== undefined) setEstimate({ percent: event.percent, etaSeconds: event.etaSeconds ?? null });
-      if (event.done) fireDone(event.ok ?? false);
+      // The estimate stops at 95 while running; the final event is the parser's own (100% on success), so the estimate steps aside for it.
+      if (event.done) { setEstimate(null); fireDone(event.ok ?? false); }
     };
     const syncHandler = (snap: ProjectActionsSnapshot) => {
       const record = snap.repo;

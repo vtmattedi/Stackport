@@ -5,6 +5,7 @@ import { buildMasker, collectSecrets } from "../../modules/actions/log";
 import { getProjectById, getProjectLogs } from "../../modules/deployments/operations";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
+import { mayActOn } from "./writeTools";
 
 /**
  * A container-log tool for the HTTP MCP endpoint, for tokens created with log access.
@@ -44,9 +45,31 @@ export const realLogDeps: LogDeps = {
   now: () => Date.now(),
 };
 
+/** Docker reads that may run at the same time: per token, and overall. Each one is a `docker compose logs` process. */
+export const MAX_CONCURRENT_PER_TOKEN = 2;
+export const MAX_CONCURRENT_OVERALL = 4;
+
 /** At most `limit` reads per token per minute, in memory (a restart forgets them, which only lets a token read again sooner). */
 export class ReadLimiter {
   private reads = new Map<number, number[]>();
+  private running = new Map<number, number>();
+  private total = 0;
+
+  /** Takes a place among the reads running now; returns how to give it back, or null when the token or the server already has its share. */
+  begin(tokenId: number): (() => void) | null {
+    const mine = this.running.get(tokenId) ?? 0;
+    if (mine >= MAX_CONCURRENT_PER_TOKEN || this.total >= MAX_CONCURRENT_OVERALL) return null;
+    this.running.set(tokenId, mine + 1);
+    this.total += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.total -= 1;
+      const left = (this.running.get(tokenId) ?? 1) - 1;
+      if (left <= 0) this.running.delete(tokenId); else this.running.set(tokenId, left);
+    };
+  }
 
   constructor(private readonly limit: number, private readonly now: () => number) {}
 
@@ -70,9 +93,32 @@ export function sanitizeLog(text: string): string {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
 }
 
-/** Masks, then cleans, then keeps the end of what is left (the recent lines matter most). */
+/** The shortest piece of a multi-line secret worth masking on its own (a line like "}" or "-----" would mask half the log). */
+const MIN_LINE_SECRET = 8;
+
+/**
+ * A secret as it can appear in the log. A multi-line value (a private key, a JSON credential) is printed one line at a time, and `docker compose logs` puts
+ * `service-1  | ` in front of every line, so the whole value never appears in one piece: each of its lines is masked as well.
+ */
+export function expandSecrets(secrets: string[]): string[] {
+  const all = new Set<string>();
+  for (const secret of secrets) {
+    const normalized = secret.replace(/\r\n?/g, "\n");
+    all.add(normalized);
+    if (normalized.includes("\n")) {
+      for (const line of normalized.split("\n")) {
+        const piece = line.trim();
+        if (piece.length >= MIN_LINE_SECRET) all.add(piece);
+      }
+    }
+  }
+  return [...all].sort((a, b) => b.length - a.length);
+}
+
+/** Cleans, then masks, then keeps the end of what is left (the recent lines matter most). Cleaning comes first: an escape code or a CRLF inside a secret
+ *  would otherwise hide it from the masker and be removed afterwards, putting the secret back together in the result. */
 export function prepareLog(raw: string, secrets: string[], maxChars: number = MAX_OUTPUT_CHARS): { output: string; truncated: boolean } {
-  const cleaned = sanitizeLog(buildMasker(secrets).mask(raw));
+  const cleaned = buildMasker(expandSecrets(secrets)).mask(sanitizeLog(raw));
   if (cleaned.length <= maxChars) return { output: cleaned, truncated: false };
   const tail = cleaned.slice(cleaned.length - maxChars);
   // Start at a line boundary, so the first line is whole.
@@ -104,7 +150,7 @@ export function registerLogTools(server: McpServer, token: ApiToken, deps: LogDe
     async ({ projectId, service, lines }) => {
       const project = deps.getProject(projectId);
       // The same answer for a project that does not exist and one outside the token's group: do not reveal which.
-      if (!project || (token.projectGroup !== null && project.groupName !== token.projectGroup)) {
+      if (!project || !mayActOn(token, project)) {
         auditLog(actor, "mcp.tool", "stackport_get_project_logs", "fail", { tokenId: token.id, projectId, reason: "not-found-or-out-of-scope" });
         return failure(`No project with id ${projectId}.`);
       }
@@ -114,9 +160,19 @@ export function registerLogTools(server: McpServer, token: ApiToken, deps: LogDe
         return failure(`Logs can be read ${MAX_READS_PER_MINUTE} times a minute per token. Try again shortly.`);
       }
 
+      const release = limiter.begin(token.id);
+      if (!release) {
+        auditLog(actor, "mcp.tool", "stackport_get_project_logs", "fail", { tokenId: token.id, projectId, reason: "busy" });
+        return failure("Other log reads are still running. Try again in a moment.");
+      }
       const tail = lines ?? DEFAULT_LINES;
       auditLog(actor, "mcp.tool", "stackport_get_project_logs", "ok", { tokenId: token.id, projectId, service: service ?? null, lines: tail });
-      const result = await deps.readLogs(projectId, tail, service);
+      let result: { ok: boolean; output: string };
+      try {
+        result = await deps.readLogs(projectId, tail, service);
+      } finally {
+        release();
+      }
       const { output, truncated } = prepareLog(result.output, deps.secrets(projectId));
       if (!result.ok) return failure(output.slice(-2_000) || "The logs could not be read.");
 
