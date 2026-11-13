@@ -21,6 +21,6 @@ Managed workloads may be able to reach `169.254.169.254` (provider metadata cred
 
 ## Existing installations and permissions
 
-Some Compose policy/hardening/managed-volume controls were introduced after earlier Stackport installations; migration choices may differ across projects. Treat repositories and privileged remote peer operations as trusted until an inventory proves the effective restrictions. **Full Stackport Control in 1.4 is deliberately trusted-peer management, not a sandbox for untrusted agents.**
+Raw Compose checks (including host port publication, host network mode and dangerous file references) apply to deployments regardless of project age. **Resolved-Compose policy enforcement can still be disabled for older projects**, where violations found only after resolution are warned instead of blocked. Verify each project's protections rather than assuming every restriction is uniformly enforced. Treat repositories and privileged remote peer operations as trusted until the effective restrictions and Docker host authority are understood. **Full Stackport Control in 1.4 is deliberately trusted-peer management, not a sandbox for untrusted agents.**
 
 See [technical overview](../../Stackport.md), [1.4 roadmap](../roadmap/1.4.md), and [1.3.0 incident](../incidents/1.3.0-network-outage.md). Detailed past implementation analysis remains available via Git history.
