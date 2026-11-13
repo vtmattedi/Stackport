@@ -94,11 +94,11 @@ Done in 1.3.1:
 | Docs state that Docker's address pool is a shared limit and how to enlarge it | `docs/1.3/security.md` S9 |
 | Tests no longer write to `/etc/nginx` | `tests/setup.ts` |
 
-Still to do (P1 is planned for 1.4, see [../1.4/README.md](../1.4/README.md); the rest for 1.3.5):
+Follow-ups identified in this incident (roadmap updated: P1 now planned for [1.5](../1.5/README.md), while P2–P8 were delivered in 1.3.x):
 
 | # | Action | Why it would have helped |
 | --- | --- | --- |
-| P1 (1.4) | **Regression report and a restore point** (see below). `stackport update` probes every route before the swap and again after it, and reports only what the update broke, never blaming a route that was already down. It does not roll anything back by itself. The update also keeps a restore point, and a **Restore** action (System page and `stackport restore`) puts the previous state back on request | Within a minute of the swap it would have listed the seven routes that went from working to unreachable, apart from the ones that were already down, and Restore would have returned the services, networks and nginx config to what they were |
+| P1 (1.5) | **Regression report and a restore point** (see below). `stackport update` probes every route before the swap and again after it, and reports only what the update broke, never blaming a route that was already down. It does not roll anything back by itself. The update also keeps a restore point, and a **Restore** action (System page and `stackport restore`) puts the previous state back on request | Within a minute of the swap it would have listed the seven routes that went from working to unreachable, apart from the ones that were already down, and Restore would have returned the services, networks and nginx config to what they were |
 | P2 | **Ingress health per project** in the UI and over MCP (is nginx on the network, is the service reachable by its alias), using the same probe as P1. No automatic alert for now | Anyone looking would have seen the cause without asking for logs |
 | P3 | **Docker network headroom** shown on the System page, in `stackport status` and before an update, with a warning near the limit and the daemon-setting fix | The limit would have been visible before 1.3.0 |
 | P4 | **Warnings reach `docker logs`.** In production, log warnings and errors to the console as well as the file | The cause would have been in the first thing anyone looks at |
@@ -107,7 +107,7 @@ Still to do (P1 is planned for 1.4, see [../1.4/README.md](../1.4/README.md); th
 | P7 | **Per-project isolation, redone safely** (1.3.5): networks from an address range of our own, created and verified before nginx's config switches to them, with the old route kept until then | Brings back S9's isolation without the pool |
 | P8 | **Operator runbook.** Where logs are (`/app/logs/app.log`, console for ingress), the three commands that diagnose routing, and what not to hide with `2>/dev/null` | Faster diagnosis |
 
-### P1 in detail (planned for 1.4)
+### P1 in detail (planned for 1.5)
 
 Two decisions shape it. **An update never undoes itself.** Rolling the application image back is not enough, because an update also changes things outside the image: which networks containers are on, which networks exist, nginx's generated config, TCP proxy containers, and the Compose files Stackport rewrites in each checkout. In this incident the old version would still have had no routes. And an automatic undo is itself a change nobody asked for, on a server with other things going on. So the update reports and the owner decides. **A probe has to say what the update broke**, not what is broken.
 
@@ -144,9 +144,9 @@ The report goes to the CLI output and to the System page as a banner on the last
    df -h /var/lib/stackport
    ```
    Pruning then runs after a successful update and never removes the point just made, or one that a Restore has under way.
-4. **Restore may also restore the database, and Stackport's database gets a first-class backup and restore.** In the Restore preview, restoring the database is a separate choice, off by default, with what it discards spelled out (deployments, audit entries and settings changes made since the update). It reuses `restore_update_backup` (stop Stackport, replace the file, remove the WAL files, start). Beyond updates: a **Back up now** and **Restore a backup** on the System page and as `stackport backup` and `stackport restore --database`, with their own retention. Scheduled off-host copies stay A2.
+4. **Restore may also restore the database; portable backup/restore is now a separate 1.4 workstream.** In the update Restore preview (1.5), restoring the database is a separate choice, off by default, with what it discards spelled out (deployments, audit entries and settings changes made since the update). It can reuse safe database restore primitives from [1.4](../1.4/README.md) and the existing `restore_update_backup`. The original manual **Back up now** / **Restore a backup** and host CLI goals are covered by 1.4's more general three-level backup contract. Scheduled off-host copies remain deferred A2.
 
-**How it fits what exists.** Restore is the existing `rollback_stackport` (image) and `restore_update_backup` (database) plus one new step that replays the recorded state, so most of it is composing parts that are already there. New work: the probe, the state record, the replay with its preview, the System page buttons, pruning, and the backup and restore commands.
+**How it fits what exists.** Update Restore (1.5) builds on the existing `rollback_stackport` (image), `restore_update_backup` (database) and, when useful, 1.4's new recovery primitives, plus replay of recorded infrastructure state. New P1 work: the probe, state record, replay/preview, UI/CLI entry points and pruning. General backup and restore commands are separately part of 1.4.
 
 ## Lessons
 
