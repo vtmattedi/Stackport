@@ -1,5 +1,6 @@
 import { getDatabase } from "../../config/database";
 import { getContainerListCached, getDockerVersionCached } from "../../integrations/docker/statusCache";
+import { actionEstimator } from "../actions/estimate";
 import { DEPLOY_KINDS_SQL, actionRegistry } from "../actions/registry";
 import { getNginxActiveStatusCached } from "../ingress/nginx/statusCache";
 import { getStorageState } from "../maintenance/storage/operations";
@@ -115,14 +116,22 @@ export async function collectStatus(now: number = Date.now()): Promise<Collected
   });
 
   const names = new Map(projects.map((project) => [project.id, project.name]));
-  const actions: ActionStatus[] = actionRegistry.running().map((record) => ({
-    id: record.id,
-    kind: clean(record.kind, 40),
-    projectId: record.projectId ?? null,
-    projectName: record.projectId !== undefined ? names.get(record.projectId) ?? null : null,
-    startedAt: record.startedAt,
-    progress: record.progress === null ? null : finite(record.progress, 0),
-  }));
+  const running = actionRegistry.running();
+  actionEstimator.prune(new Set(running.map((record) => record.id)));
+  const actions: ActionStatus[] = running.map((record) => {
+    const estimate = actionEstimator.estimate(record);
+    return {
+      id: record.id,
+      kind: clean(record.kind, 40),
+      projectId: record.projectId ?? null,
+      projectName: record.projectId !== undefined ? names.get(record.projectId) ?? null : null,
+      startedAt: record.startedAt,
+      phase: record.phase,
+      percent: estimate.percent,
+      etaSeconds: estimate.etaSeconds,
+      basis: estimate.basis,
+    };
+  });
 
   const conditions = evaluateAlerts({
     now,

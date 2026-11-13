@@ -277,6 +277,9 @@ export interface ProjectBuildProgressEvent {
   projectId: number;
   phase: BuildPhase;
   progress: number;
+  /** The estimator's percentage (0 to 95 while running) and time left; absent on events that come straight from the output parser. */
+  percent?: number;
+  etaSeconds?: number | null;
   done?: boolean;
   ok?: boolean;
 }
@@ -350,6 +353,26 @@ export interface ActionRecord {
    *  a bare git pull with no build step). */
   phase: BuildPhase | null;
   progress: number | null;
+  /** The server's estimate of how far along it is, kept current by `action:progress` events; absent until there is one. */
+  estimate?: ProgressEstimate;
+}
+
+/** How far along a running action is, and what that rests on: `steps` (a build's "step n of m"), `phase` (where the build is) or `time` (how long earlier runs took). */
+export interface ProgressEstimate {
+  /** 0 to 95 while running. */
+  percent: number | null;
+  etaSeconds: number | null;
+  basis: "steps" | "phase" | "time" | null;
+}
+
+/** Socket event `action:progress`: the estimate for one running action, sent when it changes. */
+export interface ActionProgressEvent {
+  id: string;
+  key: string;
+  projectId: number | null;
+  percent: number;
+  etaSeconds: number | null;
+  basis: "steps" | "phase" | "time";
 }
 
 /** An action without its log, as the server sends it on start and finish. */

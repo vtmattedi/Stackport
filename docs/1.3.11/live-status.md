@@ -39,12 +39,16 @@ The server looks every 10 s while anyone is connected, so a change shows up with
 host:     { cpuPercent, memPercent, memUsedMb, memTotalMb, load1, diskUsedPct, netRxBps, netTxBps, sampledAt } | null
 projects: [{ id, name, group, state, containers: { running, total }, health, lastCheckedAt,
              traffic: { windowS, requests, serverErrors, errorRatePct, p95Ms } | null }]
-actions:  [{ id, kind, projectId, projectName, startedAt, progress }]
+actions:  [{ id, kind, projectId, projectName, startedAt, phase, percent, etaSeconds, basis }]
 alerts:   [{ id, severity, code, scope, projectId, subject, message, since, value, unit }]
 ```
 
 - `state`: `ready`, `problem` (running, health check failing), `down`, `not-deployed`, `paused`. The same decision the Projects page makes; a test holds the two together.
 - `traffic` covers the last 5 minutes of Nginx's access log, per project, without Stackport's own health checks. `p95Ms` and `errorRatePct` can be `null`; with fewer than 20 requests they are real numbers but the alert rules ignore them, and so should you.
+- `actions[].percent` is an **estimate** of how far along a running action is, 0 to 95 while it runs (an action that has finished is simply no longer in the list), with `etaSeconds` left and what it rests on in `basis`:
+  `steps` (a Docker build is in its build phase and reports "step 3 of 9"), `phase` (a Docker build, by where it is: preparing, pulling, building, deploying, starting) or `time` (how long the last
+  successful runs of this kind of action for this project took, from at least 3 of them). With neither a build phase nor enough history, `percent`, `etaSeconds` and `basis` are `null`: no number is
+  better than an invented one. It never goes down for an action. The web UI shows the same numbers, from the same estimator.
 - `alerts` are **conditions that hold now**, not events: "something is wrong with X", like Insights' Needs attention. The list is whatever is true at this moment. `id` is stable while the condition lasts
   (`project_down:3`), so an adapter makes events by comparing two lists: a new `id` appeared, an `id` went away. `since` is when Stackport first saw it (it restarts with Stackport).
   The browser push alerts (something expected did not happen) are a different system and are not repeated here.

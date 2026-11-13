@@ -4,6 +4,7 @@ import { getDatabase } from "../../config/database";
 import { logger } from "../../shared/logger";
 import { actionLogPath, buildMasker, collectSecrets, openActionLog, pruneActionLogs, readActionLog, type Masker } from "./log";
 import type { Response } from "express";
+import type { ProgressEstimate } from "./estimate";
 import type { BuildPhase } from "./progress";
 
 export type ActionStatus = "running" | "success" | "failed";
@@ -24,6 +25,8 @@ export interface ActionRecord {
    *  (nginx apply, certbot, docker prune, a bare git pull with no build step). */
   phase: BuildPhase | null;
   progress: number | null;
+  /** The estimator's percentage and time left (modules/actions/estimate.ts), kept current while the action runs; absent until it has one. */
+  estimate?: ProgressEstimate;
 }
 
 export interface ActionRunResult {
@@ -258,6 +261,13 @@ class ActionRegistry {
     if (!record || record.status !== "running") return;
     record.phase = phase;
     record.progress = progress;
+  }
+
+  /** Stores the estimator's latest answer on the running action; a no-op once it is no longer running. */
+  updateEstimate(key: string, estimate: ProgressEstimate): void {
+    const record = this.actions.get(key);
+    if (!record || record.status !== "running") return;
+    record.estimate = estimate;
   }
 
   finish(key: string, ok: boolean, output?: string, meta?: Record<string, unknown>): void {

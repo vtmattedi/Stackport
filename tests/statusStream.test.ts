@@ -21,7 +21,7 @@ const baseSnapshot = (): StatusSnapshot => ({
     { id: 1, name: "shop", group: "production", state: "ready", containers: { running: 1, total: 1 }, health: "ok", lastCheckedAt: null, traffic: null },
     { id: 2, name: "shop-staging", group: "staging", state: "down", containers: { running: 0, total: 1 }, health: "failing", lastCheckedAt: null, traffic: null },
   ],
-  actions: [{ id: "a1", kind: "deploy", projectId: 2, projectName: "shop-staging", startedAt: "t", progress: 40 }],
+  actions: [{ id: "a1", kind: "deploy", projectId: 2, projectName: "shop-staging", startedAt: "t", phase: "building", percent: 40, etaSeconds: 12, basis: "steps" }],
   alerts: [{ id: "project_down:2", severity: "critical", code: "project_down", scope: "project", projectId: 2, subject: "shop-staging", message: "shop-staging is down: 0 of 1 containers are running.", since: "t", value: null, unit: null }],
 });
 

@@ -4,6 +4,7 @@ import type { ActionSummary } from "../api/types";
 import { actionTracker, useRecentlyFinishedActions, useRunningActionRecords } from "../context/ActionTracker";
 import { jsonEqual, useSystemSelector } from "../context/SystemContext";
 import { actionLabel } from "../lib/actionLabels";
+import { formatEta } from "../lib/format";
 import { TimeAgo } from "./TimeAgo";
 import styles from "./RunningActions.module.scss";
 
@@ -14,6 +15,9 @@ export interface RunningItem {
   subject: string | null;
   href: string;
   startedAt: string;
+  /** The server's estimate of how far along it is, when it has one. */
+  percent?: number | null;
+  etaSeconds?: number | null;
   /** Set once finished: whether it succeeded, and when. */
   ok?: boolean | null;
   completedAt?: string | null;
@@ -52,6 +56,8 @@ function useActionItems(records: ActionSummary[]): RunningItem[] {
       subject: (record.projectId !== undefined ? projectNames[record.projectId] : null) ?? domain,
       href: hrefFor(record),
       startedAt: record.startedAt,
+      percent: record.estimate?.percent ?? null,
+      etaSeconds: record.estimate?.etaSeconds ?? null,
       ...(record.status !== "running" ? { ok: record.ok, completedAt: record.completedAt } : {}),
     };
   });
@@ -71,7 +77,7 @@ export function RunningActionsList({ items, onNavigate }: { items: RunningItem[]
               <span className={styles.label}>{item.subject ? `${item.subject}: ` : ""}{item.label}</span>
               <span className={styles.meta}>
                 {item.completedAt === undefined
-                  ? <>started <TimeAgo ts={item.startedAt} /></>
+                  ? <>started <TimeAgo ts={item.startedAt} />{item.percent != null ? ` · ~${item.percent}%` : ""}{formatEta(item.etaSeconds) ? ` · ${formatEta(item.etaSeconds)}` : ""}</>
                   : <>{item.ok ? "finished" : "failed"} {item.completedAt ? <TimeAgo ts={item.completedAt} /> : null}</>}
               </span>
             </span>
