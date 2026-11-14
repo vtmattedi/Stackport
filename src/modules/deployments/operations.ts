@@ -485,8 +485,8 @@ export async function resolveComposeConfigDetailed(repoPath: string, composeFile
 }
 
 /** The resolved document, or null when there is none. For callers that can go on without it. */
-export async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
-  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile, expectedComposeProjectName(getProjectById(projectId)!));
+export async function resolveComposeConfig(repoPath: string, composeFile: string, projectName?: string): Promise<unknown | null> {
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile, projectName);
   return resolution.ok ? resolution.doc : null;
 }
 
