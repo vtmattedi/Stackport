@@ -928,16 +928,10 @@ export async function cleanOrphanFolder(folderPath: string): Promise<{ ok: boole
     .catch(() => fs.access(path.join(folderPath, "compose.yml")).then(() => true).catch(() => false));
 
   if (hasCompose) {
-    const compose = await composeCommand();
-    const args = [...compose.argsPrefix, "down", "--volumes", "--rmi", "local"];
-    log.push(`$ ${compose.cmd} ${args.join(" ")}\n`);
-    const ok = await new Promise<boolean>((resolve) => {
-      const child = spawn(compose.cmd, args, { cwd: folderPath, shell: false, env: dockerEnv() });
-      child.stdout.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-      child.stderr.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-      child.on("close", (code) => resolve(code === 0));
-    });
-    if (!ok) return { ok: false, log: log.join("") };
+    // An orphan directory is not proof of ownership of the Compose resources.
+    // Running "down --volumes" here could destroy a different project's data
+    // when the file declares a shared top-level name.
+    return { ok: false, log: "Orphan folder contains a Compose file. Refusing destructive cleanup; verify Docker resource ownership and remove it manually." };
   }
 
   await fs.rm(folderPath, { recursive: true, force: true });
