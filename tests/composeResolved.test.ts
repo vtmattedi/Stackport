@@ -130,3 +130,19 @@ test("S1: joining Stackport's network or another project's volume is refused as 
     assert.deepEqual(found.sort(), ["networks.sys.external", "volumes.data.external"]);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+
+test("ENG-72: Compose config uses the same explicit project namespace as deployment", () => {
+  const args = composeConfigArgs(["compose"], "compose.yml", "42-project");
+  assert.deepEqual(args, ["compose", "-p", "42-project", "--profile", "*", "-f", "compose.yml", "config", "--format", "json"]);
+});
+
+test("ENG-72: Compose config namespace overrides a repository-level name", { skip }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sp-namespaces-"));
+  fs.writeFileSync(path.join(dir, "compose.yml"), "name: shared-repo\nservices:\n  web:\n    image: alpine\n");
+  try {
+    const result = await resolveComposeConfigDetailed(dir, "compose.yml", "42-project");
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal((result.doc as { name: string }).name, "42-project");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
