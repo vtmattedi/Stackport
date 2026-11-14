@@ -626,7 +626,12 @@ async function runCompose(
   if (args[0] === "build" || (args[0] === "up" && args.includes("--build"))) {
     env["DOCKER_BUILDKIT"] = "1";
   }
-  const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, ...fileArgs, ...args], {
+  // The repository may declare a top-level Compose `name:` shared with another
+  // Stackport project. Always use the immutable project-specific namespace instead.
+  const project = getProjectById(projectId);
+  if (!project) throw new Error(`Project ${projectId} not found`);
+  const composeProjectName = expectedComposeProjectName(project);
+  const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, "-p", composeProjectName, ...fileArgs, ...args], {
     cwd: repoPath,
     timeoutMs,
     env,
