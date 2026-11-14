@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type Database from "better-sqlite3";
 import { getDatabase } from "../../config/database";
 import { decryptSecret, encryptSecret } from "../../shared/crypto";
+import { PeerError } from "./errors";
 import { parseGrants, serializeGrants, type Grant } from "./grants";
 import { KEY_ROTATION_GRACE_MS, NONCE_RETENTION_MS, newKey, sha256Hex } from "./signing";
 
@@ -41,7 +42,7 @@ const targetOf = (row: TargetRow): Target => ({ id: row.id, instanceId: row.inst
 
 /** A single-use secret the admin hands to the controlling side. Only its hash is stored. */
 export function createPairingSecret(grants: Grant[], ttlMinutes: number, db: Database.Database = getDatabase()): { secret: string; expiresAt: string } {
-  if (!Number.isFinite(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > PAIRING_CODE_MAX_TTL_MINUTES) throw new Error(`A pairing code lasts 1 to ${PAIRING_CODE_MAX_TTL_MINUTES} minutes.`);
+  if (!Number.isFinite(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > PAIRING_CODE_MAX_TTL_MINUTES) throw new PeerError(400, `A pairing code lasts 1 to ${PAIRING_CODE_MAX_TTL_MINUTES} minutes.`, "bad-ttl");
   const secret = crypto.randomBytes(24).toString("base64url");
   const expiresAt = new Date(Date.now() + ttlMinutes * 60_000).toISOString();
   db.prepare("DELETE FROM peer_pairing_codes WHERE expires_at < ? OR used_at IS NOT NULL").run(new Date().toISOString());
@@ -66,13 +67,16 @@ export function consumePairingSecret(secret: string, db: Database.Database = get
 /** Records (or re-pairs) a controller with a fresh key; the key is returned once and never readable again. */
 export function upsertController(input: { instanceId: string; name: string; grants: Grant[] }, db: Database.Database = getDatabase()): { controller: Controller; key: string; previous: Controller | null } {
   const key = newKey();
-  const previous = getControllerByInstance(input.instanceId, db);
-  db.prepare(`
-    INSERT INTO peer_controllers (instance_id, name, key_enc, grants) VALUES (?, ?, ?, ?)
-    ON CONFLICT(instance_id) DO UPDATE SET name = excluded.name, key_enc = excluded.key_enc, grants = excluded.grants,
-      previous_key_enc = NULL, previous_key_expires_at = NULL, revoked_at = NULL, created_at = CURRENT_TIMESTAMP, last_used_at = NULL
-  `).run(input.instanceId, input.name, encryptSecret(key), serializeGrants(input.grants));
-  return { controller: getControllerByInstance(input.instanceId, db) as Controller, key, previous };
+  // One transaction, so two pairings from the same instance each record what they actually replaced.
+  return db.transaction(() => {
+    const previous = getControllerByInstance(input.instanceId, db);
+    db.prepare(`
+      INSERT INTO peer_controllers (instance_id, name, key_enc, grants) VALUES (?, ?, ?, ?)
+      ON CONFLICT(instance_id) DO UPDATE SET name = excluded.name, key_enc = excluded.key_enc, grants = excluded.grants,
+        previous_key_enc = NULL, previous_key_expires_at = NULL, revoked_at = NULL, created_at = CURRENT_TIMESTAMP, last_used_at = NULL
+    `).run(input.instanceId, input.name, encryptSecret(key), serializeGrants(input.grants));
+    return { controller: getControllerByInstance(input.instanceId, db) as Controller, key, previous };
+  }).immediate();
 }
 
 export function listControllers(db: Database.Database = getDatabase()): Controller[] {

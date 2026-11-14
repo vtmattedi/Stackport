@@ -4,6 +4,7 @@ import { auditLog } from "../../shared/logger";
 import { ensureInstanceIdentity, setInstanceName } from "../backup/instance";
 import { GRANTS, GrantError } from "./grants";
 import { checkPeer, forgetPeer, peerStatus } from "./monitor";
+import { PeerIdentityError, PeerUnreachable } from "./client";
 import { issuePairingCode, PeerError, registerTarget, removeTargetAndNotify, rotateTargetKey } from "./service";
 import { listControllers, listTargets, revokeController } from "./store";
 
@@ -19,7 +20,8 @@ function idParam(req: Request<{ id: string }>, res: Response): number | null {
 function handle(res: Response, error: unknown): void {
   if (error instanceof PeerError) { res.status(error.status).json({ error: error.message, code: error.code }); return; }
   if (error instanceof GrantError) { res.status(400).json({ error: error.message, code: "bad-grants" }); return; }
-  if (error instanceof Error && /pairing code lasts|peer endpoint|instance name/i.test(error.message)) { res.status(400).json({ error: error.message }); return; }
+  if (error instanceof PeerIdentityError) { res.status(502).json({ error: error.message, code: "identity-mismatch" }); return; }
+  if (error instanceof PeerUnreachable) { res.status(502).json({ error: error.message, code: "unreachable" }); return; }
   throw error;
 }
 
@@ -34,7 +36,9 @@ router.get("/", requireAuth, (_req: Request, res: Response): void => {
 
 router.put("/self", requireAuth, (req: Request, res: Response): void => {
   try {
-    const self = setInstanceName(String(req.body?.name ?? ""));
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    if (!name || name.length > 80) throw new PeerError(400, "An instance name is 1 to 80 characters.", "bad-name");
+    const self = setInstanceName(name);
     auditLog(req.user ?? "unknown", "instance.rename", self.id, "ok", { name: self.name });
     res.json(self);
   } catch (error) { handle(res, error); }

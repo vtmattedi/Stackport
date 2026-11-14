@@ -24,6 +24,8 @@ export function assertEndpoint(endpoint: string): URL {
   try { url = new URL(endpoint); } catch { throw new PeerUnreachable("The peer endpoint is not a valid URL."); }
   if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) throw new PeerUnreachable("A peer endpoint must use https.");
   if (url.username || url.password) throw new PeerUnreachable("A peer endpoint must not contain credentials.");
+  // Control paths are absolute (/control/v1/...), so a prefix would be silently dropped and the calls would land elsewhere.
+  if ((url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) throw new PeerUnreachable("A peer endpoint is a bare address (https://host[:port]), without a path or query.");
   return url;
 }
 
@@ -53,8 +55,14 @@ async function rawRequest(endpoint: string, fingerprint: string | null, method: 
   const pinned = secure && fingerprint ? await connectPinned(target, fingerprint, timeoutMs) : null;
   return new Promise((resolve, reject) => {
     const options: https.RequestOptions = { method, headers: { ...headers, "content-length": String(body.length) }, timeout: timeoutMs };
-    // With no agent set, Node uses this connection as is (an agent would open its own and validate the chain again).
-    if (pinned) options.createConnection = () => pinned;
+    if (pinned) {
+      // The global agent would hand the request a pooled socket and ignore this one (leaking it), and would validate the chain again.
+      // A dedicated agent that returns exactly this connection, used once and closed with the request, avoids both.
+      const agent = new https.Agent({ keepAlive: false });
+      (agent as unknown as { createConnection: () => TLSSocket }).createConnection = () => pinned;
+      options.agent = agent;
+      options.headers = { ...options.headers, connection: "close" };
+    }
     const request = (secure ? https : http).request(target, options, (response) => {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -65,6 +73,7 @@ async function rawRequest(endpoint: string, fingerprint: string | null, method: 
       });
       response.on("end", () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) }));
     });
+    request.on("close", () => { pinned?.destroy(); });
     request.on("timeout", () => request.destroy(new PeerUnreachable("The peer did not answer in time.")));
     request.on("error", (error) => reject(error instanceof PeerIdentityError || error instanceof PeerUnreachable ? error : new PeerUnreachable(`Could not reach the peer: ${error.message}`)));
     request.end(body);

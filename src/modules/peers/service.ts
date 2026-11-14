@@ -2,7 +2,8 @@ import type Database from "better-sqlite3";
 import { getDatabase } from "../../config/database";
 import { ensureInstanceIdentity } from "../backup/instance";
 import { assertEndpoint, PeerIdentityError, PeerUnreachable, pairCall, signedCall } from "./client";
-import { normalizeGrants, parseGrants, type Grant } from "./grants";
+import { PeerError } from "./errors";
+import { GrantError, normalizeGrants, parseGrants, type Grant } from "./grants";
 import { auditLog } from "../../shared/logger";
 import { newKey, PROTOCOL_NAME, PROTOCOL_VERSIONS } from "./signing";
 import { addTarget, consumePairingSecret, createPairingSecret, getTarget, removeTarget, targetKey, updateTarget, upsertController, type Controller, type Target } from "./store";
@@ -10,10 +11,11 @@ import { addTarget, consumePairingSecret, createPairingSecret, getTarget, remove
 /** Pairing and the lifecycle of a peer relationship. Directional: pairing makes the instance that
  *  presents the code a CONTROLLER of the instance that issued it, and nothing more. */
 
-export class PeerError extends Error {
-  constructor(readonly status: number, message: string, readonly code = "peer-error") {
-    super(message);
-  }
+export { PeerError };
+
+/** An endpoint the admin typed is input: a bad one is a 400, never a server error. */
+function checkEndpoint(endpoint: string): void {
+  try { assertEndpoint(endpoint); } catch (error) { throw new PeerError(400, (error as Error).message, "bad-endpoint"); }
 }
 
 // ── pairing code ───────────────────────────────────────────────────────────────
@@ -30,8 +32,12 @@ const CODE_PREFIX = "spp1.";
 
 /** Issued on the instance that will BE controlled. `endpoint` is where the controller will reach it; `fingerprint` pins a self-signed certificate. */
 export function issuePairingCode(input: { endpoint: string; fingerprint?: string | null; grants: unknown; ttlMinutes?: number }, db: Database.Database = getDatabase()): PairingCode {
-  const grants = normalizeGrants(input.grants);
-  assertEndpoint(input.endpoint);
+  let grants: Grant[];
+  try { grants = normalizeGrants(input.grants); } catch (error) {
+    if (error instanceof GrantError) throw new PeerError(400, error.message, "bad-grants");
+    throw error;
+  }
+  checkEndpoint(input.endpoint);
   const { secret, expiresAt } = createPairingSecret(grants, input.ttlMinutes ?? 15, db);
   const payload: CodePayload = { v: 1, u: input.endpoint.replace(/\/+$/, ""), i: ensureInstanceIdentity(db).id, ...(input.fingerprint ? { f: input.fingerprint } : {}), s: secret };
   return { code: CODE_PREFIX + Buffer.from(JSON.stringify(payload)).toString("base64url"), expiresAt, grants };
@@ -81,7 +87,7 @@ export async function registerTarget(code: string, db: Database.Database = getDa
   const decoded = decodePairingCode(code.trim());
   const self = ensureInstanceIdentity(db);
   if (decoded.instanceId === self.id) throw new PeerError(400, "That pairing code was issued by this instance.", "self-pairing");
-  assertEndpoint(decoded.endpoint);
+  checkEndpoint(decoded.endpoint);
 
   let response;
   try {
@@ -142,19 +148,24 @@ export async function rotateTargetKey(id: number, db: Database.Database = getDat
   // This side chooses the key and repeats the call if the answer is lost: the peer treats a repeat as already done, so the two
   // sides cannot end up on different keys. The old key stays valid on the peer until the new one is first used.
   const next = newKey();
-  let lastError: unknown;
+  // Only a clear refusal stops the loop. Anything else (a network error, a gateway error, an answer that is not signed) may
+  // follow a rotation the peer did apply, and the call is safe to repeat, so it is repeated.
+  const REFUSED = new Set([400, 401, 403, 421, 426]);
+  let lastMessage = "The peer did not answer.";
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const response = await signedCall<{ error?: string }>({ endpoint: target.endpoint, fingerprint: target.certFingerprint, key, selfId: self.id, targetId: target.instanceId, method: "POST", path: "/control/v1/rotate", body: { key: next }, operationId: `rotate-${next.slice(0, 8)}` });
       if (response.status === 200 && response.verified) { updateTarget(id, { key: next }, db); return; }
-      throw new PeerError(502, response.body?.error ?? "The peer did not rotate the key.", "rotate-failed");
+      if (REFUSED.has(response.status)) throw new PeerError(502, response.body?.error ?? "The peer refused the new key.", "rotate-failed");
+      lastMessage = response.body?.error ?? `The peer answered with status ${response.status}.`;
     } catch (error) {
-      if (error instanceof PeerError) throw error; // the peer answered and refused: repeating cannot help
-      lastError = error;
+      if (error instanceof PeerError) throw error;
+      if (error instanceof PeerIdentityError) throw new PeerError(502, error.message, "identity-mismatch");
+      if (!(error instanceof PeerUnreachable)) throw error;
+      lastMessage = error.message;
     }
   }
-  if (lastError instanceof PeerUnreachable || lastError instanceof PeerIdentityError) throw new PeerError(502, lastError.message, "unreachable");
-  throw lastError;
+  throw new PeerError(502, `${lastMessage} The peer may have switched keys: the previous key stays valid for an hour, so repeat the rotation.`, "rotate-uncertain");
 }
 
 /** Stops controlling a peer. Tells it first so it can drop the controller; if it is unreachable the local record is still removed and the caller is told the peer was not notified. */

@@ -296,6 +296,37 @@ test("stored keys are encrypted at rest", async () => {
   } finally { await close(a, b); }
 });
 
+test("endpoints with a path prefix are refused rather than silently losing the prefix", () => {
+  assert.throws(() => assertEndpoint("https://host.example/stackport"), /bare address/);
+  assert.throws(() => assertEndpoint("https://host.example/?x=1"), /bare address/);
+  assert.doesNotThrow(() => assertEndpoint("https://host.example/"));
+  assert.throws(() => issuePairingCode({ endpoint: "https://host.example/stackport", grants: ["projects:read"] }, new Database(":memory:")), (e: unknown) => e instanceof PeerError && e.status === 400);
+});
+
+test("through the real application stack: pairing, signed POSTs and bodies over 10 KB all work", async () => {
+  // The control router must sit before the app's JSON parser; mounting it on a bare express() app (as the other tests do) would not catch that.
+  const { default: app } = await import("../src/app");
+  const { initializeDatabase, getDatabase, closeDatabase } = await import("../src/config/database");
+  initializeDatabase();
+  const realDb = getDatabase();
+  const server = await new Promise<Server>((resolve) => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); });
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const a = await instance("Alpha");
+  try {
+    const { code } = issuePairingCode({ endpoint: url, grants: ["projects:write"] }, realDb);
+    const target = await registerTarget(code, a.db);
+    assert.equal((await refreshTarget(target.id, a.db)).state, "online");
+    await rotateTargetKey(target.id, a.db); // a signed POST with a body
+    assert.equal((await refreshTarget(target.id, a.db)).state, "online", "the new key works through the app");
+    const big = await removeTargetAndNotify(target.id, a.db);
+    assert.equal(big.notified, true);
+  } finally {
+    await close(a);
+    await new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); });
+    closeDatabase(); // the temp directory is removed at exit, and Windows will not delete an open database
+  }
+});
+
 // ── certificate pinning ────────────────────────────────────────────────────────
 
 function makeCert(): { cert: string; key: string; fingerprint: string } | null {

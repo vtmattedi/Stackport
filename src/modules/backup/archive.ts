@@ -300,8 +300,16 @@ export function readEntryBuffer(entry: EntryHandle, maxBytes: number): Buffer {
 /** Streams an entry to a new file under `root` (created with parents), returning its size and SHA-256. */
 export function writeEntryTo(entry: EntryHandle, root: string): { size: number; sha256: string } {
   const target = path.join(root, ...entry.name.split("/"));
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const fd = fs.openSync(target, "wx", 0o600);
+  let fd: number;
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fd = fs.openSync(target, "wx", 0o600);
+  } catch (error) {
+    // A name that is both a file and a directory prefix ("a" and "a/b") passes the name check but cannot be written.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOTDIR" || code === "EEXIST" || code === "EISDIR") throw new ArchiveError(`The archive's entries conflict with each other (${entry.name}).`, "malformed");
+    throw error;
+  }
   const hash = crypto.createHash("sha256");
   try {
     let left = entry.size;

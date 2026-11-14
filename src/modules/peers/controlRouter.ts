@@ -5,7 +5,8 @@ import { getDatabase } from "../../config/database";
 import { auditLog } from "../../shared/logger";
 import { ensureInstanceIdentity } from "../backup/instance";
 import { hasGrant, type Grant } from "./grants";
-import { acceptPairing, PeerError } from "./service";
+import { PeerError } from "./errors";
+import { acceptPairing } from "./service";
 import { HEADERS, KEY_PATTERN, MAX_CLOCK_SKEW_MS, PROTOCOL_NAME, PROTOCOL_VERSIONS, safeEqual, signRequest, signResponse } from "./signing";
 import { confirmControllerKey, controllerKeys, recordNonce, revokeController, rotateControllerKey, touchController, type Controller } from "./store";
 
@@ -18,6 +19,8 @@ declare global {
   }
 }
 
+
+const DUMMY_KEY = "D".repeat(43);
 
 function header(req: Request, name: string): string {
   return req.get(name) ?? "";
@@ -41,10 +44,14 @@ function authenticate(getDb: () => Database.Database): RequestHandler {
     const nonce = header(req, HEADERS.nonce);
     const signature = header(req, HEADERS.signature);
     const known = callerId ? controllerKeys(callerId, db) : null;
-    if (!known || !timestamp || !nonce || !signature || nonce.length > 64) { fail(401, "Authentication failed.", "unauthenticated"); return; }
-
     const body = (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
     const signed = { method: req.method, path: req.originalUrl, from: callerId, to: self.id, timestamp, nonce, body };
+    if (!known || !timestamp || !nonce || !signature || nonce.length > 64) {
+      // Do the same work as for a real caller, so the answer's timing does not reveal which instance ids are paired.
+      safeEqual(signature, signRequest(DUMMY_KEY, signed));
+      fail(401, "Authentication failed.", "unauthenticated");
+      return;
+    }
     const usedKey = known.keys.find((key) => safeEqual(signature, signRequest(key, signed)));
     if (!usedKey) { fail(401, "Authentication failed.", "unauthenticated"); return; }
 
@@ -81,22 +88,34 @@ export function requireGrant(needed: Grant): RequestHandler {
   };
 }
 
-/** The Stackport Control API (`sp-control/v1`), mounted at /control. Separate from the session-authenticated /api and from MCP. */
+/** Reads the body as exact bytes (the signature covers them) without interpreting it: parsing waits until the caller is authenticated. */
+function readRaw(limit: string): RequestHandler[] {
+  return [
+    express.raw({ type: () => true, limit }),
+    (req: Request, _res: Response, next: NextFunction): void => {
+      (req as Request & { rawBody?: Buffer }).rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      next();
+    },
+  ];
+}
+
+function parseBody(req: Request, res: Response, next: NextFunction): void {
+  const raw = (req as Request & { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
+  try { req.body = raw.length ? JSON.parse(raw.toString("utf8")) : {}; } catch { res.status(400).json({ error: "The request body is not valid JSON.", code: "bad-request" }); return; }
+  next();
+}
+
+/** The Stackport Control API (`sp-control/v1`), mounted at /control. Separate from the session-authenticated /api and from MCP.
+ *  It must be mounted before the application's JSON parser: that parser would consume the body this router needs to see unparsed. */
 export function createControlRouter(getDb: () => Database.Database = getDatabase): Router {
   const router = Router();
-  // The channel reads its own body: the signature covers the exact bytes, whatever their type or size (env files will be large),
-  // so this must not depend on the application's JSON parser and its 10 KB limit.
-  router.use(express.raw({ type: () => true, limit: "5mb" }), (req: Request, res: Response, next: NextFunction): void => {
-    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    (req as Request & { rawBody?: Buffer }).rawBody = raw;
-    try { req.body = raw.length ? JSON.parse(raw.toString("utf8")) : {}; } catch { res.status(400).json({ error: "The request body is not valid JSON.", code: "bad-request" }); return; }
-    next();
-  });
   const pairLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many pairing attempts, try again later." } });
   const auth = authenticate(getDb);
+  // Authenticated calls may carry large bodies (env files) but are parsed only once authenticated; unauthenticated ones are tiny.
+  const authed = [...readRaw("1mb"), auth, parseBody];
 
   // Presents a pairing code. Unauthenticated by design: the single-use secret is the credential, so it is rate limited.
-  router.post("/v1/pair", pairLimiter, (req: Request, res: Response): void => {
+  router.post("/v1/pair", pairLimiter, ...readRaw("16kb"), parseBody, (req: Request, res: Response): void => {
     try {
       res.json(acceptPairing({ secret: req.body?.secret, controller: { id: req.body?.controller?.id, name: req.body?.controller?.name } }, getDb()));
     } catch (error) {
@@ -106,13 +125,13 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
   });
 
   /** Identity, current name and what this caller may do. Called on connect and periodically, which is how a rename reaches its controllers. */
-  router.get("/v1/hello", auth, (req: Request, res: Response): void => {
+  router.get("/v1/hello", ...authed, (req: Request, res: Response): void => {
     const self = ensureInstanceIdentity(getDb());
     res.json({ protocol: PROTOCOL_NAME, versions: PROTOCOL_VERSIONS, instance: self, grants: req.peer?.grants ?? [] });
   });
 
   /** The controller chooses the new key, so a lost answer is recovered by repeating the call. */
-  router.post("/v1/rotate", auth, (req: Request, res: Response): void => {
+  router.post("/v1/rotate", ...authed, (req: Request, res: Response): void => {
     const controller = req.peer?.controller as Controller;
     if (typeof req.body?.key !== "string" || !KEY_PATTERN.test(req.body.key)) { res.status(400).json({ error: "A new key of 43 URL-safe characters is required.", code: "bad-request" }); return; }
     rotateControllerKey(controller.id, req.body.key, getDb());
@@ -121,7 +140,7 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
   });
 
   /** The controller giving up its own access (it is being removed on its side). */
-  router.post("/v1/revoke", auth, (req: Request, res: Response): void => {
+  router.post("/v1/revoke", ...authed, (req: Request, res: Response): void => {
     const controller = req.peer?.controller as Controller;
     revokeController(controller.id, getDb());
     auditLog(`peer:${controller.instanceId}`, "peer.released", controller.instanceId, "ok", { operationId: req.peer?.operationId });

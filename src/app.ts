@@ -55,6 +55,9 @@ app.use(
 
 // GitHub webhook deliveries: own rate limit and raw-body parsing, so they go before both.
 app.use("/api/hooks", githubHooksRouter);
+// Stackport Control (sp-control/v1): instance-to-instance, authenticated per request by a pairing key, never by a session. It reads its
+// own body (the signature covers the exact bytes), so it must come before the JSON parser below, and it is still rate limited.
+app.use("/control", globalLimiter, controlRouter);
 app.use(globalLimiter);
 app.use(
   express.json({
@@ -82,8 +85,6 @@ app.get("/health/ready", async (_req, res) => {
 });
 
 app.use("/mcp", mcpRouter);
-// Stackport Control (sp-control/v1): instance-to-instance, authenticated per request by a pairing key, never by a session.
-app.use("/control", controlRouter);
 app.use("/api", router);
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "API route not found" });

@@ -5,7 +5,7 @@ import os from "os";
 import path from "path";
 import Database from "better-sqlite3";
 import { closeDatabase, getDatabase, initializeDatabase } from "../src/config/database";
-import { ArchiveError, ArchiveWriter, readArchive, readEntryBuffer } from "../src/modules/backup/archive";
+import { ArchiveError, ArchiveWriter, readArchive, readEntryBuffer, writeEntryTo } from "../src/modules/backup/archive";
 import { TABLE_TIERS } from "../src/modules/backup/classification";
 import { createBackup } from "../src/modules/backup/export";
 import { ensureInstanceIdentity } from "../src/modules/backup/instance";
@@ -101,6 +101,17 @@ test("archive: round-trips entries, and a wrong passphrase, a flipped byte and a
   })();
   fs.writeFileSync(path.join(dir, "dropped"), cut2);
   assert.throws(() => readArchive(path.join(dir, "dropped"), PASS, (e) => { readEntryBuffer(e, 1_000_000); }), (e: ArchiveError) => e.code === "truncated");
+});
+
+test("archive: entries that conflict (a file and a directory of the same name) are a malformed archive, not a crash", () => {
+  const dir = tmp();
+  const file = path.join(dir, "conflict.spbackup");
+  const writer = new ArchiveWriter(file, PASS);
+  writer.addBuffer("files/x", Buffer.from("a file"));
+  writer.addBuffer("files/x/y", Buffer.from("under it"));
+  writer.finish();
+  const out = path.join(dir, "out");
+  assert.throws(() => readArchive(file, PASS, (entry) => { writeEntryTo(entry, out); }), (e: unknown) => e instanceof ArchiveError && e.code === "malformed");
 });
 
 test("archive: refuses entry names that could escape the extraction directory", () => {
