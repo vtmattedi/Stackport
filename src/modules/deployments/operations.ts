@@ -631,6 +631,36 @@ async function runCompose(
   const project = getProjectById(projectId);
   if (!project) throw new Error(`Project ${projectId} not found`);
   const composeProjectName = expectedComposeProjectName(project);
+  // Fail closed rather than silently creating a second stack when upgrading an
+  // existing deployment whose Compose file used a different explicit name.
+  if (composeFile && (args[0] === "up" || args[0] === "down")) {
+    const raw = await readRawComposeDoc(repoPath, composeFile);
+    const declaredName = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)["name"] : null;
+    if (typeof declaredName === "string" && declaredName !== composeProjectName) {
+      const legacy = declaredName.trim();
+      if (!/^[a-z0-9][a-z0-9_-]*$/.test(legacy)) {
+        return { ok: false, output: "Compose declares a dynamic or invalid project name; explicit migration is required before deploying.", stdout: "", command: "compose namespace preflight" };
+      }
+      try {
+        for (const resourceArgs of [
+          ["ps", "-a", "-q"],
+          ["volume", "ls", "-q"],
+          ["network", "ls", "-q"],
+        ]) {
+          const output = await new Promise<string>((resolve, reject) => {
+            execFile("docker", [...resourceArgs, "--filter", `label=com.docker.compose.project=${legacy}`],
+              { env: dockerEnv(), timeout: 15_000 }, (err, stdout) => err ? reject(err) : resolve(stdout));
+          });
+          if (output.trim()) {
+            return { ok: false, output: `Existing Docker resources use legacy Compose project "${legacy}". Migrate them explicitly before deploying "${composeProjectName}" to avoid duplicate stacks or data loss.`, stdout: "", command: "compose namespace preflight" };
+          }
+        }
+      } catch (err) {
+        return { ok: false, output: `Could not verify legacy Compose resources: ${err instanceof Error ? err.message : String(err)}`, stdout: "", command: "compose namespace preflight" };
+      }
+    }
+  }
   const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, "-p", composeProjectName, ...fileArgs, ...args], {
     cwd: repoPath,
     timeoutMs,
