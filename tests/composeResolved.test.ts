@@ -139,7 +139,7 @@ test("ENG-72: Compose config uses the same explicit project namespace as deploym
 
 test("ENG-72: Compose config namespace overrides a repository-level name", { skip }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sp-namespaces-"));
-  fs.writeFileSync(path.join(dir, "compose.yml"), "name: shared-repo\\nservices:\\n  web:\\n    image: alpine\\n");
+  fs.writeFileSync(path.join(dir, "compose.yml"), "name: shared-repo\nservices:\n  web:\n    image: alpine\n");
   try {
     const result = await resolveComposeConfigDetailed(dir, "compose.yml", "42-project");
     assert.equal(result.ok, true);
