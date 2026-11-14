@@ -1689,6 +1689,7 @@ export async function getProjectLogs(
 
   const args = [
     ...compose.argsPrefix,
+    "-p", expectedComposeProjectName(project),
     ...(composeFile ? ["-f", composeFile] : []),
     "logs",
     "--no-color",
