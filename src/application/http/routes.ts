@@ -16,6 +16,7 @@ import githubAppRouter from "./githubApp";
 import domainsRouter from "./domains";
 import encryptionRouter from "../../modules/maintenance/encryption/routes";
 import statusStreamRouter from "./statusStream";
+import peersRouter from "../../modules/peers/adminRouter";
 
 const router = Router();
 
@@ -36,5 +37,6 @@ router.use("/github-app", githubAppRouter);
 router.use("/domains", domainsRouter);
 router.use("/encryption", encryptionRouter);
 router.use("/status-stream", statusStreamRouter);
+router.use("/peers", peersRouter);
 
 export default router;

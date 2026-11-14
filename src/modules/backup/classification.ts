@@ -26,6 +26,8 @@ export const TABLE_TIERS: Record<string, TableTier> = {
   push_config: "l1",
   api_tokens: "l1", // hashes only; a clone drops them
   managed_domains: "l1",
+  peer_targets: "l1", // a clone drops these: pairings never carry over to a copy
+  peer_controllers: "l1",
 
   // Level 2 — everything that describes a project.
   projects: "l2",
@@ -52,6 +54,8 @@ export const TABLE_TIERS: Record<string, TableTier> = {
   hardware_samples: "never",
   notification_logs: "never",
   vps_vm_cache: "never",
+  peer_pairing_codes: "never",
+  peer_nonces: "never",
 };
 
 /** The `app_meta` rows an archive keeps. Everything else (heartbeats, pending flags, last-outcome notes) is runtime state. */

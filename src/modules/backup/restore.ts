@@ -205,6 +205,9 @@ export function applyCloneTransforms(db: Database.Database): string[] {
   run("notification_config", "UPDATE notification_config SET enabled = 0 WHERE enabled <> 0", "turned email notifications off");
   run("push_config", "UPDATE push_config SET enabled = 0 WHERE enabled <> 0", "turned web push off");
   run("webhooks", "UPDATE webhooks SET enabled = 0 WHERE enabled <> 0", "disabled webhook scripts");
+  // Pairings are authorization between two specific installations: a copy has no standing with the original's peers.
+  run("peer_targets", "DELETE FROM peer_targets", "removed the instances this one controlled");
+  run("peer_controllers", "DELETE FROM peer_controllers", "removed the instances allowed to control this one");
   // The original keeps its domain and certificates; a clone that kept claiming them would compete for both.
   run("app_meta", "UPDATE app_meta SET value = '0' WHERE key = 'nginx_app_enabled' AND value <> '0'", "turned the public Stackport domain off");
   run("app_meta", "DELETE FROM app_meta WHERE key IN ('nginx_app_domain', 'app_update_credential_id')", "cleared the Stackport domain and the self-update credential");

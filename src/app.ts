@@ -8,6 +8,7 @@ import { errorHandler } from "./application/http/errorHandler";
 import router from "./application/http/routes";
 import githubHooksRouter from "./modules/automation/routes/githubHooks";
 import mcpRouter from "./transports/mcp/http";
+import controlRouter from "./modules/peers/controlRouter";
 import { getReadiness } from "./modules/maintenance/readiness";
 import { runningSha } from "./modules/maintenance/version";
 import { createTrustedProxy } from "./modules/ingress/trustedProxy";
@@ -81,6 +82,8 @@ app.get("/health/ready", async (_req, res) => {
 });
 
 app.use("/mcp", mcpRouter);
+// Stackport Control (sp-control/v1): instance-to-instance, authenticated per request by a pairing key, never by a session.
+app.use("/control", controlRouter);
 app.use("/api", router);
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "API route not found" });

@@ -25,6 +25,7 @@ import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./mod
 import { getPushConfig } from "./modules/notifications/push/transport";
 import { pushDeliveryWorker } from "./modules/notifications/push/worker";
 import { ensureInstanceIdentity } from "./modules/backup/instance";
+import { peerMonitor } from "./modules/peers/monitor";
 import { logger } from "./shared/logger";
 import { getNetworkHeadroom } from "./modules/maintenance/networkHeadroom";
 import { pruneDeliveries, resumeAllDeliveries } from "./modules/github/webhook";
@@ -72,6 +73,7 @@ try {
   dockerStorageMonitor.start();
   certbotRenewalMonitor.start();
   startSelfUpdateNotifications();
+  peerMonitor.start();
 
   const httpServer = createServer(app);
 
@@ -100,6 +102,7 @@ try {
     dockerStorageMonitor.stop();
     certbotRenewalMonitor.stop();
     stopSelfUpdateNotifications();
+    peerMonitor.stop();
     const pushDrained = pushDeliveryWorker.stop();
     httpServer.close(() => { void pushDrained.then(() => {
       healthChecker.stop();
