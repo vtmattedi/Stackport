@@ -24,6 +24,7 @@ import { removeLegacyIngressNetworks } from "./modules/ingress/networks";
 import { startSelfUpdateNotifications, stopSelfUpdateNotifications } from "./modules/maintenance/selfUpdate";
 import { getPushConfig } from "./modules/notifications/push/transport";
 import { pushDeliveryWorker } from "./modules/notifications/push/worker";
+import { ensureInstanceIdentity } from "./modules/backup/instance";
 import { logger } from "./shared/logger";
 import { getNetworkHeadroom } from "./modules/maintenance/networkHeadroom";
 import { pruneDeliveries, resumeAllDeliveries } from "./modules/github/webhook";
@@ -49,6 +50,7 @@ async function warnIfNetworkPoolIsNearlyFull(): Promise<void> {
 
 try {
   initializeDatabase();
+  ensureInstanceIdentity();
   try { getPushConfig(); } catch { logger.error("push.identity.bootstrap-failed"); }
   pushDeliveryWorker.start();
   markInterruptedActions();

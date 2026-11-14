@@ -59,6 +59,9 @@ Usage:
   stackport reboot [--in <minutes>] [--yes]
   stackport network-pool [show | set --base <cidr> --size <n> [--replace] [--no-restart] [--yes]]
   stackport admin-recovery
+  stackport backup [--level 1|2] [--out FILE]
+  stackport backup-verify FILE
+  stackport restore FILE --mode recover|clone [--yes]
   stackport uninstall
   stackport uninstall --purge
 
@@ -84,6 +87,20 @@ network-pool: show Docker's address pools, or enlarge them. `set` writes
           their ranges. Pools already in daemon.json are replaced only with --replace.
 admin-recovery: root+interactive only — generates a temporary credential to reset
           StackPort's administrator password.
+backup:   write a passphrase-encrypted, portable archive. Level 1: instance settings,
+          administrator identity (password hash), credentials, integrations and the
+          keys that decrypt them. Level 2 (default): also every project's record,
+          Compose files, managed .env files (with their secret values), domains,
+          routes and uploaded files. It does NOT contain application data
+          (databases, volumes, user files) and cannot recover it.
+backup-verify: authenticate and check an archive (checksums, schema, that every stored
+          secret decrypts with the archive's keys) without changing anything.
+restore:  replace this installation's configuration with an archive's. --mode recover
+          keeps the instance identity (a lost or moved host); --mode clone creates a
+          new identity, ends sessions, removes API tokens and the GitHub App, pauses
+          projects and turns automation off. Stops Stackport while it runs, keeps the
+          previous database and secrets under /var/lib/stackport, and works with the
+          web UI unavailable.
 uninstall: remove StackPort's runtime, preserving /etc/stackport and
           /var/lib/stackport so it can be reinstalled/recovered later.
 uninstall --purge: also permanently deletes that preserved state. Requires typed
@@ -1051,6 +1068,230 @@ admin_recovery() {
   docker exec -i -u node stackport node dist/cli/adminRecovery.js
 }
 
+# ── backup / restore ──────────────────────────────────────────────────────────
+# Portable backup of this installation (levels 1 and 2; docs/roadmap/1.4.md). The archive is
+# built and read by dist/cli/backup.js inside the app image: it can see the database, the
+# merged environment and the data directory, which is all a level 1 or 2 archive holds.
+# Restore is offline: it stops the app, runs the same code in a one-off container, then adopts
+# the archive's encryption keys into secrets.env (the app cannot write there). Nothing here
+# is reachable over HTTP; root on the host is the authorization boundary.
+
+BACKUP_CLI="dist/cli/backup.js"
+STAGED_HOST_FILE=""
+STAGED_CONTAINER_FILE=""
+
+# Reads the archive passphrase without echo into STACKPORT_BACKUP_PASSPHRASE (exported so docker
+# can pass it by name: it never appears in a process list). A value already in the environment wins.
+backup_passphrase() {
+  local mode="${1:-}" first second
+  [[ -n "${STACKPORT_BACKUP_PASSPHRASE:-}" ]] && return 0
+  [[ -t 0 ]] || { error "no passphrase: set STACKPORT_BACKUP_PASSPHRASE or run on a terminal"; exit 1; }
+  read -r -s -p "Backup passphrase: " first; echo
+  if [[ "$mode" == "confirm" ]]; then
+    (( ${#first} >= 12 )) || { error "use a passphrase of at least 12 characters"; exit 1; }
+    read -r -s -p "Repeat the passphrase: " second; echo
+    [[ "$first" == "$second" ]] || { error "the passphrases differ"; exit 1; }
+  fi
+  [[ -n "$first" ]] || { error "the passphrase is empty"; exit 1; }
+  export STACKPORT_BACKUP_PASSPHRASE="$first"
+}
+
+# Makes an archive readable inside the container, which only sees $VAR_DIR/data. Sets
+# STAGED_CONTAINER_FILE, and STAGED_HOST_FILE when a copy was made (remove it afterwards).
+stage_backup_file() {
+  local src data="$VAR_DIR/data"
+  [[ -f "${1:-}" ]] || { error "no such file: ${1:-<none>}"; exit 1; }
+  src="$(readlink -f "$1")"
+  STAGED_HOST_FILE=""
+  if [[ "$src" == "$data/"* ]]; then
+    STAGED_CONTAINER_FILE="/app/data/${src#"$data/"}"
+    return 0
+  fi
+  mkdir -p "$data/backups"
+  STAGED_HOST_FILE="$data/backups/.import-$$-$(basename "$src")"
+  # The copy holds every secret in the archive: remove it on any exit, including errors and Ctrl-C.
+  trap 'drop_staged_file' EXIT
+  trap 'exit 130' INT TERM
+  cp "$src" "$STAGED_HOST_FILE"
+  chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$STAGED_HOST_FILE"
+  chmod 600 "$STAGED_HOST_FILE"
+  STAGED_CONTAINER_FILE="/app/data/backups/${STAGED_HOST_FILE##*/}"
+}
+
+drop_staged_file() {
+  [[ -z "$STAGED_HOST_FILE" ]] || rm -f "$STAGED_HOST_FILE"
+}
+
+backup_stackport() {
+  local level=2 out="" arg name made
+  while (( $# )); do
+    arg="$1"
+    case "$arg" in
+      --level=*) level="${arg#--level=}"; shift ;;
+      --level)   (( $# >= 2 )) || { error "--level needs a value"; exit 1; }; level="$2"; shift 2 ;;
+      --out=*)   out="${arg#--out=}"; shift ;;
+      --out)     (( $# >= 2 )) || { error "--out needs a value"; exit 1; }; out="$2"; shift 2 ;;
+      *) error "unknown option: $arg"; exit 1 ;;
+    esac
+  done
+  [[ "$level" == "1" || "$level" == "2" ]] || { error "--level must be 1 (configs) or 2 (configs + project configs); level 3 is not available yet"; exit 1; }
+  docker ps --format '{{.Names}}' | grep -qx stackport || { error "the stackport container is not running"; exit 1; }
+  if [[ -n "$out" && -e "$out" ]]; then error "$out already exists"; exit 1; fi
+
+  name="stackport-backup-l${level}-$(date -u +%Y%m%d-%H%M%S).spbackup"
+  mkdir -p "$VAR_DIR/data/backups"
+  chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$VAR_DIR/data/backups" 2>/dev/null || true
+  backup_passphrase confirm
+  docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" create --level "$level" --out "/app/data/backups/$name"
+  made="$VAR_DIR/data/backups/$name"
+  chmod 600 "$made"
+  if [[ -n "$out" ]]; then
+    mv "$made" "$out"
+    chmod 600 "$out"
+    log "backup written to $out"
+  else
+    log "backup written to $made"
+  fi
+  log "copy it off this host: a backup stored only here does not survive losing the host."
+}
+
+backup_verify_stackport() {
+  local rc=0
+  docker ps --format '{{.Names}}' | grep -qx stackport || { error "the stackport container is not running"; exit 1; }
+  stage_backup_file "${1:-}"
+  backup_passphrase
+  docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" verify "$STAGED_CONTAINER_FILE" || rc=$?
+  drop_staged_file
+  return "$rc"
+}
+
+# Replaces KEY in secrets.env with the archive's value, appending it when absent. The Node side
+# only hands over values made of [A-Za-z0-9._=+,-], so they are safe in a sed replacement.
+adopt_secret() {
+  local key="$1" value="$2" file="${3:-$SECRETS_ENV_FILE}"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+# Merges the handoff file's keys into a copy of secrets.env and moves the copy into place in one
+# step, so a failure part-way leaves the original file untouched. Returns non-zero on any failure.
+merge_restore_secrets() {
+  local handoff="$1" merged key line
+  merged="$(mktemp "${SECRETS_ENV_FILE}.restore.XXXXXX")" || return 1
+  if [[ -f "$SECRETS_ENV_FILE" ]]; then cp -p "$SECRETS_ENV_FILE" "$merged" || { rm -f "$merged"; return 1; }; fi
+  for key in JWT_SECRET ENCRYPTION_KEY ENCRYPTION_KEY_PREVIOUS WEBHOOK_SECRET; do
+    line="$(grep "^${key}=" "$handoff" || true)"
+    if [[ -n "$line" ]]; then
+      adopt_secret "$key" "${line#*=}" "$merged" || { rm -f "$merged"; return 1; }
+    elif grep -q "^${key}=" "$merged" 2>/dev/null; then
+      # The archive had no such key: keeping the host's would change how new secrets are written.
+      sed -i "/^${key}=/d" "$merged" || { rm -f "$merged"; return 1; }
+    fi
+  done
+  mv "$merged" "$SECRETS_ENV_FILE" || { rm -f "$merged"; return 1; }
+}
+
+restore_stackport() {
+  local file="" mode="" yes=0 arg confirm stamp keep rc=0 handoff verify_out verify_rc no_admin=0
+  while (( $# )); do
+    arg="$1"
+    case "$arg" in
+      --mode=*) mode="${arg#--mode=}"; shift ;;
+      --mode)   (( $# >= 2 )) || { error "--mode needs a value"; exit 1; }; mode="$2"; shift 2 ;;
+      --yes)    yes=1; shift ;;
+      -*)       error "unknown option: $arg"; exit 1 ;;
+      *)        file="$arg"; shift ;;
+    esac
+  done
+  [[ -n "$file" ]] || { error "usage: stackport restore FILE --mode recover|clone [--yes]"; exit 1; }
+  [[ "$mode" == "recover" || "$mode" == "clone" ]] || { error "--mode recover|clone is required: recover keeps this instance's identity (a lost or moved host); clone creates a new identity"; exit 1; }
+  [[ -f "$COMPOSE_FILE" ]] || { error "no installation found at $APP_DIR: run 'stackport install' first"; exit 1; }
+
+  stage_backup_file "$file"
+  backup_passphrase
+
+  # Everything that can be checked without touching the installation is checked first, in the running container.
+  if docker ps --format '{{.Names}}' | grep -qx stackport; then
+    log "verifying the archive"
+    verify_rc=0
+    verify_out="$(docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" verify "$STAGED_CONTAINER_FILE" 2>&1)" || verify_rc=$?
+    printf '%s\n' "$verify_out"
+    if (( verify_rc != 0 )); then
+      drop_staged_file
+      error "the archive did not verify; nothing was changed"
+      exit 1
+    fi
+    [[ "$verify_out" != *"no administrator password hash"* ]] || no_admin=1
+  fi
+
+  echo
+  echo "Restoring REPLACES this installation's configuration with the archive's (mode: $mode)."
+  echo "The current database, replaced directories and secrets.env are kept under $VAR_DIR."
+  echo "Stackport is stopped while this runs. Applications keep running."
+  if (( yes == 0 )); then
+    require_interactive_tty
+    read -r -p "Type RESTORE to continue: " confirm
+    if [[ "$confirm" != "RESTORE" ]]; then
+      drop_staged_file
+      log "cancelled"
+      exit 1
+    fi
+  fi
+
+  stamp="$(date -u +%Y%m%d-%H%M%S)"
+  keep="$VAR_DIR/backups/pre-restore-$stamp"
+  mkdir -p "$keep"
+  chmod 700 "$keep"
+  cp -p "$SECRETS_ENV_FILE" "$keep/secrets.env" 2>/dev/null || true
+  [[ ! -f "$STACKPORT_ENV_FILE" ]] || cp -p "$STACKPORT_ENV_FILE" "$keep/stackport.env"
+
+  log "stopping stackport"
+  compose stop stackport >/dev/null
+  # A handoff left by an earlier attempt belongs to another archive and must never be adopted.
+  handoff="$VAR_DIR/data/.restore-secrets.env"
+  rm -f "$handoff"
+  # No -u: the image's entrypoint starts as root and drops to the app user itself.
+  compose run --rm --no-deps -T -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" restore "$STAGED_CONTAINER_FILE" --mode "$mode" --yes || rc=$?
+  drop_staged_file
+  if (( rc != 0 )); then
+    rm -f "$handoff"
+    error "restore failed; the previous installation is unchanged. Starting it again."
+    compose up -d stackport >/dev/null || true
+    exit "$rc"
+  fi
+
+  # The restored ciphertext only decrypts with the archive's keys.
+  # The database is already replaced here, so the keys are merged into a copy and moved into place
+  # in one step: secrets.env is either entirely the old file or entirely the merged one.
+  if [[ -f "$handoff" ]]; then
+    if ! merge_restore_secrets "$handoff"; then
+      error "the database was restored but the archive's keys could not be written to $SECRETS_ENV_FILE."
+      error "They are kept in $handoff (mode 600). Merge them into secrets.env by hand, then run 'stackport up'. The previous secrets.env is $keep/secrets.env."
+      exit 1
+    fi
+    rm -f "$handoff"
+    log "adopted the archive's encryption keys into $SECRETS_ENV_FILE (previous copy: $keep/secrets.env)"
+  fi
+  chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$VAR_DIR/data" 2>/dev/null || true
+
+  ensure_env_file
+  log "starting stackport"
+  compose up -d --force-recreate stackport >/dev/null
+  if (( no_admin )); then
+    log "restore complete ($mode). The archive holds no administrator password: run 'stackport admin-recovery' to set one."
+  else
+    log "restore complete ($mode). Sign in with the administrator password the archive was made with."
+  fi
+  if [[ "$mode" == "clone" ]]; then
+    log "this is a clone: projects are paused, API tokens and the GitHub App were removed, automation is off. Review each before enabling it."
+  else
+    log "if this is a different machine, check the domain and certificates (nginx_app_domain, Let's Encrypt)."
+  fi
+}
+
 # ── uninstall ─────────────────────────────────────────────────────────────────
 
 uninstall_stackport() {
@@ -1596,6 +1837,18 @@ case "$COMMAND" in
     ;;
   admin-recovery)
     admin_recovery
+    ;;
+  backup)
+    require_root
+    backup_stackport "$@"
+    ;;
+  backup-verify)
+    require_root
+    backup_verify_stackport "$@"
+    ;;
+  restore)
+    require_root
+    restore_stackport "$@"
     ;;
   uninstall)
     require_root
