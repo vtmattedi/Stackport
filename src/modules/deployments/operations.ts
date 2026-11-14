@@ -184,7 +184,7 @@ export async function getProjectIngressTargets(projectId: number, selectedFile?:
   const compose = await composeCommand();
   // Do not stream or return resolved config: it can contain environment secrets.
   const raw = await new Promise<string | null>((resolve) => {
-    execFile(compose.cmd, [...compose.argsPrefix, "-f", composeFile, "config", "--format", "json"],
+    execFile(compose.cmd, [...compose.argsPrefix, "-p", expectedComposeProjectName(getProjectById(projectId)!), "-f", composeFile, "config", "--format", "json"],
       { cwd: repoPath, env: dockerEnv(), timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout) => resolve(err ? null : stdout));
   });
@@ -233,7 +233,7 @@ export async function getProjectComposePolicy(projectId: number): Promise<Projec
   const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
   const violations = [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)];
   const enforced = isComposePolicyEnforced(projectId);
-  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile, expectedComposeProjectName(getProjectById(projectId)!));
   if (!resolution.ok) return { composeFile, violations, resolved: { checked: false, reason: resolution.reason, violations: [] }, enforced };
   const fingerprint = (v: PolicyViolation): string => JSON.stringify([v.section ?? "services", v.service, v.key, v.problem]);
   const known = new Set(violations.map(fingerprint));
@@ -454,8 +454,8 @@ async function checkComposePolicy(projectId: number, repoPath: string, composeFi
 /** The arguments that resolve a Compose file. `--profile '*'` turns every profile on, so a
  *  service behind `profiles:` is resolved too: naming it in `up` enables its profile, and
  *  it would otherwise run without ever being checked. */
-export function composeConfigArgs(argsPrefix: string[], composeFile: string): string[] {
-  return [...argsPrefix, "--profile", "*", "-f", composeFile, "config", "--format", "json"];
+export function composeConfigArgs(argsPrefix: string[], composeFile: string, projectName?: string): string[] {
+  return [...argsPrefix, ...(projectName ? ["-p", projectName] : []), "--profile", "*", "-f", composeFile, "config", "--format", "json"];
 }
 
 const RESOLVE_TIMEOUT_MS = 60_000;
@@ -464,10 +464,10 @@ const RESOLVE_MAX_BUFFER = 32 * 1024 * 1024;
 /** The Compose file as `docker compose config` resolves it, or why it could not be. Runs
  *  with the same minimal environment as every other Compose call. The document is never
  *  logged: it can contain secrets. Callers decide what an unresolvable file means. */
-export async function resolveComposeConfigDetailed(repoPath: string, composeFile: string): Promise<ComposeResolution> {
+export async function resolveComposeConfigDetailed(repoPath: string, composeFile: string, projectName?: string): Promise<ComposeResolution> {
   const compose = await composeCommand();
   const outcome = await new Promise<{ stdout: string } | { reason: string }>((resolve) => {
-    execFile(compose.cmd, composeConfigArgs(compose.argsPrefix, composeFile),
+    execFile(compose.cmd, composeConfigArgs(compose.argsPrefix, composeFile, projectName),
       { cwd: repoPath, env: dockerEnv(), timeout: RESOLVE_TIMEOUT_MS, maxBuffer: RESOLVE_MAX_BUFFER },
       (err, stdout, stderr) => {
         if (!err) { resolve({ stdout }); return; }
@@ -486,7 +486,7 @@ export async function resolveComposeConfigDetailed(repoPath: string, composeFile
 
 /** The resolved document, or null when there is none. For callers that can go on without it. */
 export async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
-  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile, expectedComposeProjectName(getProjectById(projectId)!));
   return resolution.ok ? resolution.doc : null;
 }
 
