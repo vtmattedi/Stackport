@@ -20,7 +20,7 @@ jobs:
     outputs:
       sha: ${{ steps.base.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Before the first promotion there is no stable branch: start from the previous
       # main, which is what servers follow until their first update to this version.
       - id: base
@@ -45,7 +45,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       # A plain push only fast-forwards, so stable can never move to unrelated history.

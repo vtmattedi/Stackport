@@ -14,8 +14,8 @@ jobs:
     name: API (typecheck, lint, tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -28,8 +28,8 @@ jobs:
     name: Client (typecheck, build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
@@ -47,7 +47,7 @@ jobs:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: bash -n stackport.sh && bash -n docker-entrypoint.sh
       # ShellCheck ships on GitHub's Ubuntu runners.
       - run: shellcheck -S warning stackport.sh docker-entrypoint.sh scripts/tests/buildx.sh
@@ -57,7 +57,7 @@ jobs:
     name: Docker image builds
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: docker build --tag stackport:ci .
       - name: Verify Docker plugins in the shipped image
         run: |

@@ -3,6 +3,9 @@
   "version": "1.4.0",
   "description": "Small VPS manager for running multiple projects on one server",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev:api": "nodemon --watch src --ext ts,json --exec tsx src/index.ts",
     "dev:client": "npm --prefix client run dev",
