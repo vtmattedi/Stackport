@@ -1031,9 +1031,11 @@ export default function ProjectDetails() {
                   <div className={styles.detailGrid}>
                     <DetailRow label="Repository" value={<a className="ext-link mono" href={`https://github.com/${project.githubRepo}`} target="_blank" rel="noopener noreferrer">{project.githubRepo} <ExternalLink size={10} /></a>} />
                     <DetailRow label="Auto-deploy branch" value={project.autoDeployBranch ? <span className="mono">{project.autoDeployBranch}</span> : <span className="muted-text">Off</span>} />
-                    <div className={styles.detailRowWide}>
-                      <DetailRow label="Deploy trigger" value={<DeployTriggerControl project={project} onChange={setProject} />} />
-                    </div>
+                    {project.githubAuthMode !== "app" && (
+                      <div className={styles.detailRowWide}>
+                        <DetailRow label="Deploy trigger" value={<DeployTriggerControl project={project} onChange={setProject} />} />
+                      </div>
+                    )}
                     {project.lastCommitSha && (
                       <>
                         <DetailRow label="Last commit" value={<span className="mono" style={{ fontSize: "0.82em" }}>{project.lastCommitSha.slice(0, 7)}</span>} />

@@ -184,7 +184,7 @@ export async function getProjectIngressTargets(projectId: number, selectedFile?:
   const compose = await composeCommand();
   // Do not stream or return resolved config: it can contain environment secrets.
   const raw = await new Promise<string | null>((resolve) => {
-    execFile(compose.cmd, [...compose.argsPrefix, "-f", composeFile, "config", "--format", "json"],
+    execFile(compose.cmd, [...compose.argsPrefix, "-p", expectedComposeProjectName(getProjectById(projectId)!), "-f", composeFile, "config", "--format", "json"],
       { cwd: repoPath, env: dockerEnv(), timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout) => resolve(err ? null : stdout));
   });
@@ -233,7 +233,7 @@ export async function getProjectComposePolicy(projectId: number): Promise<Projec
   const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
   const violations = [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)];
   const enforced = isComposePolicyEnforced(projectId);
-  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile, expectedComposeProjectName(getProjectById(projectId)!));
   if (!resolution.ok) return { composeFile, violations, resolved: { checked: false, reason: resolution.reason, violations: [] }, enforced };
   const fingerprint = (v: PolicyViolation): string => JSON.stringify([v.section ?? "services", v.service, v.key, v.problem]);
   const known = new Set(violations.map(fingerprint));
@@ -454,8 +454,8 @@ async function checkComposePolicy(projectId: number, repoPath: string, composeFi
 /** The arguments that resolve a Compose file. `--profile '*'` turns every profile on, so a
  *  service behind `profiles:` is resolved too: naming it in `up` enables its profile, and
  *  it would otherwise run without ever being checked. */
-export function composeConfigArgs(argsPrefix: string[], composeFile: string): string[] {
-  return [...argsPrefix, "--profile", "*", "-f", composeFile, "config", "--format", "json"];
+export function composeConfigArgs(argsPrefix: string[], composeFile: string, projectName?: string): string[] {
+  return [...argsPrefix, ...(projectName ? ["-p", projectName] : []), "--profile", "*", "-f", composeFile, "config", "--format", "json"];
 }
 
 const RESOLVE_TIMEOUT_MS = 60_000;
@@ -464,10 +464,10 @@ const RESOLVE_MAX_BUFFER = 32 * 1024 * 1024;
 /** The Compose file as `docker compose config` resolves it, or why it could not be. Runs
  *  with the same minimal environment as every other Compose call. The document is never
  *  logged: it can contain secrets. Callers decide what an unresolvable file means. */
-export async function resolveComposeConfigDetailed(repoPath: string, composeFile: string): Promise<ComposeResolution> {
+export async function resolveComposeConfigDetailed(repoPath: string, composeFile: string, projectName?: string): Promise<ComposeResolution> {
   const compose = await composeCommand();
   const outcome = await new Promise<{ stdout: string } | { reason: string }>((resolve) => {
-    execFile(compose.cmd, composeConfigArgs(compose.argsPrefix, composeFile),
+    execFile(compose.cmd, composeConfigArgs(compose.argsPrefix, composeFile, projectName),
       { cwd: repoPath, env: dockerEnv(), timeout: RESOLVE_TIMEOUT_MS, maxBuffer: RESOLVE_MAX_BUFFER },
       (err, stdout, stderr) => {
         if (!err) { resolve({ stdout }); return; }
@@ -485,8 +485,8 @@ export async function resolveComposeConfigDetailed(repoPath: string, composeFile
 }
 
 /** The resolved document, or null when there is none. For callers that can go on without it. */
-export async function resolveComposeConfig(repoPath: string, composeFile: string): Promise<unknown | null> {
-  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+export async function resolveComposeConfig(repoPath: string, composeFile: string, projectName?: string): Promise<unknown | null> {
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile, projectName);
   return resolution.ok ? resolution.doc : null;
 }
 
@@ -626,7 +626,42 @@ async function runCompose(
   if (args[0] === "build" || (args[0] === "up" && args.includes("--build"))) {
     env["DOCKER_BUILDKIT"] = "1";
   }
-  const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, ...fileArgs, ...args], {
+  // The repository may declare a top-level Compose `name:` shared with another
+  // Stackport project. Always use the immutable project-specific namespace instead.
+  const project = getProjectById(projectId);
+  if (!project) throw new Error(`Project ${projectId} not found`);
+  const composeProjectName = expectedComposeProjectName(project);
+  // Fail closed rather than silently creating a second stack when upgrading an
+  // existing deployment whose Compose file used a different explicit name.
+  if (composeFile && (args[0] === "up" || args[0] === "down")) {
+    const raw = await readRawComposeDoc(repoPath, composeFile);
+    const declaredName = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)["name"] : null;
+    if (typeof declaredName === "string" && declaredName !== composeProjectName) {
+      const legacy = declaredName.trim();
+      if (!/^[a-z0-9][a-z0-9_-]*$/.test(legacy)) {
+        return { ok: false, output: "Compose declares a dynamic or invalid project name; explicit migration is required before deploying.", stdout: "", command: "compose namespace preflight" };
+      }
+      try {
+        for (const resourceArgs of [
+          ["ps", "-a", "-q"],
+          ["volume", "ls", "-q"],
+          ["network", "ls", "-q"],
+        ]) {
+          const output = await new Promise<string>((resolve, reject) => {
+            execFile("docker", [...resourceArgs, "--filter", `label=com.docker.compose.project=${legacy}`],
+              { env: dockerEnv(), timeout: 15_000 }, (err, stdout) => err ? reject(err) : resolve(stdout));
+          });
+          if (output.trim()) {
+            return { ok: false, output: `Existing Docker resources use legacy Compose project "${legacy}". Migrate them explicitly before deploying "${composeProjectName}" to avoid duplicate stacks or data loss.`, stdout: "", command: "compose namespace preflight" };
+          }
+        }
+      } catch (err) {
+        return { ok: false, output: `Could not verify legacy Compose resources: ${err instanceof Error ? err.message : String(err)}`, stdout: "", command: "compose namespace preflight" };
+      }
+    }
+  }
+  const result = await run(projectId, action, compose.cmd, [...compose.argsPrefix, "-p", composeProjectName, ...fileArgs, ...args], {
     cwd: repoPath,
     timeoutMs,
     env,
@@ -893,16 +928,10 @@ export async function cleanOrphanFolder(folderPath: string): Promise<{ ok: boole
     .catch(() => fs.access(path.join(folderPath, "compose.yml")).then(() => true).catch(() => false));
 
   if (hasCompose) {
-    const compose = await composeCommand();
-    const args = [...compose.argsPrefix, "down", "--volumes", "--rmi", "local"];
-    log.push(`$ ${compose.cmd} ${args.join(" ")}\n`);
-    const ok = await new Promise<boolean>((resolve) => {
-      const child = spawn(compose.cmd, args, { cwd: folderPath, shell: false, env: dockerEnv() });
-      child.stdout.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-      child.stderr.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-      child.on("close", (code) => resolve(code === 0));
-    });
-    if (!ok) return { ok: false, log: log.join("") };
+    // An orphan directory is not proof of ownership of the Compose resources.
+    // Running "down --volumes" here could destroy a different project's data
+    // when the file declares a shared top-level name.
+    return { ok: false, log: "Orphan folder contains a Compose file. Refusing destructive cleanup; verify Docker resource ownership and remove it manually." };
   }
 
   await fs.rm(folderPath, { recursive: true, force: true });
@@ -1684,6 +1713,7 @@ export async function getProjectLogs(
 
   const args = [
     ...compose.argsPrefix,
+    "-p", expectedComposeProjectName(project),
     ...(composeFile ? ["-f", composeFile] : []),
     "logs",
     "--no-color",
