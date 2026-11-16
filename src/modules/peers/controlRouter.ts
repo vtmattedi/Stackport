@@ -22,6 +22,12 @@ declare global {
 
 const DUMMY_KEY = "D".repeat(43);
 
+/** Set when a backup is restored here (see backup/restore.ts); requests stamped before it are refused. */
+function replayFloor(db: Database.Database): number {
+  const row = db.prepare("SELECT value FROM app_meta WHERE key = 'peer_replay_floor'").get() as { value: string } | undefined;
+  return row ? Number(row.value) || 0 : 0;
+}
+
 function header(req: Request, name: string): string {
   return req.get(name) ?? "";
 }
@@ -66,6 +72,8 @@ function authenticate(getDb: () => Database.Database): RequestHandler {
     // Only a caller that proved it holds the key learns it was revoked.
     if (known.controller.revokedAt) { fail(403, "This instance's access has been revoked.", "peer-revoked"); return; }
     if (!/^\d+$/.test(timestamp) || Math.abs(Date.now() - Number(timestamp)) > MAX_CLOCK_SKEW_MS) { fail(401, "The request's timestamp is outside the allowed window; check both clocks.", "clock-skew"); return; }
+    // A restore starts with an empty nonce table: nothing signed before it may be accepted again.
+    if (Number(timestamp) < replayFloor(db)) { fail(401, "This request predates a restore of this instance; sign it again.", "replay"); return; }
     if (!recordNonce(known.controller.id, nonce, db)) { fail(401, "This request was already received.", "replay"); return; }
 
     touchController(known.controller.id, db);
@@ -111,8 +119,9 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
   const router = Router();
   const pairLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many pairing attempts, try again later." } });
   const auth = authenticate(getDb);
-  // Authenticated calls may carry large bodies (env files) but are parsed only once authenticated; unauthenticated ones are tiny.
-  const authed = [...readRaw("1mb"), auth, parseBody];
+  // The signature covers the body, so it has to be read before the caller is known: the limit is what a stranger can make this server hold,
+  // and stays small. A route that must accept more (env files, uploads) will need its own bounded limit and a justification.
+  const authed = [...readRaw("16kb"), auth, parseBody];
 
   // Presents a pairing code. Unauthenticated by design: the single-use secret is the credential, so it is rate limited.
   router.post("/v1/pair", pairLimiter, ...readRaw("16kb"), parseBody, (req: Request, res: Response): void => {

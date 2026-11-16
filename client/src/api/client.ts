@@ -616,4 +616,5 @@ export const api = {
   rotatePeerKey: (id: number) => request<void>(`/peers/targets/${id}/rotate-key`, { method: "POST" }),
   removePeer: (id: number) => request<{ notified: boolean }>(`/peers/targets/${id}`, { method: "DELETE" }),
   revokeController: (id: number) => request<void>(`/peers/controllers/${id}`, { method: "DELETE" }),
+  forgetController: (id: number) => request<void>(`/peers/controllers/${id}/record`, { method: "DELETE" }),
 };

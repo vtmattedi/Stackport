@@ -1324,6 +1324,7 @@ export interface PeersOverview {
   self: { id: string; name: string };
   selfSignedFingerprint: string | null;
   grantsAvailable: PeerGrant[];
+  grantImplications: Record<PeerGrant, PeerGrant[]>;
   controlling: PeerTarget[];
   controlledBy: PeerController[];
 }

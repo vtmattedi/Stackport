@@ -27,6 +27,11 @@ const IMPLIES = new Map<Grant, Grant[]>(Object.entries({
   "projects:destroy": ["projects:write", "projects:read"],
 } as Record<Grant, Grant[]>) as [Grant, Grant[]][]);
 
+/** What each grant also needs, for a client to show the final set before asking for it. */
+export function grantImplications(): Record<Grant, Grant[]> {
+  return Object.fromEntries(IMPLIES) as Record<Grant, Grant[]>;
+}
+
 export class GrantError extends Error {}
 
 export function isGrant(value: unknown): value is Grant {

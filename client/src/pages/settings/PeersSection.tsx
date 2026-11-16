@@ -25,16 +25,8 @@ const GRANT_INFO: Record<PeerGrant, { label: string; hint: string }> = {
   "projects:destroy": { label: "Delete", hint: "Delete projects and their data." },
 };
 
-/** Granting one of these also grants what it needs; mirrors the server so the form shows the final set. */
-const IMPLIES: Record<PeerGrant, PeerGrant[]> = {
-  "projects:read": [],
-  "projects:write": ["projects:read"],
-  "projects:env": ["projects:read"],
-  "projects:secrets": ["projects:env", "projects:read"],
-  "projects:shell": ["projects:write", "projects:read"],
-  "projects:destroy": ["projects:write", "projects:read"],
-};
-const expand = (picked: PeerGrant[]): PeerGrant[] => [...new Set(picked.flatMap((grant) => [grant, ...IMPLIES[grant]]))];
+/** Granting one of these also grants what it needs; the server says which, so the form shows the set it will actually issue. */
+const expand = (picked: PeerGrant[], implications: Record<PeerGrant, PeerGrant[]>): PeerGrant[] => [...new Set(picked.flatMap((grant) => [grant, ...(implications[grant] ?? [])]))];
 
 const STATE: Record<PeerState, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   online: { label: "Online", variant: "default" },
@@ -113,7 +105,7 @@ export default function PeersSection() {
 
   async function issue(event: React.FormEvent) {
     event.preventDefault();
-    const final = expand(picked);
+    const final = expand(picked, data?.grantImplications ?? ({} as Record<PeerGrant, PeerGrant[]>));
     if (final.length === 0) return;
     if (final.some((grant) => grant === "projects:secrets" || grant === "projects:shell" || grant === "projects:destroy")) {
       const ok = await confirm({
@@ -213,9 +205,18 @@ export default function PeersSection() {
     }
   }
 
+  async function forget(controller: PeerController) {
+    try {
+      await api.forgetController(controller.id);
+      void load();
+    } catch (err) {
+      notify.error(err, "Couldn't remove the entry");
+    }
+  }
+
   if (!data) return <Loader size={14} className="spin" />;
 
-  const finalGrants = expand(picked);
+  const finalGrants = expand(picked, data.grantImplications);
   const added = finalGrants.filter((grant) => !picked.includes(grant));
   const plainHttp = endpoint.trim().startsWith("http://");
   const activeControllers = data.controlledBy.filter((controller) => !controller.revokedAt);
@@ -294,7 +295,9 @@ export default function PeersSection() {
                     <span className="font-medium">{controller.name}</span>
                     {controller.revokedAt ? <Badge variant="destructive">Revoked</Badge> : <Badge>Active</Badge>}
                     <span className="text-xs text-[var(--dim)]">last used <TimeAgo ts={controller.lastUsedAt} fallback="never" /></span>
-                    {!controller.revokedAt && <Button type="button" variant="ghost" size="sm" className="ml-auto" onClick={() => void revoke(controller)}>Revoke</Button>}
+                    {controller.revokedAt
+                      ? <Button type="button" variant="ghost" size="sm" className="ml-auto" onClick={() => void forget(controller)}>Remove entry</Button>
+                      : <Button type="button" variant="ghost" size="sm" className="ml-auto" onClick={() => void revoke(controller)}>Revoke</Button>}
                   </div>
                   <div className="flex flex-wrap gap-1.5"><GrantBadges grants={controller.grants} /></div>
                 </li>

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "crypto";
 import fs from "fs";
+import http from "http";
 import https from "https";
 import os from "os";
 import path from "path";
@@ -16,8 +17,8 @@ import { createControlRouter } from "../src/modules/peers/controlRouter";
 import { GrantError, normalizeGrants } from "../src/modules/peers/grants";
 import { assertEndpoint } from "../src/modules/peers/client";
 import { acceptPairing, issuePairingCode, PeerError, refreshTarget, registerTarget, removeTargetAndNotify, rotateTargetKey } from "../src/modules/peers/service";
-import { HEADERS, KEY_PATTERN, newNonce, signRequest } from "../src/modules/peers/signing";
-import { addTarget, getControllerByInstance, listControllers, listTargets, revokeController, rotateControllerKey, targetKey } from "../src/modules/peers/store";
+import { HEADERS, KEY_PATTERN, newKey, newNonce, signRequest } from "../src/modules/peers/signing";
+import { addTarget, deleteRevokedController, getControllerByInstance, listControllers, listTargets, revokeController, rotateControllerKey, targetKey } from "../src/modules/peers/store";
 
 /** Two instances in one process: each gets its own database and its own HTTP server, so they only talk the way two hosts would. */
 interface Instance { db: Database.Database; id: string; server: Server; url: string }
@@ -254,19 +255,73 @@ test("a 403 that is not signed by the peer does not mark it revoked or count as 
   } finally { await close(a, b, liar); }
 });
 
-test("large bodies and any content type are signed and read exactly as sent", async () => {
+test("bodies are read as exact bytes in any content type, and one over the limit is refused before it is held", async () => {
   const a = await instance("Alpha");
   const b = await instance("Beta");
   try {
     const { target } = await pair(a, b);
     const key = targetKey(target.id, a.db) as string;
-    const body = Buffer.from(JSON.stringify({ key: "K".repeat(43), padding: "x".repeat(200_000) }));
-    const timestamp = String(Date.now());
-    const nonce = newNonce();
-    const signature = signRequest(key, { method: "POST", path: "/control/v1/rotate", from: a.id, to: b.id, timestamp, nonce, body });
-    const response = await fetch(`${b.url}/control/v1/rotate`, { method: "POST", body, headers: { "content-type": "text/plain", [HEADERS.protocol]: "1", [HEADERS.instance]: a.id, [HEADERS.target]: b.id, [HEADERS.timestamp]: timestamp, [HEADERS.nonce]: nonce, [HEADERS.signature]: signature } });
-    assert.equal(response.status, 200);
+    const post = async (padding: number): Promise<Response> => {
+      const body = Buffer.from(JSON.stringify({ key: "K".repeat(43), padding: "x".repeat(padding) }));
+      const timestamp = String(Date.now());
+      const nonce = newNonce();
+      const signature = signRequest(key, { method: "POST", path: "/control/v1/rotate", from: a.id, to: b.id, timestamp, nonce, body });
+      return fetch(`${b.url}/control/v1/rotate`, { method: "POST", body, headers: { "content-type": "text/plain", [HEADERS.protocol]: "1", [HEADERS.instance]: a.id, [HEADERS.target]: b.id, [HEADERS.timestamp]: timestamp, [HEADERS.nonce]: nonce, [HEADERS.signature]: signature } });
+    };
+    assert.equal((await post(8_000)).status, 200);
+    assert.equal((await post(200_000)).status, 413);
   } finally { await close(a, b); }
+});
+
+test("a peer's name and grants are checked before they are stored", async () => {
+  const a = await instance("Alpha");
+  const b = await instance("Beta");
+  try {
+    const { target } = await pair(a, b);
+    b.db.prepare("UPDATE app_meta SET value = ? WHERE key = 'instance_name'").run("Be\nta <script>" + "z".repeat(500));
+    assert.deepEqual(await refreshTarget(target.id, a.db), { state: "online" });
+    const name = listTargets(a.db)[0].name;
+    assert.ok(name.length <= 80 && !/[<>\n]/.test(name), name);
+  } finally { await close(a, b); }
+});
+
+test("a revoked controller can be forgotten, an active one cannot, and its key goes with it", async () => {
+  const a = await instance("Alpha");
+  const b = await instance("Beta");
+  try {
+    await pair(a, b);
+    const id = listControllers(b.db)[0].id;
+    assert.equal(deleteRevokedController(id, b.db), false, "revoke first");
+    revokeController(id, b.db);
+    assert.equal(deleteRevokedController(id, b.db), true);
+    assert.equal(listControllers(b.db).length, 0);
+  } finally { await close(a, b); }
+});
+
+test("requests stamped before a restore are refused", async () => {
+  const a = await instance("Alpha");
+  const b = await instance("Beta");
+  try {
+    const { target } = await pair(a, b);
+    const key = targetKey(target.id, a.db) as string;
+    b.db.prepare("INSERT INTO app_meta (key, value) VALUES ('peer_replay_floor', ?)").run(String(Date.now() + 1_000));
+    const early = await signedFetch(a, b.url, b.id, key, { timestamp: String(Date.now()) });
+    assert.equal(early.status, 401);
+    assert.equal(((await early.json()) as { code: string }).code, "replay");
+    assert.equal((await signedFetch(a, b.url, b.id, key, { timestamp: String(Date.now() + 2_000) })).status, 200);
+  } finally { await close(a, b); }
+});
+
+test("a connection cut after the headers does not leave the call hanging", async () => {
+  const dropper = await new Promise<Server>((resolve) => {
+    const s = http.createServer((_req, res) => { res.writeHead(200, { "content-length": "1000" }); res.write("{"); setTimeout(() => res.destroy(), 20); });
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  try {
+    const { signedCall } = await import("../src/modules/peers/client");
+    const endpoint = `http://127.0.0.1:${(dropper.address() as AddressInfo).port}`;
+    await assert.rejects(signedCall({ endpoint, fingerprint: null, key: newKey(), selfId: "a", targetId: "b", method: "GET", path: "/control/v1/hello", timeoutMs: 3000 }), /lost/);
+  } finally { dropper.closeAllConnections(); dropper.close(); }
 });
 
 test("re-pairing replaces the controller's grants, and the name it sends is sanitized", async () => {

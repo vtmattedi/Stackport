@@ -316,6 +316,8 @@ export function restoreBackup(options: RestoreOptions): RestoreResult {
       runMigrations(stagedDb);
       if (before < LATEST_SCHEMA_VERSION) actions.push(`migrated the database from schema ${before} to ${LATEST_SCHEMA_VERSION}`);
       if (options.mode === "clone") actions.push(...applyCloneTransforms(stagedDb));
+      // The nonce table is never archived, so a restored instance cannot tell a replayed request from a new one: refuse everything stamped before now.
+      stagedDb.prepare("INSERT INTO app_meta (key, value) VALUES ('peer_replay_floor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(Date.now()));
       const check = stagedDb.pragma("integrity_check") as { integrity_check: string }[];
       if (check[0]?.integrity_check !== "ok" || (stagedDb.pragma("foreign_key_check") as unknown[]).length) {
         throw new RestoreRefused([{ level: "error", message: "The restored database failed its checks after migration." }]);

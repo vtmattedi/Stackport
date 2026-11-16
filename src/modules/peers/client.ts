@@ -33,7 +33,9 @@ export function assertEndpoint(endpoint: string): URL {
  *  means the pairing secret or signed headers can never reach a server that presented another certificate. */
 function connectPinned(url: URL, fingerprint: string, timeoutMs: number): Promise<TLSSocket> {
   return new Promise((resolve, reject) => {
-    const socket = tls.connect({ host: url.hostname, port: Number(url.port || 443), servername: net.isIP(url.hostname) ? undefined : url.hostname, rejectUnauthorized: false, timeout: timeoutMs });
+    // URL.hostname keeps the brackets of an IPv6 literal; neither connect nor isIP understands them.
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    const socket = tls.connect({ host, port: Number(url.port || 443), servername: net.isIP(host) ? undefined : host, rejectUnauthorized: false, timeout: timeoutMs });
     const fail = (error: Error): void => { socket.destroy(); reject(error); };
     socket.once("timeout", () => fail(new PeerUnreachable("The peer did not answer in time.")));
     socket.once("error", (error) => fail(new PeerUnreachable(`Could not reach the peer: ${error.message}`)));
@@ -71,7 +73,11 @@ async function rawRequest(endpoint: string, fingerprint: string | null, method: 
         if (size > 8 * 1024 * 1024) { request.destroy(new PeerUnreachable("The peer's response is too large.")); return; }
         chunks.push(chunk);
       });
-      response.on("end", () => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) }));
+      let ended = false;
+      response.on("end", () => { ended = true; resolve({ status: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) }); });
+      // A connection cut after the headers arrived ends the response without "end": without this the call would never settle.
+      response.on("error", (error) => reject(new PeerUnreachable(`The connection to the peer was lost: ${error.message}`)));
+      response.on("close", () => { if (!ended) reject(new PeerUnreachable("The connection to the peer was lost before the answer was complete.")); });
     });
     request.on("close", () => { pinned?.destroy(); });
     request.on("timeout", () => request.destroy(new PeerUnreachable("The peer did not answer in time.")));

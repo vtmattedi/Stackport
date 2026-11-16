@@ -49,7 +49,16 @@ function ask(question: string, muted: boolean): Promise<string> {
   });
 }
 
-async function readPassphrase(flags: Map<string, string | true>, confirm: boolean): Promise<string> {
+const MIN_PASSPHRASE = 12;
+
+/** `creating` is true only when a new archive is made: an existing one must stay openable whatever passphrase it was made with. */
+async function readPassphrase(flags: Map<string, string | true>, creating: boolean): Promise<string> {
+  const passphrase = await readPassphraseFrom(flags, creating);
+  if (creating && passphrase.length < MIN_PASSPHRASE) fail(`use a passphrase of at least ${MIN_PASSPHRASE} characters`);
+  return passphrase;
+}
+
+async function readPassphraseFrom(flags: Map<string, string | true>, confirm: boolean): Promise<string> {
   const file = flags.get("passphrase-file");
   if (typeof file === "string") {
     const value = fs.readFileSync(file, "utf8").replace(/\r?\n$/, "");
@@ -62,7 +71,6 @@ async function readPassphrase(flags: Map<string, string | true>, confirm: boolea
   const first = await ask("Backup passphrase: ", true);
   if (confirm) {
     // Only when creating: an existing archive must stay openable whatever passphrase it was made with.
-    if (first.length < 12) fail("use a passphrase of at least 12 characters");
     if ((await ask("Repeat the passphrase: ", true)) !== first) fail("the passphrases differ");
   }
   return first;

@@ -5,11 +5,11 @@ import { SELF_SIGNED_CERT_PATH } from "../ingress/nginx/selfSignedCert";
 import { requireAuth } from "../identity/middleware/session";
 import { auditLog } from "../../shared/logger";
 import { ensureInstanceIdentity, setInstanceName } from "../backup/instance";
-import { GRANTS, GrantError } from "./grants";
+import { GRANTS, GrantError, grantImplications } from "./grants";
 import { checkPeer, forgetPeer, peerStatus } from "./monitor";
 import { PeerIdentityError, PeerUnreachable } from "./client";
 import { issuePairingCode, PeerError, registerTarget, removeTargetAndNotify, rotateTargetKey } from "./service";
-import { listControllers, listTargets, revokeController } from "./store";
+import { deleteRevokedController, listControllers, listTargets, revokeController } from "./store";
 
 /** Admin management of peers from this instance's own UI (session auth). Pairing codes and keys are never listed: a code is shown once at creation, a key never. */
 const router = Router();
@@ -39,6 +39,7 @@ router.get("/", requireAuth, async (_req: Request, res: Response): Promise<void>
     self: ensureInstanceIdentity(),
     selfSignedFingerprint: await selfSignedFingerprint(),
     grantsAvailable: GRANTS,
+    grantImplications: grantImplications(),
     controlling: listTargets().map((target) => ({ ...target, status: peerStatus(target.id) ?? { state: "unknown" } })),
     controlledBy: listControllers(),
   });
@@ -97,6 +98,15 @@ router.delete("/targets/:id", requireAuth, async (req: Request<{ id: string }>, 
     auditLog(req.user ?? "unknown", "peer.remove", String(id), "ok", { notified });
     res.json({ notified });
   } catch (error) { handle(res, error); }
+});
+
+/** Forgets a controller that was already revoked, with its stored key. */
+router.delete("/controllers/:id/record", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const id = idParam(req, res);
+  if (id === null) return;
+  if (!deleteRevokedController(id)) { res.status(404).json({ error: "Controller not found, or not revoked yet" }); return; }
+  auditLog(req.user ?? "unknown", "peer.controller.forget", String(id), "ok");
+  res.status(204).end();
 });
 
 /** Revokes a controller's access here. Takes effect on its next request; it learns of it on its next check. */

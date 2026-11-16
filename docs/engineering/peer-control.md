@@ -26,9 +26,9 @@ The pairing response carries the key, so it is only as trustworthy as the channe
 
 Every call after pairing is signed with HMAC-SHA256 over: protocol, method, path with query, caller id, **target id**, timestamp, nonce and the SHA-256 of the body. Headers: `X-SP-Protocol`, `-Instance`, `-Target`, `-Timestamp`, `-Nonce`, `-Signature`, and `-Operation` for mutations.
 
-B refuses, in this order: unsupported protocol (426); a target id that is not B (421 `wrong-target`, so a reused address or IP never acts for the wrong instance); an unknown caller or bad signature (401, indistinguishable); a revoked caller (403 `peer-revoked`, revealed only to a caller that proved it holds the key); a timestamp more than 5 minutes off (401 `clock-skew`); a nonce already seen (401 `replay`, nonces are persisted so a restart does not reopen the window).
+B refuses, in this order: unsupported protocol (426); a target id that is not B (421 `wrong-target`, so a reused address or IP never acts for the wrong instance); an unknown caller or bad signature (401, indistinguishable); a revoked caller (403 `peer-revoked`, revealed only to a caller that proved it holds the key); a timestamp more than 5 minutes off (401 `clock-skew`); a nonce already seen (401 `replay`, nonces are persisted so a restart does not reopen the window, and a restore records a floor so nothing signed before it is accepted again).
 
-The channel reads its own body (up to 5 MB, any content type), so signatures cover the exact bytes independent of the application's JSON parser.
+The channel reads its own body (up to 16 kB for now, any content type; the signature covers the body, so it is read before the caller is known), so signatures cover the exact bytes independent of the application's JSON parser.
 
 Once a caller has proved it holds the key, every answer, refusals included, is signed (`X-SP-Response-Signature` over nonce, status and body hash). A believes a `revoked` or "notified" answer only when it is signed, and treats an unsigned or mis-signed answer as **not the peer**, so another server answering at the registered address cannot pass for it. Identity is the instance id, never the hostname; an endpoint change is accepted only if the new address proves the same id with the same key.
 

@@ -32,10 +32,6 @@ export function ensureInstanceIdentity(db: Database.Database = getDatabase()): I
   return { id: read(db, INSTANCE_ID_KEY) as string, name: read(db, INSTANCE_NAME_KEY) as string };
 }
 
-export function getInstanceIdentity(db: Database.Database = getDatabase()): InstanceIdentity {
-  return ensureInstanceIdentity(db);
-}
-
 export function setInstanceName(name: string, db: Database.Database = getDatabase()): InstanceIdentity {
   const trimmed = name.trim();
   if (!trimmed || trimmed.length > 80) throw new Error("An instance name is 1 to 80 characters.");

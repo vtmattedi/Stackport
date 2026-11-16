@@ -65,7 +65,30 @@ function sha256File(file: string): string {
   return hash.digest("hex");
 }
 
-interface FileSource { name: string; source: string; size: number }
+/** Copies `source` to `dest`, hashing the bytes it copies. The manifest must describe exactly what the archive holds, and a file in use can change
+ *  between being measured and being archived: so the archive is built from this private copy, never from the live file. */
+function snapshotFile(source: string, dest: string): { size: number; sha256: string } {
+  const hash = crypto.createHash("sha256");
+  const input = fs.openSync(source, "r");
+  const output = fs.openSync(dest, "w", 0o600);
+  let size = 0;
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    for (;;) {
+      const read = fs.readSync(input, buffer, 0, buffer.length, null);
+      if (read === 0) break;
+      hash.update(buffer.subarray(0, read));
+      fs.writeSync(output, buffer, 0, read);
+      size += read;
+    }
+  } finally {
+    fs.closeSync(input);
+    fs.closeSync(output);
+  }
+  return { size, sha256: hash.digest("hex") };
+}
+
+interface FileSource { name: string; source: string; size: number; sha256: string }
 
 /** Regular files under `root` as `<prefix>/<relative path>`. Links and special files are skipped and counted. */
 function listFiles(root: string, prefix: string, skipped: { count: number }): FileSource[] {
@@ -76,7 +99,7 @@ function listFiles(root: string, prefix: string, skipped: { count: number }): Fi
       if (dirent.isDirectory()) walk(full);
       else if (dirent.isFile()) {
         const relative = path.relative(root, full).split(path.sep).join("/");
-        found.push({ name: `${prefix}/${relative}`, source: full, size: fs.statSync(full).size });
+        found.push({ name: `${prefix}/${relative}`, source: full, size: 0, sha256: "" });
       } else skipped.count += 1;
     }
   };
@@ -140,10 +163,16 @@ export function createBackup(options: CreateBackupOptions): BackupManifest {
       }
     }
 
+    fs.mkdirSync(path.join(staging, "files"));
+    files.forEach((file, index) => {
+      const copy = path.join(staging, "files", String(index));
+      Object.assign(file, snapshotFile(file.source, copy), { source: copy });
+    });
+
     const entries: ManifestEntry[] = [
       { name: "db.sqlite", size: fs.statSync(dbFile).size, sha256: sha256File(dbFile) },
       { name: "env.json", size: envBuffer.length, sha256: crypto.createHash("sha256").update(envBuffer).digest("hex") },
-      ...files.map((file) => ({ name: file.name, size: file.size, sha256: sha256File(file.source) })),
+      ...files.map((file) => ({ name: file.name, size: file.size, sha256: file.sha256 })),
     ];
 
     const components: ManifestComponent[] = [

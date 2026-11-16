@@ -112,6 +112,15 @@ export function revokeController(id: number, db: Database.Database = getDatabase
   return db.prepare("UPDATE peer_controllers SET revoked_at = ?, previous_key_enc = NULL, previous_key_expires_at = NULL WHERE id = ? AND revoked_at IS NULL").run(new Date().toISOString(), id).changes > 0;
 }
 
+/** Forgets a controller that was already revoked: its row, its (encrypted) key and its nonces. An active controller must be revoked first. */
+export function deleteRevokedController(id: number, db: Database.Database = getDatabase()): boolean {
+  return db.transaction(() => {
+    const removed = db.prepare("DELETE FROM peer_controllers WHERE id = ? AND revoked_at IS NOT NULL").run(id).changes > 0;
+    if (removed) db.prepare("DELETE FROM peer_nonces WHERE controller_id = ?").run(id);
+    return removed;
+  })();
+}
+
 /** Switches to a key the controller chose. The controller generates it, so it is never lost in transit: if the answer is lost it
  *  repeats the same call, which is a no-op once the key is current. The old key keeps working until the new one is first used. */
 export function rotateControllerKey(id: number, newKeyValue: string, db: Database.Database = getDatabase()): void {

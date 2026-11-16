@@ -64,6 +64,12 @@ export interface PairResult {
   grants: Grant[];
 }
 
+/** Printable characters only: a peer's name is shown in other people's UI and written to logs. Null when nothing usable is left. */
+function cleanName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return value.replace(/[^\p{L}\p{N} ._()'-]/gu, "").trim().slice(0, 80) || null;
+}
+
 export function acceptPairing(input: { secret: unknown; controller: { id: unknown; name: unknown } }, db: Database.Database = getDatabase()): PairResult {
   const { secret, controller } = input;
   if (typeof secret !== "string" || typeof controller?.id !== "string" || typeof controller?.name !== "string" || !/^[A-Za-z0-9-]{8,64}$/.test(controller.id)) {
@@ -74,7 +80,7 @@ export function acceptPairing(input: { secret: unknown; controller: { id: unknow
   const grants = consumePairingSecret(secret, db);
   if (!grants) throw new PeerError(403, "The pairing code is invalid, expired or already used.", "bad-code");
   // Printable characters only: the name is shown in other people's UI and written to logs.
-  const name = controller.name.replace(/[^\p{L}\p{N} ._()'-]/gu, "").trim().slice(0, 80) || "Stackport";
+  const name = cleanName(controller.name) ?? "Stackport";
   const { key, previous } = upsertController({ instanceId: controller.id, name, grants }, db);
   // A code spent by an instance that is already paired replaces its key and grants: record that, with what it had.
   auditLog(`peer:${controller.id}`, previous ? "peer.re-paired" : "peer.paired", self.id, "ok", { grants, ...(previous ? { previousGrants: previous.grants, wasRevoked: previous.revokedAt !== null } : {}) });
@@ -130,7 +136,9 @@ export async function refreshTarget(id: number, db: Database.Database = getDatab
     if (response.status !== 200) return { state: "offline", message: response.body?.error ?? `The peer answered with status ${response.status}.` };
     if (!response.verified) return { state: "identity-mismatch", message: "The peer's answer was not signed with the shared key: it may not be the registered instance." };
     if (response.body?.instance?.id !== target.instanceId) return { state: "identity-mismatch", message: "The instance behind this address is not the one that was registered." };
-    updateTarget(id, { name: response.body.instance.name, grants: parseGrants((response.body.grants ?? []).join(",")), seen: true }, db);
+    // The answer is signed, so it comes from the peer, but its content is still the peer's: check types and bound sizes before storing.
+    const grants = Array.isArray(response.body.grants) ? parseGrants(response.body.grants.filter((g): g is string => typeof g === "string").join(",")) : [];
+    updateTarget(id, { name: cleanName(response.body.instance?.name) ?? target.name, grants, seen: true }, db);
     return { state: "online" };
   } catch (error) {
     if (error instanceof PeerIdentityError) return { state: "identity-mismatch", message: error.message };
