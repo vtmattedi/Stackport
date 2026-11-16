@@ -1,4 +1,7 @@
 import { Router, type Request, type Response } from "express";
+import { X509Certificate } from "crypto";
+import { promises as fs } from "fs";
+import { SELF_SIGNED_CERT_PATH } from "../ingress/nginx/selfSignedCert";
 import { requireAuth } from "../identity/middleware/session";
 import { auditLog } from "../../shared/logger";
 import { ensureInstanceIdentity, setInstanceName } from "../backup/instance";
@@ -25,9 +28,16 @@ function handle(res: Response, error: unknown): void {
   throw error;
 }
 
-router.get("/", requireAuth, (_req: Request, res: Response): void => {
+/** The SHA-256 fingerprint of this instance's self-signed certificate, which a controller pins when this instance has no real one yet. Null once there is none. */
+async function selfSignedFingerprint(): Promise<string | null> {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- a fixed path, not user input
+  try { return new X509Certificate(await fs.readFile(SELF_SIGNED_CERT_PATH)).fingerprint256; } catch { return null; }
+}
+
+router.get("/", requireAuth, async (_req: Request, res: Response): Promise<void> => {
   res.json({
     self: ensureInstanceIdentity(),
+    selfSignedFingerprint: await selfSignedFingerprint(),
     grantsAvailable: GRANTS,
     controlling: listTargets().map((target) => ({ ...target, status: peerStatus(target.id) ?? { state: "unknown" } })),
     controlledBy: listControllers(),
