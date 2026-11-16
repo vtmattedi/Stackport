@@ -74,6 +74,9 @@ import type {
   ApiToken,
   ActionSummary,
   ComposeVariableStatus,
+  PeersOverview,
+  PeerTarget,
+  PairingCodeResult,
 } from "./types";
 
 // The session itself is an httpOnly cookie the browser holds and scripts cannot read
@@ -603,4 +606,15 @@ export const api = {
       metric: params.metric,
       projectIds: params.projectIds && params.projectIds.length > 0 ? params.projectIds.join(",") : "",
     })}`),
+  // Peers (Stackport Control)
+  getPeers: () => request<PeersOverview>("/peers"),
+  renameSelf: (name: string) => request<{ id: string; name: string }>("/peers/self", { method: "PUT", body: JSON.stringify({ name }) }),
+  issuePairingCode: (input: { endpoint: string; fingerprint: string | null; grants: string[]; ttlMinutes: number }) =>
+    request<PairingCodeResult>("/peers/pairing-codes", { method: "POST", body: JSON.stringify(input) }),
+  registerPeer: (code: string) => request<PeerTarget>("/peers/targets", { method: "POST", body: JSON.stringify({ code }) }),
+  refreshPeer: (id: number) => request<{ state: string; message?: string }>(`/peers/targets/${id}/refresh`, { method: "POST" }),
+  rotatePeerKey: (id: number) => request<void>(`/peers/targets/${id}/rotate-key`, { method: "POST" }),
+  removePeer: (id: number) => request<{ notified: boolean }>(`/peers/targets/${id}`, { method: "DELETE" }),
+  revokeController: (id: number) => request<void>(`/peers/controllers/${id}`, { method: "DELETE" }),
+  forgetController: (id: number) => request<void>(`/peers/controllers/${id}/record`, { method: "DELETE" }),
 };

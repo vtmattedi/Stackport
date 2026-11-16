@@ -18,6 +18,9 @@ export const SECRET_COLUMNS: SecretColumn[] = [
   { table: "github_app", column: "private_key_enc", idColumn: "id", label: "GitHub App private key" },
   { table: "github_app", column: "webhook_secret_enc", idColumn: "id", label: "GitHub App webhook secret" },
   { table: "github_app", column: "client_secret_enc", idColumn: "id", label: "GitHub App client secret" },
+  { table: "peer_targets", column: "key_enc", idColumn: "id", label: "Keys for controlling peer instances" },
+  { table: "peer_controllers", column: "key_enc", idColumn: "id", label: "Keys of instances allowed to control this one" },
+  { table: "peer_controllers", column: "previous_key_enc", idColumn: "id", label: "Previous peer keys (rotation grace)" },
 ];
 
 export interface SecretRow { id: number | string; value: string }

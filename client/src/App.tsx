@@ -28,6 +28,7 @@ const DomainsSection = lazy(() => import("./pages/settings/DomainsSection"));
 const GithubSection = lazy(() => import("./pages/settings/GithubSection"));
 const EncryptionSection = lazy(() => import("./pages/settings/encryption/EncryptionSection"));
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
+const PeersSection = lazy(() => import("./pages/settings/PeersSection"));
 const LiveStatusSection = lazy(() => import("./pages/settings/LiveStatusSection"));
 const InsightsLayout = lazy(() => import("./pages/insights/InsightsLayout"));
 const InsightsOverview = lazy(() => import("./pages/insights/OverviewSection"));
@@ -94,6 +95,7 @@ export default function App() {
               <Route path="notifications" element={<NotificationsSection />} />
               <Route path="credentials" element={<Credentials />} />
               <Route path="mcp" element={<McpSection />} />
+              <Route path="peers" element={<PeersSection />} />
               <Route path="live-status" element={<LiveStatusSection />} />
               <Route path="protections" element={<ProtectionsSection />} />
               {/* Pages that moved: Container defaults and Project protections became Protections; Storage and Maintenance went to Host. */}

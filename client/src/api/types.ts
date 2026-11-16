@@ -1311,3 +1311,21 @@ export interface NetworkGroupView {
   applied?: boolean;
   warning?: string;
 }
+
+/** Settings > Peers (GET /peers). Keys and pairing codes are never listed. */
+export type PeerGrant = "projects:read" | "projects:write" | "projects:env" | "projects:secrets" | "projects:shell" | "projects:destroy";
+export type PeerState = "online" | "offline" | "revoked" | "identity-mismatch" | "version-mismatch" | "unknown";
+export interface PeerTarget {
+  id: number; instanceId: string; name: string; endpoint: string; certFingerprint: string | null; grants: PeerGrant[]; protocol: number; createdAt: string; lastSeenAt: string | null;
+  status: { state: PeerState; message?: string; checkedAt?: string };
+}
+export interface PeerController { id: number; instanceId: string; name: string; grants: PeerGrant[]; createdAt: string; lastUsedAt: string | null; revokedAt: string | null }
+export interface PeersOverview {
+  self: { id: string; name: string };
+  selfSignedFingerprint: string | null;
+  grantsAvailable: PeerGrant[];
+  grantImplications: Record<PeerGrant, PeerGrant[]>;
+  controlling: PeerTarget[];
+  controlledBy: PeerController[];
+}
+export interface PairingCodeResult { code: string; expiresAt: string; grants: PeerGrant[] }

@@ -8,6 +8,7 @@ import { errorHandler } from "./application/http/errorHandler";
 import router from "./application/http/routes";
 import githubHooksRouter from "./modules/automation/routes/githubHooks";
 import mcpRouter from "./transports/mcp/http";
+import controlRouter from "./modules/peers/controlRouter";
 import { getReadiness } from "./modules/maintenance/readiness";
 import { runningSha } from "./modules/maintenance/version";
 import { createTrustedProxy } from "./modules/ingress/trustedProxy";
@@ -54,6 +55,9 @@ app.use(
 
 // GitHub webhook deliveries: own rate limit and raw-body parsing, so they go before both.
 app.use("/api/hooks", githubHooksRouter);
+// Stackport Control (sp-control/v1): instance-to-instance, authenticated per request by a pairing key, never by a session. It reads its
+// own body (the signature covers the exact bytes), so it must come before the JSON parser below, and it is still rate limited.
+app.use("/control", globalLimiter, controlRouter);
 app.use(globalLimiter);
 app.use(
   express.json({

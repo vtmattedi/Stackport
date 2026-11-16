@@ -98,3 +98,36 @@ file back. Networks that exist keep their ranges. `--no-restart` writes the file
 the same numbers and which networks use them, and can remove the ones nothing is attached to.
 
 To reboot the machine: `sudo stackport reboot [--in <minutes>]`, or Host → Power. On older installations upgraded from before 1.3.9, `sudo stackport repair` reconciles the host power units. **A Stackport image rollback does not replay all Docker network, generated Nginx or workload state.** Operator-controlled update infrastructure restore points are a separate, [planned 1.5 feature](../roadmap/1.5.md).
+
+## Backup and restore (levels 1 and 2)
+
+`sudo stackport backup [--level 1|2] [--out FILE]` writes one passphrase-encrypted archive (scrypt + AES-256-GCM; the
+passphrase is the only key and Stackport cannot recover it). It is separate from the automatic database copy `update` makes
+(`/var/lib/stackport/backups/update-*`), which only protects an update.
+
+| Level | Contains | Does **not** contain |
+| --- | --- | --- |
+| 1 | Instance settings, administrator identity (**password hash**, never the password), credentials, integrations, global domains, webhook scripts, and the keys that decrypt the stored secrets | Projects of any kind |
+| 2 (default) | Level 1 plus every project's record, source and deployment configuration, Compose snapshots, managed `.env` files **with their secret values**, domains/routes, health checks and files uploaded for manually uploaded projects | Workload data |
+
+Neither level contains application data: databases, volumes, uploaded user files and broker state are **not** recovered by
+a restore, and Git checkouts, certificates, generated nginx config, sessions and history are not included either (the
+archive's manifest lists every exclusion; `stackport backup-verify FILE` prints it). Level 3 (workload data) is not
+available yet. Keep archives off the host and treat them as secrets: they hold the key material for every stored credential.
+
+```bash
+sudo stackport backup --level 2 --out ~/stackport-l2.spbackup
+sudo stackport backup-verify ~/stackport-l2.spbackup            # authenticates, checks checksums, schema and that every secret decrypts
+sudo stackport restore ~/stackport-l2.spbackup --mode recover   # or --mode clone
+```
+
+`restore` **replaces** the installation's configuration (it does not merge). It verifies the archive first, asks you to
+type `RESTORE`, stops Stackport (applications keep running), restores in a one-off container, adopts the archive's keys into
+`/etc/stackport/secrets.env`, and starts Stackport again. It works with the web UI down. The previous database,
+replaced directories and `secrets.env` are kept under `/var/lib/stackport/data/backups/pre-restore-*` and
+`/var/lib/stackport/backups/pre-restore-*`; if the restore fails, nothing is changed and Stackport is started again.
+
+- **recover** keeps the instance id, name, administrator password hash and credentials: use it to replace a lost or moved host. Sessions are ended.
+- **clone** gives the copy a **new instance id** (the display name may match), ends sessions, removes API tokens and the GitHub App registration, turns GitHub polling, email, web push and webhook scripts off, and pauses every project with its GitHub hooks and automatic-deploy settings cleared. Re-enable each deliberately; two live copies must not process the same webhooks, MQTT writes or OAuth callbacks.
+- Host-specific values (domain, certificates) are shown, never applied. On a different machine check `nginx_app_domain` and re-issue certificates.
+- An archive made by a newer Stackport is refused (update first); an older one is migrated on restore.

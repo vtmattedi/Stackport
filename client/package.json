@@ -1,7 +1,10 @@
 {
   "name": "stackport-vps-manager-client",
   "private": true,
-  "version": "1.4.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "version": "1.4.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
