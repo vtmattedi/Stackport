@@ -8,6 +8,7 @@ import { getDatabase } from "../../config/database";
 import { packageVersion } from "../maintenance/version";
 import { currentVolumeRoots, managedVolumesRoot, type VolumeRoots } from "../deployments/compose/managedVolumes";
 import { DOMAIN_RE } from "../ingress/domainName";
+import { APEX_LABEL, LABEL_RE, splitOnBase } from "../ingress/managedDomains";
 import { sealEnvVariables, tryReadEnvVariables, type EnvVariable, type ProjectEnvFileRow } from "../projects/envFiles";
 import { deployRoot as configuredDeployRoot, expectedComposeProjectName } from "../projects/workspace";
 import { ArchiveError, ArchiveWriter, isSafeEntryName, readArchiveAsync, readEntryBufferAsync, writeEntryToAsync } from "./archive";
@@ -65,7 +66,13 @@ export interface ProjectContent {
 
 export interface FileMeta { mode: number; uid: number; gid: number }
 
-export interface SourceHostname { domain: string; service: string; containerPort: number | null; useSsl: boolean }
+/** One hostname of the project as it was on the source: where it routes (the compose service and port), whether it served TLS, whether it redirects the bare domain,
+ *  and whether the health check goes through it. Not in the digest: it is routing, and the move checks what the target made of it. */
+export interface SourceHostname { domain: string; service: string; containerPort: number | null; useSsl: boolean; redirectApex?: boolean; healthCheck?: boolean }
+
+/** A branch name that is safe to hand to git: it may not start with "-" (an option) or hold anything git does not allow in a ref. */
+export const SAFE_BRANCH = /^(?!-)[A-Za-z0-9._/-]{1,250}$/;
+const SAFE_COMMIT = /^[0-9a-f]{7,64}$/;
 
 export interface ProjectManifest {
   kind: "project";
@@ -83,6 +90,10 @@ export interface ProjectManifest {
   /** Made while the project was running: the volumes' trees are not expected to match, and the importer reports them as unverified. */
   live?: boolean;
   hostnames: SourceHostname[];
+  /** The branch the running revision was deployed from (a one-off deploy of another branch than the configured one): the target deploys that one first. */
+  deployedBranch?: string | null;
+  /** The commit that was running: the target deploys exactly it, so a project that was behind its branch (or rolled back) is not silently updated by being moved. */
+  deployedCommit?: string | null;
   /** Raw nginx directives, outside the digest: applied only when the importer allows them. */
   rawNginx: { extraConfig: string | null; extraBlocks: string | null } | null;
   /** Everything that is not in the archive, and why. Omissions are always stated. */
@@ -303,8 +314,12 @@ export async function exportProject(options: ExportProjectOptions): Promise<Proj
       try { metaFor(dir, real); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
     });
     const content: ProjectContent = { ...dbContent, volumes, dirs: found.dirs.map((d) => d.slice("files/".length)), files: files.map((f) => ({ ...f, name: f.name.slice("files/".length) })) };
-    const hostnames = (db.prepare("SELECT domain, service, container_port, use_ssl FROM project_domains WHERE project_id = ? ORDER BY id").all(project.id) as { domain: string; service: string | null; container_port: number | null; use_ssl: number | null }[])
-      .map((d) => ({ domain: d.domain, service: d.service ?? "", containerPort: d.container_port, useSsl: d.use_ssl !== 0 }));
+    const hostnames: SourceHostname[] = (db.prepare("SELECT id, domain, service, container_port, use_ssl, redirect_apex FROM project_domains WHERE project_id = ? ORDER BY id").all(project.id) as { id: number; domain: string; service: string | null; container_port: number | null; use_ssl: number | null; redirect_apex: number | null }[])
+      .map((d) => ({ domain: d.domain, service: d.service ?? "", containerPort: d.container_port, useSsl: !!d.use_ssl, redirectApex: !!d.redirect_apex, healthCheck: d.id === project["health_check_domain_id"] }));
+    // The revision that ran: its branch, which a one-off deploy may have chosen instead of the configured one.
+    const ran = project.source_type === "github" ? (db.prepare("SELECT branch, commit_sha FROM project_deployments WHERE project_id = ? AND status IN ('active', 'superseded') AND branch IS NOT NULL ORDER BY (status = 'active') DESC, id DESC LIMIT 1").get(project.id) as { branch: string; commit_sha: string | null } | undefined) : undefined;
+    const deployedBranch = ran && SAFE_BRANCH.test(ran.branch) ? ran.branch : null;
+    const deployedCommit = ran?.commit_sha && deployedBranch && SAFE_COMMIT.test(ran.commit_sha) ? ran.commit_sha : null;
     const nginx = { extraConfig: (project["nginx_extra_config"] as string | null) ?? null, extraBlocks: (project["nginx_extra_blocks"] as string | null) ?? null };
     const notCarried = [
       ...(engine ? [] : ["Docker named volumes, and any data this process cannot read (no Docker access for the privileged helper)"]),
@@ -313,8 +328,9 @@ export async function exportProject(options: ExportProjectOptions): Promise<Proj
       "TCP exposures (public ports are chosen per instance)",
       "deploy history, logs and metric samples",
       "credentials, the GitHub App installation and the webhook (tied to this instance)",
-      "certificates and nginx routes (issued again for the new hostnames)",
+      "certificates and nginx routes (a move issues them again for the new hostnames when you confirm it)",
       ...(project.source_type === "github" ? ["the Git checkout (cloned again on the next deploy)"] : []),
+      ...(project["network_group"] ? [`network group "${String(project["network_group"])}": the other projects of the group stay where they are, so what they shared with this one is not reachable across instances`] : []),
       ...(project["deploy_trigger"] === "webhook" ? ["the webhook deploy trigger (becomes polling)"] : []),
       ...(found.skipped ? [`${found.skipped} link(s) or special file(s), which an archive cannot hold (a service that depends on a symlink must recreate it)`] : []),
       ...(vanished ? [`${vanished} file(s) that were removed while the archive was written`] : []),
@@ -323,7 +339,7 @@ export async function exportProject(options: ExportProjectOptions): Promise<Proj
       kind: "project", format: PROJECT_ARCHIVE_FORMAT, createdAt: (options.now ?? (() => new Date()))().toISOString(), stackportVersion: packageVersion(),
       schemaVersion: LATEST_SCHEMA_VERSION,
       source: { instance: ensureInstanceIdentity(db), projectId: project.id, name: project.name },
-      content, digest: contentDigest(content), meta, blobs, live: engine && options.allowRunning ? true : undefined, hostnames,
+      content, digest: contentDigest(content), meta, blobs, live: engine && options.allowRunning ? true : undefined, hostnames, deployedBranch, deployedCommit,
       rawNginx: nginx.extraConfig || nginx.extraBlocks ? nginx : null,
       notCarried, skippedSpecialFiles: found.skipped,
     };
@@ -420,7 +436,7 @@ export interface ImportProjectOptions {
   /** The name to give the project; the archive's own name otherwise. A name already in use is refused, never merged. */
   name?: string;
   /** Hostnames to attach (no route or certificate is created here). */
-  domains?: { domain: string; service?: string; containerPort?: number | null; useSsl?: boolean }[];
+  domains?: { domain: string; /** The hostname on the source this one replaces (the first one when not given): its service, port, TLS and redirect come along unless set here. */ from?: string; service?: string; containerPort?: number | null; useSsl?: boolean }[];
   /** Applied as the project's credential for a GitHub source. */
   credentialId?: number | null;
   /** Apply the archive's raw nginx directives. Off for anything that arrives over the control channel. */
@@ -441,6 +457,11 @@ export interface ImportProjectResult {
   /** The digest the importer recomputed from what it wrote: equal to the manifest's, or the import would have failed. */
   digest: string;
   hostnames: SourceHostname[];
+  /** The hostnames created here that served TLS on the source: a certificate is issued for each once DNS points here. */
+  sslHostnames: string[];
+  /** The branch the source was running, for the first deploy. */
+  deployedBranch: string | null;
+  deployedCommit: string | null;
   notCarried: string[];
   warnings: string[];
 }
@@ -511,8 +532,19 @@ export async function importProject(options: ImportProjectOptions): Promise<Impo
       if (db.prepare("SELECT 1 FROM project_domains WHERE lower(domain) = lower(?)").get(domain.domain)) throw new ProjectArchiveError(`${domain.domain} is already used by another project here.`, "invalid");
     }
 
+    // Each chosen hostname takes the place of one on the source and keeps where that one routed: the compose service and port, TLS, the apex redirect.
+    const sourceFor = (domain: { from?: string }, index: number): SourceHostname | undefined => (domain.from ? manifest.hostnames.find((h) => h.domain.toLowerCase() === domain.from?.toLowerCase()) : undefined) ?? manifest.hostnames[index];
+    const resolved = (options.domains ?? []).map((domain, index) => {
+      const source = sourceFor(domain, index);
+      return { domain: domain.domain.toLowerCase(), service: domain.service ?? source?.service ?? "", containerPort: domain.containerPort ?? source?.containerPort ?? null, useSsl: domain.useSsl ?? source?.useSsl ?? true, wantedSsl: source?.useSsl ?? false, redirectApex: !!source?.redirectApex, healthCheck: !!source?.healthCheck };
+    });
+    const bases = db.prepare("SELECT id, name FROM managed_domains").all() as { id: number; name: string }[];
+    const deployedBranch = typeof manifest.deployedBranch === "string" && SAFE_BRANCH.test(manifest.deployedBranch) ? manifest.deployedBranch : null;
+    const deployedCommit = deployedBranch && typeof manifest.deployedCommit === "string" && SAFE_COMMIT.test(manifest.deployedCommit) ? manifest.deployedCommit : null;
+
     const warnings: string[] = [];
     const notCarried = [...manifest.notCarried];
+    if (manifest.hostnames.length > resolved.length) notCarried.push(`${manifest.hostnames.length - resolved.length} other hostname(s) of the source: ${manifest.hostnames.filter((_, i) => i >= resolved.length).map((h) => h.domain).join(", ")} (add them on this instance)`);
     const cfg = manifest.content.config;
     const now = new Date().toISOString();
     const nginx = options.allowRawNginx ? manifest.rawNginx : null;
@@ -527,10 +559,19 @@ export async function importProject(options: ImportProjectOptions): Promise<Impo
         db.prepare("INSERT INTO project_env_files (project_id, relative_path, variables_json, variables_enc, created_at, updated_at) VALUES (?,?,?,?,?,?)").run(id, file.path, sealed.json, sealed.enc, now, now);
       }
       for (const service of manifest.content.groupServices) db.prepare("INSERT INTO network_group_services (project_id, service) VALUES (?,?)").run(id, service);
-      for (const domain of options.domains ?? []) {
-        db.prepare("INSERT INTO project_domains (project_id, domain, use_ssl, service, container_port, created_at, updated_at) VALUES (?,?,?,?,?,?,?)")
-          .run(id, domain.domain.toLowerCase(), domain.useSsl === false ? 0 : 1, domain.service ?? "", domain.containerPort ?? null, now, now);
+      let firstDomain: number | null = null;
+      let healthDomain: number | null = null;
+      for (const domain of resolved) {
+        // On one of this instance's managed base domains, the hostname is managed like any other (a label under a base).
+        const split = splitOnBase(domain.domain, bases);
+        const managed = split && (split.label === APEX_LABEL || LABEL_RE.test(split.label)) ? split : null;
+        const redirectApex = domain.redirectApex && managed?.label === "www" ? 1 : 0;
+        const added = Number(db.prepare("INSERT INTO project_domains (project_id, domain, use_ssl, service, container_port, managed_domain_id, label, redirect_apex, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+          .run(id, domain.domain, domain.useSsl ? 1 : 0, domain.service, domain.containerPort, managed?.base.id ?? null, managed?.label ?? null, redirectApex, now, now).lastInsertRowid);
+        firstDomain ??= added;
+        if (domain.healthCheck) healthDomain = added;
       }
+      if ((healthDomain ?? firstDomain) !== null) db.prepare("UPDATE projects SET health_check_domain_id = ? WHERE id = ?").run(healthDomain ?? firstDomain, id);
       return id;
     })();
     const project = { id: projectId, name, source_type: String(cfg["source_type"] ?? "github") };
@@ -571,7 +612,7 @@ export async function importProject(options: ImportProjectOptions): Promise<Impo
       if (!options.allowOwnershipLoss) throw new ProjectArchiveError(`File ownership could not be restored for ${lost} path(s): this process is not allowed to chown. A database refuses to start on a data directory with the wrong owner. Archives made with Docker access carry ownership and restore it through the helper; this one was made without. Pass --ignore-ownership only for data that does not depend on its owner. The import was undone.`, "ownership");
       warnings.push(`File ownership could not be restored for ${lost} path(s) (accepted).`);
     }
-    return { projectId, name, digest, hostnames: manifest.hostnames, notCarried, warnings };
+    return { projectId, name, digest, hostnames: manifest.hostnames, sslHostnames: resolved.filter((d) => d.wantedSsl).map((d) => d.domain), deployedBranch, deployedCommit, notCarried, warnings };
   } catch (error) {
     if (created) {
       try {

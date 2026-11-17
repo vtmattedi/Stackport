@@ -16,6 +16,8 @@ import { deployProject, ensureProjectProxyNetwork, getProjectById, stopAndPurgeP
 import { DOMAIN_RE } from "../ingress/domainName";
 import { listManagedDomains } from "../ingress/managedDomains";
 import { writeNginxConfig } from "../ingress/nginx/configWriter";
+import { runCertbotAction } from "../ingress/certificates/operations";
+import { listProjectDomains, parseContainerPort, parseServiceName, setProjectDomainSsl } from "../ingress/domains";
 import { bindProjectToApp, candidatesForRepo, resolveAppRepository, verifyRepositoryAccess } from "../github/binding";
 import { GithubAppError } from "../github/app";
 import { listCredentials } from "../projects/operations";
@@ -62,10 +64,28 @@ export interface TransferView {
   warnings: string[]; notCarried: string[]; hostnames: string[]; error: string | null; expiresAt: string;
 }
 
+/** What an import records for the steps after it. */
+interface ImportNotes { warnings?: string[]; notCarried?: string[]; hostnames?: string[]; /** Hostnames that served TLS on the source: certificates are issued when the move is confirmed. */ ssl?: string[]; branch?: string | null; commit?: string | null }
+
+function notesOf(r: Row): ImportNotes {
+  try { return JSON.parse(r.warnings_json) as ImportNotes; } catch { return {}; }
+}
+
 /** What this module calls out to, so a test can stand in for Docker. */
 export const transferDeps = {
   engine: (): Promise<VolumeEngine | null> => DockerVolumeEngine.create(),
-  deploy: (projectId: number): Promise<{ ok: boolean; output: string }> => deployProject(projectId, "manual"),
+  deploy: (projectId: number, branch?: string | null, commit?: string | null): Promise<{ ok: boolean; output: string }> => deployProject(projectId, "manual", branch ?? null, commit ?? null),
+  /** A certificate for a hostname that served TLS on the source, then the TLS route. Needs DNS to point here already: a failure leaves the HTTP route as it is. */
+  issueSsl: async (projectId: number, domain: string): Promise<{ ok: boolean; output: string }> => {
+    const row = listProjectDomains(projectId).find((d) => d.domain.toLowerCase() === domain.toLowerCase());
+    if (!row) return { ok: false, output: `${domain} is no longer a hostname of this project.` };
+    if (!row.service || !row.containerPort) return { ok: false, output: `${domain} has no compose service and port to route to.` };
+    const cert = await runCertbotAction(row.domain, "issue");
+    if (!cert.ok) return { ok: false, output: cert.output };
+    setProjectDomainSsl(projectId, row.id, true);
+    const applied = await writeNginxConfig();
+    return { ok: applied.ok, output: applied.ok ? cert.output : applied.output };
+  },
   publish: async (projectId: number): Promise<void> => { await ensureProjectProxyNetwork(projectId); const nginx = await writeNginxConfig(); if (!nginx.ok) logger.warn({ projectId, output: nginx.output }, "transfer.nginx-failed"); },
   purge: async (projectId: number): Promise<void> => { await stopAndPurgeProject(projectId); },
 };
@@ -84,8 +104,7 @@ function row(id: string, db: Database.Database): Row {
 }
 
 function view(r: Row): TransferView {
-  let extra: { warnings?: string[]; notCarried?: string[]; hostnames?: string[] } = {};
-  try { extra = JSON.parse(r.warnings_json) as typeof extra; } catch { /* empty */ }
+  const extra = notesOf(r);
   return { id: r.id, state: r.state, name: r.name, receivedBytes: r.received_bytes, nextChunk: r.next_chunk, digest: r.digest, projectId: r.project_id, warnings: extra.warnings ?? [], notCarried: extra.notCarried ?? [], hostnames: extra.hostnames ?? [], error: r.error, expiresAt: r.expires_at };
 }
 
@@ -101,7 +120,8 @@ function freeBytes(): number | null {
 
 // ── hostname ────────────────────────────────────────────────────────────────
 
-export interface DomainChoice { domain: string; service?: string; containerPort?: number | null }
+/** `from` is the hostname on the source this one replaces: where it routed (service, port), whether it served TLS, comes along. */
+export interface DomainChoice { domain: string; from?: string; service?: string; containerPort?: number | null }
 
 /** The target's own domain manager: the base domains it manages, for the "new hostname" step. */
 export function domainOptions(db: Database.Database = getDatabase()): { bases: { name: string; isDefault: boolean }[]; used: string[] } {
@@ -185,7 +205,14 @@ export async function prepareTransfer(input: { controllerInstance: string; name:
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (!name || name.length > 200) throw new TransferError(400, "Give the project a name of 1 to 200 characters.", "bad-request");
   if (db.prepare("SELECT 1 FROM projects WHERE lower(name) = lower(?)").get(name)) throw new TransferError(409, `A project named "${name}" already exists on this instance.`, "name-exists");
-  for (const choice of input.domains ?? []) {
+  // Only what is understood is kept: a hostname, the source hostname it replaces, and an explicit route that is a valid service name and port.
+  const domains: DomainChoice[] = (input.domains ?? []).map((choice) => ({
+    domain: choice.domain,
+    ...(typeof choice.from === "string" ? { from: choice.from } : {}),
+    ...(parseServiceName(choice.service) ? { service: choice.service } : {}),
+    ...(parseContainerPort(choice.containerPort) ? { containerPort: parseContainerPort(choice.containerPort) } : {}),
+  }));
+  for (const choice of domains) {
     const problem = hostnameProblem(choice.domain, db);
     if (problem) throw new TransferError(409, problem, "hostname-unavailable");
   }
@@ -202,7 +229,7 @@ export async function prepareTransfer(input: { controllerInstance: string; name:
   const archiveKey = crypto.randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + AWAITING_TTL_MS).toISOString();
   db.prepare(`INSERT INTO project_transfers_in (id, token_hash, key_enc, controller_instance, state, name, domains_json, auth_json, expires_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, hashToken(token), encryptSecret(archiveKey), input.controllerInstance, "awaiting", name, JSON.stringify(input.domains ?? []), repo && auth ? JSON.stringify(auth) : null, expiresAt, now(), now());
+    .run(id, hashToken(token), encryptSecret(archiveKey), input.controllerInstance, "awaiting", name, JSON.stringify(domains), repo && auth ? JSON.stringify(auth) : null, expiresAt, now(), now());
   fs.mkdirSync(transferDir(id), { recursive: true, mode: 0o700 });
   auditLog(`peer:${input.controllerInstance}`, "transfer.prepared", name, "ok", { transferId: id });
   return { transferId: id, token, archiveKey, expiresAt };
@@ -303,7 +330,7 @@ export function startImport(id: string, controllerInstance: string, db: Database
       const engine = await transferDeps.engine();
       const domains = (JSON.parse(r.domains_json) as DomainChoice[]).map((d) => ({ ...d, useSsl: false }));
       const result = await importProject({ archivePath: archiveFile(id), passphrase: decryptSecret(r.key_enc), name: r.name, domains, engine, requireVerified: true, allowRawNginx: false, db });
-      setState(id, "imported", db, { digest: result.digest, project_id: result.projectId, warnings_json: JSON.stringify({ warnings: result.warnings, notCarried: result.notCarried, hostnames: result.hostnames.map((h) => h.domain) }) });
+      setState(id, "imported", db, { digest: result.digest, project_id: result.projectId, warnings_json: JSON.stringify({ warnings: result.warnings, notCarried: result.notCarried, hostnames: result.hostnames.map((h) => h.domain), ssl: result.sslHostnames, branch: result.deployedBranch, commit: result.deployedCommit } satisfies ImportNotes) });
       auditLog(`peer:${controllerInstance}`, "transfer.imported", r.name, "ok", { transferId: id, projectId: result.projectId });
     } catch (error) {
       const message = error instanceof ProjectArchiveError || error instanceof Error ? error.message : String(error);
@@ -341,7 +368,7 @@ export function startImported(id: string, controllerInstance: string, db: Databa
       const result = await new Promise<{ ok: boolean; output: string }>((resolve) => {
         const record = actionRegistry.tryStart(projectRepoKey(projectId), "deploy", { projectId, triggeredBy: "move" }, async () => {
           try {
-            const deployed = await transferDeps.deploy(projectId);
+            const deployed = await transferDeps.deploy(projectId, notesOf(r).branch ?? null, notesOf(r).commit ?? null);
             resolve({ ok: deployed.ok, output: deployed.output });
             return { ok: deployed.ok, output: deployed.output };
           } catch (error) {
@@ -393,7 +420,27 @@ export function commitTransfer(id: string, controllerInstance: string, db: Datab
   setState(id, "committed", db);
   removeFiles(id);
   auditLog(`peer:${controllerInstance}`, "transfer.committed", r.name, "ok", { transferId: id, projectId: r.project_id });
+  // The project is this instance's own now. Its TLS is the one thing a move could not do before: the certificate needs DNS pointing here, which is what confirming says it does.
+  const ssl = notesOf(r).ssl ?? [];
+  if (ssl.length && r.project_id !== null) void issueCarriedSsl(id, r.project_id, r.name, ssl, db);
   return view(row(id, db));
+}
+
+/** Issues the certificates of a committed move, one hostname after another, and says on the transfer how each went. Never undoes the move. */
+export async function issueCarriedSsl(id: string, projectId: number, name: string, domains: string[], db: Database.Database = getDatabase()): Promise<void> {
+  const notes: string[] = [];
+  for (const domain of domains) {
+    try {
+      const result = await transferDeps.issueSsl(projectId, domain);
+      auditLog("system", "transfer.ssl", `${name}:${domain}`, result.ok ? "ok" : "fail", { transferId: id });
+      notes.push(result.ok ? `${domain}: TLS certificate issued and applied.` : `${domain}: no TLS certificate yet (${result.output.split("\n").filter(Boolean).slice(-1)[0] ?? "failed"}). Point its DNS here, then issue it from the project's domain settings.`);
+    } catch (error) {
+      notes.push(`${domain}: no TLS certificate yet (${error instanceof Error ? error.message : String(error)}).`);
+    }
+  }
+  const current = row(id, db);
+  const extra = notesOf(current);
+  db.prepare("UPDATE project_transfers_in SET warnings_json = ? WHERE id = ?").run(JSON.stringify({ ...extra, warnings: [...(extra.warnings ?? []), ...notes], ssl: [] } satisfies ImportNotes), id);
 }
 
 function sourcesOf(project: { id: number; name: string }): VolumeSource[] {

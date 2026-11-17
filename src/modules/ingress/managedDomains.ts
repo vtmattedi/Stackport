@@ -124,7 +124,7 @@ export function removeManagedDomain(id: number): boolean {
 
 /** Splits a hostname on the longest base domain it is on: `@` when it is the base domain itself, otherwise everything in
  *  front of it (which may not be one valid label). Null when it is not on any base. */
-function splitOnBase<B extends { name: string }>(host: string, bases: B[]): { base: B; label: string } | null {
+export function splitOnBase<B extends { name: string }>(host: string, bases: B[]): { base: B; label: string } | null {
   const sorted = [...bases].sort((a, b) => b.name.length - a.name.length);
   const bare = sorted.find((b) => b.name === host);
   if (bare) return { base: bare, label: APEX_LABEL };

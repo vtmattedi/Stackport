@@ -104,7 +104,7 @@ export function MoveProjectDialog({ source, projectId, projectName, githubRepo, 
     if (!target) return;
     setStarting(true);
     try {
-      const run = await api.startMove({ source: sourceRef(source), target: target.ref, projectId, projectName, githubRepo, auth, name: name.trim(), domains: hostname ? [{ domain: hostname }] : [] });
+      const run = await api.startMove({ source: sourceRef(source), target: target.ref, projectId, projectName, githubRepo, auth, name: name.trim(), domains: hostname ? [{ domain: hostname, ...(currentHostname ? { from: currentHostname } : {}) }] : [] });
       setMoveId(run.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.moves });
     } catch (err) { notify.error(err, "Couldn't start the move"); } finally { setStarting(false); }
@@ -139,7 +139,7 @@ export function MoveProjectDialog({ source, projectId, projectName, githubRepo, 
                       {githubAuth.isLoading ? <Loader size={14} className="spin" /> : <AppSelect value={authChoice} onValueChange={setAuthChoice} options={authOptions} placeholder="Choose a token or the GitHub App" />}
                     </Field>
                   )}
-                  <Field label="Hostname there" hint={domains.error ? undefined : "Chosen from the domains the target manages. Stackport does not manage DNS: create the record for it before you confirm, and turn on TLS afterwards."} error={domains.error instanceof Error ? domains.error.message : taken ? `${hostname} is already used on ${target?.name}.` : undefined}>
+                  <Field label="Hostname there" hint={domains.error ? undefined : "Chosen from the domains the target manages. Stackport does not manage DNS: create the record for it before you confirm. The route (service and port) comes along, and if it served TLS, the certificate is issued when you confirm."} error={domains.error instanceof Error ? domains.error.message : taken ? `${hostname} is already used on ${target?.name}.` : undefined}>
                     {domains.isLoading ? <Loader size={14} className="spin" /> : (
                       <div className="flex gap-2">
                         <Input aria-label="Subdomain" className="w-40 font-mono text-xs" value={label} onChange={(event) => setLabel(event.target.value)} disabled={baseName === NONE} placeholder="label or @" />
