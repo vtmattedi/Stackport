@@ -1,8 +1,8 @@
 {
   "name": "stackport",
-  "version": "1.4.2",
-  "builtAt": "2026-08-12T08:31:21.898Z",
-  "gitCommit": "caad9ed",
-  "gitBranch": "main",
-  "gitMessage": "feat: better metrics"
+  "version": "1.4.3",
+  "builtAt": "2026-11-17T14:40:36.894Z",
+  "gitCommit": "796822a",
+  "gitBranch": "feat/project-archive-and-move",
+  "gitMessage": "feat(backup): level 3, one project as a verified archive (slice 1)"
 }

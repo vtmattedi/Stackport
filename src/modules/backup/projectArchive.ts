@@ -43,7 +43,7 @@ export class ProjectArchiveError extends Error {
  *  (credentials, GitHub App installation, the webhook), and is reported as not carried. */
 const CARRIED_COLUMNS = [
   "internal_port", "health_check_endpoint", "health_check_interval_s", "group_name", "source_type", "github_repo", "auto_deploy_branch", "deploy_trigger",
-  "paused", "favorite", "compose_file", "available_compose_files", "deploy_health_grace_s", "auto_rollback_unhealthy", "compose_policy_enforced",
+  "favorite", "compose_file", "available_compose_files", "deploy_health_grace_s", "auto_rollback_unhealthy", "compose_policy_enforced",
   "volumes_managed", "hardened_defaults", "network_group", "ingress_isolated", "github_deploy_on",
 ] as const;
 
@@ -82,6 +82,37 @@ export interface ProjectManifest {
 
 /** Code-unit order: the digest must not depend on the locale or ICU of the machine that computes it. */
 const byCode = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+const CONFIG_RULES: Record<string, (value: unknown) => boolean> = {
+  internal_port: (v) => v === null || (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 65535),
+  health_check_endpoint: (v) => v === null || (typeof v === "string" && v.length <= 500),
+  health_check_interval_s: (v) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 86400,
+  group_name: (v) => v === null || (typeof v === "string" && v.length <= 200),
+  source_type: (v) => v === "github" || v === "upload",
+  github_repo: (v) => v === null || (typeof v === "string" && v.length <= 300),
+  auto_deploy_branch: (v) => v === null || (typeof v === "string" && v.length <= 250),
+  deploy_trigger: (v) => v === "poller" || v === "manual",
+  favorite: (v) => v === 0 || v === 1,
+  compose_file: (v) => v === null || (typeof v === "string" && v.length <= 300 && !v.startsWith("/") && !v.includes("\\") && !v.split("/").includes("..")),
+  available_compose_files: (v) => v === null || (typeof v === "string" && v.length <= 20000),
+  deploy_health_grace_s: (v) => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 86400,
+  auto_rollback_unhealthy: (v) => v === 0 || v === 1,
+  compose_policy_enforced: (v) => v === 0 || v === 1,
+  volumes_managed: (v) => v === 0 || v === 1,
+  hardened_defaults: (v) => v === 0 || v === 1,
+  network_group: (v) => v === null || (typeof v === "string" && v.length <= 200),
+  ingress_isolated: (v) => v === 0 || v === 1,
+  github_deploy_on: (v) => v === null || v === "push" || v === "ci" || v === "release",
+};
+
+/** The first carried value that is not what a project column may hold, or null. */
+function invalidConfig(config: Record<string, unknown>): string | null {
+  for (const column of CARRIED_COLUMNS) {
+    const value = config[column] === undefined ? null : config[column];
+    if (!CONFIG_RULES[column](value)) return column;
+  }
+  return null;
+}
 
 export function contentDigest(content: ProjectContent): string {
   const canonical = {
@@ -198,9 +229,10 @@ export function exportProject(options: ExportProjectOptions): ProjectManifest {
     let vanished = 0;
     for (const file of found.files) {
       try {
+        const before = statMeta(file.source);
         const written = writer.addFile(file.name, file.source);
         files.push({ name: file.name, ...written });
-        metaFor(file.name, file.source);
+        meta[file.name] = before;
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ENOENT") { vanished += 1; continue; } // removed since it was listed: a live project's temporary file
@@ -213,10 +245,10 @@ export function exportProject(options: ExportProjectOptions): ProjectManifest {
       throw new ProjectArchiveError(`${found.unreadable.length} path(s) in this project's data cannot be read by Stackport (${shown}${found.unreadable.length > 5 ? ", ..." : ""}). They belong to another user inside a container, such as a database's data directory. Nothing was archived: leaving them out would hide data loss.`, "unreadable");
     }
     for (const [root, name] of [[dirs.volumes, "files/volumes"], [dirs.repo, "files/repo"]] as const) if (root && fs.existsSync(root)) metaFor(name, root);
-    for (const dir of found.dirs) {
+    found.dirs = found.dirs.filter((dir) => {
       const real = dir.startsWith("files/volumes") ? path.join(dirs.volumes, ...dir.slice("files/volumes/".length).split("/")) : path.join(dirs.repo as string, ...dir.slice("files/repo/".length).split("/"));
-      metaFor(dir, real);
-    }
+      try { metaFor(dir, real); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+    });
     const content: ProjectContent = { ...dbContent, dirs: found.dirs.map((d) => d.slice("files/".length)), files: files.map((f) => ({ ...f, name: f.name.slice("files/".length) })) };
     const hostnames = (db.prepare("SELECT domain, service, container_port, use_ssl FROM project_domains WHERE project_id = ? ORDER BY id").all(project.id) as { domain: string; service: string | null; container_port: number | null; use_ssl: number | null }[])
       .map((d) => ({ domain: d.domain, service: d.service ?? "", containerPort: d.container_port, useSsl: d.use_ssl !== 0 }));
@@ -230,6 +262,7 @@ export function exportProject(options: ExportProjectOptions): ProjectManifest {
       "certificates and nginx routes (issued again for the new hostnames)",
       ...(project.source_type === "github" ? ["the Git checkout (cloned again on the next deploy)"] : []),
       ...(project["deploy_trigger"] === "webhook" ? ["the webhook deploy trigger (becomes polling)"] : []),
+      ...(found.skipped ? [`${found.skipped} link(s) or special file(s), which an archive cannot hold (a service that depends on a symlink must recreate it)`] : []),
       ...(vanished ? [`${vanished} file(s) that were removed while the archive was written`] : []),
     ];
     const manifest: ProjectManifest = {
@@ -297,6 +330,15 @@ export function stageProjectArchive(archivePath: string, passphrase: string, dir
     && (c.files ?? []).every((f) => typeof f?.name === "string" && Number.isSafeInteger(f.size) && /^[0-9a-f]{64}$/.test(String(f.sha256)))
     && !!manifest.meta && typeof manifest.meta === "object" && typeof manifest.source?.name === "string" && Array.isArray(manifest.hostnames) && Array.isArray(manifest.notCarried);
   if (!shapeOk) throw new ProjectArchiveError("The archive's manifest is incomplete.", "corrupt");
+  const badColumn = invalidConfig(manifest.content.config);
+  if (badColumn) throw new ProjectArchiveError(`The archive holds a value this Stackport does not accept for ${badColumn}.`, "corrupt");
+  // A path that is a file and also a directory (or the parent of another file) cannot be written.
+  const fileNames = new Set(manifest.content.files.map((f) => f.name));
+  for (const name of [...fileNames, ...manifest.content.dirs]) {
+    const parts = name.split("/");
+    for (let n = 1; n < parts.length; n += 1) if (fileNames.has(parts.slice(0, n).join("/"))) throw new ProjectArchiveError(`The archive's entries conflict with each other (${name}).`, "corrupt");
+  }
+  for (const dir of manifest.content.dirs) if (fileNames.has(dir)) throw new ProjectArchiveError(`The archive's entries conflict with each other (${dir}).`, "corrupt");
   for (const name of [...manifest.content.dirs, ...manifest.content.files.map((f) => f.name)]) {
     if (!isSafeEntryName(name) || !/^(volumes|repo)\//.test(name)) throw new ProjectArchiveError(`The archive lists an unsafe path (${name}).`, "corrupt");
   }
@@ -369,6 +411,15 @@ function forceRemove(root: string): void {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
+/** Staging holds decrypted archives: one left by a crashed import is removed when the next import starts. */
+function sweepStaleStaging(parent: string): void {
+  for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(".project-import-")) continue;
+    const full = path.join(parent, entry.name);
+    if (Date.now() - fs.statSync(full).mtimeMs > 60 * 60 * 1000) forceRemove(full);
+  }
+}
+
 /** Creates a new project from an archive, verifies the result against the archive's digest, and undoes everything if anything fails. */
 export function importProject(options: ImportProjectOptions): ImportProjectResult {
   const db = options.db ?? getDatabase();
@@ -376,6 +427,7 @@ export function importProject(options: ImportProjectOptions): ImportProjectResul
   const deployRoot = path.resolve(options.deployRoot ?? configuredDeployRoot());
   const stagingParent = path.resolve(options.stagingParent ?? roots.containerDataRoot);
   fs.mkdirSync(stagingParent, { recursive: true });
+  sweepStaleStaging(stagingParent);
   const staging = fs.mkdtempSync(path.join(stagingParent, ".project-import-"));
   let created: { id: number; dirs: ProjectDirs | null } | null = null;
   try {
@@ -384,7 +436,10 @@ export function importProject(options: ImportProjectOptions): ImportProjectResul
     const name = (options.name ?? manifest.source.name).trim();
     if (!name || name.length > 200) throw new ProjectArchiveError("The project needs a name of 1 to 200 characters.", "invalid");
     if (db.prepare("SELECT 1 FROM projects WHERE lower(name) = lower(?)").get(name)) throw new ProjectArchiveError(`A project named "${name}" already exists here. Choose another name.`, "name-exists");
-    for (const domain of options.domains ?? []) if (domain.domain.length > 253 || !DOMAIN_RE.test(domain.domain)) throw new ProjectArchiveError(`"${domain.domain}" is not a valid hostname.`, "invalid");
+    for (const domain of options.domains ?? []) {
+      if (domain.domain.length > 253 || !DOMAIN_RE.test(domain.domain)) throw new ProjectArchiveError(`"${domain.domain}" is not a valid hostname.`, "invalid");
+      if (db.prepare("SELECT 1 FROM project_domains WHERE lower(domain) = lower(?)").get(domain.domain)) throw new ProjectArchiveError(`${domain.domain} is already used by another project here.`, "invalid");
+    }
 
     const warnings: string[] = [];
     const notCarried = [...manifest.notCarried];
@@ -394,8 +449,8 @@ export function importProject(options: ImportProjectOptions): ImportProjectResul
     if (manifest.rawNginx && !nginx) notCarried.push("raw nginx directives (not applied on this import)");
 
     const projectId = db.transaction((): number => {
-      const columns = ["name", ...CARRIED_COLUMNS, "credential_id", "github_credential_id", "nginx_extra_config", "nginx_extra_blocks", "created_at", "updated_at"];
-      const values = [name, ...CARRIED_COLUMNS.map((c) => cfg[c] ?? null), options.credentialId ?? null, options.credentialId ?? null, nginx?.extraConfig ?? null, nginx?.extraBlocks ?? null, now, now];
+      const columns = ["name", "paused", ...CARRIED_COLUMNS, "credential_id", "github_credential_id", "nginx_extra_config", "nginx_extra_blocks", "created_at", "updated_at"];
+      const values = [name, 1, ...CARRIED_COLUMNS.map((c) => cfg[c] ?? null), options.credentialId ?? null, options.credentialId ?? null, nginx?.extraConfig ?? null, nginx?.extraBlocks ?? null, now, now];
       const id = Number(db.prepare(`INSERT INTO projects (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`).run(...(values as (string | number | null)[])).lastInsertRowid);
       for (const file of manifest.content.env) {
         const sealed = sealEnvVariables(file.variables);
@@ -428,12 +483,19 @@ export function importProject(options: ImportProjectOptions): ImportProjectResul
     // Modes and owners are applied after the digest check (the digest does not cover them) and before the import is called a success.
     const lost = applyModes(manifest, dirs, warnings);
     if (lost > 0) {
-      if (!options.allowOwnershipLoss) throw new ProjectArchiveError(`File ownership could not be restored for ${lost} path(s): this process is not allowed to chown. A database refuses to start on a data directory with the wrong owner. Run the import as root, or accept the loss explicitly. The import was undone.`, "ownership");
+      if (!options.allowOwnershipLoss) throw new ProjectArchiveError(`File ownership could not be restored for ${lost} path(s): this process is not allowed to chown. A database refuses to start on a data directory with the wrong owner. This needs a privileged copy of the data (planned: a helper container); until then, pass --ignore-ownership only for data that does not depend on its owner. The import was undone.`, "ownership");
       warnings.push(`File ownership could not be restored for ${lost} path(s) (accepted).`);
     }
     return { projectId, name, digest, hostnames: manifest.hostnames, notCarried, warnings };
   } catch (error) {
-    if (created) removeImportedProject(db, created.id, created.dirs);
+    if (created) {
+      try {
+        removeImportedProject(db, created.id, created.dirs);
+      } catch (cleanup) {
+        const code = error instanceof ProjectArchiveError ? error.code : "invalid";
+        throw new ProjectArchiveError(`${(error as Error).message} Undoing the import also failed (${(cleanup as Error).message}): remove project #${created.id} and its directories by hand.`, code);
+      }
+    }
     throw error;
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
@@ -456,7 +518,10 @@ function placeFiles(staging: string, manifest: ProjectManifest, dirs: ProjectDir
     const to = targetPath(dirs, file.name);
     fs.mkdirSync(path.dirname(to), { recursive: true });
     const from = path.join(staging, "files", ...file.name.split("/"));
-    try { fs.renameSync(from, to); } catch { fs.copyFileSync(from, to); }
+    try { fs.renameSync(from, to); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+      fs.copyFileSync(from, to);
+    }
   }
 }
 

@@ -62,6 +62,7 @@ test("a project round-trips through an archive and is verified against its diges
   assert.equal(row["deploy_trigger"], "poller", "a webhook trigger cannot move: the hook is tied to the old instance");
   assert.equal(row["nginx_extra_config"], null, "raw nginx is not applied unless allowed");
   assert.equal(row["credential_id"], null);
+  assert.equal(row["paused"], 1, "an imported project is created paused: nothing deploys it until the user starts it");
   const env = db.prepare("SELECT * FROM project_env_files WHERE project_id = ?").get(result.projectId) as ProjectEnvFileRow;
   assert.deepEqual(tryReadEnvVariables(env)?.map((v) => `${v.key}=${v.value}`), ["DB_PASSWORD=s3cret-value", "MODE=prod"]);
   assert.ok(!env.variables_json.includes("s3cret"), "values are stored encrypted");
@@ -184,5 +185,20 @@ test("the digest sorts by code unit, so every machine computes the same one", ()
   const content: ProjectContent = { config: {}, env: [], groupServices: [], dirs: [], files };
   assert.equal(contentDigest(content), contentDigest({ ...content, files: [...files].reverse() }));
   // Fixed value: a change in ordering or encoding changes every digest ever recorded, so it must be a deliberate format bump.
-  assert.equal(contentDigest({ config: {}, env: [], groupServices: [], dirs: ["volumes/d"], files: [{ name: "volumes/f", size: 1, sha256: "0".repeat(64) }] }), "d78341cc4cb01d0e1da813e7abc2664d48cd0a032f6934e54eb891d11d3d70a9");
+  assert.equal(contentDigest({ config: {}, env: [], groupServices: [], dirs: ["volumes/d"], files: [{ name: "volumes/f", size: 1, sha256: "0".repeat(64) }] }), "1f0bca6e1df5d30be6be2549010409e47125e0b69e36849b630c3a4ac59b0c14");
+});
+
+test("a hostname in use is a clear refusal, and an archive's values are validated", () => {
+  const s = seed();
+  const file = path.join(s.dir, "v.spbackup");
+  exportProject(exportOpts(s, file));
+  assert.throws(() => importProject(importOpts(s, file, { name: "Clash", domains: [{ domain: "shop.example.com" }] })), (error: unknown) => error instanceof ProjectArchiveError && /already used/.test(error.message));
+  const forged = path.join(s.dir, "bad-config.spbackup");
+  const m = exportProject(exportOpts(s, path.join(s.dir, "good.spbackup")));
+  const writer = new ArchiveWriter(forged, PASS);
+  writer.addBuffer("header.json", Buffer.from(JSON.stringify({ kind: "project", format: 1 })));
+  const bad = { ...m, content: { ...m.content, config: { ...m.content.config, compose_file: "../../etc/x.yml" }, files: [], dirs: [] } };
+  writer.addBuffer("manifest.json", Buffer.from(JSON.stringify({ ...bad, digest: contentDigest(bad.content) })));
+  writer.finish();
+  assert.throws(() => stageProjectArchive(forged, PASS, path.join(s.dir, "st-bad")), (error: unknown) => error instanceof ProjectArchiveError && /compose_file/.test(error.message));
 });

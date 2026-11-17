@@ -1131,14 +1131,14 @@ drop_staged_file() {
 }
 
 backup_stackport() {
-  local level=2 out="" arg name made project=""
+  local level=2 level_given=0 out="" arg name made project=""
   while (( $# )); do
     arg="$1"
     case "$arg" in
       --project=*) project="${arg#--project=}"; shift ;;
       --project)   (( $# >= 2 )) || { error "--project needs a project id"; exit 1; }; project="$2"; shift 2 ;;
-      --level=*) level="${arg#--level=}"; shift ;;
-      --level)   (( $# >= 2 )) || { error "--level needs a value"; exit 1; }; level="$2"; shift 2 ;;
+      --level=*) level="${arg#--level=}"; level_given=1; shift ;;
+      --level)   (( $# >= 2 )) || { error "--level needs a value"; exit 1; }; level="$2"; level_given=1; shift 2 ;;
       --out=*)   out="${arg#--out=}"; shift ;;
       --out)     (( $# >= 2 )) || { error "--out needs a value"; exit 1; }; out="$2"; shift 2 ;;
       *) error "unknown option: $arg"; exit 1 ;;
@@ -1146,6 +1146,7 @@ backup_stackport() {
   done
   if [[ -n "$project" ]]; then
     [[ "$project" =~ ^[0-9]+$ ]] || { error "--project needs a numeric project id"; exit 1; }
+    (( level_given == 0 )) || { error "--level does not apply to --project (a project archive is level 3)"; exit 1; }
   else
     [[ "$level" == "1" || "$level" == "2" ]] || { error "--level must be 1 (configs) or 2 (configs + project configs); level 3 is one project: use --project ID"; exit 1; }
   fi
@@ -1179,21 +1180,20 @@ backup_stackport() {
 
 # Creates a project on this instance from a level 3 archive. The app keeps running: the import only adds rows and a project's own directories.
 project_import_stackport() {
-  local file="" arg rc=0 flags=()
+  local file="" arg rc=0 flags=() seen_name=0 seen_domain=0
   while (( $# )); do
     arg="$1"
     case "$arg" in
-      --name=*)   flags+=(--name "${arg#--name=}"); shift ;;
-      --domain=*) flags+=(--domain "${arg#--domain=}"); shift ;;
-      --name|--domain) (( $# >= 2 )) || { error "$arg needs a value"; exit 1; }; flags+=("$arg" "$2"); shift 2 ;;
+      --name=*)   (( seen_name == 0 )) || { error "give --name once"; exit 1; }; seen_name=1; flags+=(--name "${arg#--name=}"); shift ;;
+      --domain=*) (( seen_domain == 0 )) || { error "give --domain once: attach further hostnames from the dashboard"; exit 1; }; seen_domain=1; flags+=(--domain "${arg#--domain=}"); shift ;;
+      --name)     (( $# >= 2 )) || { error "--name needs a value"; exit 1; }; (( seen_name == 0 )) || { error "give --name once"; exit 1; }; seen_name=1; flags+=(--name "$2"); shift 2 ;;
+      --domain)   (( $# >= 2 )) || { error "--domain needs a value"; exit 1; }; (( seen_domain == 0 )) || { error "give --domain once: attach further hostnames from the dashboard"; exit 1; }; seen_domain=1; flags+=(--domain "$2"); shift 2 ;;
       --allow-raw-nginx|--ignore-ownership) flags+=("$arg"); shift ;;
       -*) error "unknown option: $arg"; exit 1 ;;
       *)  file="$arg"; shift ;;
     esac
   done
   [[ -n "$file" ]] || { error "usage: stackport project-import FILE [--name NAME] [--domain HOST] [--allow-raw-nginx] [--ignore-ownership]"; exit 1; }
-  local count; count="$(printf '%s\n' "${flags[@]+"${flags[@]}"}" | grep -c -x -- '--domain' || true)"
-  (( count <= 1 )) || { error "give --domain once: attach further hostnames from the dashboard"; exit 1; }
   docker ps --format '{{.Names}}' | grep -qx stackport || { error "the stackport container is not running"; exit 1; }
   stage_backup_file "$file"
   backup_passphrase
