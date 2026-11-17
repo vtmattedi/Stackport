@@ -313,3 +313,33 @@ test("a controller that restarts after the target committed finishes removing th
     assert.equal(exists(b.db, "Shop on target"), true, "the committed copy stays");
   } finally { a.close(); await b.stop(); }
 });
+
+test("a GitHub project is cloned on the target with the target's own credentials, chosen before anything is stopped", async () => {
+  const b = await startB();
+  const a = controller("Alpha");
+  try {
+    const projectId = seedProject(b.db);
+    b.db.prepare("UPDATE projects SET github_repo = 'owner/site', github_credential_id = NULL WHERE id = ?").run(projectId);
+    b.db.exec("DELETE FROM credentials");
+    const credentialId = Number(b.db.prepare("INSERT INTO credentials (type, alias, secret_enc) VALUES ('github', 'target-token', 'x')").run().lastInsertRowid);
+    const peerId = await pair(b, a, ["projects:transfer", "projects:destroy"]);
+    const ref = { kind: "peer", peerId } as const;
+    const base = { source: ref, target: ref, projectId, projectName: "Shop", name: "Shop on target", allowSameInstance: true, githubRepo: "owner/site" } as const;
+
+    // Refused up front, while the source still runs: no way to reach GitHub chosen, or one that does not exist.
+    const noAuth = startMove(base, a);
+    const failed = await until(a, noAuth.id, (r) => r.state === "failed", "the move to be refused");
+    assert.match(failed.error ?? "", /how this instance reaches GitHub/i);
+    assert.equal(docker.stopped, 0, "the source was never stopped");
+    const missing = startMove({ ...base, auth: { mode: "token", credentialId: credentialId + 99 } }, a);
+    assert.match((await until(a, missing.id, (r) => r.state === "failed", "the move to be refused")).error ?? "", /does not exist/);
+    assert.equal(docker.stopped, 0);
+
+    const run = startMove({ ...base, auth: { mode: "token", credentialId } }, a);
+    await until(a, run.id, (r) => r.state === "awaiting-confirmation", "the copy to be started");
+    const copy = b.db.prepare("SELECT github_credential_id AS cred, github_auth_mode AS mode FROM projects WHERE name = 'Shop on target'").get() as { cred: number; mode: string | null };
+    assert.equal(copy.cred, credentialId, "the copy uses the target's token");
+    assert.equal(copy.mode, null);
+    await decide(run.id, "abort", a);
+  } finally { a.close(); await b.stop(); }
+});

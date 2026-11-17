@@ -5,7 +5,7 @@ import { auditLog, logger } from "../../shared/logger";
 import { ensureInstanceIdentity } from "../backup/instance";
 import { abortMove, beginMove, commitMove, getMove, renewMove, type MoveView } from "../moves/moveOut";
 import type { PushTicket } from "../moves/ticketPush";
-import { abortTransfer, commitTransfer, domainOptions, getTransfer, keepAlive, prepareTransfer, projectHealth, startImport, startImported, type DomainChoice, type TransferView } from "../moves/transferIn";
+import { abortTransfer, commitTransfer, domainOptions, getTransfer, githubAuthOptions, keepAlive, prepareTransfer, type GithubAuthOptions, type MoveAuth, projectHealth, startImport, startImported, type DomainChoice, type TransferView } from "../moves/transferIn";
 import { hasGrant } from "./grants";
 import { selfSignedFingerprint } from "./selfCert";
 import { PeerError, remoteCall } from "./service";
@@ -23,7 +23,7 @@ export type EndpointRef = { kind: "local" } | { kind: "peer"; peerId: number };
 export type MoveRunState = "preparing" | "transferring" | "importing" | "starting" | "awaiting-confirmation" | "committing" | "done" | "aborting" | "aborted" | "failed" | "interrupted" | "needs-attention";
 const TERMINAL: MoveRunState[] = ["done", "aborted", "failed", "interrupted", "needs-attention"];
 
-export interface MoveRequest { source: EndpointRef; target: EndpointRef; projectId: number; /** The project's name on the source, for display. */ projectName: string; /** The name on the target; the project's own by default. */ name?: string; domains?: DomainChoice[]; allowSameInstance?: boolean }
+export interface MoveRequest { source: EndpointRef; target: EndpointRef; projectId: number; /** The project's GitHub repository (owner/name), when it has one: the target then needs its own way to reach it. */ githubRepo?: string | null; auth?: MoveAuth | null; /** The project's name on the source, for display. */ projectName: string; /** The name on the target; the project's own by default. */ name?: string; domains?: DomainChoice[]; allowSameInstance?: boolean }
 export interface Step { name: string; status: "running" | "ok" | "failed"; detail: string; at: string }
 export interface MoveRun { id: string; source: EndpointRef; target: EndpointRef; projectName: string; state: MoveRunState; steps: Step[]; error: string | null; createdAt: string; updatedAt: string; transfer: TransferView | null; sourceMove: MoveView | null }
 
@@ -42,7 +42,8 @@ interface SourceApi {
 interface TargetApi {
   address(): Promise<{ endpoint: string; fingerprint: string | null }>;
   domains(): Promise<{ bases: { name: string; isDefault: boolean }[]; used: string[] }>;
-  prepare(name: string, domains: DomainChoice[]): Promise<Ticket>;
+  githubAuth(repo: string): Promise<GithubAuthOptions>;
+  prepare(name: string, domains: DomainChoice[], githubRepo: string | null, auth: MoveAuth | null): Promise<Ticket>;
   get(id: string): Promise<TransferView>;
   keepAlive(id: string): Promise<TransferView>;
   import(id: string): Promise<TransferView>;
@@ -97,7 +98,8 @@ function localTarget(db: Database.Database): TargetApi {
       return { endpoint: `https://${domain}`, fingerprint: await selfSignedFingerprint() };
     },
     domains: async () => domainOptions(db),
-    prepare: async (name, domains) => prepareTransfer({ controllerInstance: self, name, domains }, db),
+    githubAuth: async (repo) => githubAuthOptions(repo),
+    prepare: (name, domains, githubRepo, auth) => prepareTransfer({ controllerInstance: self, name, domains, githubRepo, auth }, db),
     get: async (id) => getTransfer(id, self, db),
     keepAlive: async (id) => keepAlive(id, self, db),
     import: async (id) => startImport(id, self, db),
@@ -116,7 +118,8 @@ function peerTarget(peerId: number, db: Database.Database): TargetApi {
       return { endpoint: t.endpoint, fingerprint: t.certFingerprint };
     },
     domains: () => peerCall(peerId, "GET", "/v1/domains", undefined, db),
-    prepare: (name, domains) => peerCall(peerId, "POST", "/v1/transfers", { name, domains }, db),
+    githubAuth: (repo) => peerCall(peerId, "GET", `/v1/github-auth?repo=${encodeURIComponent(repo)}`, undefined, db),
+    prepare: (name, domains, githubRepo, auth) => peerCall(peerId, "POST", "/v1/transfers", { name, domains, githubRepo, auth }, db),
     get: (id) => peerCall(peerId, "GET", `/v1/transfers/${id}`, undefined, db),
     keepAlive: (id) => peerCall(peerId, "POST", `/v1/transfers/${id}/keepalive`, undefined, db),
     import: (id) => peerCall(peerId, "POST", `/v1/transfers/${id}/import`, undefined, db),
@@ -129,6 +132,12 @@ function peerTarget(peerId: number, db: Database.Database): TargetApi {
 
 const sourceOf = (ref: EndpointRef, db: Database.Database): SourceApi => (ref.kind === "local" ? localSource(db) : peerSource(ref.peerId, db));
 const targetOf = (ref: EndpointRef, db: Database.Database): TargetApi => (ref.kind === "local" ? localTarget(db) : peerTarget(ref.peerId, db));
+
+/** How a target can reach GitHub for a repository: its tokens, and its GitHub App if it can read it. */
+export function targetGithubAuth(ref: EndpointRef, repo: string, db: Database.Database = getDatabase()): Promise<GithubAuthOptions> {
+  if (ref.kind === "peer") requireGrants(ref.peerId, ["projects:transfer"], db);
+  return targetOf(ref, db).githubAuth(repo);
+}
 
 /** The base domains a target manages and the hostnames it already uses: what the "new hostname" step offers. */
 export function targetDomains(ref: EndpointRef, db: Database.Database = getDatabase()): Promise<{ bases: { name: string; isDefault: boolean }[]; used: string[] }> {
@@ -255,7 +264,7 @@ async function run(id: string, request: MoveRequest & { name: string }, db: Data
   const ctx = live.get(id) as Live;
   try {
     step("Prepare the target", "running");
-    const ticket = await target.prepare(request.name, request.domains ?? []);
+    const ticket = await target.prepare(request.name, request.domains ?? [], request.githubRepo ?? null, request.auth ?? null);
     ctx.transferId = ticket.transferId;
     remember(id, db, { transferId: ticket.transferId });
     const address = await target.address();

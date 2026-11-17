@@ -119,7 +119,7 @@ export function PeerSettings({ peer, project }: { peer: PeerTarget; project: Rem
           <div className="card-title flex items-center gap-2"><MoveRight size={13} />Move to another instance</div>
           <p className="mb-3 text-xs text-[var(--dim)]">Stop {project.name} on {peer.name}, copy it with all of its data and secrets straight to the target, verify the copy and start it there. The original is removed only after you confirm. This instance only directs the move; the data does not pass through it.</p>
           <Button type="button" variant="outline" size="sm" onClick={() => setMoving(true)}>Move…</Button>
-          {moving && <MoveProjectDialog source={{ kind: "peer", peer }} projectId={project.id} projectName={project.name} currentHostname={project.domains[0]?.domain ?? null} onClose={() => setMoving(false)} />}
+          {moving && <MoveProjectDialog source={{ kind: "peer", peer }} projectId={project.id} projectName={project.name} githubRepo={project.githubRepo} currentHostname={project.domains[0]?.domain ?? null} onClose={() => setMoving(false)} />}
         </div>
       )}
       {canDestroy && (

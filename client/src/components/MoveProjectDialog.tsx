@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader, MoveRight, X } from "lucide-react";
 import { api } from "../api/client";
-import type { MoveEndpoint, PeerTarget } from "../api/types";
+import type { MoveAuth, MoveEndpoint, PeerTarget } from "../api/types";
 import { notify } from "../lib/notify";
 import { queryKeys } from "../lib/queryKeys";
 import { usePeers } from "../lib/usePeers";
@@ -19,7 +19,7 @@ const sourceRef = (source: MoveSource): MoveEndpoint => (source.kind === "local"
 const NONE = "__none__";
 
 /** Move a project to another instance: pick where, name it, choose its hostname from that instance's own domains, then watch it and decide. */
-export function MoveProjectDialog({ source, projectId, projectName, currentHostname, onClose }: { source: MoveSource; projectId: number; projectName: string; currentHostname: string | null; onClose: () => void }) {
+export function MoveProjectDialog({ source, projectId, projectName, githubRepo, currentHostname, onClose }: { source: MoveSource; projectId: number; projectName: string; /** owner/name, for a project deployed from GitHub. */ githubRepo: string | null; currentHostname: string | null; onClose: () => void }) {
   const queryClient = useQueryClient();
   const { data: overview } = usePeers();
   const sourceName = source.kind === "local" ? overview?.self.name ?? "this instance" : source.peer.name;
@@ -57,6 +57,30 @@ export function MoveProjectDialog({ source, projectId, projectName, currentHostn
     staleTime: 0,
   });
 
+  // A GitHub project is cloned on the target with the target's own credentials: the source's do not exist there.
+  const githubAuth = useQuery({
+    queryKey: queryKeys.moveGithubAuth(targetValue, githubRepo ?? ""),
+    queryFn: () => api.getMoveGithubAuth((target as NonNullable<typeof target>).ref, githubRepo as string),
+    enabled: !!target && !!githubRepo && !moveId,
+    retry: false,
+    staleTime: 0,
+  });
+  const authOptions = useMemo(() => {
+    const list: { value: string; label: string }[] = [];
+    for (const credential of githubAuth.data?.credentials ?? []) list.push({ value: `token:${credential.id}`, label: `Token: ${credential.alias}${credential.isDefault ? " (default)" : ""}` });
+    if ((githubAuth.data?.app ?? []).length > 0) list.push({ value: "app", label: "GitHub App" });
+    list.push({ value: "none", label: "None (a public repository)" });
+    return list;
+  }, [githubAuth.data]);
+  const [authChoice, setAuthChoice] = useState("");
+  useEffect(() => { setAuthChoice(""); }, [targetValue]);
+  useEffect(() => {
+    if (!githubRepo || authChoice || !githubAuth.data) return;
+    const preferred = githubAuth.data.credentials.find((c) => c.isDefault) ?? githubAuth.data.credentials[0];
+    setAuthChoice(preferred ? `token:${preferred.id}` : githubAuth.data.app.length > 0 ? "app" : "");
+  }, [githubAuth.data, githubRepo, authChoice]);
+  const auth: MoveAuth | null = !githubRepo || !authChoice ? null : authChoice === "app" ? { mode: "app" } : authChoice === "none" ? { mode: "none" } : { mode: "token", credentialId: Number(authChoice.slice(6)) };
+
   // Preselect what the project has now: its subdomain label, under the first domain the target manages.
   const suggestion = useMemo(() => {
     const current = currentHostname?.toLowerCase() ?? "";
@@ -74,13 +98,13 @@ export function MoveProjectDialog({ source, projectId, projectName, currentHostn
   const hostname = baseName === NONE ? "" : label.trim() === "@" ? baseName : `${label.trim().toLowerCase()}.${baseName}`;
   const taken = hostname && domains.data?.used.map((d) => d.toLowerCase()).includes(hostname);
   const baseValid = baseName === NONE || (domains.data?.bases ?? []).some((base) => base.name === baseName);
-  const canStart = !!target && !target.disabled && !!name.trim() && !starting && !taken && !domains.isLoading && !domains.error && baseValid && (baseName === NONE || !!label.trim());
+  const canStart = !!target && !target.disabled && (!githubRepo || !!auth) && !!name.trim() && !starting && !taken && !domains.isLoading && !domains.error && baseValid && (baseName === NONE || !!label.trim());
 
   async function start() {
     if (!target) return;
     setStarting(true);
     try {
-      const run = await api.startMove({ source: sourceRef(source), target: target.ref, projectId, projectName, name: name.trim(), domains: hostname ? [{ domain: hostname }] : [] });
+      const run = await api.startMove({ source: sourceRef(source), target: target.ref, projectId, projectName, githubRepo, auth, name: name.trim(), domains: hostname ? [{ domain: hostname }] : [] });
       setMoveId(run.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.moves });
     } catch (err) { notify.error(err, "Couldn't start the move"); } finally { setStarting(false); }
@@ -110,6 +134,11 @@ export function MoveProjectDialog({ source, projectId, projectName, currentHostn
                     <AppSelect value={targetValue} onValueChange={setTargetValue} options={choices.map((c) => ({ value: c.value, label: c.label, disabled: c.disabled }))} placeholder="Choose an instance" />
                   </Field>
                   <Field label="Name there" htmlFor="move-name"><Input id="move-name" value={name} onChange={(event) => setName(event.target.value)} /></Field>
+                  {githubRepo && (
+                    <Field label={`How ${target?.name ?? "the target"} reaches GitHub`} hint={`${githubRepo} is cloned on ${target?.name ?? "the target"} with that instance's own token or GitHub App; the source's credentials do not move.`} error={githubAuth.error instanceof Error ? githubAuth.error.message : undefined}>
+                      {githubAuth.isLoading ? <Loader size={14} className="spin" /> : <AppSelect value={authChoice} onValueChange={setAuthChoice} options={authOptions} placeholder="Choose a token or the GitHub App" />}
+                    </Field>
+                  )}
                   <Field label="Hostname there" hint={domains.error ? undefined : "Chosen from the domains the target manages. Stackport does not manage DNS: create the record for it before you confirm, and turn on TLS afterwards."} error={domains.error instanceof Error ? domains.error.message : taken ? `${hostname} is already used on ${target?.name}.` : undefined}>
                     {domains.isLoading ? <Loader size={14} className="spin" /> : (
                       <div className="flex gap-2">

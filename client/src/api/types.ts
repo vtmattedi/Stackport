@@ -1349,6 +1349,9 @@ export interface MoveRun {
   transfer: { state: string; receivedBytes: number; digest: string | null; warnings: string[]; notCarried: string[]; hostnames: string[] } | null;
   sourceMove: { state: string; sentBytes: number; digest: string | null } | null;
 }
+/** How the target instance reaches GitHub for a moved project: its own token, its own GitHub App, or nothing (a public repository). */
+export type MoveAuth = { mode: "token"; credentialId: number } | { mode: "app"; installationId?: number; repositoryId?: number } | { mode: "none" };
+export interface MoveGithubAuth { credentials: { id: number; alias: string; isDefault: boolean }[]; app: { installationId: number; repositoryId: number; fullName: string }[] }
 export interface MoveDomains { bases: { name: string; isDefault: boolean }[]; used: string[] }
 export interface PairingCodeResult { code: string; expiresAt: string; grants: PeerGrant[] }
 
