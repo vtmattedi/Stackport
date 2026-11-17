@@ -121,19 +121,24 @@ export class ArchiveWriter {
     this.write(data);
   }
 
-  addFile(name: string, source: string): void {
+  /** Archives `source` as it is read, exactly the size seen at open, and returns the size and SHA-256 of the bytes written (a file that grows meanwhile is cut at that size). */
+  addFile(name: string, source: string): { size: number; sha256: string } {
     const fd = fs.openSync(source, "r");
     try {
       const size = fs.fstatSync(fd).size;
       this.begin(name, size);
+      const hash = crypto.createHash("sha256");
       const buffer = Buffer.alloc(CHUNK_BYTES);
       let remaining = size;
       while (remaining > 0) {
         const read = fs.readSync(fd, buffer, 0, Math.min(buffer.length, remaining), null);
         if (read === 0) throw new ArchiveError(`${source} shrank while it was being archived.`, "malformed");
-        this.write(Buffer.from(buffer.subarray(0, read)));
+        const part = Buffer.from(buffer.subarray(0, read));
+        hash.update(part);
+        this.write(part);
         remaining -= read;
       }
+      return { size, sha256: hash.digest("hex") };
     } finally {
       fs.closeSync(fd);
     }
