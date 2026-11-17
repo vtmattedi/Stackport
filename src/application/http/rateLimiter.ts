@@ -13,6 +13,16 @@ export const globalLimiter = rateLimit({
   message: { error: "Too many requests, please try again later" },
 });
 
+// The control channel (Stackport to Stackport): a controller's pages poll it (action progress every 2 s, status every 15 s) on top of the
+// monitor, so it cannot share the browser-sized limit above. Every call is HMAC-signed, so this only bounds a flood from one address.
+export const controlLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 3000,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later" },
+});
+
 // Stricter limit for the login endpoint to slow brute-force attempts
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

@@ -56,6 +56,7 @@ export const TABLE_TIERS: Record<string, TableTier> = {
   vps_vm_cache: "never",
   peer_pairing_codes: "never",
   peer_nonces: "never",
+  peer_operations: "never",
 };
 
 /** The `app_meta` rows an archive keeps. Everything else (heartbeats, pending flags, last-outcome notes) is runtime state. */

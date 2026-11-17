@@ -1,5 +1,5 @@
+import { randomUUID, X509Certificate } from "crypto";
 import { Router, type Request, type Response } from "express";
-import { X509Certificate } from "crypto";
 import { promises as fs } from "fs";
 import { SELF_SIGNED_CERT_PATH } from "../ingress/nginx/selfSignedCert";
 import { requireAuth } from "../identity/middleware/session";
@@ -9,8 +9,9 @@ import { parseLogQuery } from "../deployments/logQuery";
 import { GRANTS, GrantError, grantImplications } from "./grants";
 import { checkPeer, forgetPeer, peerStatus } from "./monitor";
 import { PeerIdentityError, PeerUnreachable } from "./client";
-import { forgetRemoteCache, issuePairingCode, peekRemote, PeerError, registerTarget, remoteGet, removeTargetAndNotify, rotateTargetKey, STATUS_PATH } from "./service";
+import { forgetRemoteCache, issuePairingCode, peekRemote, PeerError, registerTarget, remoteCall, remoteGet, removeTargetAndNotify, rotateTargetKey, STATUS_PATH } from "./service";
 import { statusHub } from "../status/hub";
+import { OPERATION_ID_PATTERN } from "./signing";
 import { isStatusReport, summarize, type PeerStatusReport, type StatusSummary } from "./peerStatus";
 import { deleteRevokedController, listControllers, listTargets, revokeController } from "./store";
 
@@ -122,6 +123,35 @@ router.get("/targets/:id/status", requireAuth, async (req: Request<{ id: string 
   const id = idParam(req, res);
   if (id === null) return;
   try { res.json(await remoteGet(id, STATUS_PATH, { validate: isStatusReport })); } catch (error) { handle(res, error); }
+});
+
+// ── a peer's project API (read and write) ────────────────────────────────────
+// The management UI's one door to another instance's projects. The path is the application's own (/projects/5/deploy, /domains, ...); the peer
+// decides what exists for this instance and what it may do, and answers with its own status and body. A write carries an operation id, so a retry after a lost
+// answer returns the first result instead of acting twice.
+
+const PROXY_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const PROXY_PATH = /^\/[A-Za-z0-9/_.,:=&%?-]{0,1999}$/;
+
+router.use("/targets/:id/api", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = idParam(req, res);
+  if (id === null) return;
+  if (!PROXY_METHODS.has(req.method)) { res.status(405).json({ error: "Method not allowed" }); return; }
+  if (!PROXY_PATH.test(req.url) || req.url.includes("..")) { res.status(400).json({ error: "Invalid path" }); return; }
+  const mutating = req.method !== "GET";
+  const supplied = req.get("x-operation-id");
+  const operationId = mutating ? (supplied && OPERATION_ID_PATTERN.test(supplied) ? supplied : randomUUID()) : undefined;
+  const body = mutating && req.body && typeof req.body === "object" && Object.keys(req.body as object).length > 0 ? req.body : mutating ? {} : undefined;
+  try {
+    const result = await remoteCall(id, { method: req.method, path: req.url, body, operationId });
+    if (operationId) res.setHeader("X-Operation-Id", operationId);
+    if (result.replayed) res.setHeader("X-SP-Replayed", "true");
+    // By what the peer said it sent: a stored action log is text even when it happens to parse as JSON.
+    if (result.contentType?.includes("json") && result.body !== null && result.body !== undefined) res.status(result.status).json(result.body);
+    // Whatever the peer calls it, it is shown as plain text from this origin: a peer cannot serve a page (and its scripts) from the management UI.
+    else if (result.text) res.status(result.status).type("text/plain").set("X-Content-Type-Options", "nosniff").send(result.text);
+    else res.status(result.status).end();
+  } catch (error) { handle(res, error); }
 });
 
 // ── a peer's projects (read only) ─────────────────────────────────────────────

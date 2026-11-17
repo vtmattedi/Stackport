@@ -131,6 +131,13 @@ export function clearSetupToken(): void {
   sessionStorage.removeItem(SETUP_TOKEN_KEY);
 }
 
+/** Names one user action, so a repeat of the same request (a retry after a lost answer) cannot act twice on the peer. crypto.randomUUID needs a secure context, which a raw-IP install is not. */
+export function newOperationId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `op-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -623,6 +630,18 @@ export const api = {
   removePeer: (id: number) => request<{ notified: boolean }>(`/peers/targets/${id}`, { method: "DELETE" }),
   revokeController: (id: number) => request<void>(`/peers/controllers/${id}`, { method: "DELETE" }),
   getLocalSummary: () => request<{ summary: StatusSummary | null }>("/peers/local-summary"),
+  /** The one door to another instance's project API, through this instance. The peer decides what exists for us and what we may do, and answers with its own status and body. */
+  peerRequest: <T>(peerId: number, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown, operationId?: string) =>
+    request<T>(`/peers/targets/${peerId}/api${path}`, {
+      method,
+      ...(method !== "GET" ? { body: JSON.stringify(body ?? {}), headers: { "X-Operation-Id": operationId ?? newOperationId() } } : {}),
+    }),
+  /** A peer's stored action output, which is text, not JSON. */
+  peerActionLog: async (peerId: number, actionId: string): Promise<string> => {
+    const res = await fetch(`/api/peers/targets/${peerId}/api/actions/${actionId}/log`, { headers: sessionHeaders() });
+    if (!res.ok) throw new ApiError(res.status, "Couldn't read the output");
+    return res.text();
+  },
   getPeerStatus: (peerId: number) => request<PeerRead<PeerStatusReport>>(`/peers/targets/${peerId}/status`),
   getPeerProjects: (peerId: number) => request<PeerRead<{ projects: RemoteProject[] }>>(`/peers/targets/${peerId}/projects`),
   getPeerProject: (peerId: number, projectId: number) => request<PeerRead<RemoteProjectDetail>>(`/peers/targets/${peerId}/projects/${projectId}`),

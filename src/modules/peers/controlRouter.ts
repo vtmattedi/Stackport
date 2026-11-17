@@ -6,6 +6,7 @@ import { auditLog, logger } from "../../shared/logger";
 import { ensureInstanceIdentity } from "../backup/instance";
 import { hasGrant, type Grant } from "./grants";
 import { PeerError } from "./errors";
+import { createGateway } from "./gateway";
 import { parseLogQuery } from "../deployments/logQuery";
 import { reportStatus } from "./peerStatus";
 import { getRemoteProject, listRemoteProjects, remoteDeploys, remoteLogs } from "./remoteProjects";
@@ -65,12 +66,15 @@ function authenticate(getDb: () => Database.Database): RequestHandler {
     if (!usedKey) { fail(401, "Authentication failed.", "unauthenticated"); return; }
 
     // From here the caller has proved it holds the key, so every answer is signed (a refusal too, or it could not be told from a stranger's).
-    res.json = (payload: unknown): Response => {
-      const text = JSON.stringify(payload ?? null);
-      res.setHeader(HEADERS.responseSignature, signResponse(usedKey, nonce, res.statusCode, Buffer.from(text)));
-      res.type("application/json");
-      return res.send(text);
-    };
+    // Signed where it is sent (res.end), so a body is covered however the handler produced it: res.json, res.send, or a bare end().
+    const end = res.end.bind(res) as (...args: unknown[]) => Response;
+    res.end = ((chunk?: unknown, encoding?: unknown, ...rest: unknown[]) => {
+      if (!res.headersSent && !res.getHeader(HEADERS.responseSignature)) {
+        const body = chunk === undefined || typeof chunk === "function" ? Buffer.alloc(0) : Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), typeof encoding === "string" ? (encoding as BufferEncoding) : "utf8");
+        res.setHeader(HEADERS.responseSignature, signResponse(usedKey, nonce, res.statusCode, body));
+      }
+      return end(chunk, encoding, ...rest);
+    }) as typeof res.end;
 
     // Only a caller that proved it holds the key learns it was revoked.
     if (known.controller.revokedAt) { fail(403, "This instance's access has been revoked.", "peer-revoked"); return; }
@@ -130,7 +134,7 @@ function parseBody(req: Request, res: Response, next: NextFunction): void {
 
 /** The Stackport Control API (`sp-control/v1`), mounted at /control. Separate from the session-authenticated /api and from MCP.
  *  It must be mounted before the application's JSON parser: that parser would consume the body this router needs to see unparsed. */
-export function createControlRouter(getDb: () => Database.Database = getDatabase): Router {
+export function createControlRouter(getDb: () => Database.Database = getDatabase, options: { api?: Router } = {}): Router {
   const router = Router();
   const pairLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many pairing attempts, try again later." } });
   const auth = authenticate(getDb);
@@ -178,6 +182,10 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
       res.status(503).json({ error: "This instance could not collect its status.", code: "unavailable" });
     });
   });
+
+  // ── the project API, for the requests the allow-list names ───────────────────
+  // Only where the application's router was given (the real app); a bare control router, as in most tests, has no such route.
+  if (options.api) router.use("/v1/api", ...authed, createGateway(options.api, getDb));
 
   // ── projects (read) ─────────────────────────────────────────────────────────
   // Served from this instance's own services; the caller only reads. Mutations arrive with their own grants in later routes.
@@ -227,4 +235,3 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
   return router;
 }
 
-export default createControlRouter();

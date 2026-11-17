@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { FolderDot, Loader, RefreshCw } from "lucide-react";
+import { FolderDot, Loader, Plus, RefreshCw } from "lucide-react";
 import { api } from "../../api/client";
 import { PeerBanner } from "../../components/PeerBanner";
 import { TimeAgo } from "../../components/TimeAgo";
@@ -22,7 +22,8 @@ export default function PeerProjects() {
       <PeerBanner peer={peer} stale={query.data?.stale} fetchedAt={query.data?.fetchedAt} />
       <div className="mb-4 flex items-center gap-3">
         <h1 className="page-title"><FolderDot size={20} />{peer.name}: projects</h1>
-        <Button type="button" variant="outline" size="sm" className="ml-auto" disabled={query.isFetching} onClick={() => void query.refetch()}>
+        {peer.grants.includes("projects:write") && <Button asChild size="sm" className="ml-auto"><Link to={`/peers/${peer.id}/new`}><Plus size={13} />New project</Link></Button>}
+        <Button type="button" variant="outline" size="sm" className={peer.grants.includes("projects:write") ? "" : "ml-auto"} disabled={query.isFetching} onClick={() => void query.refetch()}>
           {query.isFetching ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}Refresh
         </Button>
       </div>

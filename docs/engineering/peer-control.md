@@ -59,9 +59,21 @@ Each grant includes what it needs (`secrets` ⇒ `env` ⇒ `read`). Global host 
 - **Storage:** keys are encrypted with the installation keyring and registered with the re-encryption task. Pairing codes and nonces are runtime state and never in a backup.
 - **Backup/restore:** `peer_targets` and `peer_controllers` are level 1. *Recover* keeps them (the peer will see the same instance id and key); *clone* deletes both, so a copy has no standing with the original's peers.
 
+## Project API for controllers (built)
+
+A controller reaches this instance's projects through `/control/v1/api/<path>`, where `<path>` is the application's own API path (`/projects/5/deploy`, `/domains`, ...). The request is **dispatched in this process into the same routes, services and action runner** the local UI uses ([gateway.ts](../../src/modules/peers/gateway.ts)); nothing is reimplemented, so the two cannot drift and this instance stays authoritative.
+
+- **Default-deny allow-list** of (method, path, grant): `GATEWAY_RULES`. A route that is not on it does not exist to a peer (404, the same answer as an unknown route). Read: `projects:read`. Write (`projects:write`): create, update, deploy, pull, rebuild, restart, stop, pause, roll back, hostnames, routing, TLS and certificates, TCP exposure, deploy trigger, network group, Compose file edit.
+- **Not on the list, on purpose:** deleting a project and its data, env files, uploads, webhooks, credentials, host administration, other peers, backups and updates. The controls that keep a Compose file from reaching the host (`compose-policy-enforcement`, `hardening`, `ingress-isolation`) are not project configuration, and `nginxExtraConfig` / `nginxExtraBlocks` (raw directives for the shared proxy) are refused in a body. Actions are visible only when started for a project.
+- **The principal** is the controller (`peer:<instance id>`), set in a WeakMap keyed by the in-memory request, which `requireAuth` accepts. A client cannot put a request in that map, so a header or body cannot claim it.
+- **Idempotency:** a write needs `X-SP-Operation` (8 to 128 characters). The first request with an id records its answer (`peer_operations`, a week); the same id with the same request returns that answer with `X-SP-Replayed: true` and runs nothing; the same id with a different request is `409 operation-conflict`; one still running is `409 operation-in-progress`; one that never recorded (a crash, more than 10 minutes) is `operation-outcome-unknown`: check the state, then use a new id. Answers that mean "try again" (409, 429, 503) are not recorded, so a retry can run once the cause is gone.
+- **Audit:** each write is audited on this instance with the caller, the operation id, the status and the grant; a denied request is audited too.
+- **Controller side:** `/api/peers/targets/:id/api/...` (session-authenticated) signs and forwards, and passes the peer's own status and body back. A peer's 401 becomes a 502 (it must not sign an admin out of their own instance); an unsigned answer is never taken as the peer; a stored action output is always served as `text/plain`.
+- Limits: the signature covers the body, so it is read before the caller is known and is capped at 16 kB. Uploading source files does not fit and is not offered through the channel yet.
+
 ## Not yet built
 
-1. Project operations over the channel (list/create/configure/delete, env, domains, deploy/rebuild/stop/restart/rollback, logs, history) through B's existing services and action locks, with the `requireGrant` checks and operation-id idempotency (a repeated `X-SP-Operation` returns the first result).
+1. Over the channel, still missing: env files with masked secrets (`projects:env`, `projects:secrets`), deleting a project (`projects:destroy`), source uploads, and a shell. Built: listing, status, logs, history, create, configure, deploy and the rest of the allow-list above.
 2. The live channel (WebSocket) for action progress and logs, with resume after disconnect by event cursor.
 3. UI: sidebar entries with connection state, the selected instance shown on every project screen and destructive confirmation, pairing screens, rename.
 4. Pairing-code transport hardening beyond TLS (e.g. confirming a short fingerprint on both screens) if needed after real two-host testing.

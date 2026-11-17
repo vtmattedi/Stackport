@@ -14,6 +14,11 @@ export interface PeerResponse<T = unknown> {
   body: T;
   /** True when the response carried a valid signature from the shared key. Unsigned responses (errors from a proxy, a wrong server) are never trusted as the peer. */
   verified: boolean;
+  /** True when the peer answered a repeated operation id with the result of the first (nothing ran again). */
+  replayed: boolean;
+  /** The body as text, for an answer that is not JSON (an action's stored output). */
+  text: string;
+  contentType: string | null;
 }
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
@@ -123,7 +128,7 @@ export async function signedCall<T = unknown>(call: SignedCall): Promise<PeerRes
   const response = await rawRequest(call.endpoint, call.fingerprint, call.method, call.path, headers, body, call.timeoutMs ?? 10_000);
   const claimed = response.headers[HEADERS.responseSignature];
   const verified = typeof claimed === "string" && safeEqual(claimed, signResponse(call.key, nonce, response.status, response.body));
-  return { status: response.status, body: parseJson(response.body) as T, verified };
+  return { status: response.status, body: parseJson(response.body) as T, verified, replayed: response.headers["x-sp-replayed"] === "true", text: response.body.toString("utf8"), contentType: typeof response.headers["content-type"] === "string" ? response.headers["content-type"] : null };
 }
 
 /** The one unsigned call: presents a pairing code. The response carries the key, so it can only be trusted over a pinned or CA-validated channel. */

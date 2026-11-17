@@ -222,6 +222,42 @@ export function forgetRemoteCache(targetId: number): void {
   for (const key of remoteCache.keys()) if (key.startsWith(`${targetId}:`)) remoteCache.delete(key);
 }
 
+/** Throws unless this is an answer from the registered peer, signed with the shared key: a wrong version, a different server or a refusal of this instance's credentials is an error, not data. */
+function assertFromPeer(response: { status: number; verified: boolean }): void {
+  // The peer's rate limiter answers before it knows who is calling, so its answer is not signed: that is "slow down", not an impostor.
+  if (response.status === 429) throw new PeerError(503, "The peer is rate limiting this instance; try again shortly.", "rate-limited");
+  if (response.status === 426) throw new PeerError(502, "The peer does not speak a protocol version this instance understands.", "version-mismatch");
+  if (response.status === 421) throw new PeerError(502, "The server at this address is not the registered instance.", "identity-mismatch");
+  if (!response.verified) throw new PeerError(502, response.status === 401 ? "The peer did not accept this instance's credentials (check both clocks, or re-pair)." : "The peer's answer was not signed with the shared key: it may not be the registered instance.", response.status === 401 ? "unauthenticated" : "identity-mismatch");
+}
+
+export interface RemoteCall { status: number; body: unknown; replayed: boolean; text: string; contentType: string | null }
+
+/** Signed request to a peer's project API (`/control/v1/api/...`), for the controller's UI. Unlike a read, the peer's own answer is passed on as it is
+ *  (a validation error or a conflict is the point), once it is known to come from the registered peer. A write carries an operation id: when the answer
+ *  is lost, repeating the call with the same id returns the first result instead of acting again. Nothing here is cached. */
+export async function remoteCall(id: number, call: { method: string; path: string; body?: unknown; operationId?: string }, db: Database.Database = getDatabase()): Promise<RemoteCall> {
+  const target = getTarget(id, db);
+  const key = targetKey(id, db);
+  if (!target || !key) throw new PeerError(404, "No such peer.", "not-found");
+  const self = ensureInstanceIdentity(db);
+  try {
+    const response = await signedCall<{ error?: string; code?: string } | null>({
+      endpoint: target.endpoint, fingerprint: target.certFingerprint, key, selfId: self.id, targetId: target.instanceId,
+      method: call.method, path: `/control/v1/api${call.path}`, body: call.body, operationId: call.operationId, timeoutMs: call.method === "GET" ? 10_000 : 30_000,
+    });
+    assertFromPeer(response);
+    // A signed 401 is the peer refusing this instance's credentials or clock. Passed on as a 401 it would sign the admin out of this instance's own UI.
+    if (response.status === 401) throw new PeerError(502, response.body?.error ?? "The peer did not accept this instance's request.", response.body?.code ?? "unauthenticated");
+    if (response.status === 403 && response.body?.code === "peer-revoked") { forgetRemoteCache(id); throw new PeerError(403, "The peer has revoked this instance's access.", "peer-revoked"); }
+    return { status: response.status, body: response.body, replayed: response.replayed, text: response.text, contentType: response.contentType };
+  } catch (error) {
+    if (error instanceof PeerIdentityError) throw new PeerError(502, error.message, "identity-mismatch");
+    if (error instanceof PeerUnreachable) throw new PeerError(502, error.message, "unreachable");
+    throw error;
+  }
+}
+
 /** Signed GET to a peer's control API. A refusal or an unsigned answer is an error here; only "could not reach it" may fall back to the last answer. */
 export async function remoteGet<T>(id: number, path: string, options: { cache?: boolean; validate?: (body: unknown) => boolean } = {}, db: Database.Database = getDatabase()): Promise<RemoteResult<T>> {
   const target = getTarget(id, db);
@@ -233,9 +269,7 @@ export async function remoteGet<T>(id: number, path: string, options: { cache?: 
   try {
     const response = await signedCall<T & { error?: string; code?: string }>({ endpoint: target.endpoint, fingerprint: target.certFingerprint, key, selfId: self.id, targetId: target.instanceId, method: "GET", path });
     // Anything but an answer from the registered peer ends the fallback: a peer that refused, was replaced or changed must not be shown from memory once it goes quiet.
-    if (response.status === 426) { forgetRemoteCache(id); throw new PeerError(502, "The peer does not speak a protocol version this instance understands.", "version-mismatch"); }
-    if (response.status === 421) { forgetRemoteCache(id); throw new PeerError(502, "The server at this address is not the registered instance.", "identity-mismatch"); }
-    if (!response.verified) { forgetRemoteCache(id); throw new PeerError(502, response.status === 401 ? "The peer did not accept this instance's credentials (check both clocks, or re-pair)." : "The peer's answer was not signed with the shared key: it may not be the registered instance.", response.status === 401 ? "unauthenticated" : "identity-mismatch"); }
+    try { assertFromPeer(response); } catch (error) { forgetRemoteCache(id); throw error; }
     if (response.status === 403) { forgetRemoteCache(id); throw new PeerError(403, response.body?.code === "peer-revoked" ? "The peer has revoked this instance's access." : response.body?.error ?? "The peer has not granted this.", response.body?.code === "peer-revoked" ? "peer-revoked" : "forbidden"); }
     if (response.status === 404) throw new PeerError(404, response.body?.error ?? "Not found on the peer.", "not-found");
     if (response.status !== 200) throw new PeerError(502, response.body?.error ?? `The peer answered with status ${response.status}.`, "peer-error");
