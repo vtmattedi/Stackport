@@ -1,8 +1,8 @@
 {
   "name": "stackport",
-  "version": "1.4.5",
-  "builtAt": "2026-11-17T17:22:56.419Z",
-  "gitCommit": "955d416",
+  "version": "1.4.6",
+  "builtAt": "2026-11-17T19:05:02.205Z",
+  "gitCommit": "41ce17b",
   "gitBranch": "feat/project-archive-and-move",
-  "gitMessage": "chore: retrigger CI (GitHub did not pick up the previous push)"
+  "gitMessage": "fix(moves): migration 24 adds the transfer columns to databases that already ran 23"
 }
