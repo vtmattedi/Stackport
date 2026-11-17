@@ -1166,7 +1166,9 @@ backup_stackport() {
   chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$VAR_DIR/data/backups" 2>/dev/null || true
   backup_passphrase confirm
   if [[ -n "$project" ]]; then
-    docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" create --project "$project" --out "/app/data/backups/$name" $( (( allow_running )) && echo --allow-running )
+    local extra=()
+    (( allow_running )) && extra=(--allow-running)
+    docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" create --project "$project" --out "/app/data/backups/$name" ${extra[@]+"${extra[@]}"}
   else
     docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" create --level "$level" --out "/app/data/backups/$name"
   fi
