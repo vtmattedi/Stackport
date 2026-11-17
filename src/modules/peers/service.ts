@@ -108,7 +108,7 @@ export async function registerTarget(code: string, db: Database.Database = getDa
   if (response.body.instance?.id !== decoded.instanceId) throw new PeerError(502, "The server that answered is not the instance that issued the code.", "identity-mismatch");
   if (!response.body.versions?.some((v) => PROTOCOL_VERSIONS.includes(v))) throw new PeerError(502, "The peer does not speak a protocol version this instance understands.", "version-mismatch");
 
-  return addTarget({ instanceId: decoded.instanceId, name: response.body.instance.name, endpoint: decoded.endpoint, certFingerprint: decoded.fingerprint, key: response.body.key, grants: normalizeGrants(response.body.grants), protocol: 1 }, db);
+  return addTarget({ instanceId: decoded.instanceId, name: cleanName(response.body.instance.name) ?? "Stackport", endpoint: decoded.endpoint, certFingerprint: decoded.fingerprint, key: response.body.key, grants: normalizeGrants(response.body.grants), protocol: 1 }, db);
 }
 
 // ── controlling side: keeping a target current ────────────────────────────────
@@ -195,3 +195,109 @@ export async function removeTargetAndNotify(id: number, db: Database.Database = 
 }
 
 export type { Controller, Target };
+
+// ── controlling side: reading a peer's data ───────────────────────────────────
+
+export const STATUS_PATH = "/control/v1/status";
+
+export interface RemoteResult<T> {
+  data: T;
+  /** True when the peer could not be reached and this is what it last said. */
+  stale: boolean;
+  fetchedAt: string;
+}
+
+/** What each peer last said, in memory only: it lets an offline peer keep showing what was known, marked stale. A restart empties it, and nothing here
+ *  is written to disk or to a backup. Responses that can carry secrets (logs) are never kept. */
+const remoteCache = new Map<string, { data: unknown; fetchedAt: string }>();
+const REMOTE_CACHE_MAX = 200;
+
+/** The last answer for a path, without calling the peer; null when there is none. */
+export function peekRemote<T>(targetId: number, path: string): { data: T; fetchedAt: string } | null {
+  const entry = remoteCache.get(`${targetId}:${path}`);
+  return entry ? { data: entry.data as T, fetchedAt: entry.fetchedAt } : null;
+}
+
+export function forgetRemoteCache(targetId: number): void {
+  for (const key of remoteCache.keys()) if (key.startsWith(`${targetId}:`)) remoteCache.delete(key);
+}
+
+/** Throws unless this is an answer from the registered peer, signed with the shared key: a wrong version, a different server or a refusal of this instance's credentials is an error, not data. */
+function assertFromPeer(response: { status: number; verified: boolean }): void {
+  // The peer's rate limiter answers before it knows who is calling, so its answer is not signed: that is "slow down", not an impostor.
+  if (response.status === 429) throw new PeerError(503, "The peer is rate limiting this instance; try again shortly.", "rate-limited");
+  // Refused for size before the caller was known, so unsigned as well: too large for the channel, not an impostor.
+  if (response.status === 413) throw new PeerError(413, "That is too large for the control channel (16 kB).", "too-large");
+  if (response.status === 426) throw new PeerError(502, "The peer does not speak a protocol version this instance understands.", "version-mismatch");
+  if (response.status === 421) throw new PeerError(502, "The server at this address is not the registered instance.", "identity-mismatch");
+  if (!response.verified) throw new PeerError(502, response.status === 401 ? "The peer did not accept this instance's credentials (check both clocks, or re-pair)." : "The peer's answer was not signed with the shared key: it may not be the registered instance.", response.status === 401 ? "unauthenticated" : "identity-mismatch");
+}
+
+/** Reads that run `docker compose config`, git or the GitHub API on the peer take longer than a status read; a slow host must not look like an unreachable one. */
+const SLOW_READS = /\/(ingress-targets|compose-policy|compose-variables|compose-env-files|branches|deploy-preview|rollback-preview)(\?|$)/;
+function timeoutFor(method: string, path: string): number {
+  if (method !== "GET") return 30_000;
+  return SLOW_READS.test(path) ? 70_000 : 15_000;
+}
+
+export interface RemoteCall { status: number; body: unknown; replayed: boolean; text: string; contentType: string | null }
+
+/** Signed request to a peer's project API (`/control/v1/api/...`), for the controller's UI. Unlike a read, the peer's own answer is passed on as it is
+ *  (a validation error or a conflict is the point), once it is known to come from the registered peer. A write carries an operation id: when the answer
+ *  is lost, repeating the call with the same id returns the first result instead of acting again. Nothing here is cached. */
+export async function remoteCall(id: number, call: { method: string; path: string; body?: unknown; operationId?: string }, db: Database.Database = getDatabase()): Promise<RemoteCall> {
+  const target = getTarget(id, db);
+  const key = targetKey(id, db);
+  if (!target || !key) throw new PeerError(404, "No such peer.", "not-found");
+  const self = ensureInstanceIdentity(db);
+  try {
+    const response = await signedCall<{ error?: string; code?: string } | null>({
+      endpoint: target.endpoint, fingerprint: target.certFingerprint, key, selfId: self.id, targetId: target.instanceId,
+      method: call.method, path: `/control/v1/api${call.path}`, body: call.body, operationId: call.operationId, timeoutMs: timeoutFor(call.method, call.path),
+    });
+    assertFromPeer(response);
+    // A signed 401 is the peer refusing this instance's credentials or clock. Passed on as a 401 it would sign the admin out of this instance's own UI.
+    if (response.status === 401) throw new PeerError(502, response.body?.error ?? "The peer did not accept this instance's request.", response.body?.code ?? "unauthenticated");
+    if (response.status === 403 && response.body?.code === "peer-revoked") { forgetRemoteCache(id); throw new PeerError(403, "The peer has revoked this instance's access.", "peer-revoked"); }
+    return { status: response.status, body: response.body, replayed: response.replayed, text: response.text, contentType: response.contentType };
+  } catch (error) {
+    if (error instanceof PeerIdentityError) throw new PeerError(502, error.message, "identity-mismatch");
+    if (error instanceof PeerUnreachable) throw new PeerError(502, error.message, "unreachable");
+    throw error;
+  }
+}
+
+/** Signed GET to a peer's control API. A refusal or an unsigned answer is an error here; only "could not reach it" may fall back to the last answer. */
+export async function remoteGet<T>(id: number, path: string, options: { cache?: boolean; validate?: (body: unknown) => boolean } = {}, db: Database.Database = getDatabase()): Promise<RemoteResult<T>> {
+  const target = getTarget(id, db);
+  const key = targetKey(id, db);
+  if (!target || !key) throw new PeerError(404, "No such peer.", "not-found");
+  const self = ensureInstanceIdentity(db);
+  const cacheKey = `${id}:${path}`;
+  const useCache = options.cache !== false;
+  try {
+    const response = await signedCall<T & { error?: string; code?: string }>({ endpoint: target.endpoint, fingerprint: target.certFingerprint, key, selfId: self.id, targetId: target.instanceId, method: "GET", path });
+    // Anything but an answer from the registered peer ends the fallback: a peer that refused, was replaced or changed must not be shown from memory once it goes quiet.
+    try { assertFromPeer(response); } catch (error) { forgetRemoteCache(id); throw error; }
+    if (response.status === 403) { forgetRemoteCache(id); throw new PeerError(403, response.body?.code === "peer-revoked" ? "The peer has revoked this instance's access." : response.body?.error ?? "The peer has not granted this.", response.body?.code === "peer-revoked" ? "peer-revoked" : "forbidden"); }
+    if (response.status === 404) throw new PeerError(404, response.body?.error ?? "Not found on the peer.", "not-found");
+    if (response.status !== 200) throw new PeerError(502, response.body?.error ?? `The peer answered with status ${response.status}.`, "peer-error");
+    if (response.body === null || typeof response.body !== "object" || (options.validate && !options.validate(response.body))) throw new PeerError(502, "The peer's answer was not understood.", "peer-error");
+    const fetchedAt = new Date().toISOString();
+    if (useCache) {
+      remoteCache.delete(cacheKey);
+      remoteCache.set(cacheKey, { data: response.body, fetchedAt });
+      if (remoteCache.size > REMOTE_CACHE_MAX) remoteCache.delete(remoteCache.keys().next().value as string);
+    }
+    updateTarget(id, { seen: true }, db);
+    return { data: response.body as T, stale: false, fetchedAt };
+  } catch (error) {
+    if (error instanceof PeerIdentityError) { forgetRemoteCache(id); throw new PeerError(502, error.message, "identity-mismatch"); }
+    if (error instanceof PeerUnreachable) {
+      const last = useCache ? remoteCache.get(cacheKey) : undefined;
+      if (last) return { data: last.data as T, stale: true, fetchedAt: last.fetchedAt };
+      throw new PeerError(502, error.message, "unreachable");
+    }
+    throw error;
+  }
+}

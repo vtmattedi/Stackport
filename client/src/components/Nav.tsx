@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Link, useNavigate, useLocation } from "react-router-dom";
 import { HoverCard } from "radix-ui";
 import {
-  ScrollText, FolderDot, LogOut, Settings as SettingsIcon, Cpu, ChevronLeft, ChevronRight, Loader, BarChart2, Star, Menu, Search,
+  ScrollText, FolderDot, LogOut, Settings as SettingsIcon, Cpu, ChevronLeft, ChevronRight, Loader, BarChart2, Star, Menu, Search, Server,
 } from "lucide-react";
 import { api, markSignedOut } from "../api/client";
 import { useSocket } from "../context/SocketContext";
@@ -16,7 +16,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { ActionsPanel, useRunningActions } from "./RunningActions";
 import { ConnectionRow, HostPanel, StatusStrip } from "./StatusStrip";
 import { openCommandPalette, PALETTE_SHORTCUT } from "./CommandPalette";
-import type { Project, SystemData } from "../api/types";
+import type { PeerState, PeerTarget, Project, SystemData } from "../api/types";
+import { usePeers } from "../lib/usePeers";
+import { PEER_STATE } from "../lib/peerState";
 
 // Keep in sync with $submenu-open-delay in Nav.module.scss: the trigger's
 // hover sweep is timed to this, so the submenu wipe starts exactly when the
@@ -60,6 +62,35 @@ function SystemSubmenu({ system }: { system: SystemData | null }) {
             <span className={styles.submenuItemLabel}>{label}</span>
           </Link>
         ))}
+      </div>
+    </>
+  );
+}
+
+function peerSquircle(state: PeerState): string {
+  if (state === "online") return styles.squircleReady;
+  if (state === "offline") return styles.squircleDown;
+  if (state === "unknown") return styles.squircleNotDeployed;
+  return styles.squircleProblem;
+}
+
+function PeersSubmenu({ peers }: { peers: PeerTarget[] }) {
+  return (
+    <>
+      <div className={styles.submenuHeader}>Instances</div>
+      <div className={styles.submenuList}>
+        {peers.map((peer) => (
+          <Link key={peer.id} to={`/peers/${peer.id}`} className={styles.submenuItem}>
+            <span className={cn(styles.squircle, peerSquircle(peer.status.state))} title={PEER_STATE[peer.status.state]?.label} />
+            <span className={styles.submenuItemLabel}>{peer.name}</span>
+            {peer.status.state !== "online" && <span className={styles.submenuBadge}>{PEER_STATE[peer.status.state]?.label}</span>}
+            {peer.status.state === "online" && peer.summary && peer.summary.alerts.total > 0 && <span className={styles.submenuBadge} title="Alerts">{peer.summary.alerts.total}</span>}
+          </Link>
+        ))}
+      </div>
+      <div className={styles.submenuFooter}>
+        <Link to="/fleet" className={styles.submenuFooterLink}>All instances</Link>
+        <Link to="/settings/peers" className={styles.submenuFooterLink}>Manage peers</Link>
       </div>
     </>
   );
@@ -126,6 +157,9 @@ export default function Nav() {
   const { disconnect } = useSocket();
   const { system, projects } = useSystem();
   const running = useRunningActions();
+  const peers = usePeers().data?.controlling ?? [];
+  const peersActive = location.pathname.startsWith("/peers") || location.pathname === "/fleet";
+  const peerAlerts = peers.reduce((sum, peer) => sum + (peer.status.state === "online" ? peer.summary?.alerts.total ?? 0 : 0), 0);
   const [moreOpen, setMoreOpen] = useState(false);
   const [expanded, setExpanded] = useState(() => {
     return localStorage.getItem("sidebar-expanded") === "true";
@@ -231,6 +265,27 @@ export default function Nav() {
           </HoverCard.Portal>
         </HoverCard.Root>
 
+        {peers.length > 0 && (
+          <HoverCard.Root openDelay={SUBMENU_OPEN_DELAY_MS} closeDelay={150}>
+            <HoverCard.Trigger asChild>
+              <NavLink
+                to="/fleet"
+                title="Instances"
+                className={cn(styles.navLink, styles.hasSubmenu, peersActive && styles.active)}
+              >
+                <Server size={16} />
+                <span className={styles.linkText}>Instances</span>
+                {peerAlerts > 0 && <span className={styles.submenuBadge} title="Alerts on peers">{peerAlerts}</span>}
+              </NavLink>
+            </HoverCard.Trigger>
+            <HoverCard.Portal>
+              <HoverCard.Content side="right" align="start" sideOffset={0} collisionPadding={8} className={styles.submenu}>
+                <PeersSubmenu peers={peers} />
+              </HoverCard.Content>
+            </HoverCard.Portal>
+          </HoverCard.Root>
+        )}
+
         <NavLink
           to="/logs"
           title="Logs"
@@ -291,6 +346,13 @@ export default function Nav() {
           <div className={styles.moreSeparator} />
           <HostPanel onNavigate={() => setMoreOpen(false)} />
           <div className={styles.moreSeparator} />
+          {peers.map((peer) => (
+            <NavLink key={peer.id} to={`/peers/${peer.id}`} className={({ isActive }) => cn(styles.submenuItem, isActive && styles.moreItemActive)} onClick={() => setMoreOpen(false)}>
+              <span className={cn(styles.squircle, peerSquircle(peer.status.state))} />
+              <span className={styles.submenuItemLabel}>{peer.name}</span>
+            </NavLink>
+          ))}
+          {peers.length > 0 && <div className={styles.moreSeparator} />}
           {([
             ["/settings", "Settings", SettingsIcon],
           ] as const).map(([to, label, Icon]) => (

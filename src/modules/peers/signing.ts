@@ -9,6 +9,9 @@ export const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 export const NONCE_RETENTION_MS = 2 * MAX_CLOCK_SKEW_MS;
 /** A rotated-out key still verifies this long, so a rotation whose answer was lost can be retried. */
 export const KEY_ROTATION_GRACE_MS = 60 * 60 * 1000;
+/** An operation id: names one user action so a repeated request cannot act twice. */
+export const OPERATION_ID_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
+
 export const KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 export const HEADERS = {

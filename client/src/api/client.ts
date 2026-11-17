@@ -77,6 +77,12 @@ import type {
   PeersOverview,
   PeerTarget,
   PairingCodeResult,
+  PeerRead,
+  PeerStatusReport,
+  StatusSummary,
+  RemoteProject,
+  RemoteProjectDetail,
+  RemoteDeploy,
 } from "./types";
 
 // The session itself is an httpOnly cookie the browser holds and scripts cannot read
@@ -125,10 +131,19 @@ export function clearSetupToken(): void {
   sessionStorage.removeItem(SETUP_TOKEN_KEY);
 }
 
+/** Names one user action, so a repeat of the same request (a retry after a lost answer) cannot act twice on the peer. crypto.randomUUID needs a secure context, which a raw-IP install is not. */
+export function newOperationId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `op-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
-    message: string
+    message: string,
+    /** The peer's or server's own code for the refusal (`operation-in-progress`, `forbidden`, ...), when it gave one. */
+    public readonly code?: string
   ) {
     super(message);
     this.name = "ApiError";
@@ -166,8 +181,9 @@ async function request<T>(
   if (!res.ok) {
     const body = (await res.json().catch(() => ({ error: "Request failed" }))) as {
       error?: string;
+      code?: string;
     };
-    throw new ApiError(res.status, body.error ?? "Request failed");
+    throw new ApiError(res.status, body.error ?? "Request failed", body.code);
   }
 
   if (res.status === 204) return undefined as T;
@@ -616,5 +632,23 @@ export const api = {
   rotatePeerKey: (id: number) => request<void>(`/peers/targets/${id}/rotate-key`, { method: "POST" }),
   removePeer: (id: number) => request<{ notified: boolean }>(`/peers/targets/${id}`, { method: "DELETE" }),
   revokeController: (id: number) => request<void>(`/peers/controllers/${id}`, { method: "DELETE" }),
+  getLocalSummary: () => request<{ summary: StatusSummary | null }>("/peers/local-summary"),
+  /** The one door to another instance's project API, through this instance. The peer decides what exists for us and what we may do, and answers with its own status and body. */
+  peerRequest: <T>(peerId: number, method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown, operationId?: string) =>
+    request<T>(`/peers/targets/${peerId}/api${path}`, {
+      method,
+      ...(method !== "GET" ? { body: JSON.stringify(body ?? {}), headers: { "X-Operation-Id": operationId ?? newOperationId() } } : {}),
+    }),
+  /** A peer's stored action output, which is text, not JSON. */
+  peerActionLog: async (peerId: number, actionId: string): Promise<string> => {
+    const res = await fetch(`/api/peers/targets/${peerId}/api/actions/${actionId}/log`, { headers: sessionHeaders() });
+    if (!res.ok) throw new ApiError(res.status, "Couldn't read the output");
+    return res.text();
+  },
+  getPeerStatus: (peerId: number) => request<PeerRead<PeerStatusReport>>(`/peers/targets/${peerId}/status`),
+  getPeerProjects: (peerId: number) => request<PeerRead<{ projects: RemoteProject[] }>>(`/peers/targets/${peerId}/projects`),
+  getPeerProject: (peerId: number, projectId: number) => request<PeerRead<RemoteProjectDetail>>(`/peers/targets/${peerId}/projects/${projectId}`),
+  getPeerProjectDeploys: (peerId: number, projectId: number) => request<PeerRead<{ deploys: RemoteDeploy[] }>>(`/peers/targets/${peerId}/projects/${projectId}/deploys`),
+  getPeerProjectLogs: (peerId: number, projectId: number, tail: number) => request<PeerRead<{ ok: boolean; output: string }>>(`/peers/targets/${peerId}/projects/${projectId}/logs?tail=${tail}`),
   forgetController: (id: number) => request<void>(`/peers/controllers/${id}/record`, { method: "DELETE" }),
 };

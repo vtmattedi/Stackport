@@ -29,6 +29,11 @@ const GithubSection = lazy(() => import("./pages/settings/GithubSection"));
 const EncryptionSection = lazy(() => import("./pages/settings/encryption/EncryptionSection"));
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
 const PeersSection = lazy(() => import("./pages/settings/PeersSection"));
+const FleetPage = lazy(() => import("./pages/peers/FleetPage"));
+const PeerLayout = lazy(() => import("./pages/peers/PeerLayout"));
+const PeerProjects = lazy(() => import("./pages/peers/PeerProjects"));
+const NewPeerProject = lazy(() => import("./pages/peers/NewPeerProject"));
+const PeerProject = lazy(() => import("./pages/peers/PeerProject"));
 const LiveStatusSection = lazy(() => import("./pages/settings/LiveStatusSection"));
 const InsightsLayout = lazy(() => import("./pages/insights/InsightsLayout"));
 const InsightsOverview = lazy(() => import("./pages/insights/OverviewSection"));
@@ -83,6 +88,12 @@ export default function App() {
             <Route path="/logs" element={<Logs />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:id/:tab?" element={<ProjectDetails />} />
+            <Route path="/fleet" element={<FleetPage />} />
+            <Route path="/peers/:peerId" element={<PeerLayout />}>
+              <Route index element={<PeerProjects />} />
+              <Route path="new" element={<NewPeerProject />} />
+              <Route path="projects/:projectId" element={<PeerProject />} />
+            </Route>
             <Route path="/credentials" element={<Navigate to="/settings/credentials" replace />} />
             <Route path="/host/:section?" element={<System />} />
             <Route path="/system/:section?" element={<LegacySystemRedirect />} />

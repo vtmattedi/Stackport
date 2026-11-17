@@ -2,10 +2,14 @@ import express, { Router, type NextFunction, type Request, type RequestHandler, 
 import rateLimit from "express-rate-limit";
 import type Database from "better-sqlite3";
 import { getDatabase } from "../../config/database";
-import { auditLog } from "../../shared/logger";
+import { auditLog, logger } from "../../shared/logger";
 import { ensureInstanceIdentity } from "../backup/instance";
 import { hasGrant, type Grant } from "./grants";
 import { PeerError } from "./errors";
+import { createGateway } from "./gateway";
+import { parseLogQuery } from "../deployments/logQuery";
+import { reportStatus } from "./peerStatus";
+import { getRemoteProject, listRemoteProjects, remoteDeploys, remoteLogs } from "./remoteProjects";
 import { acceptPairing } from "./service";
 import { HEADERS, KEY_PATTERN, MAX_CLOCK_SKEW_MS, PROTOCOL_NAME, PROTOCOL_VERSIONS, safeEqual, signRequest, signResponse } from "./signing";
 import { confirmControllerKey, controllerKeys, recordNonce, revokeController, rotateControllerKey, touchController, type Controller } from "./store";
@@ -62,12 +66,15 @@ function authenticate(getDb: () => Database.Database): RequestHandler {
     if (!usedKey) { fail(401, "Authentication failed.", "unauthenticated"); return; }
 
     // From here the caller has proved it holds the key, so every answer is signed (a refusal too, or it could not be told from a stranger's).
-    res.json = (payload: unknown): Response => {
-      const text = JSON.stringify(payload ?? null);
-      res.setHeader(HEADERS.responseSignature, signResponse(usedKey, nonce, res.statusCode, Buffer.from(text)));
-      res.type("application/json");
-      return res.send(text);
-    };
+    // Signed where it is sent (res.end), so a body is covered however the handler produced it: res.json, res.send, or a bare end().
+    const end = res.end.bind(res) as (...args: unknown[]) => Response;
+    res.end = ((chunk?: unknown, encoding?: unknown, ...rest: unknown[]) => {
+      if (!res.headersSent && !res.getHeader(HEADERS.responseSignature)) {
+        const body = chunk === undefined || typeof chunk === "function" ? Buffer.alloc(0) : Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), typeof encoding === "string" ? (encoding as BufferEncoding) : "utf8");
+        res.setHeader(HEADERS.responseSignature, signResponse(usedKey, nonce, res.statusCode, body));
+      }
+      return end(chunk, encoding, ...rest);
+    }) as typeof res.end;
 
     // Only a caller that proved it holds the key learns it was revoked.
     if (known.controller.revokedAt) { fail(403, "This instance's access has been revoked.", "peer-revoked"); return; }
@@ -96,6 +103,18 @@ export function requireGrant(needed: Grant): RequestHandler {
   };
 }
 
+/** For a route that any one of several grants opens; the refusal names all of them. */
+export function requireAnyGrant(...accepted: Grant[]): RequestHandler {
+  return (req, res, next) => {
+    if (!req.peer || !accepted.some((grant) => hasGrant(req.peer?.grants ?? [], grant))) {
+      auditLog(`peer:${req.peer?.controller.instanceId ?? "unknown"}`, "peer.denied", `${req.method} ${req.path}`, "fail", { needed: accepted, operationId: req.peer?.operationId });
+      res.status(403).json({ error: `This instance has been granted none of: ${accepted.join(", ")}.`, code: "forbidden", needed: accepted });
+      return;
+    }
+    next();
+  };
+}
+
 /** Reads the body as exact bytes (the signature covers them) without interpreting it: parsing waits until the caller is authenticated. */
 function readRaw(limit: string): RequestHandler[] {
   return [
@@ -115,9 +134,9 @@ function parseBody(req: Request, res: Response, next: NextFunction): void {
 
 /** The Stackport Control API (`sp-control/v1`), mounted at /control. Separate from the session-authenticated /api and from MCP.
  *  It must be mounted before the application's JSON parser: that parser would consume the body this router needs to see unparsed. */
-export function createControlRouter(getDb: () => Database.Database = getDatabase): Router {
+export function createControlRouter(getDb: () => Database.Database = getDatabase, options: { api?: Router } = {}): Router {
   const router = Router();
-  const pairLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many pairing attempts, try again later." } });
+  const pairLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, skipSuccessfulRequests: true, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many pairing attempts, try again later." } });
   const auth = authenticate(getDb);
   // The signature covers the body, so it has to be read before the caller is known: the limit is what a stranger can make this server hold,
   // and stays small. A route that must accept more (env files, uploads) will need its own bounded limit and a justification.
@@ -156,8 +175,66 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
     res.json({ revoked: true });
   });
 
+  /** The live status stream's snapshot, cut to what this caller was granted. Either read grant opens it; neither gets nothing but a refusal. */
+  router.get("/v1/status", ...authed, requireAnyGrant("host:read", "projects:read"), (req: Request, res: Response): void => {
+    reportStatus(req.peer?.grants ?? []).then((report) => { res.json(report); }).catch((error: unknown) => {
+      logger.error({ error: error instanceof Error ? error.message : String(error) }, "peer.status.read-failed");
+      res.status(503).json({ error: "This instance could not collect its status.", code: "unavailable" });
+    });
+  });
+
+  // ── the project API, for the requests the allow-list names ───────────────────
+  // Only where the application's router was given (the real app); a bare control router, as in most tests, has no such route.
+  if (options.api) router.use("/v1/api", ...authed, createGateway(options.api, getDb));
+
+  // ── projects (read) ─────────────────────────────────────────────────────────
+  // A curated summary (list, detail, deploys, logs) for lists, the sidebar and monitoring: built field by field, so a column added later is not shown by accident.
+  // Operating on a project goes through the gateway above, which serves the application's own shapes. The two do not overlap on a path; what both must keep
+  // (project-level actions only, masked env values) is decided in one place each: peerStatus.ts and gateway.ts.
+  // Served from this instance's own services; the caller only reads. Mutations arrive with their own grants in later routes.
+  const projectId = (req: Request, res: Response): number | null => {
+    const id = Number(req.params["id"]);
+    if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid project id.", code: "bad-request" }); return null; }
+    return id;
+  };
+  const notFound = (res: Response): void => { res.status(404).json({ error: "Project not found.", code: "not-found" }); };
+  const failed = (res: Response, error: unknown): void => {
+    logger.error({ error: error instanceof Error ? error.message : String(error) }, "peer.projects.read-failed");
+    res.status(500).json({ error: "This instance could not read the project.", code: "internal" });
+  };
+
+  router.get("/v1/projects", ...authed, requireGrant("projects:read"), async (_req: Request, res: Response): Promise<void> => {
+    try { res.json({ projects: await listRemoteProjects() }); } catch (error) { failed(res, error); }
+  });
+
+  router.get("/v1/projects/:id", ...authed, requireGrant("projects:read"), async (req: Request, res: Response): Promise<void> => {
+    const id = projectId(req, res);
+    if (id === null) return;
+    try {
+      const project = await getRemoteProject(id);
+      if (project) res.json(project); else notFound(res);
+    } catch (error) { failed(res, error); }
+  });
+
+  router.get("/v1/projects/:id/deploys", ...authed, requireGrant("projects:read"), (req: Request, res: Response): void => {
+    const id = projectId(req, res);
+    if (id === null) return;
+    const deploys = remoteDeploys(id);
+    if (deploys) res.json({ deploys }); else notFound(res);
+  });
+
+  router.get("/v1/projects/:id/logs", ...authed, requireGrant("projects:read"), async (req: Request, res: Response): Promise<void> => {
+    const id = projectId(req, res);
+    if (id === null) return;
+    const query = parseLogQuery(req.query);
+    if (!query) { res.status(400).json({ error: "Invalid service name.", code: "bad-request" }); return; }
+    try {
+      const logs = await remoteLogs(id, query.tail, query.service);
+      if (logs) res.json(logs); else notFound(res);
+    } catch (error) { failed(res, error); }
+  });
+
   router.use((_req: Request, res: Response): void => { res.status(404).json({ error: "Unknown control endpoint.", code: "not-found" }); });
   return router;
 }
 
-export default createControlRouter();

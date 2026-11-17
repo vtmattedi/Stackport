@@ -1313,11 +1313,14 @@ export interface NetworkGroupView {
 }
 
 /** Settings > Peers (GET /peers). Keys and pairing codes are never listed. */
-export type PeerGrant = "projects:read" | "projects:write" | "projects:env" | "projects:secrets" | "projects:shell" | "projects:destroy";
+export type PeerGrant = "projects:read" | "projects:write" | "projects:env" | "projects:secrets" | "projects:shell" | "projects:destroy" | "host:read";
 export type PeerState = "online" | "offline" | "revoked" | "identity-mismatch" | "version-mismatch" | "unknown";
 export interface PeerTarget {
   id: number; instanceId: string; name: string; endpoint: string; certFingerprint: string | null; grants: PeerGrant[]; protocol: number; createdAt: string; lastSeenAt: string | null;
   status: { state: PeerState; message?: string; checkedAt?: string };
+  /** What the peer last reported (null until it has, or when it was granted neither read grant). Kept in memory; `summaryAt` says how old it is. */
+  summary: StatusSummary | null;
+  summaryAt: string | null;
 }
 export interface PeerController { id: number; instanceId: string; name: string; grants: PeerGrant[]; createdAt: string; lastUsedAt: string | null; revokedAt: string | null }
 export interface PeersOverview {
@@ -1329,3 +1332,52 @@ export interface PeersOverview {
   controlledBy: PeerController[];
 }
 export interface PairingCodeResult { code: string; expiresAt: string; grants: PeerGrant[] }
+
+/** A peer's projects, as the peer itself reports them (GET /peers/targets/:id/projects ...). `stale` means the peer could not be reached and this is its last answer. */
+export interface PeerRead<T> { data: T; stale: boolean; fetchedAt: string }
+export type RemoteProjectState = "ready" | "problem" | "down" | "not-deployed" | "paused";
+export interface RemoteProject {
+  id: number;
+  name: string;
+  group: string | null;
+  sourceType: "github" | "upload";
+  githubRepo: string | null;
+  branch: string | null;
+  paused: boolean;
+  favorite: boolean;
+  status: { state: RemoteProjectState; containers: { running: number; total: number }; health: "ok" | "failing" | "unknown" | "none"; lastCheckedAt: string | null; traffic: { windowS: number; requests: number; serverErrors: number; errorRatePct: number | null; p95Ms: number | null } | null } | null;
+  domains: { id: number; domain: string }[];
+  lastCommit: { sha: string; message: string | null; author: string | null; at: string | null } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface RemoteProjectDetail extends RemoteProject {
+  composeFile: string | null;
+  availableComposeFiles: string[];
+  deployTrigger: string;
+  healthCheck: { endpoint: string | null; intervalS: number; graceS: number };
+  hardenedDefaults: boolean;
+  composePolicyEnforced: boolean;
+  volumesManaged: boolean;
+  ingressIsolated: boolean;
+  networkGroup: string | null;
+}
+export interface RemoteDeploy { id: string; kind: string; commitSha: string | null; commitMessage: string | null; commitAuthor: string | null; branch: string | null; triggeredBy: string; status: string; createdAt: string; completedAt: string | null; hasLog: boolean }
+
+/** The live status model (host, projects, actions, alerts), as a peer reports it to a controller with the matching grants. */
+export interface PeerHostStatus { cpuPercent: number; memPercent: number; memUsedMb: number; memTotalMb: number; load1: number; diskUsedPct: number | null; netRxBps: number | null; netTxBps: number | null; sampledAt: string }
+export interface PeerAction { id: string; kind: string; projectId: number | null; projectName: string | null; startedAt: string; phase: string | null; percent: number | null; etaSeconds: number | null }
+export interface PeerAlert { id: string; severity: "warning" | "critical"; code: string; scope: "host" | "project"; projectId: number | null; subject: string; message: string; since: string }
+export interface PeerStatusReport {
+  host: PeerHostStatus | null;
+  projects: { id: number; name: string; state: RemoteProjectState; containers: { running: number; total: number } }[];
+  actions: PeerAction[];
+  alerts: PeerAlert[];
+  ageSeconds: number | null;
+}
+export interface StatusSummary {
+  host: PeerHostStatus | null;
+  projects: { total: number; ready: number; problem: number; down: number; notDeployed: number; paused: number };
+  runningActions: number;
+  alerts: { total: number; critical: number };
+}
