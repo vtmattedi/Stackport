@@ -19,7 +19,6 @@ import {
   composeProject,
   deployProject,
   ensureProjectProxyNetwork,
-  leaveNetworkGroup,
   getProjectById,
   getProjectComposeEnvFiles,
   getProjectComposeVariables,
@@ -48,6 +47,7 @@ import { getProjectBranches } from "../../modules/automation/githubPolling";
 import { runCertbotAction } from "../../modules/ingress/certificates/operations";
 import { actionRegistry, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../../modules/actions/registry";
 import { deleteProjectActionLogs } from "../../modules/actions/log";
+import { destroyProject } from "../../modules/projects/destroy";
 import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "../../modules/observability/queries/projectResources";
 import { createProject as adminCreateProject, updateProject, setProjectPaused as pauseProject, ProjectAdminError } from "../../modules/projects/operations";
 import {
@@ -70,12 +70,10 @@ import {
   insertTcpExposure,
   listTcpExposures,
   reconcileTcpExposure,
-  removeProjectTcpRuntime,
   type TcpExposure,
   TcpExposureError,
 } from "../../modules/ingress/tcp";
-import { removeIngressNetwork } from "../../modules/ingress/networks";
-import { defaultIsolationDeps, removeIsolatedNetworkQuietly, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
+import { defaultIsolationDeps, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
 import { modeAvailable } from "../../modules/github/ci";
 import { realRenameDeps } from "../../modules/ingress/hostnameOps";
@@ -1418,23 +1416,14 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
   if (!row) { res.status(404).json({ error: "Project not found" }); return; }
 
-  await leaveNetworkGroup({ id, name: row.name }).catch(() => undefined);
-  try {
-    await removeProjectTcpRuntime(id);
-  } catch (err) {
-    res.status(502).json({ error: `Could not remove project TCP proxies: ${err instanceof Error ? err.message : String(err)}` });
+  // A project in the middle of a move belongs to the move until it ends: deleting it would break the way back.
+  const current = actionRegistry.get(projectRepoKey(id));
+  if (current?.status === "running" && current.kind === "move") {
+    res.status(409).json({ error: "This project is being moved to another instance. Abort the move first.", code: "project-moving" });
     return;
   }
-  if (row.github_hook_id != null) {
-    const warning = await disableWebhook(id);
-    if (warning) logger.warn({ project: row.name, warning }, "webhook");
-  }
-  // Action rows go with the project (ON DELETE CASCADE); their log files don't.
-  deleteProjectActionLogs(id);
-  db.prepare("DELETE FROM projects WHERE id = ?").run(id);
-  healthChecker.unschedule(id);
-  void removeIngressNetwork(id);
-  void removeIsolatedNetworkQuietly(id);
+  const destroyed = await destroyProject(id);
+  if (!destroyed.ok) { res.status(502).json({ error: destroyed.error }); return; }
 
   auditLog(req.user ?? "unknown", "project.delete", row.name, "ok");
   res.status(204).send();

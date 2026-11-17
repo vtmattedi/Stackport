@@ -245,7 +245,7 @@ export interface RemoteCall { status: number; body: unknown; replayed: boolean; 
 /** Signed request to a peer's project API (`/control/v1/api/...`), for the controller's UI. Unlike a read, the peer's own answer is passed on as it is
  *  (a validation error or a conflict is the point), once it is known to come from the registered peer. A write carries an operation id: when the answer
  *  is lost, repeating the call with the same id returns the first result instead of acting again. Nothing here is cached. */
-export async function remoteCall(id: number, call: { method: string; path: string; body?: unknown; operationId?: string }, db: Database.Database = getDatabase()): Promise<RemoteCall> {
+export async function remoteCall(id: number, call: { method: string; path: string; body?: unknown; operationId?: string; /** A control route (`/control/...`) instead of the project API. */ control?: boolean; timeoutMs?: number }, db: Database.Database = getDatabase()): Promise<RemoteCall> {
   const target = getTarget(id, db);
   const key = targetKey(id, db);
   if (!target || !key) throw new PeerError(404, "No such peer.", "not-found");
@@ -253,7 +253,7 @@ export async function remoteCall(id: number, call: { method: string; path: strin
   try {
     const response = await signedCall<{ error?: string; code?: string } | null>({
       endpoint: target.endpoint, fingerprint: target.certFingerprint, key, selfId: self.id, targetId: target.instanceId,
-      method: call.method, path: `/control/v1/api${call.path}`, body: call.body, operationId: call.operationId, timeoutMs: timeoutFor(call.method, call.path),
+      method: call.method, path: `${call.control ? "/control" : "/control/v1/api"}${call.path}`, body: call.body, operationId: call.operationId, timeoutMs: call.timeoutMs ?? timeoutFor(call.method, call.path),
     });
     assertFromPeer(response);
     // A signed 401 is the peer refusing this instance's credentials or clock. Passed on as a 401 it would sign the admin out of this instance's own UI.

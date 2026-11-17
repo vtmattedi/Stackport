@@ -137,9 +137,9 @@ export function contentDigest(content: ProjectContent): string {
   return crypto.createHash("sha256").update(JSON.stringify(volumes.length ? { ...canonical, volumes } : canonical)).digest("hex");
 }
 
-interface ProjectDirs { volumes: string; repo: string | null }
+export interface ProjectDirs { volumes: string; repo: string | null }
 
-function projectDirs(project: { id: number; name: string; source_type: string }, roots: VolumeRoots, deployRoot: string): ProjectDirs {
+export function projectDirs(project: { id: number; name: string; source_type: string }, roots: VolumeRoots, deployRoot: string): ProjectDirs {
   return {
     volumes: path.resolve(managedVolumesRoot(roots, project.id).container),
     repo: project.source_type === "upload" ? path.join(deployRoot, expectedComposeProjectName(project)) : null,
@@ -429,6 +429,8 @@ export interface ImportProjectOptions {
   allowOwnershipLoss?: boolean;
   /** Where to stage; defaults to a directory beside the project data. */
   stagingParent?: string;
+  /** Refuse an archive that was copied from a running project (its volumes cannot be verified). A move always asks for this. */
+  requireVerified?: boolean;
   /** The privileged helper. Required for an archive that carries volume data. */
   engine?: VolumeEngine | null;
 }
@@ -498,6 +500,7 @@ export async function importProject(options: ImportProjectOptions): Promise<Impo
   try {
     const { manifest } = stageProjectArchive(options.archivePath, options.passphrase, staging);
     if (manifest.schemaVersion > LATEST_SCHEMA_VERSION) throw new ProjectArchiveError(`This archive was made by a newer Stackport (schema ${manifest.schemaVersion}; this one understands up to ${LATEST_SCHEMA_VERSION}). Update this instance first.`, "unsupported");
+    if (options.requireVerified && manifest.live) throw new ProjectArchiveError("This archive was copied while the project was running, so its data cannot be verified. Stop the project and archive it again.", "running");
     const volumeRecords = manifest.content.volumes ?? [];
     if (volumeRecords.length && !engine) throw new ProjectArchiveError("This archive carries volume data, which only the privileged helper can write (it needs Docker). Docker is not reachable from here.", "needs-helper");
     const name = (options.name ?? manifest.source.name).trim();

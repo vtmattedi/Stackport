@@ -91,6 +91,12 @@ async function rawRequest(endpoint: string, fingerprint: string | null, method: 
   });
 }
 
+/** A request to another instance with no signature: the caller holds a ticket, not a key. Still https, still pinned when a fingerprint is given. */
+export async function ticketRequest(endpoint: string, fingerprint: string | null, method: string, path: string, headers: Record<string, string>, body: Buffer, timeoutMs: number): Promise<{ status: number; body: unknown }> {
+  const response = await rawRequest(endpoint, fingerprint, method, path, headers, body, timeoutMs);
+  return { status: response.status, body: parseJson(response.body) };
+}
+
 function parseJson(body: Buffer): unknown {
   if (body.length === 0) return null;
   try { return JSON.parse(body.toString("utf8")); } catch { return null; }
