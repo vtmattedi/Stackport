@@ -45,16 +45,16 @@ const exportOpts = (s: Seeded, file: string) => ({ projectId: s.projectId, outPa
 const importOpts = (s: Seeded, file: string, extra: object = {}) => ({ archivePath: file, passphrase: PASS, roots: s.roots, deployRoot: s.deployRoot, ...extra });
 const failsWith = (code: string) => (error: unknown): boolean => error instanceof ProjectArchiveError && error.code === code;
 
-test("a project round-trips through an archive and is verified against its digest", () => {
+test("a project round-trips through an archive and is verified against its digest", async () => {
   const s = seed();
   const db = initializeDatabase();
   const file = path.join(s.dir, "shop.spbackup");
-  const manifest = exportProject(exportOpts(s, file));
+  const manifest = await exportProject(exportOpts(s, file));
   assert.ok(manifest.notCarried.some((line) => line.includes("named volumes")));
   assert.ok(manifest.notCarried.some((line) => line.includes("webhook")));
   assert.equal(manifest.hostnames[0]?.domain, "shop.example.com");
 
-  const result = importProject(importOpts(s, file, { name: "Shop copy", domains: [{ domain: "shop2.example.com", service: "web", containerPort: 3000 }] }));
+  const result = await importProject(importOpts(s, file, { name: "Shop copy", domains: [{ domain: "shop2.example.com", service: "web", containerPort: 3000 }] }));
   assert.equal(result.digest, manifest.digest, "recomputed from what the target wrote");
   const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(result.projectId) as Record<string, unknown>;
   assert.equal(row["name"], "Shop copy");
@@ -76,48 +76,48 @@ test("a project round-trips through an archive and is verified against its diges
   assert.ok(fs.existsSync(path.join(s.deployRoot, `${result.projectId}-shop-copy`, "docker-compose.yml")));
 });
 
-test("raw nginx directives are applied only when the importer allows them", () => {
+test("raw nginx directives are applied only when the importer allows them", async () => {
   const s = seed();
   const db = initializeDatabase();
   const file = path.join(s.dir, "n.spbackup");
-  exportProject(exportOpts(s, file));
-  const result = importProject(importOpts(s, file, { name: "Allowed", allowRawNginx: true }));
+  await exportProject(exportOpts(s, file));
+  const result = await importProject(importOpts(s, file, { name: "Allowed", allowRawNginx: true }));
   assert.equal((db.prepare("SELECT nginx_extra_config FROM projects WHERE id = ?").get(result.projectId) as { nginx_extra_config: string }).nginx_extra_config, "client_max_body_size 5m;");
 });
 
-test("a name that exists is refused and nothing is left behind", () => {
+test("a name that exists is refused and nothing is left behind", async () => {
   const s = seed();
   const db = initializeDatabase();
   const file = path.join(s.dir, "dup.spbackup");
-  exportProject(exportOpts(s, file));
-  assert.throws(() => importProject(importOpts(s, file)), failsWith("name-exists"));
+  await exportProject(exportOpts(s, file));
+  await assert.rejects(() => importProject(importOpts(s, file)), failsWith("name-exists"));
   assert.equal((db.prepare("SELECT COUNT(*) n FROM projects").get() as { n: number }).n, 1);
   assert.deepEqual(fs.readdirSync(s.roots.containerDataRoot).filter((name) => name.startsWith(".project-import-")), [], "staging is removed");
 });
 
-test("a failed import undoes its rows and directories, and leaves a directory it did not create", () => {
+test("a failed import undoes its rows and directories, and leaves a directory it did not create", async () => {
   const s = seed();
   const db = initializeDatabase();
   const file = path.join(s.dir, "x.spbackup");
-  exportProject(exportOpts(s, file));
+  await exportProject(exportOpts(s, file));
   // The next project id is 2: a directory already there is somebody else's and must not be deleted by the rollback.
   const foreign = path.join(s.roots.containerDataRoot, "volumes", "2");
   fs.mkdirSync(foreign, { recursive: true });
   fs.writeFileSync(path.join(foreign, "keep.txt"), "mine");
-  assert.throws(() => importProject(importOpts(s, file, { name: "Other" })), failsWith("invalid"));
+  await assert.rejects(() => importProject(importOpts(s, file, { name: "Other" })), failsWith("invalid"));
   assert.equal((db.prepare("SELECT COUNT(*) n FROM projects").get() as { n: number }).n, 1, "the row is gone");
   assert.equal(fs.readFileSync(path.join(foreign, "keep.txt"), "utf8"), "mine");
   // A hostname that is already taken fails inside the transaction: no row, no files.
   fs.rmSync(foreign, { recursive: true });
-  assert.throws(() => importProject(importOpts(s, file, { name: "Taken", domains: [{ domain: "shop.example.com" }] })));
+  await assert.rejects(() => importProject(importOpts(s, file, { name: "Taken", domains: [{ domain: "shop.example.com" }] })));
   assert.equal((db.prepare("SELECT COUNT(*) n FROM projects").get() as { n: number }).n, 1);
   assert.equal(fs.existsSync(path.join(s.roots.containerDataRoot, "volumes", "2")), false);
 });
 
-test("a damaged archive, a wrong passphrase and an instance backup are all refused", () => {
+test("a damaged archive, a wrong passphrase and an instance backup are all refused", async () => {
   const s = seed();
   const file = path.join(s.dir, "d.spbackup");
-  exportProject(exportOpts(s, file));
+  await exportProject(exportOpts(s, file));
   const bytes = fs.readFileSync(file);
   bytes[Math.floor(bytes.length / 2)] ^= 0xff;
   const damaged = path.join(s.dir, "damaged.spbackup");
@@ -129,7 +129,7 @@ test("a damaged archive, a wrong passphrase and an instance backup are all refus
   assert.throws(() => stageProjectArchive(instance, PASS, path.join(s.dir, "st3")), failsWith("not-a-project-archive"));
 });
 
-test("the digest changes with any file, any value, and not with order", () => {
+test("the digest changes with any file, any value, and not with order", async () => {
   const base: ProjectContent = { config: { internal_port: 1 }, env: [{ path: ".env", variables: [{ key: "A", value: "1" }, { key: "B", value: "2" }] }], groupServices: ["x", "y"], dirs: ["volumes/a"], files: [{ name: "volumes/f", size: 1, sha256: "a".repeat(64) }, { name: "volumes/g", size: 2, sha256: "b".repeat(64) }] };
   const digest = contentDigest(base);
   assert.equal(contentDigest({ ...base, env: [{ path: ".env", variables: [...base.env[0].variables].reverse() }], groupServices: ["y", "x"], files: [...base.files].reverse() }), digest);
@@ -138,7 +138,7 @@ test("the digest changes with any file, any value, and not with order", () => {
   assert.notEqual(contentDigest({ ...base, dirs: [] }), digest);
 });
 
-test("a manifest with the wrong shape is refused as corrupt, not as a crash", () => {
+test("a manifest with the wrong shape is refused as corrupt, not as a crash", async () => {
   const s = seed();
   const forged = path.join(s.dir, "forged.spbackup");
   const writer = new ArchiveWriter(forged, PASS);
@@ -148,39 +148,39 @@ test("a manifest with the wrong shape is refused as corrupt, not as a crash", ()
   assert.throws(() => stageProjectArchive(forged, PASS, path.join(s.dir, "st-forged")), failsWith("corrupt"));
 });
 
-test("an upload-only path in a non-upload project is refused", () => {
+test("an upload-only path in a non-upload project is refused", async () => {
   const s = seed();
   const db = initializeDatabase();
   db.prepare("UPDATE projects SET source_type = 'github' WHERE id = ?").run(s.projectId);
   const file = path.join(s.dir, "gh.spbackup");
-  const manifest = exportProject(exportOpts(s, file));
+  const manifest = await exportProject(exportOpts(s, file));
   assert.equal(manifest.content.files.some((f) => f.name.startsWith("repo/")), false, "a Git checkout is cloned again, never archived");
-  const result = importProject(importOpts(s, file, { name: "From git" }));
+  const result = await importProject(importOpts(s, file, { name: "From git" }));
   assert.equal(result.digest, manifest.digest);
 });
 
-test("links are skipped and counted, and the digest does not depend on locale ordering", { skip: process.platform === "win32" }, () => {
+test("links are skipped and counted, and the digest does not depend on locale ordering", { skip: process.platform === "win32" }, async () => {
   const s = seed();
   const volumes = path.join(s.roots.containerDataRoot, "volumes", String(s.projectId));
   fs.symlinkSync("/etc/passwd", path.join(volumes, "link"));
-  const manifest = exportProject(exportOpts(s, path.join(s.dir, "l.spbackup")));
+  const manifest = await exportProject(exportOpts(s, path.join(s.dir, "l.spbackup")));
   assert.equal(manifest.skippedSpecialFiles, 1);
   assert.equal(manifest.content.files.some((f) => f.name.endsWith("link")), false);
 });
 
-test("data this process cannot read refuses the export instead of being left out", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+test("data this process cannot read refuses the export instead of being left out", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
   const s = seed();
   const locked = path.join(s.roots.containerDataRoot, "volumes", String(s.projectId), "pg");
   fs.chmodSync(locked, 0o000);
   try {
-    assert.throws(() => exportProject(exportOpts(s, path.join(s.dir, "u.spbackup"))), failsWith("unreadable"));
+    await assert.rejects(() => exportProject(exportOpts(s, path.join(s.dir, "u.spbackup"))), failsWith("unreadable"));
     assert.equal(fs.existsSync(path.join(s.dir, "u.spbackup")), false, "no partial archive");
   } finally {
     fs.chmodSync(locked, 0o700);
   }
 });
 
-test("the digest sorts by code unit, so every machine computes the same one", () => {
+test("the digest sorts by code unit, so every machine computes the same one", async () => {
   const files = ["b", "B", "a", "\u00e4", "z"].map((name) => ({ name: `volumes/${name}`, size: 1, sha256: "a".repeat(64) }));
   const content: ProjectContent = { config: {}, env: [], groupServices: [], dirs: [], files };
   assert.equal(contentDigest(content), contentDigest({ ...content, files: [...files].reverse() }));
@@ -188,17 +188,23 @@ test("the digest sorts by code unit, so every machine computes the same one", ()
   assert.equal(contentDigest({ config: {}, env: [], groupServices: [], dirs: ["volumes/d"], files: [{ name: "volumes/f", size: 1, sha256: "0".repeat(64) }] }), "1f0bca6e1df5d30be6be2549010409e47125e0b69e36849b630c3a4ac59b0c14");
 });
 
-test("a hostname in use is a clear refusal, and an archive's values are validated", () => {
+test("a hostname in use is a clear refusal, and an archive's values are validated", async () => {
   const s = seed();
   const file = path.join(s.dir, "v.spbackup");
-  exportProject(exportOpts(s, file));
-  assert.throws(() => importProject(importOpts(s, file, { name: "Clash", domains: [{ domain: "shop.example.com" }] })), (error: unknown) => error instanceof ProjectArchiveError && /already used/.test(error.message));
+  await exportProject(exportOpts(s, file));
+  await assert.rejects(() => importProject(importOpts(s, file, { name: "Clash", domains: [{ domain: "shop.example.com" }] })), (error: unknown) => error instanceof ProjectArchiveError && /already used/.test(error.message));
   const forged = path.join(s.dir, "bad-config.spbackup");
-  const m = exportProject(exportOpts(s, path.join(s.dir, "good.spbackup")));
+  const m = await exportProject(exportOpts(s, path.join(s.dir, "good.spbackup")));
   const writer = new ArchiveWriter(forged, PASS);
   writer.addBuffer("header.json", Buffer.from(JSON.stringify({ kind: "project", format: 1 })));
   const bad = { ...m, content: { ...m.content, config: { ...m.content.config, compose_file: "../../etc/x.yml" }, files: [], dirs: [] } };
   writer.addBuffer("manifest.json", Buffer.from(JSON.stringify({ ...bad, digest: contentDigest(bad.content) })));
   writer.finish();
   assert.throws(() => stageProjectArchive(forged, PASS, path.join(s.dir, "st-bad")), (error: unknown) => error instanceof ProjectArchiveError && /compose_file/.test(error.message));
+});
+
+test("an archive without volumes keeps the digest it was written with", () => {
+  const content: ProjectContent = { config: {}, env: [], groupServices: [], dirs: [], files: [] };
+  assert.equal(contentDigest({ ...content, volumes: [] }), contentDigest(content));
+  assert.notEqual(contentDigest({ ...content, volumes: [{ id: "managed", kind: "managed", key: "", tree: "a".repeat(64), blob: "data/0.tar" }] }), contentDigest(content));
 });

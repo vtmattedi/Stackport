@@ -5,7 +5,7 @@
 // whoever can run a container on the host is already the local-root authorization boundary.
 //
 //   backup.js create  --level 1|2 --out FILE
-//   backup.js create  --project ID --out FILE                 (level 3: one project, with its data)
+//   backup.js create  --project ID --out FILE [--allow-running]   (level 3: one project, with its data)
 //   backup.js import  FILE [--name NAME] [--domain HOST] [--allow-raw-nginx] [--ignore-ownership]   (a project archive, into this instance)
 //   backup.js verify  FILE
 //   backup.js restore FILE --mode recover|clone [--yes]      (offline: nothing else may hold the database)
@@ -19,6 +19,7 @@ import { initializeDatabase, closeDatabase } from "../config/database";
 import { ArchiveError } from "../modules/backup/archive";
 import { createBackup } from "../modules/backup/export";
 import { exportProject, importProject, ProjectArchiveError } from "../modules/backup/projectArchive";
+import { DockerVolumeEngine } from "../modules/backup/volumeEngine";
 import { describeInstallation, restoreBackup, RestoreRefused, stageArchive, verifyStaged, type Finding, type RestoreMode } from "../modules/backup/restore";
 import type { BackupManifest } from "../modules/backup/manifest";
 
@@ -35,7 +36,7 @@ function parseArgs(argv: string[]): { positional: string[]; flags: Map<string, s
     if (!arg.startsWith("--")) { positional.push(arg); continue; }
     const key = arg.slice(2);
     const next = argv[i + 1];
-    if (["yes", "allow-raw-nginx", "ignore-ownership"].includes(key)) flags.set(key, true);
+    if (["yes", "allow-raw-nginx", "ignore-ownership", "allow-running"].includes(key)) flags.set(key, true);
     else if (next === undefined || next.startsWith("--")) fail(`--${key} needs a value`);
     else { flags.set(key, next); i += 1; }
   }
@@ -109,13 +110,18 @@ async function main(): Promise<void> {
     const passphrase = await readPassphrase(flags, true);
     initializeDatabase();
     try {
-      const manifest = exportProject({ projectId, outPath: out, passphrase });
+      const engine = await DockerVolumeEngine.create();
+      if (!engine) {
+        console.log("Docker is not reachable from here: only files this process can read will be archived (no named volumes, no data owned by other users).");
+        console.log("Stop the project first if it has a database: files copied while it runs may not be consistent, and this copy cannot tell.");
+      }
+      const manifest = await exportProject({ projectId, outPath: out, passphrase, engine, allowRunning: flags.get("allow-running") === true });
+      for (const volume of manifest.content.volumes ?? []) console.log(`  volume ${volume.kind === "managed" ? "(managed directories)" : volume.key}: tree ${volume.tree.slice(0, 16)}...`);
       console.log(`Project "${manifest.source.name}" (${manifest.content.files.length} files, ${manifest.content.env.length} env files) archived.`);
       console.log(`Content digest: ${manifest.digest}`);
       console.log("NOT in the archive:");
       for (const line of manifest.notCarried) console.log(`  - ${line}`);
       if (manifest.skippedSpecialFiles) console.log(`  - ${manifest.skippedSpecialFiles} links or special files`);
-      console.log("\nStop the project before archiving if it has a database: files copied while it runs may not be consistent.");
       console.log(`Archive written to ${path.resolve(out)}`);
     } finally {
       closeDatabase();
@@ -131,8 +137,8 @@ async function main(): Promise<void> {
     const domain = flags.get("domain");
     initializeDatabase();
     try {
-      const result = importProject({
-        archivePath: archive, passphrase,
+      const result = await importProject({
+        archivePath: archive, passphrase, engine: await DockerVolumeEngine.create(),
         name: typeof flags.get("name") === "string" ? (flags.get("name") as string) : undefined,
         domains: typeof domain === "string" ? [{ domain }] : undefined,
         allowRawNginx: flags.get("allow-raw-nginx") === true,

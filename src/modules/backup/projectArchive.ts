@@ -12,6 +12,7 @@ import { sealEnvVariables, tryReadEnvVariables, type EnvVariable, type ProjectEn
 import { deployRoot as configuredDeployRoot, expectedComposeProjectName } from "../projects/workspace";
 import { ArchiveError, ArchiveWriter, isSafeEntryName, readArchive, readEntryBuffer, writeEntryTo } from "./archive";
 import { ensureInstanceIdentity } from "./instance";
+import type { VolumeEngine, VolumeSource } from "./volumeEngine";
 import { LATEST_SCHEMA_VERSION } from "./manifest";
 
 /**
@@ -30,7 +31,7 @@ import { LATEST_SCHEMA_VERSION } from "./manifest";
 export const PROJECT_ARCHIVE_FORMAT = 1;
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
 
-export type ProjectArchiveCode = "not-found" | "not-a-project-archive" | "unsupported" | "name-exists" | "corrupt" | "env-unreadable" | "digest-mismatch" | "invalid" | "unreadable" | "ownership";
+export type ProjectArchiveCode = "not-found" | "not-a-project-archive" | "unsupported" | "name-exists" | "corrupt" | "env-unreadable" | "digest-mismatch" | "invalid" | "unreadable" | "ownership" | "running" | "needs-helper";
 
 export class ProjectArchiveError extends Error {
   constructor(message: string, readonly code: ProjectArchiveCode) {
@@ -47,7 +48,12 @@ const CARRIED_COLUMNS = [
   "volumes_managed", "hardened_defaults", "network_group", "ingress_isolated", "github_deploy_on",
 ] as const;
 
+/** One volume of the project carried as a tar made by the privileged helper: the managed directory, or a Docker named volume. `tree` is the digest of what is in it. */
+export interface VolumeRecord { id: string; kind: "managed" | "named"; /** The volume's key in the Compose file (named volumes). */ key: string; tree: string; /** The archive entry, under `files/`. */ blob: string }
+
 export interface ProjectContent {
+  /** Volumes carried by the helper; absent when the archive was made without it (volume files are then plain `files`). */
+  volumes?: VolumeRecord[];
   config: Record<string, unknown>;
   env: { path: string; variables: EnvVariable[] }[];
   /** Services in the project's network group. */
@@ -72,6 +78,10 @@ export interface ProjectManifest {
   /** SHA-256 over `content`; what an importer must reproduce from what it wrote. */
   digest: string;
   meta: Record<string, FileMeta>;
+  /** The tars of `content.volumes`, checked on arrival. Their bytes are not in the digest (a tar is not reproducible); what is inside is, through `tree`. */
+  blobs?: { name: string; size: number; sha256: string }[];
+  /** Made while the project was running: the volumes' trees are not expected to match, and the importer reports them as unverified. */
+  live?: boolean;
   hostnames: SourceHostname[];
   /** Raw nginx directives, outside the digest: applied only when the importer allows them. */
   rawNginx: { extraConfig: string | null; extraBlocks: string | null } | null;
@@ -122,7 +132,9 @@ export function contentDigest(content: ProjectContent): string {
     dirs: [...content.dirs].sort(),
     files: [...content.files].sort((a, b) => byCode(a.name, b.name)).map((f) => [f.name, f.size, f.sha256]),
   };
-  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  // Only when there are volumes: an archive without them keeps the digest it was written with.
+  const volumes = [...(content.volumes ?? [])].sort((a, b) => byCode(a.id, b.id)).map((v) => [v.id, v.kind, v.key, v.tree]);
+  return crypto.createHash("sha256").update(JSON.stringify(volumes.length ? { ...canonical, volumes } : canonical)).digest("hex");
 }
 
 interface ProjectDirs { volumes: string; repo: string | null }
@@ -200,20 +212,30 @@ export interface ExportProjectOptions {
   roots?: VolumeRoots;
   deployRoot?: string;
   now?: () => Date;
+  /** The privileged helper that reads volumes the process cannot. Without it only files Stackport can read are archived. */
+  engine?: VolumeEngine | null;
+  /** Copy even though the project's containers are running. The copy may be inconsistent, so its volumes cannot be verified, and the archive says so. */
+  allowRunning?: boolean;
 }
 
 /** Writes one project's archive at `outPath`; never leaves a partial file there. The caller decides whether the project is running: a running database's
  *  files copied live are crash-consistent at best, which is why a move stops the project first. */
-export function exportProject(options: ExportProjectOptions): ProjectManifest {
+export async function exportProject(options: ExportProjectOptions): Promise<ProjectManifest> {
   const db = options.db ?? getDatabase();
   const project = db.prepare("SELECT * FROM projects WHERE id = ?").get(options.projectId) as (Record<string, unknown> & { id: number; name: string; source_type: string }) | undefined;
   if (!project) throw new ProjectArchiveError("The project does not exist.", "not-found");
   const roots = options.roots ?? currentVolumeRoots();
   const dirs = projectDirs(project, roots, path.resolve(options.deployRoot ?? configuredDeployRoot()));
   const dbContent = readDbContent(db, project.id);
+  const engine = options.engine ?? null;
+  const composeProject = expectedComposeProjectName(project);
+  if (engine && !options.allowRunning) {
+    const running = await engine.runningContainers(composeProject);
+    if (running.length) throw new ProjectArchiveError(`The project is running (${running.length} container(s)). Stop it first: the files of a running database are not a consistent copy.`, "running");
+  }
 
   const found: Found = { files: [], dirs: [], skipped: 0, unreadable: [] };
-  walk(dirs.volumes, "files/volumes", found);
+  if (!engine) walk(dirs.volumes, "files/volumes", found);
   if (dirs.repo) walk(dirs.repo, "files/repo", found);
 
   const outPath = path.resolve(options.outPath);
@@ -244,17 +266,49 @@ export function exportProject(options: ExportProjectOptions): ProjectManifest {
       const shown = found.unreadable.slice(0, 5).map((name) => name.replace(/^files\//, "")).join(", ");
       throw new ProjectArchiveError(`${found.unreadable.length} path(s) in this project's data cannot be read by Stackport (${shown}${found.unreadable.length > 5 ? ", ..." : ""}). They belong to another user inside a container, such as a database's data directory. Nothing was archived: leaving them out would hide data loss.`, "unreadable");
     }
-    for (const [root, name] of [[dirs.volumes, "files/volumes"], [dirs.repo, "files/repo"]] as const) if (root && fs.existsSync(root)) metaFor(name, root);
+    for (const [root, name] of [[engine ? null : dirs.volumes, "files/volumes"], [dirs.repo, "files/repo"]] as const) if (root && fs.existsSync(root)) metaFor(name, root);
+
+    // Volumes through the helper: tar (owners and modes intact) and a digest of the tree, both read as root.
+    const volumes: VolumeRecord[] = [];
+    const notCarriedVolumes: string[] = [];
+    const blobs: NonNullable<ProjectManifest["blobs"]> = [];
+    if (engine) {
+      sweepStale(path.dirname(outPath), ".project-export-");
+      const work = fs.mkdtempSync(path.join(path.dirname(outPath), ".project-export-"));
+      try {
+        const sources: { id: string; kind: VolumeRecord["kind"]; key: string; source: VolumeSource }[] = [];
+        if (fs.existsSync(dirs.volumes)) sources.push({ id: "managed", kind: "managed", key: "", source: { kind: "bind", hostPath: managedVolumesRoot(roots, project.id).host } });
+        const skippedVolumes: string[] = [];
+        for (const named of await engine.namedVolumes(composeProject)) {
+          // Compose names a volume `<project>_<key>`. Anything else (an explicit `name:`, an anonymous volume) cannot be recreated so that Compose finds it.
+          if (named.key && named.name === `${composeProject}_${named.key}`) sources.push({ id: `named:${named.key}`, kind: "named", key: named.key, source: { kind: "named", name: named.name } });
+          else skippedVolumes.push(named.name);
+        }
+        notCarriedVolumes.push(...skippedVolumes);
+        for (const [index, volume] of sources.entries()) {
+          const tree = await engine.treeDigest(volume.source);
+          const tar = path.join(work, `${index}.tar`);
+          await engine.exportTar(volume.source, tar);
+          const blob = `data/${index}.tar`;
+          blobs.push({ name: blob, ...writer.addFile(`files/${blob}`, tar) });
+          fs.rmSync(tar, { force: true });
+          volumes.push({ id: volume.id, kind: volume.kind, key: volume.key, tree, blob });
+        }
+      } finally {
+        fs.rmSync(work, { recursive: true, force: true });
+      }
+    }
     found.dirs = found.dirs.filter((dir) => {
       const real = dir.startsWith("files/volumes") ? path.join(dirs.volumes, ...dir.slice("files/volumes/".length).split("/")) : path.join(dirs.repo as string, ...dir.slice("files/repo/".length).split("/"));
       try { metaFor(dir, real); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
     });
-    const content: ProjectContent = { ...dbContent, dirs: found.dirs.map((d) => d.slice("files/".length)), files: files.map((f) => ({ ...f, name: f.name.slice("files/".length) })) };
+    const content: ProjectContent = { ...dbContent, volumes, dirs: found.dirs.map((d) => d.slice("files/".length)), files: files.map((f) => ({ ...f, name: f.name.slice("files/".length) })) };
     const hostnames = (db.prepare("SELECT domain, service, container_port, use_ssl FROM project_domains WHERE project_id = ? ORDER BY id").all(project.id) as { domain: string; service: string | null; container_port: number | null; use_ssl: number | null }[])
       .map((d) => ({ domain: d.domain, service: d.service ?? "", containerPort: d.container_port, useSsl: d.use_ssl !== 0 }));
     const nginx = { extraConfig: (project["nginx_extra_config"] as string | null) ?? null, extraBlocks: (project["nginx_extra_blocks"] as string | null) ?? null };
     const notCarried = [
-      "Docker named volumes (only the project's managed directories are archived)",
+      ...(engine ? [] : ["Docker named volumes, and any data this process cannot read (no Docker access for the privileged helper)"]),
+      ...(notCarriedVolumes.length ? [`Docker volume(s) with a custom name or no Compose label: ${notCarriedVolumes.join(", ")}`] : []),
       "the project's containers, images and build cache (rebuilt on the next deploy)",
       "TCP exposures (public ports are chosen per instance)",
       "deploy history, logs and metric samples",
@@ -269,7 +323,7 @@ export function exportProject(options: ExportProjectOptions): ProjectManifest {
       kind: "project", format: PROJECT_ARCHIVE_FORMAT, createdAt: (options.now ?? (() => new Date()))().toISOString(), stackportVersion: packageVersion(),
       schemaVersion: LATEST_SCHEMA_VERSION,
       source: { instance: ensureInstanceIdentity(db), projectId: project.id, name: project.name },
-      content, digest: contentDigest(content), meta, hostnames,
+      content, digest: contentDigest(content), meta, blobs, live: engine && options.allowRunning ? true : undefined, hostnames,
       rawNginx: nginx.extraConfig || nginx.extraBlocks ? nginx : null,
       notCarried, skippedSpecialFiles: found.skipped,
     };
@@ -328,6 +382,10 @@ export function stageProjectArchive(archivePath: string, passphrase: string, dir
     && c.env.every((file) => typeof file?.path === "string" && Array.isArray(file.variables) && file.variables.every((v) => typeof v?.key === "string" && typeof v.value === "string"))
     && isStrings(c.groupServices) && isStrings(c.dirs)
     && (c.files ?? []).every((f) => typeof f?.name === "string" && Number.isSafeInteger(f.size) && /^[0-9a-f]{64}$/.test(String(f.sha256)))
+    && (c.volumes ?? []).every((v) => (v?.kind === "managed" || (v?.kind === "named" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(String(v.key)))) && typeof v.id === "string" && /^[0-9a-f]{64}$/.test(String(v.tree)) && /^data\/\d+\.tar$/.test(String(v.blob)))
+    && new Set((c.volumes ?? []).map((v) => v.id)).size === (c.volumes ?? []).length && (c.volumes ?? []).filter((v) => v.kind === "managed").length <= 1
+    && (manifest.blobs ?? []).every((b) => /^data\/\d+\.tar$/.test(String(b?.name)) && Number.isSafeInteger(b.size) && /^[0-9a-f]{64}$/.test(String(b.sha256)))
+    && (c.volumes ?? []).every((v) => (manifest.blobs ?? []).some((b) => b.name === v.blob))
     && !!manifest.meta && typeof manifest.meta === "object" && typeof manifest.source?.name === "string" && Array.isArray(manifest.hostnames) && Array.isArray(manifest.notCarried);
   if (!shapeOk) throw new ProjectArchiveError("The archive's manifest is incomplete.", "corrupt");
   const badColumn = invalidConfig(manifest.content.config);
@@ -342,7 +400,7 @@ export function stageProjectArchive(archivePath: string, passphrase: string, dir
   for (const name of [...manifest.content.dirs, ...manifest.content.files.map((f) => f.name)]) {
     if (!isSafeEntryName(name) || !/^(volumes|repo)\//.test(name)) throw new ProjectArchiveError(`The archive lists an unsafe path (${name}).`, "corrupt");
   }
-  const declared = new Map(manifest.content.files.map((f) => [`files/${f.name}`, f]));
+  const declared = new Map([...manifest.content.files, ...(manifest.blobs ?? [])].map((f) => [`files/${f.name}`, f]));
   for (const [name, want] of declared) {
     const got = seen.get(name);
     if (!got) throw new ProjectArchiveError(`The archive is incomplete: ${name} is missing.`, "corrupt");
@@ -371,6 +429,8 @@ export interface ImportProjectOptions {
   allowOwnershipLoss?: boolean;
   /** Where to stage; defaults to a directory beside the project data. */
   stagingParent?: string;
+  /** The privileged helper. Required for an archive that carries volume data. */
+  engine?: VolumeEngine | null;
 }
 
 export interface ImportProjectResult {
@@ -385,7 +445,7 @@ export interface ImportProjectResult {
 
 
 /** Removes everything an import creates: rows and directories. Idempotent, so a retry after a crash finishes the job. */
-export function removeImportedProject(db: Database.Database, projectId: number, dirs: ProjectDirs | null): void {
+export async function removeImportedProject(db: Database.Database, projectId: number, dirs: ProjectDirs | null, helper: { engine?: VolumeEngine | null; volumes?: VolumeSource[] } = {}): Promise<void> {
   db.transaction(() => {
     for (const table of ["project_env_files", "project_domains", "tcp_exposures", "network_group_services", "legacy_mount_sources"]) {
       db.prepare(`DELETE FROM ${table} WHERE project_id = ?`).run(projectId);
@@ -393,6 +453,8 @@ export function removeImportedProject(db: Database.Database, projectId: number, 
     db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
   })();
   if (!dirs) return; // directories are removed only once this import has claimed them, never a pre-existing one
+  // Data the helper wrote belongs to other users: only the helper can remove it.
+  for (const volume of helper.volumes ?? []) await helper.engine?.remove(volume);
   forceRemove(dirs.volumes);
   if (dirs.repo) forceRemove(dirs.repo);
 }
@@ -412,16 +474,18 @@ function forceRemove(root: string): void {
 }
 
 /** Staging holds decrypted archives: one left by a crashed import is removed when the next import starts. */
-function sweepStaleStaging(parent: string): void {
+function sweepStaleStaging(parent: string): void { sweepStale(parent, ".project-import-"); }
+
+function sweepStale(parent: string, prefix: string): void {
   for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith(".project-import-")) continue;
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
     const full = path.join(parent, entry.name);
     if (Date.now() - fs.statSync(full).mtimeMs > 60 * 60 * 1000) forceRemove(full);
   }
 }
 
 /** Creates a new project from an archive, verifies the result against the archive's digest, and undoes everything if anything fails. */
-export function importProject(options: ImportProjectOptions): ImportProjectResult {
+export async function importProject(options: ImportProjectOptions): Promise<ImportProjectResult> {
   const db = options.db ?? getDatabase();
   const roots = options.roots ?? currentVolumeRoots();
   const deployRoot = path.resolve(options.deployRoot ?? configuredDeployRoot());
@@ -429,10 +493,13 @@ export function importProject(options: ImportProjectOptions): ImportProjectResul
   fs.mkdirSync(stagingParent, { recursive: true });
   sweepStaleStaging(stagingParent);
   const staging = fs.mkdtempSync(path.join(stagingParent, ".project-import-"));
-  let created: { id: number; dirs: ProjectDirs | null } | null = null;
+  const engine = options.engine ?? null;
+  let created: { id: number; dirs: ProjectDirs | null; volumes: VolumeSource[] } | null = null;
   try {
     const { manifest } = stageProjectArchive(options.archivePath, options.passphrase, staging);
     if (manifest.schemaVersion > LATEST_SCHEMA_VERSION) throw new ProjectArchiveError(`This archive was made by a newer Stackport (schema ${manifest.schemaVersion}; this one understands up to ${LATEST_SCHEMA_VERSION}). Update this instance first.`, "unsupported");
+    const volumeRecords = manifest.content.volumes ?? [];
+    if (volumeRecords.length && !engine) throw new ProjectArchiveError("This archive carries volume data, which only the privileged helper can write (it needs Docker). Docker is not reachable from here.", "needs-helper");
     const name = (options.name ?? manifest.source.name).trim();
     if (!name || name.length > 200) throw new ProjectArchiveError("The project needs a name of 1 to 200 characters.", "invalid");
     if (db.prepare("SELECT 1 FROM projects WHERE lower(name) = lower(?)").get(name)) throw new ProjectArchiveError(`A project named "${name}" already exists here. Choose another name.`, "name-exists");
@@ -465,32 +532,47 @@ export function importProject(options: ImportProjectOptions): ImportProjectResul
     })();
     const project = { id: projectId, name, source_type: String(cfg["source_type"] ?? "github") };
     const dirs = projectDirs(project, roots, deployRoot);
-    created = { id: projectId, dirs: null };
+    created = { id: projectId, dirs: null, volumes: [] };
 
+    const composeProject = expectedComposeProjectName(project);
+    const hasManaged = volumeRecords.some((v) => v.kind === "managed");
+    for (const record of volumeRecords.filter((v) => v.kind === "named")) {
+      if (await (engine as VolumeEngine).volumeExists(`${composeProject}_${record.key}`)) throw new ProjectArchiveError(`A Docker volume named ${composeProject}_${record.key} already exists here.`, "invalid");
+    }
     if (fs.existsSync(dirs.volumes) || (dirs.repo && fs.existsSync(dirs.repo))) throw new ProjectArchiveError("The project's data directory already exists on this instance.", "invalid");
     created.dirs = dirs;
     placeFiles(staging, manifest, dirs);
 
+    const imported: VolumeRecord[] = [];
+    for (const record of volumeRecords) {
+      const target: VolumeSource = record.kind === "managed" ? { kind: "bind", hostPath: managedVolumesRoot(roots, projectId).host } : { kind: "named", name: `${composeProject}_${record.key}` };
+      created.volumes.push(target); // before the write: a half-written volume is also removed on failure
+      await (engine as VolumeEngine).importTar(target, path.join(staging, "files", ...record.blob.split("/")), record.kind === "named" ? { "com.docker.compose.project": composeProject, "com.docker.compose.volume": record.key } : {});
+      const tree = await (engine as VolumeEngine).treeDigest(target);
+      if (manifest.live && tree !== record.tree) warnings.push(`Volume ${record.kind === "managed" ? "(managed directories)" : record.key} was copied while the project was running and is NOT verified; check it before deploying.`);
+      imported.push({ ...record, tree: manifest.live ? record.tree : tree });
+    }
+
     // Verify what was written, not what was received: re-read the rows and the files from the target.
-    const reread: ProjectContent = { ...readDbContent(db, projectId), dirs: [], files: [] };
+    const reread: ProjectContent = { ...readDbContent(db, projectId), volumes: imported, dirs: [], files: [] };
     const found: Found = { files: [], dirs: [], skipped: 0, unreadable: [] };
-    walk(dirs.volumes, "files/volumes", found);
+    if (!hasManaged) walk(dirs.volumes, "files/volumes", found);
     if (dirs.repo) walk(dirs.repo, "files/repo", found);
     reread.dirs = found.dirs.map((d) => d.slice("files/".length));
     reread.files = found.files.map((f) => ({ name: f.name.slice("files/".length), ...sha256Of(f.source) }));
     const digest = contentDigest(reread);
     if (digest !== manifest.digest) throw new ProjectArchiveError("What was written does not match the archive (digest differs). The import was undone.", "digest-mismatch");
     // Modes and owners are applied after the digest check (the digest does not cover them) and before the import is called a success.
-    const lost = applyModes(manifest, dirs, warnings);
+    const lost = applyModes(manifest, dirs, warnings, !hasManaged);
     if (lost > 0) {
-      if (!options.allowOwnershipLoss) throw new ProjectArchiveError(`File ownership could not be restored for ${lost} path(s): this process is not allowed to chown. A database refuses to start on a data directory with the wrong owner. This needs a privileged copy of the data (planned: a helper container); until then, pass --ignore-ownership only for data that does not depend on its owner. The import was undone.`, "ownership");
+      if (!options.allowOwnershipLoss) throw new ProjectArchiveError(`File ownership could not be restored for ${lost} path(s): this process is not allowed to chown. A database refuses to start on a data directory with the wrong owner. Archives made with Docker access carry ownership and restore it through the helper; this one was made without. Pass --ignore-ownership only for data that does not depend on its owner. The import was undone.`, "ownership");
       warnings.push(`File ownership could not be restored for ${lost} path(s) (accepted).`);
     }
     return { projectId, name, digest, hostnames: manifest.hostnames, notCarried, warnings };
   } catch (error) {
     if (created) {
       try {
-        removeImportedProject(db, created.id, created.dirs);
+        await removeImportedProject(db, created.id, created.dirs, { engine, volumes: created.volumes });
       } catch (cleanup) {
         const code = error instanceof ProjectArchiveError ? error.code : "invalid";
         throw new ProjectArchiveError(`${(error as Error).message} Undoing the import also failed (${(cleanup as Error).message}): remove project #${created.id} and its directories by hand.`, code);
@@ -511,7 +593,7 @@ function placeFiles(staging: string, manifest: ProjectManifest, dirs: ProjectDir
   if (!dirs.repo && [...manifest.content.files.map((f) => f.name), ...manifest.content.dirs].some((name) => name.startsWith("repo/"))) {
     throw new ProjectArchiveError("The archive has uploaded sources for a project that is not an upload.", "corrupt");
   }
-  fs.mkdirSync(dirs.volumes, { recursive: true });
+  fs.mkdirSync(dirs.volumes, { recursive: true }); // Docker refuses to mount a path that does not exist; the tar then sets this directory's own owner and mode
   if (dirs.repo) fs.mkdirSync(dirs.repo, { recursive: true });
   for (const dir of manifest.content.dirs) fs.mkdirSync(targetPath(dirs, dir), { recursive: true });
   for (const file of manifest.content.files) {
@@ -527,10 +609,10 @@ function placeFiles(staging: string, manifest: ProjectManifest, dirs: ProjectDir
 
 /** Applies the recorded modes and owners, files first and directories deepest-first (so a restrictive parent does not block its children), the roots last.
  *  Returns how many paths could not be given their owner. A path that already has the right owner counts as restored. */
-function applyModes(manifest: ProjectManifest, dirs: ProjectDirs, warnings: string[]): number {
+function applyModes(manifest: ProjectManifest, dirs: ProjectDirs, warnings: string[], includeVolumesRoot: boolean): number {
   if (process.platform === "win32") return 0;
   let lost = 0;
-  const roots = [["volumes", "files/volumes", dirs.volumes], ["repo", "files/repo", dirs.repo]] as const;
+  const roots = [["volumes", "files/volumes", includeVolumesRoot ? dirs.volumes : null], ["repo", "files/repo", dirs.repo]] as const;
   const targets: { key: string; file: string }[] = [
     ...manifest.content.files.map((f) => ({ key: `files/${f.name}`, file: targetPath(dirs, f.name) })),
     ...[...manifest.content.dirs].sort((a, b) => b.length - a.length).map((d) => ({ key: `files/${d}`, file: targetPath(dirs, d) })),
