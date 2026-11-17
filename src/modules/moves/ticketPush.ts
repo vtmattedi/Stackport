@@ -60,8 +60,18 @@ export async function pushArchive(file: string, ticket: PushTicket, options: { o
     }
   } finally { fs.closeSync(fd); }
 
-  const done = await call("POST", `${base}/complete`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ chunks: total, size, sha256 })));
-  if (done.status !== 200) throw new PushError(`The target did not accept the archive (${done.status}): ${errorOf(done.body)}`, "refused");
+  // The target hashes the whole archive before it answers, which takes a while for a large one; asking again is safe (it answers a repeat with the same result).
+  let done: { status: number; body: unknown } | null = null;
+  for (let attempt = 0; attempt <= RETRIES; attempt += 1) {
+    try {
+      done = await ticketRequest(ticket.endpoint, ticket.fingerprint, "POST", `${base}/complete`, { ...auth, "content-type": "application/json" }, Buffer.from(JSON.stringify({ chunks: total, size, sha256 })), 60 * 60 * 1000);
+      if (done.status < 500 && done.status !== 429) break;
+    } catch (error) {
+      if (attempt >= RETRIES) throw new PushError(`The target could not be reached to finish the transfer: ${error instanceof Error ? error.message : String(error)}`, "unreachable");
+    }
+    await sleep(options.sleepMs ? options.sleepMs(attempt) : Math.min(30_000, 500 * 2 ** attempt));
+  }
+  if (!done || done.status !== 200) throw new PushError(`The target did not accept the archive (${done?.status ?? "no answer"}): ${errorOf(done?.body)}`, "refused");
   return { size, sha256, chunks: total };
 }
 

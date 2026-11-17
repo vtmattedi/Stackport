@@ -60,9 +60,10 @@ function run(args: string[], options: { stdin?: string; stdoutFile?: string; col
     child.stdout!.on("data", (part: Buffer) => {
       hash.update(part);
       size += part.length;
-      if (out) out.write(part);
-      else if (options.collect !== false) chunks.push(part);
+      if (!out && options.collect !== false) chunks.push(part);
     });
+    // Piped, so a disk slower than the helper slows the helper down instead of filling this process's memory with the difference.
+    if (out) child.stdout!.pipe(out, { end: false });
     child.stderr!.on("data", (part: Buffer) => { if (stderr.length < 4000) stderr += part.toString("utf8"); });
     child.on("error", (error) => { clearTimeout(timer); out?.destroy(); reject(error); });
     child.on("close", (code) => {

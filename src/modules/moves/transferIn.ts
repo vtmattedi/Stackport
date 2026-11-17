@@ -51,7 +51,7 @@ export class TransferError extends Error {
 interface Row {
   id: string; token_hash: string; key_enc: string; controller_instance: string; state: TransferState; name: string; domains_json: string;
   received_bytes: number; next_chunk: number; last_chunk_sha: string | null; size: number | null; sha256: string | null; digest: string | null;
-  project_id: number | null; warnings_json: string; error: string | null; expires_at: string; created_at: string; updated_at: string;
+  project_id: number | null; health_endpoint: string | null; warnings_json: string; error: string | null; expires_at: string; created_at: string; updated_at: string;
 }
 
 export interface TransferView {
@@ -270,9 +270,11 @@ export function startImported(id: string, controllerInstance: string, db: Databa
   const job = (async (): Promise<void> => {
     try {
       // Created paused so nothing deployed it by itself; it runs now, and a paused project gets no health check.
-      db.prepare("UPDATE projects SET paused = 0, updated_at = ? WHERE id = ?").run(now(), projectId);
-      const running = getProjectById(projectId);
-      if (running) healthChecker.schedule(running);
+      // The deploy's own health gate probes the public hostname, which does not point at this instance until the user moves its DNS: for a move the gate is
+      // "the containers run" (projectHealth). The configured check is put back, and scheduled, once the deploy is over.
+      const configured = getProjectById(projectId)?.healthCheckEndpoint ?? null;
+      db.prepare("UPDATE project_transfers_in SET health_endpoint = ? WHERE id = ?").run(configured, id);
+      db.prepare("UPDATE projects SET paused = 0, health_check_endpoint = NULL, updated_at = ? WHERE id = ?").run(now(), projectId);
       const result = await new Promise<{ ok: boolean; output: string }>((resolve) => {
         const record = actionRegistry.tryStart(projectRepoKey(projectId), "deploy", { projectId, triggeredBy: "move" }, async () => {
           try {
@@ -287,10 +289,15 @@ export function startImported(id: string, controllerInstance: string, db: Databa
         });
         if (!record) resolve({ ok: false, output: "Another action is running on this project." });
       });
+      db.prepare("UPDATE projects SET health_check_endpoint = ?, updated_at = ? WHERE id = ?").run(configured, now(), projectId);
       if (!result.ok) { setState(id, "failed", db, { error: `The project did not start: ${result.output.slice(-400)}` }); return; }
       await transferDeps.publish(projectId);
+      const started = getProjectById(projectId);
+      if (started) healthChecker.schedule(started);
       setState(id, "started", db);
     } catch (error) {
+      const saved = (db.prepare("SELECT health_endpoint FROM project_transfers_in WHERE id = ?").get(id) as { health_endpoint: string | null } | undefined)?.health_endpoint ?? null;
+      db.prepare("UPDATE projects SET health_check_endpoint = ? WHERE id = ?").run(saved, projectId);
       setState(id, "failed", db, { error: error instanceof Error ? error.message : String(error) });
     } finally { inflight.delete(id); }
   })();
@@ -299,13 +306,17 @@ export function startImported(id: string, controllerInstance: string, db: Databa
 }
 
 /** Whether the started project answers: its recorded status, which the health checker keeps current. A project without a health check is up when its deploy succeeded. */
-export function projectHealth(id: string, controllerInstance: string, db: Database.Database = getDatabase()): { healthy: boolean; detail: string } {
+export async function projectHealth(id: string, controllerInstance: string, db: Database.Database = getDatabase()): Promise<{ healthy: boolean; detail: string }> {
   const r = row(id, db);
   owned(r, controllerInstance);
   const project = r.project_id === null ? null : getProjectById(r.project_id);
   if (!project || r.state !== "started") return { healthy: false, detail: r.state === "started" ? "The project no longer exists." : `This transfer is ${r.state}.` };
-  if (!project.healthCheckEndpoint) return { healthy: true, detail: "No health check is configured; the deploy succeeded." };
-  return { healthy: project.lastStatus === "up", detail: `Health check: ${project.lastStatus}.` };
+  const engine = await transferDeps.engine();
+  if (!engine) return { healthy: true, detail: "The deploy succeeded (Docker could not be asked about the containers)." };
+  const running = await engine.runningContainers(expectedComposeProjectName(project));
+  return running.length > 0
+    ? { healthy: true, detail: `${running.length} container(s) running.${r.health_endpoint ? " Its HTTP health check runs against the hostname, which answers once its DNS points here." : ""}` }
+    : { healthy: false, detail: "No container of the project is running." };
 }
 
 // ── ending ──────────────────────────────────────────────────────────────────
@@ -343,7 +354,8 @@ export async function abortTransfer(id: string, controllerInstance: string | nul
 
 async function doAbort(id: string, r: Row, controllerInstance: string | null, db: Database.Database): Promise<TransferView> {
   await settled(id).catch(() => undefined);
-  const projectId = r.project_id;
+  // The row as it is now: an import that was still running has just created the project, and that is what has to be removed.
+  const projectId = row(id, db).project_id;
   const project = projectId === null ? null : getProjectById(projectId);
   if (project && projectId !== null) {
     const engine: VolumeEngine | null = await transferDeps.engine();

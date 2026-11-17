@@ -25,7 +25,9 @@ class FakeDocker implements VolumeEngine {
   stopped = 0;
   started = 0;
   private key = (source: VolumeSource): string => (source.kind === "named" ? `named:${source.name}` : `bind:${source.hostPath}`);
-  async runningContainers(): Promise<string[]> { return this.running; }
+  deployed = false;
+  // The source is project 1; a copy made by a move is another project, running once it has been deployed.
+  async runningContainers(composeProject?: string): Promise<string[]> { return composeProject && !composeProject.startsWith("1-") ? (this.deployed ? ["web-1"] : []) : this.running; }
   async namedVolumes(): Promise<{ name: string; key: string }[]> { return []; }
   async volumeExists(name: string): Promise<boolean> { return this.volumes.has(`named:${name}`); }
   async exportTar(source: VolumeSource, file: string): Promise<{ size: number; sha256: string }> {
@@ -56,7 +58,7 @@ beforeEach(() => {
   moveDeps.leaseMs = 60_000;
   moveDeps.pollMs = 20;
   transferDeps.engine = async () => docker;
-  transferDeps.deploy = async () => ({ ok: true, output: "" });
+  transferDeps.deploy = async () => { docker.deployed = true; return { ok: true, output: "" }; };
   transferDeps.publish = async () => undefined;
   transferDeps.purge = async () => undefined;
   Object.assign(timing, { pollMs: 20, renewMs: 50, healthTimeoutMs: 2000, stepTimeoutMs: 20_000, confirmTimeoutMs: 20_000 });
@@ -282,5 +284,32 @@ test("an abort cannot be turned into a confirmation, and a restart in the middle
     const id = (b.db.prepare("SELECT id FROM project_moves_out").get() as { id: string }).id;
     const refused = await remoteCall(peerId, { method: "POST", path: `/v1/moves/${id}/abort`, control: true }, a);
     assert.equal(refused.status, 409, "a confirmed move cannot be aborted");
+  } finally { a.close(); await b.stop(); }
+});
+
+test("a controller that restarts after the target committed finishes removing the original instead of leaving two copies", async () => {
+  const b = await startB();
+  const a = controller("Alpha");
+  try {
+    const projectId = seedProject(b.db);
+    const peerId = await pair(b, a, ["projects:transfer", "projects:destroy"]);
+    const ref = { kind: "peer", peerId } as const;
+    const run = startMove({ source: ref, target: ref, projectId, projectName: "Shop", name: "Shop on target", allowSameInstance: true }, a);
+    const waiting = await until(a, run.id, (r) => r.state === "awaiting-confirmation", "the copy to be started");
+    const transferId = waiting.transfer?.id ?? (b.db.prepare("SELECT id FROM project_transfers_in").get() as { id: string }).id;
+    const sourceMoveId = waiting.sourceMove?.id as string;
+    const digest = waiting.sourceMove?.digest as string;
+
+    // The target commits; the controller dies before it tells the source. A second record stands in for the run this process lost.
+    const committed = await remoteCall(peerId, { method: "POST", path: `/v1/transfers/${transferId}/commit`, control: true }, a);
+    assert.equal(committed.status, 200);
+    a.prepare("INSERT INTO peer_moves (id, source_json, target_json, project_name, state, steps_json, refs_json, created_at, updated_at) VALUES ('lost-run', ?, ?, 'Shop', 'committing', '[]', ?, ?, ?)")
+      .run(JSON.stringify(ref), JSON.stringify(ref), JSON.stringify({ transferId, sourceMoveId, digest }), new Date().toISOString(), new Date().toISOString());
+    const { reconcileRuns } = await import("../src/modules/peers/moveOrchestrator");
+    await reconcileRuns(a);
+    const finished = a.prepare("SELECT state, error FROM peer_moves WHERE id = 'lost-run'").get() as { state: string; error: string | null };
+    assert.equal(finished.state, "done", finished.error ?? "");
+    assert.equal(exists(b.db, "Shop"), false, "the original is removed");
+    assert.equal(exists(b.db, "Shop on target"), true, "the committed copy stays");
   } finally { a.close(); await b.stop(); }
 });

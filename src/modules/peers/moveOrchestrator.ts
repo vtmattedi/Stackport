@@ -35,7 +35,7 @@ interface Ticket { transferId: string; token: string; archiveKey: string; expire
 interface SourceApi {
   begin(projectId: number, ticket: PushTicket, archiveKey: string): Promise<MoveView>;
   get(id: string): Promise<MoveView>;
-  renew(id: string): Promise<MoveView>;
+  renew(id: string, holdMs?: number): Promise<MoveView>;
   abort(id: string): Promise<MoveView>;
   commit(id: string, digest: string): Promise<MoveView>;
 }
@@ -72,7 +72,7 @@ function localSource(db: Database.Database): SourceApi {
   return {
     begin: (projectId, ticket, archiveKey) => beginMove({ controllerInstance: self, projectId, ticket, archiveKey }, db),
     get: async (id) => getMove(id, self, db),
-    renew: async (id) => renewMove(id, self, db),
+    renew: async (id, holdMs) => renewMove(id, self, db, holdMs),
     abort: (id) => abortMove(id, self, db),
     commit: (id, digest) => commitMove(id, self, digest, db),
   };
@@ -82,7 +82,7 @@ function peerSource(peerId: number, db: Database.Database): SourceApi {
   return {
     begin: (projectId, ticket, archiveKey) => peerCall(peerId, "POST", "/v1/moves", { projectId, ticket, archiveKey }, db),
     get: (id) => peerCall(peerId, "GET", `/v1/moves/${id}`, undefined, db),
-    renew: (id) => peerCall(peerId, "POST", `/v1/moves/${id}/renew`, undefined, db),
+    renew: (id, holdMs) => peerCall(peerId, "POST", `/v1/moves/${id}/renew`, holdMs === undefined ? undefined : { holdMs }, db),
     abort: (id) => peerCall(peerId, "POST", `/v1/moves/${id}/abort`, undefined, db, 120_000),
     commit: (id, digest) => peerCall(peerId, "POST", `/v1/moves/${id}/commit`, { digest }, db, 10 * 60_000),
   };
@@ -169,7 +169,7 @@ export function listMoves(db: Database.Database = getDatabase()): MoveRun[] {
 /** The record, with what each side last said (a side that cannot be reached is simply not shown). */
 export async function getMoveRun(id: string, db: Database.Database = getDatabase()): Promise<MoveRun> {
   const r = read(id, db);
-  const refs = JSON.parse(r.refs_json) as { transferId?: string; sourceMoveId?: string };
+  const refs = JSON.parse(r.refs_json) as { transferId?: string; sourceMoveId?: string; digest?: string };
   const target = targetOf(JSON.parse(r.target_json) as EndpointRef, db);
   const source = sourceOf(JSON.parse(r.source_json) as EndpointRef, db);
   // What each side says about its part, also after the move ended (the notes about hostnames and what was not carried matter most then). A side that cannot be reached is simply not shown.
@@ -180,7 +180,7 @@ export async function getMoveRun(id: string, db: Database.Database = getDatabase
   return toRun(r, { transfer, sourceMove });
 }
 
-function remember(id: string, db: Database.Database, refs: { transferId?: string; sourceMoveId?: string }): void {
+function remember(id: string, db: Database.Database, refs: { transferId?: string; sourceMoveId?: string; digest?: string }): void {
   const current = JSON.parse(read(id, db).refs_json) as object;
   db.prepare("UPDATE peer_moves SET refs_json = ? WHERE id = ?").run(JSON.stringify({ ...current, ...refs }), id);
 }
@@ -313,8 +313,11 @@ async function run(id: string, request: MoveRequest & { name: string }, db: Data
     await stillHeld();
 
     save(id, db, { state: "committing" });
+    remember(id, db, { digest: sourceView.digest });
     step("Your confirmation", "ok", "Confirmed.");
     step("Remove the source", "running");
+    // Longer than usual, so that a restart of this instance in the next moments can still finish what it began (see reconcileRuns) before the source takes the project back.
+    await source.renew(begun.id, 15 * 60_000).catch(() => undefined);
     try {
       await target.commit(ticket.transferId);
     } catch (error) {
@@ -396,11 +399,36 @@ export function pruneRuns(db: Database.Database = getDatabase()): void {
   db.prepare("DELETE FROM peer_moves WHERE state IN ('done','aborted','failed','interrupted') AND updated_at < ?").run(new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString());
 }
 
-/** After a restart: a move this process was running cannot continue, and each side takes itself back; say so. */
-export function reconcileRuns(db: Database.Database = getDatabase()): void {
-  const stale = db.prepare("SELECT id FROM peer_moves WHERE state NOT IN ('done','aborted','failed','interrupted','needs-attention')").all() as { id: string }[];
-  for (const { id } of stale) {
-    if (live.has(id)) continue;
-    save(id, db, { state: "interrupted", error: "This instance restarted in the middle of the move. The source takes the project back when its lease lapses, and the target removes its copy when it goes quiet; check both if either still shows the project." });
+/** After a restart: a move this process was running cannot continue. One that had not been confirmed is undone by the two sides themselves (the source's lease, the
+ *  target's silence timeout). One that had been confirmed is finished here, from what was recorded: the target decides which way it goes. */
+export async function reconcileRuns(db: Database.Database = getDatabase()): Promise<void> {
+  const stale = db.prepare("SELECT * FROM peer_moves WHERE state NOT IN ('done','aborted','failed','interrupted','needs-attention')").all() as Row[];
+  for (const r of stale) {
+    if (live.has(r.id)) continue;
+    if (r.state === "committing") { await finishCommit(r, db); continue; }
+    save(r.id, db, { state: "interrupted", error: "This instance restarted in the middle of the move. The source takes the project back when its lease lapses, and the target removes its copy when it goes quiet; check both if either still shows the project." });
+  }
+}
+
+async function finishCommit(r: Row, db: Database.Database): Promise<void> {
+  const refs = JSON.parse(r.refs_json) as { transferId?: string; sourceMoveId?: string; digest?: string };
+  const source = sourceOf(JSON.parse(r.source_json) as EndpointRef, db);
+  const target = targetOf(JSON.parse(r.target_json) as EndpointRef, db);
+  const step = stepper(r.id, db);
+  try {
+    if (!refs.transferId || !refs.sourceMoveId || !refs.digest) throw new Error("what the move was doing was not recorded");
+    const copy = await target.get(refs.transferId);
+    if (copy.state === "committed") {
+      // The target already holds the project for good: finish removing the original.
+      await source.commit(refs.sourceMoveId, refs.digest);
+      step("Remove the source", "ok", "Finished after this instance restarted.");
+      save(r.id, db, { state: "done", error: null });
+      return;
+    }
+    // The target never committed: the usual way back.
+    await undo({ transferId: refs.transferId, sourceMoveId: refs.sourceMoveId } as Live, source, target);
+    save(r.id, db, { state: "failed", error: "This instance restarted while the move was being confirmed, before the target committed. Both sides were put back as they were." });
+  } catch (error) {
+    save(r.id, db, { state: "needs-attention", error: `This instance restarted while the move was being confirmed and could not tell how far it got (${error instanceof Error ? error.message : String(error)}). Check the source and the target: the copy on the target is the one to keep if it is committed.` });
   }
 }

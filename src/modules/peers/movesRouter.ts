@@ -35,7 +35,7 @@ export function attachTargetRoutes(router: Router, authed: RequestHandler[], req
   router.post("/v1/transfers/:id/keepalive", ...authed, requireTransfer, wrap((req, res, db) => { res.json(keepAlive(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/import", ...authed, requireTransfer, wrap((req, res, db) => { res.json(startImport(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/start", ...authed, requireTransfer, wrap((req, res, db) => { res.json(startImported(String(req.params["id"]), controller(req), db)); }));
-  router.get("/v1/transfers/:id/health", ...authed, requireTransfer, wrap((req, res, db) => { res.json(projectHealth(String(req.params["id"]), controller(req), db)); }));
+  router.get("/v1/transfers/:id/health", ...authed, requireTransfer, wrap(async (req, res, db) => { res.json(await projectHealth(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/commit", ...authed, requireTransfer, wrap((req, res, db) => { res.json(commitTransfer(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/abort", ...authed, requireTransfer, wrap(async (req, res, db) => { res.json(await abortTransfer(String(req.params["id"]), controller(req), db)); }));
 
@@ -46,7 +46,7 @@ export function attachTargetRoutes(router: Router, authed: RequestHandler[], req
     res.status(202).json(await beginMove({ controllerInstance: controller(req), projectId: body.projectId as number, ticket: body.ticket as never, archiveKey: body.archiveKey as string }, db));
   }));
   router.get("/v1/moves/:id", ...authed, requireTransfer, wrap((req, res, db) => { res.json(getMove(String(req.params["id"]), controller(req), db)); }));
-  router.post("/v1/moves/:id/renew", ...authed, requireTransfer, wrap((req, res, db) => { res.json(renewMove(String(req.params["id"]), controller(req), db)); }));
+  router.post("/v1/moves/:id/renew", ...authed, requireTransfer, wrap((req, res, db) => { res.json(renewMove(String(req.params["id"]), controller(req), db, typeof req.body?.holdMs === "number" ? req.body.holdMs : undefined)); }));
   router.post("/v1/moves/:id/abort", ...authed, requireTransfer, wrap(async (req, res, db) => { res.json(await abortMove(String(req.params["id"]), controller(req), db)); }));
   // Destroying the source is its own grant, never implied by the transfer.
   router.post("/v1/moves/:id/commit", ...authed, requireTransfer, requireGrant("projects:destroy"), wrap(async (req, res, db) => {

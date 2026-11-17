@@ -122,11 +122,11 @@ test("a damaged archive, a wrong passphrase and an instance backup are all refus
   bytes[Math.floor(bytes.length / 2)] ^= 0xff;
   const damaged = path.join(s.dir, "damaged.spbackup");
   fs.writeFileSync(damaged, bytes);
-  assert.throws(() => stageProjectArchive(damaged, PASS, path.join(s.dir, "st1")), failsWith("corrupt"));
-  assert.throws(() => stageProjectArchive(file, "not the passphrase at all", path.join(s.dir, "st2")), failsWith("corrupt"));
+  await assert.rejects(() => stageProjectArchive(damaged, PASS, path.join(s.dir, "st1")), failsWith("corrupt"));
+  await assert.rejects(() => stageProjectArchive(file, "not the passphrase at all", path.join(s.dir, "st2")), failsWith("corrupt"));
   const instance = path.join(s.dir, "instance.spbackup");
   createBackup({ level: 2, outPath: instance, passphrase: PASS, env: { JWT_SECRET: "j", ENCRYPTION_KEY: "e", WEBHOOK_SECRET: "w" } as NodeJS.ProcessEnv, scriptsDir: path.join(s.dir, "none"), deployRoot: s.deployRoot });
-  assert.throws(() => stageProjectArchive(instance, PASS, path.join(s.dir, "st3")), failsWith("not-a-project-archive"));
+  await assert.rejects(() => stageProjectArchive(instance, PASS, path.join(s.dir, "st3")), failsWith("not-a-project-archive"));
 });
 
 test("the digest changes with any file, any value, and not with order", async () => {
@@ -145,7 +145,7 @@ test("a manifest with the wrong shape is refused as corrupt, not as a crash", as
   writer.addBuffer("header.json", Buffer.from(JSON.stringify({ kind: "project", format: 1 })));
   writer.addBuffer("manifest.json", Buffer.from(JSON.stringify({ kind: "project", format: 1, digest: "x", content: { files: [], dirs: [] } })));
   writer.finish();
-  assert.throws(() => stageProjectArchive(forged, PASS, path.join(s.dir, "st-forged")), failsWith("corrupt"));
+  await assert.rejects(() => stageProjectArchive(forged, PASS, path.join(s.dir, "st-forged")), failsWith("corrupt"));
 });
 
 test("an upload-only path in a non-upload project is refused", async () => {
@@ -200,7 +200,7 @@ test("a hostname in use is a clear refusal, and an archive's values are validate
   const bad = { ...m, content: { ...m.content, config: { ...m.content.config, compose_file: "../../etc/x.yml" }, files: [], dirs: [] } };
   writer.addBuffer("manifest.json", Buffer.from(JSON.stringify({ ...bad, digest: contentDigest(bad.content) })));
   writer.finish();
-  assert.throws(() => stageProjectArchive(forged, PASS, path.join(s.dir, "st-bad")), (error: unknown) => error instanceof ProjectArchiveError && /compose_file/.test(error.message));
+  await assert.rejects(() => stageProjectArchive(forged, PASS, path.join(s.dir, "st-bad")), (error: unknown) => error instanceof ProjectArchiveError && /compose_file/.test(error.message));
 });
 
 test("an archive without volumes keeps the digest it was written with", () => {

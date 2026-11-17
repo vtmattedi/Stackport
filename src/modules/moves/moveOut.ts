@@ -98,10 +98,12 @@ export function getMove(id: string, controllerInstance: string, db: Database.Dat
 }
 
 /** The controller is alive and still wants this move: the lease runs on. */
-export function renewMove(id: string, controllerInstance: string, db: Database.Database = getDatabase()): MoveView {
+export function renewMove(id: string, controllerInstance: string, db: Database.Database = getDatabase(), holdMs?: number): MoveView {
   const r = row(id, db);
   owned(r, controllerInstance);
-  if (ACTIVE.includes(r.state)) db.prepare("UPDATE project_moves_out SET lease_expires_at = ?, updated_at = ? WHERE id = ?").run(new Date(Date.now() + deps.leaseMs).toISOString(), now(), id);
+  // Around the commit the controller asks for longer (never more than 20 minutes): a controller that restarts there must be able to finish what it began before the source takes the project back.
+  const span = holdMs !== undefined && r.state === "awaiting-confirmation" ? Math.min(Math.max(holdMs, deps.leaseMs), 20 * 60_000) : deps.leaseMs;
+  if (ACTIVE.includes(r.state)) db.prepare("UPDATE project_moves_out SET lease_expires_at = ?, updated_at = ? WHERE id = ?").run(new Date(Date.now() + span).toISOString(), now(), id);
   return view(row(id, db));
 }
 
@@ -183,7 +185,9 @@ async function drive(id: string, input: BeginInput, engine: VolumeEngine, db: Da
 
     // The project stays down and this instance waits: for the commit, the abort, or the lease to lapse.
     while (!driver.decision) {
-      if (leaseLapsed(row(id, db))) throw new Lapsed("The controller stopped renewing the move, so this instance is taking the project back.");
+      const current = row(id, db);
+      // Once the commit has begun it is not interrupted by the lease: only the commit itself ends it.
+      if (current.state !== "committing" && leaseLapsed(current)) throw new Lapsed("The controller stopped renewing the move, so this instance is taking the project back.");
       await sleep(deps.pollMs);
     }
     if (driver.decision === "abort") throw new Stopped("The move was aborted.");
@@ -270,16 +274,18 @@ export async function commitMove(id: string, controllerInstance: string, digest:
   }
   if (leaseLapsed(r)) throw new MoveError(409, "The move's lease has lapsed: this instance is taking the project back.", "lease-lapsed");
   const driver = drivers.get(id);
+  // Before anything is destroyed: without the helper the volumes' data would be left behind with nothing pointing at it.
+  const engine = await deps.engine();
+  if (!engine) throw new MoveError(503, "Docker cannot be reached from here, so the original's data cannot be removed. Nothing was destroyed; confirm again once Docker answers.", "needs-helper");
   setState(id, "committing", db);
   try {
     const project = getProjectById(r.project_id);
     if (project) {
-      const engine = await deps.engine();
       await deps.purge(project.id).catch(() => undefined);
       const roots = currentVolumeRoots();
       const volumes: VolumeSource[] = [{ kind: "bind", hostPath: managedVolumesRoot(roots, project.id).host }];
-      if (engine) for (const named of await engine.namedVolumes(expectedComposeProjectName(project)).catch(() => [])) volumes.push({ kind: "named", name: named.name });
-      if (engine) for (const volume of volumes) await engine.remove(volume);
+      for (const named of await engine.namedVolumes(expectedComposeProjectName(project))) volumes.push({ kind: "named", name: named.name });
+      for (const volume of volumes) await engine.remove(volume);
       const dirs = projectDirs({ id: project.id, name: project.name, source_type: project.sourceType }, roots, path.resolve(configuredDeployRoot()));
       if (dirs.repo) fs.rmSync(dirs.repo, { recursive: true, force: true });
       fs.rmSync(dirs.volumes, { recursive: true, force: true });

@@ -10,7 +10,7 @@ import { currentVolumeRoots, managedVolumesRoot, type VolumeRoots } from "../dep
 import { DOMAIN_RE } from "../ingress/domainName";
 import { sealEnvVariables, tryReadEnvVariables, type EnvVariable, type ProjectEnvFileRow } from "../projects/envFiles";
 import { deployRoot as configuredDeployRoot, expectedComposeProjectName } from "../projects/workspace";
-import { ArchiveError, ArchiveWriter, isSafeEntryName, readArchive, readEntryBuffer, writeEntryTo } from "./archive";
+import { ArchiveError, ArchiveWriter, isSafeEntryName, readArchiveAsync, readEntryBufferAsync, writeEntryToAsync } from "./archive";
 import { ensureInstanceIdentity } from "./instance";
 import type { VolumeEngine, VolumeSource } from "./volumeEngine";
 import { LATEST_SCHEMA_VERSION } from "./manifest";
@@ -252,7 +252,7 @@ export async function exportProject(options: ExportProjectOptions): Promise<Proj
     for (const file of found.files) {
       try {
         const before = statMeta(file.source);
-        const written = writer.addFile(file.name, file.source);
+        const written = await writer.addFileAsync(file.name, file.source);
         files.push({ name: file.name, ...written });
         meta[file.name] = before;
       } catch (error) {
@@ -290,7 +290,7 @@ export async function exportProject(options: ExportProjectOptions): Promise<Proj
           const tar = path.join(work, `${index}.tar`);
           await engine.exportTar(volume.source, tar);
           const blob = `data/${index}.tar`;
-          blobs.push({ name: blob, ...writer.addFile(`files/${blob}`, tar) });
+          blobs.push({ name: blob, ...(await writer.addFileAsync(`files/${blob}`, tar)) });
           fs.rmSync(tar, { force: true });
           volumes.push({ id: volume.id, kind: volume.kind, key: volume.key, tree, blob });
         }
@@ -347,24 +347,24 @@ function statMeta(file: string): FileMeta {
 export interface StagedProjectArchive { manifest: ProjectManifest; dir: string }
 
 /** Decrypts into `dir` and checks every file against the manifest, then the manifest against its own digest. Refuses anything inconsistent. */
-export function stageProjectArchive(archivePath: string, passphrase: string, dir: string): StagedProjectArchive {
+export async function stageProjectArchive(archivePath: string, passphrase: string, dir: string): Promise<StagedProjectArchive> {
   fs.mkdirSync(dir, { recursive: true });
   const seen = new Map<string, { size: number; sha256: string }>();
   let manifestBuffer: Buffer | null = null;
   let first = true;
   try {
-    readArchive(archivePath, passphrase, (entry) => {
+    await readArchiveAsync(archivePath, passphrase, async (entry) => {
       if (first) {
         first = false;
         let header: { kind?: unknown; format?: unknown } = {};
-        try { header = entry.name === "header.json" ? JSON.parse(readEntryBuffer(entry, 4096).toString("utf8")) : {}; } catch { /* handled below */ }
+        try { header = entry.name === "header.json" ? JSON.parse((await readEntryBufferAsync(entry, 4096)).toString("utf8")) : {}; } catch { /* handled below */ }
         if (header.kind !== "project") throw new ProjectArchiveError("This is not a project archive (an instance backup is restored with `stackport restore`).", "not-a-project-archive");
         if (header.format !== PROJECT_ARCHIVE_FORMAT) throw new ProjectArchiveError(`Project archive format ${String(header.format)} is not supported (this Stackport reads ${PROJECT_ARCHIVE_FORMAT}).`, "unsupported");
         return;
       }
-      if (entry.name === "manifest.json") { manifestBuffer = readEntryBuffer(entry, MAX_MANIFEST_BYTES); return; }
+      if (entry.name === "manifest.json") { manifestBuffer = await readEntryBufferAsync(entry, MAX_MANIFEST_BYTES); return; }
       if (!entry.name.startsWith("files/")) throw new ProjectArchiveError(`The archive contains an unexpected entry (${entry.name}).`, "corrupt");
-      seen.set(entry.name, writeEntryTo(entry, dir));
+      seen.set(entry.name, await writeEntryToAsync(entry, dir));
     });
   } catch (error) {
     if (error instanceof ArchiveError) throw new ProjectArchiveError(error.message, "corrupt");
@@ -498,7 +498,7 @@ export async function importProject(options: ImportProjectOptions): Promise<Impo
   const engine = options.engine ?? null;
   let created: { id: number; dirs: ProjectDirs | null; volumes: VolumeSource[] } | null = null;
   try {
-    const { manifest } = stageProjectArchive(options.archivePath, options.passphrase, staging);
+    const { manifest } = await stageProjectArchive(options.archivePath, options.passphrase, staging);
     if (manifest.schemaVersion > LATEST_SCHEMA_VERSION) throw new ProjectArchiveError(`This archive was made by a newer Stackport (schema ${manifest.schemaVersion}; this one understands up to ${LATEST_SCHEMA_VERSION}). Update this instance first.`, "unsupported");
     if (options.requireVerified && manifest.live) throw new ProjectArchiveError("This archive was copied while the project was running, so its data cannot be verified. Stop the project and archive it again.", "running");
     const volumeRecords = manifest.content.volumes ?? [];

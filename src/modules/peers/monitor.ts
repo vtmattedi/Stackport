@@ -49,7 +49,7 @@ class PeerMonitor {
     this.running = true;
     try {
       // Moves this instance is part of: expired tickets are undone, and a transfer a restart cut short is cleaned up.
-      try { reconcileRuns(); } catch (err) { logger.warn({ err: err instanceof Error ? err.message : String(err) }, "move.reconcile-failed"); }
+      void reconcileRuns().catch((err: unknown) => { logger.warn({ err: err instanceof Error ? err.message : String(err) }, "move.reconcile-failed"); });
       try { pruneMoves(); pruneRuns(); } catch (err) { logger.warn({ err: err instanceof Error ? err.message : String(err) }, "move.prune-failed"); }
       void reconcileMoves().catch((err: unknown) => logger.warn({ err: err instanceof Error ? err.message : String(err) }, "move.reconcile-failed"));
       try { purgeExpired(); } catch (err) { logger.warn({ err: err instanceof Error ? err.message : String(err) }, "transfer.purge-failed"); }

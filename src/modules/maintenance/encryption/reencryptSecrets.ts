@@ -21,6 +21,7 @@ export const SECRET_COLUMNS: SecretColumn[] = [
   { table: "peer_targets", column: "key_enc", idColumn: "id", label: "Keys for controlling peer instances" },
   { table: "peer_controllers", column: "key_enc", idColumn: "id", label: "Keys of instances allowed to control this one" },
   { table: "peer_controllers", column: "previous_key_enc", idColumn: "id", label: "Previous peer keys (rotation grace)" },
+  { table: "project_transfers_in", column: "key_enc", idColumn: "id", label: "Archive keys of projects being moved here" },
 ];
 
 export interface SecretRow { id: number | string; value: string }
