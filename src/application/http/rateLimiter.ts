@@ -18,6 +18,8 @@ export const globalLimiter = rateLimit({
 export const controlLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 3000,
+  // A move's chunks are many and large by design and are bounded by their own ticket (movesRouter): they would exhaust this budget in minutes.
+  skip: (req) => req.path.startsWith("/transfer/"),
   standardHeaders: "draft-8",
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later" },

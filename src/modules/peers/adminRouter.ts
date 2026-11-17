@@ -1,11 +1,10 @@
-import { randomUUID, X509Certificate } from "crypto";
+import { randomUUID } from "crypto";
 import { Router, type Request, type Response } from "express";
-import { promises as fs } from "fs";
-import { SELF_SIGNED_CERT_PATH } from "../ingress/nginx/selfSignedCert";
 import { requireAuth } from "../identity/middleware/session";
 import { auditLog } from "../../shared/logger";
 import { ensureInstanceIdentity, setInstanceName } from "../backup/instance";
 import { parseLogQuery } from "../deployments/logQuery";
+import { selfSignedFingerprint } from "./selfCert";
 import { GRANTS, GrantError, grantImplications } from "./grants";
 import { checkPeer, forgetPeer, peerStatus } from "./monitor";
 import { PeerIdentityError, PeerUnreachable } from "./client";
@@ -13,6 +12,9 @@ import { forgetRemoteCache, issuePairingCode, peekRemote, PeerError, registerTar
 import { statusHub } from "../status/hub";
 import { OPERATION_ID_PATTERN } from "./signing";
 import { isStatusReport, summarize, type PeerStatusReport, type StatusSummary } from "./peerStatus";
+import { MoveError } from "../moves/moveOut";
+import { TransferError } from "../moves/transferIn";
+import { decide, getMoveRun, listMoves, startMove, targetDomains, type EndpointRef } from "./moveOrchestrator";
 import { deleteRevokedController, listControllers, listTargets, revokeController } from "./store";
 
 /** Admin management of peers from this instance's own UI (session auth). Pairing codes and keys are never listed: a code is shown once at creation, a key never. */
@@ -26,16 +28,11 @@ function idParam(req: Request<{ id: string }>, res: Response): number | null {
 
 function handle(res: Response, error: unknown): void {
   if (error instanceof PeerError) { res.status(error.status).json({ error: error.message, code: error.code }); return; }
+  if (error instanceof TransferError || error instanceof MoveError) { res.status(error.status).json({ error: error.message, code: error.code }); return; }
   if (error instanceof GrantError) { res.status(400).json({ error: error.message, code: "bad-grants" }); return; }
   if (error instanceof PeerIdentityError) { res.status(502).json({ error: error.message, code: "identity-mismatch" }); return; }
   if (error instanceof PeerUnreachable) { res.status(502).json({ error: error.message, code: "unreachable" }); return; }
   throw error;
-}
-
-/** The SHA-256 fingerprint of this instance's self-signed certificate, which a controller pins when this instance has no real one yet. Null once there is none. */
-async function selfSignedFingerprint(): Promise<string | null> {
-  // eslint-disable-next-line security/detect-non-literal-fs-filename -- a fixed path, not user input
-  try { return new X509Certificate(await fs.readFile(SELF_SIGNED_CERT_PATH)).fingerprint256; } catch { return null; }
 }
 
 /** This instance's own numbers, for the fleet view. A collector that is failing leaves it null rather than failing the whole page. */
@@ -211,6 +208,49 @@ router.delete("/controllers/:id", requireAuth, (req: Request<{ id: string }>, re
   if (!revokeController(id)) { res.status(404).json({ error: "Controller not found or already revoked" }); return; }
   auditLog(req.user ?? "unknown", "peer.controller.revoke", String(id), "ok");
   res.status(204).end();
+});
+
+// ── moving a project between instances ───────────────────────────────────────
+// This instance is the controller; the source and the target are each this instance ("local") or a paired peer.
+
+function refParam(value: unknown): EndpointRef | null {
+  if (value === "local" || (value && typeof value === "object" && (value as { kind?: unknown }).kind === "local")) return { kind: "local" };
+  const peerId = value && typeof value === "object" ? Number((value as { peerId?: unknown }).peerId) : typeof value === "string" ? Number(value) : NaN;
+  return Number.isInteger(peerId) && peerId > 0 ? { kind: "peer", peerId } : null;
+}
+
+router.get("/moves", requireAuth, (_req: Request, res: Response): void => { res.json({ moves: listMoves() }); });
+
+/** The hostname step: the base domains the target's own domain manager holds and the names already taken there. */
+router.get("/moves/domains/:target", requireAuth, async (req: Request<{ target: string }>, res: Response): Promise<void> => {
+  const ref = refParam(req.params.target);
+  if (!ref) { res.status(400).json({ error: "Invalid target" }); return; }
+  try { res.json(await targetDomains(ref)); } catch (error) { handle(res, error); }
+});
+
+router.post("/moves", requireAuth, (req: Request, res: Response): void => {
+  try {
+    const source = refParam(req.body?.source);
+    const target = refParam(req.body?.target);
+    const projectId = Number(req.body?.projectId);
+    if (!source || !target || typeof req.body?.projectName !== "string") throw new PeerError(400, "A source, a target, a project and its name are required.", "bad-request");
+    const domains = Array.isArray(req.body?.domains) ? (req.body.domains as unknown[]).filter((d): d is { domain: string; service?: string; containerPort?: number | null } => typeof (d as { domain?: unknown })?.domain === "string") : [];
+    const run = startMove({ source, target, projectId, projectName: req.body.projectName, name: typeof req.body?.name === "string" ? req.body.name : undefined, domains });
+    auditLog(req.user ?? "unknown", "move.start", `${run.projectName}`, "ok", { moveRun: run.id });
+    res.status(202).json(run);
+  } catch (error) { handle(res, error); }
+});
+
+router.get("/moves/:id", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  try { res.json(await getMoveRun(req.params.id)); } catch (error) { handle(res, error); }
+});
+
+router.post("/moves/:id/confirm", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  try { auditLog(req.user ?? "unknown", "move.confirm", req.params.id, "ok"); res.json(await decide(req.params.id, "confirm")); } catch (error) { handle(res, error); }
+});
+
+router.post("/moves/:id/abort", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  try { auditLog(req.user ?? "unknown", "move.abort", req.params.id, "ok"); res.json(await decide(req.params.id, "abort")); } catch (error) { handle(res, error); }
 });
 
 export default router;

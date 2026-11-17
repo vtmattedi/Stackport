@@ -26,6 +26,7 @@ const GRANT_INFO: Record<PeerGrant, { label: string; hint: string }> = {
   "projects:secrets": { label: "Reveal secrets", hint: "See secret values in clear text." },
   "projects:shell": { label: "Shell", hint: "Open a shell inside a project's containers." },
   "projects:destroy": { label: "Delete", hint: "Delete projects and their data." },
+  "projects:transfer": { label: "Move projects", hint: "Move a project to or from this instance: all of its data and secret values travel with it. Removing the original afterwards also needs Delete." },
   "host:read": { label: "Host metrics", hint: "CPU, memory, disk, load and network of this machine, and the alerts about it. Read only: host administration can never be granted." },
 };
 
@@ -103,7 +104,7 @@ export default function PeersSection() {
     event.preventDefault();
     const final = expand(picked, data?.grantImplications ?? ({} as Record<PeerGrant, PeerGrant[]>));
     if (final.length === 0) return;
-    if (final.some((grant) => grant === "projects:secrets" || grant === "projects:shell" || grant === "projects:destroy")) {
+    if (final.some((grant) => grant === "projects:secrets" || grant === "projects:shell" || grant === "projects:destroy" || grant === "projects:transfer")) {
       const ok = await confirm({
         title: "Grant this much access?",
         description: "Whoever holds this code and uses it first controls this instance with these powers, until you revoke them. Hand it over only through a channel you trust.",

@@ -1,4 +1,7 @@
 import { logger } from "../../shared/logger";
+import { pruneMoves, reconcileMoves } from "../moves/moveOut";
+import { pruneRuns, reconcileRuns } from "./moveOrchestrator";
+import { purgeExpired } from "../moves/transferIn";
 import { hasGrant } from "./grants";
 import { getTarget, listTargets } from "./store";
 import { isStatusReport } from "./peerStatus";
@@ -45,6 +48,11 @@ class PeerMonitor {
     if (this.running) return;
     this.running = true;
     try {
+      // Moves this instance is part of: expired tickets are undone, and a transfer a restart cut short is cleaned up.
+      void reconcileRuns().catch((err: unknown) => { logger.warn({ err: err instanceof Error ? err.message : String(err) }, "move.reconcile-failed"); });
+      try { pruneMoves(); pruneRuns(); } catch (err) { logger.warn({ err: err instanceof Error ? err.message : String(err) }, "move.prune-failed"); }
+      void reconcileMoves().catch((err: unknown) => logger.warn({ err: err instanceof Error ? err.message : String(err) }, "move.reconcile-failed"));
+      try { purgeExpired(); } catch (err) { logger.warn({ err: err instanceof Error ? err.message : String(err) }, "transfer.purge-failed"); }
       // One peer at a time: a slow or unreachable peer must not delay the others' checks beyond its own timeout.
       const targets = listTargets();
       // Drop the state of peers that no longer exist (removed by a restore, say), so an id is never shown another peer's status.

@@ -121,21 +121,49 @@ export class ArchiveWriter {
     this.write(data);
   }
 
-  addFile(name: string, source: string): void {
+  /** Archives `source` as it is read, exactly the size seen at open, and returns the size and SHA-256 of the bytes written (a file that grows meanwhile is cut at that size). */
+  addFile(name: string, source: string): { size: number; sha256: string } {
     const fd = fs.openSync(source, "r");
     try {
       const size = fs.fstatSync(fd).size;
       this.begin(name, size);
+      const hash = crypto.createHash("sha256");
       const buffer = Buffer.alloc(CHUNK_BYTES);
       let remaining = size;
       while (remaining > 0) {
         const read = fs.readSync(fd, buffer, 0, Math.min(buffer.length, remaining), null);
         if (read === 0) throw new ArchiveError(`${source} shrank while it was being archived.`, "malformed");
-        this.write(Buffer.from(buffer.subarray(0, read)));
+        const part = Buffer.from(buffer.subarray(0, read));
+        hash.update(part);
+        this.write(part);
         remaining -= read;
       }
+      return { size, sha256: hash.digest("hex") };
     } finally {
       fs.closeSync(fd);
+    }
+  }
+
+  /** Like addFile, but reads in asynchronous steps so a multi-gigabyte volume does not hold up everything else this process does. */
+  async addFileAsync(name: string, source: string): Promise<{ size: number; sha256: string }> {
+    const handle = await fs.promises.open(source, "r");
+    try {
+      const size = (await handle.stat()).size;
+      this.begin(name, size);
+      const hash = crypto.createHash("sha256");
+      const buffer = Buffer.alloc(1024 * 1024);
+      let remaining = size;
+      while (remaining > 0) {
+        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, remaining), null);
+        if (bytesRead === 0) throw new ArchiveError(`${source} shrank while it was being archived.`, "malformed");
+        const part = Buffer.from(buffer.subarray(0, bytesRead));
+        hash.update(part);
+        this.write(part);
+        remaining -= bytesRead;
+      }
+      return { size, sha256: hash.digest("hex") };
+    } finally {
+      await handle.close();
     }
   }
 
@@ -242,6 +270,130 @@ class PlainReader {
   close(): void {
     fs.closeSync(this.fd);
   }
+}
+
+/** Plaintext of the whole archive, read in asynchronous steps. The same format and checks as PlainReader. */
+class AsyncPlainReader {
+  private counter = 0;
+  private buffer: Buffer = Buffer.alloc(0);
+  private sawFinal = false;
+
+  private constructor(private readonly handle: fs.promises.FileHandle, private readonly header: Buffer, private readonly key: Buffer, private readonly noncePrefix: Buffer) {}
+
+  static async open(filePath: string, passphrase: string): Promise<AsyncPlainReader> {
+    const handle = await fs.promises.open(filePath, "r");
+    try {
+      const header = Buffer.alloc(HEADER_BYTES);
+      const { bytesRead } = await handle.read(header, 0, HEADER_BYTES, null);
+      if (bytesRead < HEADER_BYTES || !header.subarray(0, MAGIC.length).equals(MAGIC)) throw new ArchiveError("This is not a Stackport backup archive.", "malformed");
+      if (header[MAGIC.length] !== FORMAT_VERSION) throw new ArchiveError(`Archive format version ${header[MAGIC.length]} is not supported by this Stackport (it reads version ${FORMAT_VERSION}).`, "unsupported");
+      const saltStart = MAGIC.length + 1;
+      const log2N = header[saltStart + SALT_BYTES];
+      if (log2N < 14 || log2N > 20) throw new ArchiveError("The archive's key-derivation parameters are out of range.", "malformed");
+      return new AsyncPlainReader(handle, header, deriveKey(passphrase, header.subarray(saltStart, saltStart + SALT_BYTES), log2N), header.subarray(saltStart + SALT_BYTES + 1));
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  }
+
+  private async nextChunk(): Promise<boolean> {
+    if (this.sawFinal) return false;
+    const prefix = Buffer.alloc(5);
+    if ((await this.handle.read(prefix, 0, 5, null)).bytesRead < 5) throw new ArchiveError("The archive is truncated.", "truncated");
+    const length = prefix.readUInt32BE(0);
+    if (length > CHUNK_BYTES) throw new ArchiveError("The archive is damaged (oversized chunk).", "malformed");
+    const body = Buffer.alloc(length + TAG_BYTES);
+    if ((await this.handle.read(body, 0, body.length, null)).bytesRead < body.length) throw new ArchiveError("The archive is truncated.", "truncated");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", this.key, nonceFor(this.noncePrefix, this.counter));
+    decipher.setAAD(Buffer.concat([this.header, prefix.subarray(4, 5)]));
+    decipher.setAuthTag(body.subarray(length));
+    let plain: Buffer;
+    try { plain = Buffer.concat([decipher.update(body.subarray(0, length)), decipher.final()]); } catch { throw new ArchiveError("Wrong passphrase, or the archive is corrupted.", "wrong-passphrase-or-corrupt"); }
+    this.counter += 1;
+    this.sawFinal = prefix[4] === 1;
+    this.buffer = this.buffer.length ? Buffer.concat([this.buffer, plain]) : plain;
+    return true;
+  }
+
+  async take(bytes: number): Promise<Buffer> {
+    while (this.buffer.length < bytes) if (!(await this.nextChunk())) throw new ArchiveError("The archive ends inside an entry.", "truncated");
+    const out = this.buffer.subarray(0, bytes);
+    this.buffer = this.buffer.subarray(bytes);
+    return out;
+  }
+
+  async assertEnded(): Promise<void> {
+    while (!this.sawFinal) await this.nextChunk();
+    if (this.buffer.length) throw new ArchiveError("The archive has data after its end marker.", "malformed");
+    if ((await this.handle.read(Buffer.alloc(1), 0, 1, null)).bytesRead !== 0) throw new ArchiveError("The archive has data after its final chunk.", "malformed");
+  }
+
+  async close(): Promise<void> { await this.handle.close(); }
+}
+
+export interface AsyncEntryHandle { name: string; size: number; read(bytes: number): Promise<Buffer> }
+
+/** readArchive, without holding up the process while a large archive is decrypted. `visit` must consume the entry or return without reading. */
+export async function readArchiveAsync(filePath: string, passphrase: string, visit: (entry: AsyncEntryHandle) => Promise<void | "stop">): Promise<void> {
+  const reader = await AsyncPlainReader.open(filePath, passphrase);
+  try {
+    const seen = new Set<string>();
+    for (;;) {
+      const nameLength = (await reader.take(2)).readUInt16BE(0);
+      if (nameLength === 0) break;
+      if (nameLength > MAX_NAME_BYTES) throw new ArchiveError("The archive is damaged (entry name too long).", "malformed");
+      const name = (await reader.take(nameLength)).toString("utf8");
+      if (!isSafeEntryName(name)) throw new ArchiveError(`The archive contains an unsafe path: ${name}`, "unsafe-path");
+      if (seen.has(name)) throw new ArchiveError(`The archive repeats the entry ${name}.`, "malformed");
+      seen.add(name);
+      const sizeBig = (await reader.take(8)).readBigUInt64BE(0);
+      if (sizeBig > BigInt(Number.MAX_SAFE_INTEGER)) throw new ArchiveError("The archive is damaged (entry size).", "malformed");
+      const size = Number(sizeBig);
+      let remaining = size;
+      const handle: AsyncEntryHandle = { name, size, async read(bytes) { const n = Math.min(bytes, remaining); if (n === 0) return Buffer.alloc(0); remaining -= n; return reader.take(n); } };
+      if ((await visit(handle)) === "stop") return;
+      while (remaining > 0) await handle.read(Math.min(remaining, CHUNK_BYTES));
+    }
+    await reader.assertEnded();
+  } finally {
+    await reader.close();
+  }
+}
+
+export async function readEntryBufferAsync(entry: AsyncEntryHandle, maxBytes: number): Promise<Buffer> {
+  if (entry.size > maxBytes) throw new ArchiveError(`${entry.name} is larger than the ${maxBytes} byte limit.`, "malformed");
+  const parts: Buffer[] = [];
+  let left = entry.size;
+  while (left > 0) { const part = await entry.read(Math.min(left, CHUNK_BYTES)); parts.push(Buffer.from(part)); left -= part.length; }
+  return Buffer.concat(parts);
+}
+
+/** writeEntryTo, in asynchronous steps. */
+export async function writeEntryToAsync(entry: AsyncEntryHandle, root: string): Promise<{ size: number; sha256: string }> {
+  const target = path.join(root, ...entry.name.split("/"));
+  let handle: fs.promises.FileHandle;
+  try {
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    handle = await fs.promises.open(target, "wx", 0o600);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOTDIR" || code === "EEXIST" || code === "EISDIR") throw new ArchiveError(`The archive's entries conflict with each other (${entry.name}).`, "malformed");
+    throw error;
+  }
+  const hash = crypto.createHash("sha256");
+  try {
+    let left = entry.size;
+    while (left > 0) {
+      const part = await entry.read(Math.min(left, CHUNK_BYTES));
+      hash.update(part);
+      await handle.write(part);
+      left -= part.length;
+    }
+  } finally {
+    await handle.close();
+  }
+  return { size: entry.size, sha256: hash.digest("hex") };
 }
 
 /**

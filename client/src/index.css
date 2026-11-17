@@ -1019,6 +1019,11 @@ tr:last-child td { border-bottom: none; }
   box-shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
 }
 
+/* A panel that holds a form or a progress view rather than an icon and a sentence. */
+.confirm-panel-form {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .confirm-panel-wide {
   width: min(760px, 100%);
   max-height: calc(100vh - 40px);

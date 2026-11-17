@@ -22,6 +22,7 @@ import { PolicyCard } from "./PolicyCard";
 import { IsolationCard } from "./IsolationCard";
 import { GithubAuthCard } from "./GithubAuthCard";
 import { NetworkGroupCard } from "./NetworkGroupCard";
+import { MoveCard } from "./MoveCard";
 
 const INTERVALS = [
   { label: "Off", value: 0 },
@@ -396,6 +397,7 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
         <IsolationCard project={project} setProject={setProject} />
 
         <NetworkGroupCard project={project} />
+        <MoveCard project={project} currentHostname={domains[0]?.domain ?? null} />
 
         <ExpandableCard
           icon={<FolderDot size={13} />}

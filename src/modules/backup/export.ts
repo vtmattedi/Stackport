@@ -185,7 +185,7 @@ export function createBackup(options: CreateBackupOptions): BackupManifest {
       level >= 2
         ? { id: "project-uploads", included: true, description: `Files uploaded for manually uploaded projects (${projectsForFiles.length} projects)` }
         : { id: "project-uploads", included: false, description: "Uploaded project files", reason: "Not part of level 1." },
-      { id: "project-data", included: false, description: "Databases, volumes, uploaded user files and broker state of the workloads", reason: "Only level 3 (not yet available) backs up workload data. This archive cannot recover application data." },
+      { id: "project-data", included: false, description: "Databases, volumes, uploaded user files and broker state of the workloads", reason: "Only level 3 backs up workload data, one project at a time (`stackport backup --project ID`). This archive cannot recover application data." },
       { id: "git-checkouts", included: false, description: "Checkouts of GitHub-sourced projects", reason: "Cloned again on the next deploy." },
       { id: "certificates", included: false, description: "Let's Encrypt certificates and account", reason: "Issued again for the domains on the new host." },
       { id: "nginx-config", included: false, description: "Generated nginx configuration", reason: "Regenerated from the restored settings." },

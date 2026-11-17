@@ -60,6 +60,8 @@ Usage:
   stackport network-pool [show | set --base <cidr> --size <n> [--replace] [--no-restart] [--yes]]
   stackport admin-recovery
   stackport backup [--level 1|2] [--out FILE]
+  stackport backup --project ID [--out FILE] [--allow-running]
+  stackport project-import FILE [--name NAME] [--domain HOST] [--allow-raw-nginx] [--ignore-ownership]
   stackport backup-verify FILE
   stackport restore FILE --mode recover|clone [--yes]
   stackport uninstall
@@ -93,6 +95,14 @@ backup:   write a passphrase-encrypted, portable archive. Level 1: instance sett
           Compose files, managed .env files (with their secret values), domains,
           routes and uploaded files. It does NOT contain application data
           (databases, volumes, user files) and cannot recover it.
+          --project ID (level 3) archives ONE project instead: its record, managed .env files,
+          uploaded source and its data (managed directories and Docker named volumes), read
+          by a short-lived root helper container so database files owned by another user are
+          included with their owners. The project must be stopped (--allow-running overrides,
+          at the cost of a possibly inconsistent copy). Images and containers are not included.
+project-import: create a project on this instance from a level 3 archive, verified against
+          the archive's content digest and undone completely if it does not match. The
+          project is created stopped; deploy it from the dashboard.
 backup-verify: authenticate and check an archive (checksums, schema, that every stored
           secret decrypts with the archive's keys) without changing anything.
 restore:  replace this installation's configuration with an archive's. --mode recover
@@ -1123,26 +1133,45 @@ drop_staged_file() {
 }
 
 backup_stackport() {
-  local level=2 out="" arg name made
+  local level=2 level_given=0 out="" arg name made project="" allow_running=0
   while (( $# )); do
     arg="$1"
     case "$arg" in
-      --level=*) level="${arg#--level=}"; shift ;;
-      --level)   (( $# >= 2 )) || { error "--level needs a value"; exit 1; }; level="$2"; shift 2 ;;
+      --allow-running) allow_running=1; shift ;;
+      --project=*) project="${arg#--project=}"; shift ;;
+      --project)   (( $# >= 2 )) || { error "--project needs a project id"; exit 1; }; project="$2"; shift 2 ;;
+      --level=*) level="${arg#--level=}"; level_given=1; shift ;;
+      --level)   (( $# >= 2 )) || { error "--level needs a value"; exit 1; }; level="$2"; level_given=1; shift 2 ;;
       --out=*)   out="${arg#--out=}"; shift ;;
       --out)     (( $# >= 2 )) || { error "--out needs a value"; exit 1; }; out="$2"; shift 2 ;;
       *) error "unknown option: $arg"; exit 1 ;;
     esac
   done
-  [[ "$level" == "1" || "$level" == "2" ]] || { error "--level must be 1 (configs) or 2 (configs + project configs); level 3 is not available yet"; exit 1; }
+  if [[ -n "$project" ]]; then
+    [[ "$project" =~ ^[0-9]+$ ]] || { error "--project needs a numeric project id"; exit 1; }
+    (( level_given == 0 )) || { error "--level does not apply to --project (a project archive is level 3)"; exit 1; }
+  else
+    (( allow_running == 0 )) || { error "--allow-running applies to --project only"; exit 1; }
+    [[ "$level" == "1" || "$level" == "2" ]] || { error "--level must be 1 (configs) or 2 (configs + project configs); level 3 is one project: use --project ID"; exit 1; }
+  fi
   docker ps --format '{{.Names}}' | grep -qx stackport || { error "the stackport container is not running"; exit 1; }
   if [[ -n "$out" && -e "$out" ]]; then error "$out already exists"; exit 1; fi
 
-  name="stackport-backup-l${level}-$(date -u +%Y%m%d-%H%M%S).spbackup"
+  if [[ -n "$project" ]]; then
+    name="stackport-project-${project}-$(date -u +%Y%m%d-%H%M%S).spbackup"
+  else
+    name="stackport-backup-l${level}-$(date -u +%Y%m%d-%H%M%S).spbackup"
+  fi
   mkdir -p "$VAR_DIR/data/backups"
   chown "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$VAR_DIR/data/backups" 2>/dev/null || true
   backup_passphrase confirm
-  docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" create --level "$level" --out "/app/data/backups/$name"
+  if [[ -n "$project" ]]; then
+    local extra=()
+    (( allow_running )) && extra=(--allow-running)
+    docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" create --project "$project" --out "/app/data/backups/$name" ${extra[@]+"${extra[@]}"}
+  else
+    docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" create --level "$level" --out "/app/data/backups/$name"
+  fi
   made="$VAR_DIR/data/backups/$name"
   chmod 600 "$made"
   if [[ -n "$out" ]]; then
@@ -1153,6 +1182,30 @@ backup_stackport() {
     log "backup written to $made"
   fi
   log "copy it off this host: a backup stored only here does not survive losing the host."
+}
+
+# Creates a project on this instance from a level 3 archive. The app keeps running: the import only adds rows and a project's own directories.
+project_import_stackport() {
+  local file="" arg rc=0 flags=() seen_name=0 seen_domain=0
+  while (( $# )); do
+    arg="$1"
+    case "$arg" in
+      --name=*)   (( seen_name == 0 )) || { error "give --name once"; exit 1; }; seen_name=1; flags+=(--name "${arg#--name=}"); shift ;;
+      --domain=*) (( seen_domain == 0 )) || { error "give --domain once: attach further hostnames from the dashboard"; exit 1; }; seen_domain=1; flags+=(--domain "${arg#--domain=}"); shift ;;
+      --name)     (( $# >= 2 )) || { error "--name needs a value"; exit 1; }; (( seen_name == 0 )) || { error "give --name once"; exit 1; }; seen_name=1; flags+=(--name "$2"); shift 2 ;;
+      --domain)   (( $# >= 2 )) || { error "--domain needs a value"; exit 1; }; (( seen_domain == 0 )) || { error "give --domain once: attach further hostnames from the dashboard"; exit 1; }; seen_domain=1; flags+=(--domain "$2"); shift 2 ;;
+      --allow-raw-nginx|--ignore-ownership) flags+=("$arg"); shift ;;
+      -*) error "unknown option: $arg"; exit 1 ;;
+      *)  file="$arg"; shift ;;
+    esac
+  done
+  [[ -n "$file" ]] || { error "usage: stackport project-import FILE [--name NAME] [--domain HOST] [--allow-raw-nginx] [--ignore-ownership]"; exit 1; }
+  docker ps --format '{{.Names}}' | grep -qx stackport || { error "the stackport container is not running"; exit 1; }
+  stage_backup_file "$file"
+  backup_passphrase
+  docker exec -u node -e STACKPORT_BACKUP_PASSPHRASE stackport node "$BACKUP_CLI" import "$STAGED_CONTAINER_FILE" ${flags[@]+"${flags[@]}"} || rc=$?
+  drop_staged_file
+  return "$rc"
 }
 
 backup_verify_stackport() {
@@ -1845,6 +1898,10 @@ case "$COMMAND" in
   backup-verify)
     require_root
     backup_verify_stackport "$@"
+    ;;
+  project-import)
+    require_root
+    project_import_stackport "$@"
     ;;
   restore)
     require_root

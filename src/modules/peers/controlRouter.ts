@@ -7,6 +7,7 @@ import { ensureInstanceIdentity } from "../backup/instance";
 import { hasGrant, type Grant } from "./grants";
 import { PeerError } from "./errors";
 import { createGateway } from "./gateway";
+import { attachTargetRoutes } from "./movesRouter";
 import { parseLogQuery } from "../deployments/logQuery";
 import { reportStatus } from "./peerStatus";
 import { getRemoteProject, listRemoteProjects, remoteDeploys, remoteLogs } from "./remoteProjects";
@@ -186,6 +187,9 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
   // ── the project API, for the requests the allow-list names ───────────────────
   // Only where the application's router was given (the real app); a bare control router, as in most tests, has no such route.
   if (options.api) router.use("/v1/api", ...authed, createGateway(options.api, getDb));
+
+  // ── moving a project: this instance as target (and, later, as source) ───────
+  attachTargetRoutes(router, authed, requireGrant, getDb);
 
   // ── projects (read) ─────────────────────────────────────────────────────────
   // A curated summary (list, detail, deploys, logs) for lists, the sidebar and monitoring: built field by field, so a column added later is not shown by accident.
