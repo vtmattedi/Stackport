@@ -27,11 +27,16 @@ import { deployRoot as configuredDeployRoot, expectedComposeProjectName } from "
  * The ticket is the only credential the source ever holds for this instance: scoped to one transfer, one hour, and not a standing link between the two.
  */
 
+/** Once chunks are arriving, the ticket is good for this long after the latest one. */
 export const TICKET_TTL_MS = 60 * 60 * 1000;
+/** Before the first chunk: the source is stopping the project and writing the archive, which takes as long as the data is large. */
+export const AWAITING_TTL_MS = 8 * 60 * 60 * 1000;
 export const CHUNK_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 2 * 1024 ** 4;
 const MIN_FREE_BYTES = 1024 ** 3;
 const MAX_OPEN_TICKETS = 3;
+/** A copy the controller has not asked about for this long was abandoned (the source took the project back by itself): it is removed. */
+const SILENCE_MS = 30 * 60 * 1000;
 
 export type TransferState = "awaiting" | "receiving" | "received" | "importing" | "imported" | "starting" | "started" | "committed" | "failed" | "aborted";
 /** Transfers that still hold something: files, a project, a slot. A failed one holds only a project, if it got that far, until it is aborted. */
@@ -53,6 +58,14 @@ export interface TransferView {
   id: string; state: TransferState; name: string; receivedBytes: number; nextChunk: number; digest: string | null; projectId: number | null;
   warnings: string[]; notCarried: string[]; hostnames: string[]; error: string | null; expiresAt: string;
 }
+
+/** What this module calls out to, so a test can stand in for Docker. */
+export const transferDeps = {
+  engine: (): Promise<VolumeEngine | null> => DockerVolumeEngine.create(),
+  deploy: (projectId: number): Promise<{ ok: boolean; output: string }> => deployProject(projectId, "manual"),
+  publish: async (projectId: number): Promise<void> => { await ensureProjectProxyNetwork(projectId); const nginx = await writeNginxConfig(); if (!nginx.ok) logger.warn({ projectId, output: nginx.output }, "transfer.nginx-failed"); },
+  purge: async (projectId: number): Promise<void> => { await stopAndPurgeProject(projectId); },
+};
 
 const hashToken = (token: string): string => crypto.createHash("sha256").update(token).digest("hex");
 const now = (): string => new Date().toISOString();
@@ -126,7 +139,7 @@ export function prepareTransfer(input: { controllerInstance: string; name: unkno
   const id = randomUUID();
   const token = crypto.randomBytes(32).toString("base64url");
   const archiveKey = crypto.randomBytes(32).toString("base64url");
-  const expiresAt = new Date(Date.now() + TICKET_TTL_MS).toISOString();
+  const expiresAt = new Date(Date.now() + AWAITING_TTL_MS).toISOString();
   db.prepare(`INSERT INTO project_transfers_in (id, token_hash, key_enc, controller_instance, state, name, domains_json, expires_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(id, hashToken(token), encryptSecret(archiveKey), input.controllerInstance, "awaiting", name, JSON.stringify(input.domains ?? []), expiresAt, now(), now());
   fs.mkdirSync(transferDir(id), { recursive: true, mode: 0o700 });
@@ -168,7 +181,7 @@ export function receiveChunk(id: string, token: string, index: number, sha256: s
     fs.writeSync(fd, bytes, 0, bytes.length, r.received_bytes);
     fs.fsyncSync(fd);
   } finally { fs.closeSync(fd); }
-  setState(id, "receiving", db, { received_bytes: r.received_bytes + bytes.length, next_chunk: index + 1, last_chunk_sha: sha256 });
+  setState(id, "receiving", db, { received_bytes: r.received_bytes + bytes.length, next_chunk: index + 1, last_chunk_sha: sha256, expires_at: new Date(Date.now() + TICKET_TTL_MS).toISOString() });
   return { next: index + 1, received: r.received_bytes + bytes.length };
 }
 
@@ -207,6 +220,14 @@ export function getTransfer(id: string, controllerInstance: string, db: Database
   return view(r);
 }
 
+/** The controller says it is still there. A copy nobody has kept alive for a while was abandoned (the source took the project back by itself) and is removed. */
+export function keepAlive(id: string, controllerInstance: string, db: Database.Database = getDatabase()): TransferView {
+  const r = row(id, db);
+  owned(r, controllerInstance);
+  if (r.state === "imported" || r.state === "started") db.prepare("UPDATE project_transfers_in SET updated_at = ? WHERE id = ?").run(now(), id);
+  return view(row(id, db));
+}
+
 /** Imports the archive that was received, with the manual import's verification. Returns at once; the state says how it went. */
 export function startImport(id: string, controllerInstance: string, db: Database.Database = getDatabase()): TransferView {
   const r = row(id, db);
@@ -218,7 +239,7 @@ export function startImport(id: string, controllerInstance: string, db: Database
   setState(id, "importing", db);
   const job = (async (): Promise<void> => {
     try {
-      const engine = await DockerVolumeEngine.create();
+      const engine = await transferDeps.engine();
       const domains = (JSON.parse(r.domains_json) as DomainChoice[]).map((d) => ({ ...d, useSsl: false }));
       const result = await importProject({ archivePath: archiveFile(id), passphrase: decryptSecret(r.key_enc), name: r.name, domains, engine, requireVerified: true, allowRawNginx: false, db });
       setState(id, "imported", db, { digest: result.digest, project_id: result.projectId, warnings_json: JSON.stringify({ warnings: result.warnings, notCarried: result.notCarried, hostnames: result.hostnames.map((h) => h.domain) }) });
@@ -255,7 +276,7 @@ export function startImported(id: string, controllerInstance: string, db: Databa
       const result = await new Promise<{ ok: boolean; output: string }>((resolve) => {
         const record = actionRegistry.tryStart(projectRepoKey(projectId), "deploy", { projectId, triggeredBy: "move" }, async () => {
           try {
-            const deployed = await deployProject(projectId, "manual");
+            const deployed = await transferDeps.deploy(projectId);
             resolve({ ok: deployed.ok, output: deployed.output });
             return { ok: deployed.ok, output: deployed.output };
           } catch (error) {
@@ -267,9 +288,7 @@ export function startImported(id: string, controllerInstance: string, db: Databa
         if (!record) resolve({ ok: false, output: "Another action is running on this project." });
       });
       if (!result.ok) { setState(id, "failed", db, { error: `The project did not start: ${result.output.slice(-400)}` }); return; }
-      await ensureProjectProxyNetwork(projectId);
-      const nginx = await writeNginxConfig();
-      if (!nginx.ok) logger.warn({ projectId, output: nginx.output }, "transfer.nginx-failed");
+      await transferDeps.publish(projectId);
       setState(id, "started", db);
     } catch (error) {
       setState(id, "failed", db, { error: error instanceof Error ? error.message : String(error) });
@@ -327,8 +346,8 @@ async function doAbort(id: string, r: Row, controllerInstance: string | null, db
   const projectId = r.project_id;
   const project = projectId === null ? null : getProjectById(projectId);
   if (project && projectId !== null) {
-    const engine: VolumeEngine | null = await DockerVolumeEngine.create();
-    try { await stopAndPurgeProject(projectId); } catch { /* the volumes are removed below */ }
+    const engine: VolumeEngine | null = await transferDeps.engine();
+    try { await transferDeps.purge(projectId); } catch { /* the volumes are removed below */ }
     const volumes: VolumeSource[] = sourcesOf(project);
     if (engine) for (const named of await engine.namedVolumes(expectedComposeProjectName(project)).catch(() => [])) volumes.push({ kind: "named", name: named.name });
     const destroyed = await destroyProject(projectId, db);
@@ -337,7 +356,7 @@ async function doAbort(id: string, r: Row, controllerInstance: string | null, db
       throw new TransferError(502, `Could not remove the project: ${destroyed.error}`, "abort-incomplete");
     }
     await removeImportedProject(db, projectId, projectDirs({ id: projectId, name: project.name, source_type: project.sourceType }, currentVolumeRoots(), path.resolve(configuredDeployRoot())), { engine, volumes });
-    void writeNginxConfig().catch(() => undefined);
+    void transferDeps.publish(projectId).catch(() => undefined);
   }
   removeFiles(id);
   setState(id, "aborted", db, { project_id: null });
@@ -347,7 +366,7 @@ async function doAbort(id: string, r: Row, controllerInstance: string | null, db
 
 /** Tickets that ran out before they finished are undone; finished rows are kept for a week, then dropped. */
 export function purgeExpired(db: Database.Database = getDatabase()): void {
-  const stale = db.prepare(`SELECT id FROM project_transfers_in WHERE (expires_at < ? AND state IN ('awaiting','receiving','received')) OR (state IN ('importing','starting'))`).all(now()) as { id: string }[];
+  const stale = db.prepare(`SELECT id FROM project_transfers_in WHERE (expires_at < ? AND state IN ('awaiting','receiving','received')) OR (state IN ('importing','starting')) OR (state IN ('imported','started','failed') AND updated_at < ?)`).all(now(), new Date(Date.now() - SILENCE_MS).toISOString()) as { id: string }[];
   // importing and starting run in this process: one with no job here was cut short by a restart, and its half-made project goes.
   for (const { id } of stale.filter((s) => !inflight.has(s.id))) void abortTransfer(id, null, db).catch((error: unknown) => logger.error({ error: String(error), transferId: id }, "transfer.purge-failed"));
   db.prepare("DELETE FROM project_transfers_in WHERE state IN ('aborted','committed','failed') AND updated_at < ?").run(new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString());

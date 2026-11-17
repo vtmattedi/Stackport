@@ -2,13 +2,14 @@ import express, { type NextFunction, type Request, type RequestHandler, type Res
 import rateLimit from "express-rate-limit";
 import type Database from "better-sqlite3";
 import { logger } from "../../shared/logger";
-import { CHUNK_MAX_BYTES, TransferError, abortTransfer, authorizeTicket, commitTransfer, completeTransfer, domainOptions, getTransfer, prepareTransfer, projectHealth, receiveChunk, startImport, startImported } from "../moves/transferIn";
+import { MoveError, abortMove, beginMove, commitMove, getMove, renewMove } from "../moves/moveOut";
+import { CHUNK_MAX_BYTES, TransferError, abortTransfer, authorizeTicket, commitTransfer, completeTransfer, domainOptions, getTransfer, keepAlive, prepareTransfer, projectHealth, receiveChunk, startImport, startImported } from "../moves/transferIn";
 import type { Grant } from "./grants";
 
 /** The routes a move uses on this instance, as target. The paired controller's routes sit behind its signature and grants; the two the source uses
  *  (chunks, complete) are reached by a ticket's token alone, outside the signature, and are bounded by it: one transfer, one hour. */
 function failure(res: Response, error: unknown): void {
-  if (error instanceof TransferError) { res.status(error.status).json({ error: error.message, code: error.code, ...error.extra }); return; }
+  if (error instanceof TransferError || error instanceof MoveError) { res.status(error.status).json({ error: error.message, code: error.code, ...error.extra }); return; }
   logger.error({ error: error instanceof Error ? error.message : String(error) }, "peer.moves.failed");
   res.status(500).json({ error: "This instance could not complete the request.", code: "internal" });
 }
@@ -31,11 +32,27 @@ export function attachTargetRoutes(router: Router, authed: RequestHandler[], req
     res.status(201).json(prepareTransfer({ controllerInstance: controller(req), name: req.body?.name, domains }, db));
   }));
   router.get("/v1/transfers/:id", ...authed, requireTransfer, wrap((req, res, db) => { res.json(getTransfer(String(req.params["id"]), controller(req), db)); }));
+  router.post("/v1/transfers/:id/keepalive", ...authed, requireTransfer, wrap((req, res, db) => { res.json(keepAlive(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/import", ...authed, requireTransfer, wrap((req, res, db) => { res.json(startImport(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/start", ...authed, requireTransfer, wrap((req, res, db) => { res.json(startImported(String(req.params["id"]), controller(req), db)); }));
   router.get("/v1/transfers/:id/health", ...authed, requireTransfer, wrap((req, res, db) => { res.json(projectHealth(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/commit", ...authed, requireTransfer, wrap((req, res, db) => { res.json(commitTransfer(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/abort", ...authed, requireTransfer, wrap(async (req, res, db) => { res.json(await abortTransfer(String(req.params["id"]), controller(req), db)); }));
+
+  // ── this instance as the source of a move ────────────────────────────────────
+  router.post("/v1/moves", ...authed, requireTransfer, wrap(async (req, res, db) => {
+    const body = req.body as { projectId?: unknown; ticket?: unknown; archiveKey?: unknown };
+    if (!Number.isInteger(body.projectId)) throw new MoveError(400, "projectId is required.", "bad-request");
+    res.status(202).json(await beginMove({ controllerInstance: controller(req), projectId: body.projectId as number, ticket: body.ticket as never, archiveKey: body.archiveKey as string }, db));
+  }));
+  router.get("/v1/moves/:id", ...authed, requireTransfer, wrap((req, res, db) => { res.json(getMove(String(req.params["id"]), controller(req), db)); }));
+  router.post("/v1/moves/:id/renew", ...authed, requireTransfer, wrap((req, res, db) => { res.json(renewMove(String(req.params["id"]), controller(req), db)); }));
+  router.post("/v1/moves/:id/abort", ...authed, requireTransfer, wrap(async (req, res, db) => { res.json(await abortMove(String(req.params["id"]), controller(req), db)); }));
+  // Destroying the source is its own grant, never implied by the transfer.
+  router.post("/v1/moves/:id/commit", ...authed, requireTransfer, requireGrant("projects:destroy"), wrap(async (req, res, db) => {
+    if (typeof req.body?.digest !== "string") throw new MoveError(400, "The digest is required.", "bad-request");
+    res.json(await commitMove(String(req.params["id"]), controller(req), req.body.digest, db));
+  }));
 
   // ── the source's side of a ticket: no signature, only the token ─────────────
   // Wrong tokens count against the caller; a stream of good chunks does not.
