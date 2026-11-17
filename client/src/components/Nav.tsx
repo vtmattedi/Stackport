@@ -84,10 +84,12 @@ function PeersSubmenu({ peers }: { peers: PeerTarget[] }) {
             <span className={cn(styles.squircle, peerSquircle(peer.status.state))} title={PEER_STATE[peer.status.state]?.label} />
             <span className={styles.submenuItemLabel}>{peer.name}</span>
             {peer.status.state !== "online" && <span className={styles.submenuBadge}>{PEER_STATE[peer.status.state]?.label}</span>}
+            {peer.status.state === "online" && peer.summary && peer.summary.alerts.total > 0 && <span className={styles.submenuBadge} title="Alerts">{peer.summary.alerts.total}</span>}
           </Link>
         ))}
       </div>
       <div className={styles.submenuFooter}>
+        <Link to="/fleet" className={styles.submenuFooterLink}>All instances</Link>
         <Link to="/settings/peers" className={styles.submenuFooterLink}>Manage peers</Link>
       </div>
     </>
@@ -156,7 +158,8 @@ export default function Nav() {
   const { system, projects } = useSystem();
   const running = useRunningActions();
   const peers = usePeers().data?.controlling ?? [];
-  const peersActive = location.pathname.startsWith("/peers");
+  const peersActive = location.pathname.startsWith("/peers") || location.pathname === "/fleet";
+  const peerAlerts = peers.reduce((sum, peer) => sum + (peer.status.state === "online" ? peer.summary?.alerts.total ?? 0 : 0), 0);
   const [moreOpen, setMoreOpen] = useState(false);
   const [expanded, setExpanded] = useState(() => {
     return localStorage.getItem("sidebar-expanded") === "true";
@@ -266,12 +269,13 @@ export default function Nav() {
           <HoverCard.Root openDelay={SUBMENU_OPEN_DELAY_MS} closeDelay={150}>
             <HoverCard.Trigger asChild>
               <NavLink
-                to={`/peers/${peers[0].id}`}
+                to="/fleet"
                 title="Instances"
                 className={cn(styles.navLink, styles.hasSubmenu, peersActive && styles.active)}
               >
                 <Server size={16} />
                 <span className={styles.linkText}>Instances</span>
+                {peerAlerts > 0 && <span className={styles.submenuBadge} title="Alerts on peers">{peerAlerts}</span>}
               </NavLink>
             </HoverCard.Trigger>
             <HoverCard.Portal>

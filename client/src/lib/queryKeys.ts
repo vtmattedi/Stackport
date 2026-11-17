@@ -13,6 +13,8 @@ export const queryKeys = {
   githubPoller: ["github-poller"] as const,
   apiTokens: ["api-tokens"] as const,
   peers: ["peer-list"] as const,
+  localSummary: ["peer-list", "local"] as const,
+  peerStatus: (peerId: number) => ["peers", peerId, "status"] as const,
   peerProjects: (peerId: number) => ["peers", peerId, "projects"] as const,
   peerProject: (peerId: number, id: number) => ["peers", peerId, "project", id] as const,
   peerDeploys: (peerId: number, id: number) => ["peers", peerId, "project", id, "deploys"] as const,

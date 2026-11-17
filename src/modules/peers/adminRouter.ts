@@ -9,7 +9,9 @@ import { parseLogQuery } from "../deployments/logQuery";
 import { GRANTS, GrantError, grantImplications } from "./grants";
 import { checkPeer, forgetPeer, peerStatus } from "./monitor";
 import { PeerIdentityError, PeerUnreachable } from "./client";
-import { forgetRemoteCache, issuePairingCode, PeerError, registerTarget, remoteGet, removeTargetAndNotify, rotateTargetKey } from "./service";
+import { forgetRemoteCache, issuePairingCode, peekRemote, PeerError, registerTarget, remoteGet, removeTargetAndNotify, rotateTargetKey, STATUS_PATH } from "./service";
+import { statusHub } from "../status/hub";
+import { isStatusReport, summarize, type PeerStatusReport, type StatusSummary } from "./peerStatus";
 import { deleteRevokedController, listControllers, listTargets, revokeController } from "./store";
 
 /** Admin management of peers from this instance's own UI (session auth). Pairing codes and keys are never listed: a code is shown once at creation, a key never. */
@@ -35,13 +37,27 @@ async function selfSignedFingerprint(): Promise<string | null> {
   try { return new X509Certificate(await fs.readFile(SELF_SIGNED_CERT_PATH)).fingerprint256; } catch { return null; }
 }
 
+/** This instance's own numbers, for the fleet view. A collector that is failing leaves it null rather than failing the whole page. */
+async function localSummary(): Promise<StatusSummary | null> {
+  try { return summarize(await statusHub.current()); } catch { return null; }
+}
+
+router.get("/local-summary", requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  res.json({ summary: await localSummary() });
+});
+
 router.get("/", requireAuth, async (_req: Request, res: Response): Promise<void> => {
   res.json({
     self: ensureInstanceIdentity(),
     selfSignedFingerprint: await selfSignedFingerprint(),
     grantsAvailable: GRANTS,
     grantImplications: grantImplications(),
-    controlling: listTargets().map((target) => ({ ...target, status: peerStatus(target.id) ?? { state: "unknown" } })),
+    controlling: listTargets().map((target) => {
+      // What the monitor last read from the peer (memory only); an offline peer keeps its last numbers, and `summaryAt` says how old they are.
+      const last = peekRemote<PeerStatusReport>(target.id, STATUS_PATH);
+      const report = last && isStatusReport(last.data) ? last.data : null;
+      return { ...target, status: peerStatus(target.id) ?? { state: "unknown" }, summary: report ? summarize(report) : null, summaryAt: report ? last?.fetchedAt ?? null : null };
+    }),
     controlledBy: listControllers(),
   });
 });
@@ -100,6 +116,12 @@ router.delete("/targets/:id", requireAuth, async (req: Request<{ id: string }>, 
     auditLog(req.user ?? "unknown", "peer.remove", String(id), "ok", { notified });
     res.json({ notified });
   } catch (error) { handle(res, error); }
+});
+
+router.get("/targets/:id/status", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = idParam(req, res);
+  if (id === null) return;
+  try { res.json(await remoteGet(id, STATUS_PATH, { validate: isStatusReport })); } catch (error) { handle(res, error); }
 });
 
 // ── a peer's projects (read only) ─────────────────────────────────────────────

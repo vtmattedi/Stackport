@@ -6,7 +6,8 @@ import Database from "better-sqlite3";
 import migration from "../src/migrations/021_peers";
 import { ensureInstanceIdentity, setInstanceName } from "../src/modules/backup/instance";
 import { parseLogQuery } from "../src/modules/deployments/logQuery";
-import { issuePairingCode, registerTarget, remoteGet, PeerError } from "../src/modules/peers/service";
+import { issuePairingCode, peekRemote, registerTarget, remoteGet, PeerError, STATUS_PATH } from "../src/modules/peers/service";
+import { isStatusReport, summarize } from "../src/modules/peers/peerStatus";
 import { getControllerByInstance, revokeController } from "../src/modules/peers/store";
 
 /** B is this process's real application (real database, real routes, real control router); A is a bare in-memory controller, as another host would be. */
@@ -127,4 +128,59 @@ test("a service name that could be read as an option is refused, and the line co
   assert.deepEqual(parseLogQuery({ service: "web-1", tail: "5000" }), { tail: 1000, service: "web-1" });
   assert.deepEqual(parseLogQuery({ tail: "1" }), { tail: 10, service: undefined });
   assert.deepEqual(parseLogQuery({}), { tail: 100, service: undefined });
+});
+
+test("the status snapshot is cut to the grants: host:read gets the machine, projects:read gets projects, neither gets nothing", async () => {
+  const b = await startB();
+  const hostOnly = controller("HostOnly");
+  const projectsOnly = controller("ProjectsOnly");
+  const neither = controller("Neither");
+  try {
+    b.db.prepare("DELETE FROM hardware_samples").run();
+    b.db.prepare("INSERT INTO hardware_samples (cpu_percent, mem_percent, mem_used_mb, mem_total_mb, load1) VALUES (42, 50, 1024, 2048, 0.7)").run();
+    b.db.prepare("INSERT INTO projects (name, source_type) VALUES ('Visible', 'upload')").run();
+
+    const pair = async (c: Database.Database, grants: string[]) => {
+      const { code } = issuePairingCode({ endpoint: b.url, grants: ["projects:read"] }, b.db);
+      const target = await registerTarget(code, c);
+      b.db.prepare("UPDATE peer_controllers SET grants = ? WHERE instance_id = ?").run(grants.join(","), ensureInstanceIdentity(c).id);
+      return target;
+    };
+    type Report = { host: { cpuPercent: number } | null; projects: unknown[] };
+
+    const h = await pair(hostOnly, ["host:read"]);
+    const host = await remoteGet<Report>(h.id, STATUS_PATH, {}, hostOnly);
+    assert.equal(host.data.host?.cpuPercent, 42);
+    assert.deepEqual(host.data.projects, [], "host:read does not show projects");
+
+    // What the monitor would keep for the sidebar and fleet view comes from the same answer.
+    const last = peekRemote<Report & { actions: unknown[]; alerts: unknown[] }>(h.id, STATUS_PATH);
+    assert.ok(last);
+    assert.equal(summarize(last.data as never).host?.cpuPercent, 42);
+
+    const p = await pair(projectsOnly, ["projects:read"]);
+    const projects = await remoteGet<Report>(p.id, STATUS_PATH, {}, projectsOnly);
+    assert.equal(projects.data.host, null, "projects:read does not show the machine");
+    assert.ok(projects.data.projects.length >= 1);
+
+    const n = await pair(neither, []);
+    await assert.rejects(remoteGet(n.id, STATUS_PATH, {}, neither), (e: PeerError) => e.status === 403 && e.code === "forbidden");
+
+  } finally { hostOnly.close(); projectsOnly.close(); neither.close(); await b.stop(); }
+});
+
+test("summarize counts projects by state, running actions and alerts", () => {
+  const project = (state: string) => ({ state }) as never;
+  const summary = summarize({ host: null, projects: [project("ready"), project("ready"), project("down"), project("paused")], actions: [{}] as never, alerts: [{ severity: "critical" }, { severity: "warning" }] as never });
+  assert.deepEqual(summary.projects, { total: 4, ready: 2, problem: 0, down: 1, notDeployed: 0, paused: 1 });
+  assert.equal(summary.runningActions, 1);
+  assert.deepEqual(summary.alerts, { total: 2, critical: 1 });
+});
+
+test("a status answer that is not the expected shape is refused, not kept or summarised", () => {
+  const good = { host: null, projects: [{ state: "ready" }], actions: [], alerts: [{ severity: "warning", scope: "host" }], ageSeconds: 1 };
+  assert.equal(isStatusReport(good), true);
+  for (const bad of [null, "x", {}, { ...good, projects: undefined }, { ...good, host: "up" }, { ...good, alerts: [{ severity: 1 }] }, { ...good, projects: [null] }]) {
+    assert.equal(isStatusReport(bad), false, JSON.stringify(bad));
+  }
 });

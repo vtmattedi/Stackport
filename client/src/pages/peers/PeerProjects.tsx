@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { queryKeys } from "../../lib/queryKeys";
 import { usePeer } from "./PeerLayout";
+import { PeerStatusPanel } from "./PeerStatusPanel";
 import { ProjectStateBadge } from "./projectState";
 
 /** A peer's projects, read from the peer itself. Read only: nothing here changes the peer. */
@@ -25,6 +26,8 @@ export default function PeerProjects() {
           {query.isFetching ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}Refresh
         </Button>
       </div>
+
+      <PeerStatusPanel peer={peer} />
 
       {query.error && (
         <Alert variant="destructive" className="mb-4"><AlertDescription>

@@ -198,6 +198,8 @@ export type { Controller, Target };
 
 // ── controlling side: reading a peer's data ───────────────────────────────────
 
+export const STATUS_PATH = "/control/v1/status";
+
 export interface RemoteResult<T> {
   data: T;
   /** True when the peer could not be reached and this is what it last said. */
@@ -210,12 +212,18 @@ export interface RemoteResult<T> {
 const remoteCache = new Map<string, { data: unknown; fetchedAt: string }>();
 const REMOTE_CACHE_MAX = 200;
 
+/** The last answer for a path, without calling the peer; null when there is none. */
+export function peekRemote<T>(targetId: number, path: string): { data: T; fetchedAt: string } | null {
+  const entry = remoteCache.get(`${targetId}:${path}`);
+  return entry ? { data: entry.data as T, fetchedAt: entry.fetchedAt } : null;
+}
+
 export function forgetRemoteCache(targetId: number): void {
   for (const key of remoteCache.keys()) if (key.startsWith(`${targetId}:`)) remoteCache.delete(key);
 }
 
 /** Signed GET to a peer's control API. A refusal or an unsigned answer is an error here; only "could not reach it" may fall back to the last answer. */
-export async function remoteGet<T>(id: number, path: string, options: { cache?: boolean } = {}, db: Database.Database = getDatabase()): Promise<RemoteResult<T>> {
+export async function remoteGet<T>(id: number, path: string, options: { cache?: boolean; validate?: (body: unknown) => boolean } = {}, db: Database.Database = getDatabase()): Promise<RemoteResult<T>> {
   const target = getTarget(id, db);
   const key = targetKey(id, db);
   if (!target || !key) throw new PeerError(404, "No such peer.", "not-found");
@@ -231,7 +239,7 @@ export async function remoteGet<T>(id: number, path: string, options: { cache?: 
     if (response.status === 403) { forgetRemoteCache(id); throw new PeerError(403, response.body?.code === "peer-revoked" ? "The peer has revoked this instance's access." : response.body?.error ?? "The peer has not granted this.", response.body?.code === "peer-revoked" ? "peer-revoked" : "forbidden"); }
     if (response.status === 404) throw new PeerError(404, response.body?.error ?? "Not found on the peer.", "not-found");
     if (response.status !== 200) throw new PeerError(502, response.body?.error ?? `The peer answered with status ${response.status}.`, "peer-error");
-    if (response.body === null || typeof response.body !== "object") throw new PeerError(502, "The peer's answer was not understood.", "peer-error");
+    if (response.body === null || typeof response.body !== "object" || (options.validate && !options.validate(response.body))) throw new PeerError(502, "The peer's answer was not understood.", "peer-error");
     const fetchedAt = new Date().toISOString();
     if (useCache) {
       remoteCache.delete(cacheKey);

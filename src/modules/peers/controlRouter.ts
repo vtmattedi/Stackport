@@ -7,6 +7,7 @@ import { ensureInstanceIdentity } from "../backup/instance";
 import { hasGrant, type Grant } from "./grants";
 import { PeerError } from "./errors";
 import { parseLogQuery } from "../deployments/logQuery";
+import { reportStatus } from "./peerStatus";
 import { getRemoteProject, listRemoteProjects, remoteDeploys, remoteLogs } from "./remoteProjects";
 import { acceptPairing } from "./service";
 import { HEADERS, KEY_PATTERN, MAX_CLOCK_SKEW_MS, PROTOCOL_NAME, PROTOCOL_VERSIONS, safeEqual, signRequest, signResponse } from "./signing";
@@ -98,6 +99,18 @@ export function requireGrant(needed: Grant): RequestHandler {
   };
 }
 
+/** For a route that any one of several grants opens; the refusal names all of them. */
+export function requireAnyGrant(...accepted: Grant[]): RequestHandler {
+  return (req, res, next) => {
+    if (!req.peer || !accepted.some((grant) => hasGrant(req.peer?.grants ?? [], grant))) {
+      auditLog(`peer:${req.peer?.controller.instanceId ?? "unknown"}`, "peer.denied", `${req.method} ${req.path}`, "fail", { needed: accepted, operationId: req.peer?.operationId });
+      res.status(403).json({ error: `This instance has been granted none of: ${accepted.join(", ")}.`, code: "forbidden", needed: accepted });
+      return;
+    }
+    next();
+  };
+}
+
 /** Reads the body as exact bytes (the signature covers them) without interpreting it: parsing waits until the caller is authenticated. */
 function readRaw(limit: string): RequestHandler[] {
   return [
@@ -156,6 +169,14 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
     revokeController(controller.id, getDb());
     auditLog(`peer:${controller.instanceId}`, "peer.released", controller.instanceId, "ok", { operationId: req.peer?.operationId });
     res.json({ revoked: true });
+  });
+
+  /** The live status stream's snapshot, cut to what this caller was granted. Either read grant opens it; neither gets nothing but a refusal. */
+  router.get("/v1/status", ...authed, requireAnyGrant("host:read", "projects:read"), (req: Request, res: Response): void => {
+    reportStatus(req.peer?.grants ?? []).then((report) => { res.json(report); }).catch((error: unknown) => {
+      logger.error({ error: error instanceof Error ? error.message : String(error) }, "peer.status.read-failed");
+      res.status(503).json({ error: "This instance could not collect its status.", code: "unavailable" });
+    });
   });
 
   // ── projects (read) ─────────────────────────────────────────────────────────

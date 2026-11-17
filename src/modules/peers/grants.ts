@@ -14,6 +14,7 @@ export const GRANTS = [
   "projects:secrets", // reveal secret values
   "projects:shell", // interactive container shell
   "projects:destroy", // delete projects and their data
+  "host:read", // read-only host metrics (CPU, memory, disk, load, network) and the alerts about the host; not administration
 ] as const;
 export type Grant = (typeof GRANTS)[number];
 
@@ -25,6 +26,7 @@ const IMPLIES = new Map<Grant, Grant[]>(Object.entries({
   "projects:secrets": ["projects:env", "projects:read"],
   "projects:shell": ["projects:write", "projects:read"],
   "projects:destroy": ["projects:write", "projects:read"],
+  "host:read": [],
 } as Record<Grant, Grant[]>) as [Grant, Grant[]][]);
 
 /** What each grant also needs, for a client to show the final set before asking for it. */

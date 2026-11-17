@@ -29,6 +29,7 @@ const GithubSection = lazy(() => import("./pages/settings/GithubSection"));
 const EncryptionSection = lazy(() => import("./pages/settings/encryption/EncryptionSection"));
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
 const PeersSection = lazy(() => import("./pages/settings/PeersSection"));
+const FleetPage = lazy(() => import("./pages/peers/FleetPage"));
 const PeerLayout = lazy(() => import("./pages/peers/PeerLayout"));
 const PeerProjects = lazy(() => import("./pages/peers/PeerProjects"));
 const PeerProject = lazy(() => import("./pages/peers/PeerProject"));
@@ -86,6 +87,7 @@ export default function App() {
             <Route path="/logs" element={<Logs />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:id/:tab?" element={<ProjectDetails />} />
+            <Route path="/fleet" element={<FleetPage />} />
             <Route path="/peers/:peerId" element={<PeerLayout />}>
               <Route index element={<PeerProjects />} />
               <Route path="projects/:projectId" element={<PeerProject />} />

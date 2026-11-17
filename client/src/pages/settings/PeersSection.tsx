@@ -26,6 +26,7 @@ const GRANT_INFO: Record<PeerGrant, { label: string; hint: string }> = {
   "projects:secrets": { label: "Reveal secrets", hint: "See secret values in clear text." },
   "projects:shell": { label: "Shell", hint: "Open a shell inside a project's containers." },
   "projects:destroy": { label: "Delete", hint: "Delete projects and their data." },
+  "host:read": { label: "Host metrics", hint: "CPU, memory, disk, load and network of this machine, and the alerts about it. Read only: host administration can never be granted." },
 };
 
 /** Granting one of these also grants what it needs; the server says which, so the form shows the set it will actually issue. */
