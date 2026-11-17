@@ -21,6 +21,7 @@ export const queryKeys = {
   peerEnv: (peerId: number, id: number) => ["peers", peerId, "project", id, "env"] as const,
   moves: ["peer-list", "moves"] as const,
   move: (id: string) => ["peer-list", "moves", id] as const,
+  moveGithubAuth: (target: string, repo: string) => ["peer-list", "move-github-auth", target, repo] as const,
   moveDomains: (target: string) => ["peer-list", "move-domains", target] as const,
   peerLogs: (peerId: number, id: number) => ["peers", peerId, "project", id, "logs"] as const,
 };

@@ -1,8 +1,8 @@
 {
   "name": "stackport-vps-manager-client",
-  "version": "1.4.4",
-  "builtAt": "2026-11-17T14:42:52.499Z",
-  "gitCommit": "fc77b96",
+  "version": "1.4.5",
+  "builtAt": "2026-11-17T17:22:56.970Z",
+  "gitCommit": "955d416",
   "gitBranch": "feat/project-archive-and-move",
-  "gitMessage": "fix(backup): review findings on the project archive; version 1.4.3"
+  "gitMessage": "chore: retrigger CI (GitHub did not pick up the previous push)"
 }

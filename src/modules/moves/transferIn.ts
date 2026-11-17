@@ -16,6 +16,9 @@ import { deployProject, ensureProjectProxyNetwork, getProjectById, stopAndPurgeP
 import { DOMAIN_RE } from "../ingress/domainName";
 import { listManagedDomains } from "../ingress/managedDomains";
 import { writeNginxConfig } from "../ingress/nginx/configWriter";
+import { bindProjectToApp, candidatesForRepo, resolveAppRepository, verifyRepositoryAccess } from "../github/binding";
+import { GithubAppError } from "../github/app";
+import { listCredentials } from "../projects/operations";
 import { destroyProject } from "../projects/destroy";
 import { sha256OfFile } from "./fileHash";
 import { deployRoot as configuredDeployRoot, expectedComposeProjectName } from "../projects/workspace";
@@ -51,7 +54,7 @@ export class TransferError extends Error {
 interface Row {
   id: string; token_hash: string; key_enc: string; controller_instance: string; state: TransferState; name: string; domains_json: string;
   received_bytes: number; next_chunk: number; last_chunk_sha: string | null; size: number | null; sha256: string | null; digest: string | null;
-  project_id: number | null; health_endpoint: string | null; warnings_json: string; error: string | null; expires_at: string; created_at: string; updated_at: string;
+  project_id: number | null; health_endpoint: string | null; auth_json: string | null; warnings_json: string; error: string | null; expires_at: string; created_at: string; updated_at: string;
 }
 
 export interface TransferView {
@@ -118,11 +121,66 @@ export function hostnameProblem(domain: string, db: Database.Database = getDatab
   return null;
 }
 
+// ── how the target reaches GitHub ──────────────────────────────────────────
+
+/** A credential belongs to the instance that holds it: a project that moves here is cloned with THIS instance's token or GitHub App, not the source's. */
+export type MoveAuth = { mode: "token"; credentialId: number } | { mode: "app"; installationId?: number; repositoryId?: number } | { mode: "none" };
+
+export interface GithubAuthOptions {
+  credentials: { id: number; alias: string; isDefault: boolean }[];
+  /** Installations of this instance's GitHub App that can read the repository. */
+  app: { installationId: number; repositoryId: number; fullName: string }[];
+}
+
+/** What this instance offers a project from `repo`: its GitHub tokens, and its GitHub App if the App can read that repository. */
+export function githubAuthOptions(repo: string | null): GithubAuthOptions {
+  return {
+    credentials: listCredentials("github").map((c) => ({ id: c.id, alias: c.alias, isDefault: c.isDefault })),
+    app: repo ? candidatesForRepo(repo).map((r) => ({ installationId: r.installationId, repositoryId: r.repositoryId, fullName: r.fullName })) : [],
+  };
+}
+
+function parseAuth(value: unknown): MoveAuth | null {
+  const a = value as { mode?: unknown; credentialId?: unknown; installationId?: unknown; repositoryId?: unknown } | null;
+  if (!a || typeof a !== "object") return null;
+  if (a.mode === "none") return { mode: "none" };
+  if (a.mode === "token" && Number.isInteger(a.credentialId)) return { mode: "token", credentialId: a.credentialId as number };
+  if (a.mode === "app") return { mode: "app", ...(Number.isInteger(a.installationId) ? { installationId: a.installationId as number } : {}), ...(Number.isInteger(a.repositoryId) ? { repositoryId: a.repositoryId as number } : {}) };
+  return null;
+}
+
+/** Checked before the source is touched: a copy that cannot be cloned would be found out only after the project had been down for the whole transfer. */
+async function checkAuth(repo: string, auth: MoveAuth | null): Promise<void> {
+  if (!auth) throw new TransferError(400, "Choose how this instance reaches GitHub for this project: one of its tokens, its GitHub App, or none for a public repository.", "auth-required");
+  if (auth.mode === "token") {
+    if (!listCredentials("github").some((c) => c.id === auth.credentialId)) throw new TransferError(400, "That GitHub token does not exist on this instance.", "bad-request");
+  } else if (auth.mode === "app") {
+    const found = candidatesForRepo(repo).filter((r) => (auth.installationId === undefined || r.installationId === auth.installationId) && (auth.repositoryId === undefined || r.repositoryId === auth.repositoryId));
+    if (found.length === 0) throw new TransferError(409, `This instance's GitHub App cannot read ${repo}. Install it on the repository's owner and connect the account in Settings > GitHub, or choose a token.`, "auth-unavailable");
+    if (found.length > 1) throw new TransferError(409, `More than one installation can read ${repo}: choose one.`, "auth-ambiguous");
+    try { await verifyRepositoryAccess(resolveAppRepository(found[0].installationId, found[0].repositoryId)); } catch (error) {
+      throw new TransferError(409, `This instance's GitHub App could not read ${repo}: ${error instanceof GithubAppError ? error.message : error instanceof Error ? error.message : String(error)}`, "auth-unavailable");
+    }
+  }
+}
+
+function applyAuth(projectId: number, auth: MoveAuth | null, db: Database.Database): void {
+  const project = getProjectById(projectId);
+  if (!auth || !project?.githubRepo) return;
+  if (auth.mode === "token") {
+    db.prepare("UPDATE projects SET github_auth_mode = NULL, github_credential_id = ?, credential_id = ?, updated_at = ? WHERE id = ?").run(auth.credentialId, auth.credentialId, now(), projectId);
+  } else if (auth.mode === "app") {
+    const found = candidatesForRepo(project.githubRepo).filter((r) => (auth.installationId === undefined || r.installationId === auth.installationId) && (auth.repositoryId === undefined || r.repositoryId === auth.repositoryId));
+    if (found.length !== 1) throw new Error(`The GitHub App can no longer be matched to ${project.githubRepo}.`);
+    bindProjectToApp(projectId, resolveAppRepository(found[0].installationId, found[0].repositoryId));
+  }
+}
+
 // ── ticket ──────────────────────────────────────────────────────────────────
 
 export interface Ticket { transferId: string; token: string; archiveKey: string; expiresAt: string }
 
-export function prepareTransfer(input: { controllerInstance: string; name: unknown; domains?: DomainChoice[] }, db: Database.Database = getDatabase()): Ticket {
+export async function prepareTransfer(input: { controllerInstance: string; name: unknown; domains?: DomainChoice[]; githubRepo?: string | null; auth?: unknown }, db: Database.Database = getDatabase()): Promise<Ticket> {
   purgeExpired(db);
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (!name || name.length > 200) throw new TransferError(400, "Give the project a name of 1 to 200 characters.", "bad-request");
@@ -131,6 +189,9 @@ export function prepareTransfer(input: { controllerInstance: string; name: unkno
     const problem = hostnameProblem(choice.domain, db);
     if (problem) throw new TransferError(409, problem, "hostname-unavailable");
   }
+  const auth = parseAuth(input.auth);
+  const repo = typeof input.githubRepo === "string" && input.githubRepo.trim() ? input.githubRepo.trim() : null;
+  if (repo) await checkAuth(repo, auth);
   const free = freeBytes();
   if (free !== null && free < MIN_FREE_BYTES) throw new TransferError(507, "This instance has less than 1 GB free: there is no room to receive a project.", "no-space");
   const open = (db.prepare(`SELECT COUNT(*) AS n FROM project_transfers_in WHERE state IN (${OPEN.map(() => "?").join(",")})`).get(...OPEN) as { n: number }).n;
@@ -140,8 +201,8 @@ export function prepareTransfer(input: { controllerInstance: string; name: unkno
   const token = crypto.randomBytes(32).toString("base64url");
   const archiveKey = crypto.randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + AWAITING_TTL_MS).toISOString();
-  db.prepare(`INSERT INTO project_transfers_in (id, token_hash, key_enc, controller_instance, state, name, domains_json, expires_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, hashToken(token), encryptSecret(archiveKey), input.controllerInstance, "awaiting", name, JSON.stringify(input.domains ?? []), expiresAt, now(), now());
+  db.prepare(`INSERT INTO project_transfers_in (id, token_hash, key_enc, controller_instance, state, name, domains_json, auth_json, expires_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, hashToken(token), encryptSecret(archiveKey), input.controllerInstance, "awaiting", name, JSON.stringify(input.domains ?? []), repo && auth ? JSON.stringify(auth) : null, expiresAt, now(), now());
   fs.mkdirSync(transferDir(id), { recursive: true, mode: 0o700 });
   auditLog(`peer:${input.controllerInstance}`, "transfer.prepared", name, "ok", { transferId: id });
   return { transferId: id, token, archiveKey, expiresAt };
@@ -272,6 +333,8 @@ export function startImported(id: string, controllerInstance: string, db: Databa
       // Created paused so nothing deployed it by itself; it runs now, and a paused project gets no health check.
       // The deploy's own health gate probes the public hostname, which does not point at this instance until the user moves its DNS: for a move the gate is
       // "the containers run" (projectHealth). The configured check is put back, and scheduled, once the deploy is over.
+      // This instance's own way of reaching GitHub: the source's credentials do not exist here.
+      applyAuth(projectId, r.auth_json ? (JSON.parse(r.auth_json) as MoveAuth) : null, db);
       const configured = getProjectById(projectId)?.healthCheckEndpoint ?? null;
       db.prepare("UPDATE project_transfers_in SET health_endpoint = ? WHERE id = ?").run(configured, id);
       db.prepare("UPDATE projects SET paused = 0, health_check_endpoint = NULL, updated_at = ? WHERE id = ?").run(now(), projectId);

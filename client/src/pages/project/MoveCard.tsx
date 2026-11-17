@@ -15,7 +15,7 @@ export function MoveCard({ project, currentHostname }: { project: Project; curre
       <div className="card-title flex items-center gap-2"><MoveRight size={13} />Move to another instance</div>
       <p className="mb-3 text-xs text-[var(--dim)]">Stop this project, copy it with all of its data and secrets to another instance, verify the copy and start it there. The original is removed only after you confirm.</p>
       <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>Move…</Button>
-      {open && <MoveProjectDialog source={{ kind: "local" }} projectId={project.id} projectName={project.name} currentHostname={currentHostname} onClose={() => setOpen(false)} />}
+      {open && <MoveProjectDialog source={{ kind: "local" }} projectId={project.id} projectName={project.name} githubRepo={project.githubRepo} currentHostname={currentHostname} onClose={() => setOpen(false)} />}
     </div>
   );
 }

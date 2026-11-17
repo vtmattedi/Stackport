@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import type Database from "better-sqlite3";
 import { logger } from "../../shared/logger";
 import { MoveError, abortMove, beginMove, commitMove, getMove, renewMove } from "../moves/moveOut";
-import { CHUNK_MAX_BYTES, TransferError, abortTransfer, authorizeTicket, commitTransfer, completeTransfer, domainOptions, getTransfer, keepAlive, prepareTransfer, projectHealth, receiveChunk, startImport, startImported } from "../moves/transferIn";
+import { CHUNK_MAX_BYTES, TransferError, abortTransfer, authorizeTicket, commitTransfer, completeTransfer, domainOptions, getTransfer, githubAuthOptions, keepAlive, prepareTransfer, projectHealth, receiveChunk, startImport, startImported } from "../moves/transferIn";
 import type { Grant } from "./grants";
 
 /** The routes a move uses on this instance, as target. The paired controller's routes sit behind its signature and grants; the two the source uses
@@ -27,9 +27,12 @@ export function attachTargetRoutes(router: Router, authed: RequestHandler[], req
   // Where the "new hostname" step looks: the base domains this instance manages and the hostnames already taken.
   router.get("/v1/domains", ...authed, requireTransfer, wrap((_req, res, db) => { res.json(domainOptions(db)); }));
 
-  router.post("/v1/transfers", ...authed, requireTransfer, wrap((req, res, db) => {
+  // The GitHub tokens this instance holds and whether its GitHub App can read a repository: what the "how does the target reach GitHub" step offers.
+  router.get("/v1/github-auth", ...authed, requireTransfer, wrap((req, res) => { res.json(githubAuthOptions(typeof req.query["repo"] === "string" ? req.query["repo"] : null)); }));
+
+  router.post("/v1/transfers", ...authed, requireTransfer, wrap(async (req, res, db) => {
     const domains = Array.isArray(req.body?.domains) ? (req.body.domains as unknown[]).filter((d): d is { domain: string; service?: string; containerPort?: number | null } => typeof (d as { domain?: unknown })?.domain === "string") : [];
-    res.status(201).json(prepareTransfer({ controllerInstance: controller(req), name: req.body?.name, domains }, db));
+    res.status(201).json(await prepareTransfer({ controllerInstance: controller(req), name: req.body?.name, domains, githubRepo: typeof req.body?.githubRepo === "string" ? req.body.githubRepo : null, auth: req.body?.auth }, db));
   }));
   router.get("/v1/transfers/:id", ...authed, requireTransfer, wrap((req, res, db) => { res.json(getTransfer(String(req.params["id"]), controller(req), db)); }));
   router.post("/v1/transfers/:id/keepalive", ...authed, requireTransfer, wrap((req, res, db) => { res.json(keepAlive(String(req.params["id"]), controller(req), db)); }));

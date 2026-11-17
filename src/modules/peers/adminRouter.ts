@@ -14,7 +14,7 @@ import { OPERATION_ID_PATTERN } from "./signing";
 import { isStatusReport, summarize, type PeerStatusReport, type StatusSummary } from "./peerStatus";
 import { MoveError } from "../moves/moveOut";
 import { TransferError } from "../moves/transferIn";
-import { decide, getMoveRun, listMoves, startMove, targetDomains, type EndpointRef } from "./moveOrchestrator";
+import { decide, getMoveRun, listMoves, startMove, targetDomains, targetGithubAuth, type EndpointRef } from "./moveOrchestrator";
 import { deleteRevokedController, listControllers, listTargets, revokeController } from "./store";
 
 /** Admin management of peers from this instance's own UI (session auth). Pairing codes and keys are never listed: a code is shown once at creation, a key never. */
@@ -228,6 +228,14 @@ router.get("/moves/domains/:target", requireAuth, async (req: Request<{ target: 
   try { res.json(await targetDomains(ref)); } catch (error) { handle(res, error); }
 });
 
+/** How the target can reach GitHub for this repository: its own tokens, and its GitHub App when that can read it. */
+router.get("/moves/github-auth/:target", requireAuth, async (req: Request<{ target: string }>, res: Response): Promise<void> => {
+  const ref = refParam(req.params.target);
+  const repo = typeof req.query["repo"] === "string" ? req.query["repo"] : "";
+  if (!ref || !repo) { res.status(400).json({ error: "A target and a repository are required" }); return; }
+  try { res.json(await targetGithubAuth(ref, repo)); } catch (error) { handle(res, error); }
+});
+
 router.post("/moves", requireAuth, (req: Request, res: Response): void => {
   try {
     const source = refParam(req.body?.source);
@@ -235,7 +243,7 @@ router.post("/moves", requireAuth, (req: Request, res: Response): void => {
     const projectId = Number(req.body?.projectId);
     if (!source || !target || typeof req.body?.projectName !== "string") throw new PeerError(400, "A source, a target, a project and its name are required.", "bad-request");
     const domains = Array.isArray(req.body?.domains) ? (req.body.domains as unknown[]).filter((d): d is { domain: string; service?: string; containerPort?: number | null } => typeof (d as { domain?: unknown })?.domain === "string") : [];
-    const run = startMove({ source, target, projectId, projectName: req.body.projectName, name: typeof req.body?.name === "string" ? req.body.name : undefined, domains });
+    const run = startMove({ source, target, projectId, githubRepo: typeof req.body?.githubRepo === "string" ? req.body.githubRepo : null, auth: req.body?.auth ?? null, projectName: req.body.projectName, name: typeof req.body?.name === "string" ? req.body.name : undefined, domains });
     auditLog(req.user ?? "unknown", "move.start", `${run.projectName}`, "ok", { moveRun: run.id });
     res.status(202).json(run);
   } catch (error) { handle(res, error); }

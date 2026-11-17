@@ -76,7 +76,9 @@ import type {
   ComposeVariableStatus,
   PeersOverview,
   PeerTarget,
+  MoveAuth,
   MoveDomains,
+  MoveGithubAuth,
   MoveEndpoint,
   MoveRun,
   PairingCodeResult,
@@ -657,8 +659,9 @@ export const api = {
   // Moving a project between instances
   getMoves: () => request<{ moves: MoveRun[] }>("/peers/moves"),
   getMove: (id: string) => request<MoveRun>(`/peers/moves/${id}`),
+  getMoveGithubAuth: (target: MoveEndpoint, repo: string) => request<MoveGithubAuth>(`/peers/moves/github-auth/${target.kind === "local" ? "local" : target.peerId}?repo=${encodeURIComponent(repo)}`),
   getMoveDomains: (target: MoveEndpoint) => request<MoveDomains>(`/peers/moves/domains/${target.kind === "local" ? "local" : target.peerId}`),
-  startMove: (input: { source: MoveEndpoint; target: MoveEndpoint; projectId: number; projectName: string; name: string; domains: { domain: string; service?: string; containerPort?: number | null }[] }) =>
+  startMove: (input: { source: MoveEndpoint; target: MoveEndpoint; projectId: number; projectName: string; githubRepo?: string | null; auth?: MoveAuth | null; name: string; domains: { domain: string; service?: string; containerPort?: number | null }[] }) =>
     request<MoveRun>("/peers/moves", { method: "POST", body: JSON.stringify(input) }),
   confirmMove: (id: string) => request<MoveRun>(`/peers/moves/${id}/confirm`, { method: "POST" }),
   abortMove: (id: string) => request<MoveRun>(`/peers/moves/${id}/abort`, { method: "POST" }),

@@ -23,6 +23,7 @@ const migration: Migration = {
         digest TEXT,
         project_id INTEGER,
         health_endpoint TEXT,
+        auth_json TEXT,
         warnings_json TEXT NOT NULL DEFAULT '[]',
         error TEXT,
         expires_at TEXT NOT NULL,
