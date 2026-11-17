@@ -6,6 +6,7 @@ import type { Grant } from "./grants";
 import { hasGrant } from "./grants";
 import { setPeerPrincipal } from "./principal";
 import { actionRegistry } from "../actions/registry";
+import { tryReadEnvVariables, type ProjectEnvFileRow } from "../projects/envFiles";
 import { getDatabase } from "../../config/database";
 import { OPERATION_ID_PATTERN, safeEqual } from "./signing";
 
@@ -59,6 +60,15 @@ export const GATEWAY_RULES: readonly Rule[] = [
   write("DELETE", new RegExp(`${PROJECT}/domains/${ID}$`)),
   write("POST", new RegExp(`${PROJECT}/tcp-exposures$`)),
   write("DELETE", new RegExp(`${PROJECT}/tcp-exposures/${ID}$`)),
+  // env files: `projects:env` reads and writes them with values masked; `projects:secrets` sees the values (see maskEnv)
+  { method: "GET", path: new RegExp(`${PROJECT}/env-files$`), grant: "projects:env" },
+  { method: "POST", path: new RegExp(`${PROJECT}/env-files$`), grant: "projects:env" },
+  { method: "PUT", path: new RegExp(`${PROJECT}/env-files/${ID}$`), grant: "projects:env" },
+  { method: "DELETE", path: new RegExp(`${PROJECT}/env-files/${ID}$`), grant: "projects:env" },
+  // destroy: the project and its data. Each needs `projects:destroy`, which is never implied by another grant.
+  { method: "DELETE", path: new RegExp(`${PROJECT}$`), grant: "projects:destroy" },
+  { method: "POST", path: new RegExp(`${PROJECT}/stop-purge$`), grant: "projects:destroy" },
+  { method: "POST", path: new RegExp(`${PROJECT}/containers/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/drop-volumes$`), grant: "projects:destroy" },
   // write: the repository credentials a new project may name (aliases and types only; a secret is never part of the answer)
   { method: "GET", path: /^\/credentials$/, grant: "projects:write" },
 ];
@@ -66,6 +76,56 @@ export const GATEWAY_RULES: readonly Rule[] = [
 /** What the allow-list says about a request, or null when it is not on the list. `target` is the path without its query string. */
 export function matchRule(method: string, target: string): Rule | null {
   return GATEWAY_RULES.find((rule) => rule.method === method && rule.path.test(target)) ?? null;
+}
+
+const ENV_FILES = new RegExp(`${PROJECT}/env-files(/${ID})?$`);
+
+interface EnvVariableLike { key?: unknown; value?: unknown; masked?: unknown }
+
+/** Env values never leave in clear text for a caller without `projects:secrets`: the keys stay, the values do not. The answer is rebuilt from a short list of
+ *  fields, not patched, so a field added to an env file later is not shown to a masked caller until it is added here on purpose. */
+export function maskEnv(body: unknown): unknown {
+  const maskFile = (file: unknown): unknown => {
+    if (file === null || typeof file !== "object") return file;
+    const f = file as Record<string, unknown>;
+    if (!Array.isArray(f["variables"])) {
+      // Not an env file (an error answer): only its message.
+      return { ...(typeof f["error"] === "string" ? { error: f["error"] } : {}), ...(typeof f["code"] === "string" ? { code: f["code"] } : {}) };
+    }
+    return {
+      id: f["id"], projectId: f["projectId"], relativePath: f["relativePath"], unreadable: f["unreadable"], createdAt: f["createdAt"], updatedAt: f["updatedAt"],
+      variables: (f["variables"] as EnvVariableLike[]).map((variable) => ({ key: variable.key, value: "", masked: true })),
+    };
+  };
+  return Array.isArray(body) ? body.map(maskFile) : maskFile(body);
+}
+
+/** Whether an env answer actually carries a value in clear: the only thing worth recording as a secret having left. */
+function revealsValues(body: unknown): boolean {
+  const files = Array.isArray(body) ? body : [body];
+  return files.some((file) => Array.isArray((file as { variables?: unknown })?.variables) && ((file as { variables: EnvVariableLike[] }).variables).some((variable) => typeof variable.value === "string" && variable.value !== ""));
+}
+
+const ENV_FILE_ONE = /^\/projects\/(\d+)\/env-files\/(\d+)$/;
+
+/** A masked caller edits a file without knowing its values: an entry `{ key, keep: true }` stands for the value the file already has. Resolved here, on the peer, so the value never travels. */
+function resolveKeptValues(req: Request, target: string, db: Database.Database): string | null {
+  const match = ENV_FILE_ONE.exec(target);
+  const variables = (req.body as { variables?: unknown } | undefined)?.variables;
+  if (!match || !Array.isArray(variables) || !variables.some((entry) => (entry as { keep?: unknown })?.keep === true)) return null;
+  const row = db.prepare("SELECT * FROM project_env_files WHERE id = ? AND project_id = ?").get(Number(match[2]), Number(match[1])) as ProjectEnvFileRow | undefined;
+  const existing = row ? tryReadEnvVariables(row) : null;
+  if (!existing) return "The values to keep cannot be read.";
+  const byKey = new Map(existing.map((variable) => [variable.key, variable.value]));
+  const resolved: unknown[] = [];
+  for (const entry of variables as { key?: unknown; value?: unknown; keep?: unknown }[]) {
+    if (entry?.keep === true) {
+      if (typeof entry.key !== "string" || !byKey.has(entry.key)) return `There is no existing value for ${String(entry?.key)} to keep.`;
+      resolved.push({ key: entry.key, value: byKey.get(entry.key) });
+    } else resolved.push(entry);
+  }
+  (req.body as { variables: unknown[] }).variables = resolved;
+  return null;
 }
 
 /** An action belongs to a project when it was started for one. Updates, backups and other host-level actions are not a peer's to see. */
@@ -111,6 +171,21 @@ export function createGateway(api: Router, getDb: () => Database.Database): Requ
       const denied = rule.denyFields.find((field) => Object.prototype.hasOwnProperty.call(req.body, field));
       if (denied) { refuse(res, 403, `${denied} cannot be set by a peer.`, "forbidden-field"); return; }
     }
+    const db = getDb();
+    const envRoute = ENV_FILES.test(target);
+    const secrets = hasGrant(req.peer?.grants ?? [], "projects:secrets");
+    if (envRoute && req.method === "PUT") {
+      const problem = resolveKeptValues(req, target, db);
+      if (problem) { refuse(res, 400, problem, "bad-request"); return; }
+    }
+    if (envRoute) {
+      // Masked unless the caller may see secrets; and a clear value being shown is audited as such.
+      const json = res.json.bind(res) as (body: unknown) => Response;
+      res.json = ((body: unknown) => {
+        if (secrets && res.statusCode < 400 && revealsValues(body)) auditLog(`peer:${controller.instanceId}`, "peer.secrets-read", `${req.method} ${target}`, "ok", { operationId: req.peer?.operationId, status: res.statusCode });
+        return json(secrets ? body : maskEnv(body));
+      }) as typeof res.json;
+    }
     if (target === "/actions/running") {
       // Only the actions started for a project.
       const json = res.json.bind(res) as (body: unknown) => Response;
@@ -118,7 +193,6 @@ export function createGateway(api: Router, getDb: () => Database.Database): Requ
     }
 
     const mutating = req.method !== "GET";
-    const db = getDb();
     const operationId = req.peer?.operationId ?? null;
     let recorded = false;
 
@@ -152,7 +226,9 @@ export function createGateway(api: Router, getDb: () => Database.Database): Requ
     if (recorded && operationId) {
       const end = res.end.bind(res) as (...args: unknown[]) => Response;
       res.end = ((chunk?: unknown, ...rest: unknown[]) => {
-        const body = chunk === undefined || typeof chunk === "function" ? "" : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+        let body = chunk === undefined || typeof chunk === "function" ? "" : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+        // A value is never stored in the operations table, whoever was allowed to see it: a replay of an env write is the masked answer.
+        if (envRoute && body) { try { body = JSON.stringify(maskEnv(JSON.parse(body))); } catch { /* not JSON: an error page, which holds no value */ } }
         try {
           if (NOT_RECORDED.has(res.statusCode)) db.prepare("DELETE FROM peer_operations WHERE controller_id = ? AND operation_id = ?").run(controller.id, operationId);
           else {

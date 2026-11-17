@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { Loader } from "lucide-react";
 import type { DeployTrigger, PeerTarget, RemoteProjectDetail } from "../../api/types";
 import { AppSelect } from "../../components/AppSelect";
+import { useConfirm } from "../../components/ConfirmDialog";
 import { Button } from "../../components/ui/button";
 import { Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
@@ -28,7 +30,37 @@ export function PeerSettings({ peer, project }: { peer: PeerTarget; project: Rem
   const [trigger, setTrigger] = useState(project.deployTrigger);
   const [saving, setSaving] = useState(false);
   const canWrite = peer.grants.includes("projects:write");
+  const canDestroy = peer.grants.includes("projects:destroy");
   const call = usePeerCall(peer.id);
+  const confirm = useConfirm();
+  const navigate = useNavigate();
+
+  async function destroy(purge: boolean) {
+    const ok = await confirm({
+      title: purge ? `Stop ${project.name} on ${peer.name} and delete its data?` : `Delete ${project.name} from ${peer.name}?`,
+      description: purge
+        ? `This stops the project on ${peer.name} and deletes its containers and volumes there. It cannot be undone.`
+        : `This removes the project from ${peer.name}: its configuration, hostnames and env files. This instance never had a copy. It cannot be undone.`,
+      confirmLabel: purge ? "Stop and delete data" : "Delete project",
+      destructive: true,
+      requireText: project.name,
+    });
+    if (!ok) return;
+    try {
+      if (purge) {
+        await call("POST", `/projects/${project.id}/stop-purge`);
+        notify.success(`Stopping ${project.name} on ${peer.name} and deleting its data.`);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.peerProject(peer.id, project.id) });
+      } else {
+        await call("DELETE", `/projects/${project.id}`);
+        notify.success(`${project.name} deleted from ${peer.name}.`);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.peerProjects(peer.id) });
+        navigate(`/peers/${peer.id}`);
+      }
+    } catch (err) {
+      notify.error(err, `Couldn't ${purge ? "stop and delete the data of" : "delete"} ${project.name} on ${peer.name}`);
+    }
+  }
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -55,7 +87,7 @@ export function PeerSettings({ peer, project }: { peer: PeerTarget; project: Rem
     }
   }
 
-  return (
+  const form = (
     <form className="card" onSubmit={(event) => void save(event)}>
       <Stack gap={4}>
         <div className="flex flex-wrap gap-3">
@@ -73,5 +105,21 @@ export function PeerSettings({ peer, project }: { peer: PeerTarget; project: Rem
         {canWrite && <div><Button type="submit" disabled={saving || !name.trim()}>{saving && <Loader size={13} className="spin" />}Save on {peer.name}</Button></div>}
       </Stack>
     </form>
+  );
+
+  return (
+    <>
+      {form}
+      {canDestroy && (
+        <div className="card mt-4 border-destructive">
+          <div className="card-title text-destructive">Danger zone on {peer.name}</div>
+          <p className="mb-3 text-xs text-[var(--dim)]">These act on {peer.name}, not on this instance, and cannot be undone. You will be asked to type the project's name.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => void destroy(true)}>Stop and delete data</Button>
+            <Button type="button" variant="destructive" size="sm" onClick={() => void destroy(false)}>Delete project</Button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

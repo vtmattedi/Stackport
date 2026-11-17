@@ -5,7 +5,8 @@ import type { Server } from "http";
 import Database from "better-sqlite3";
 import migration from "../src/migrations/021_peers";
 import { ensureInstanceIdentity, setInstanceName } from "../src/modules/backup/instance";
-import { matchRule } from "../src/modules/peers/gateway";
+import { getAuditEntries } from "../src/shared/auditStore";
+import { maskEnv, matchRule } from "../src/modules/peers/gateway";
 import { issuePairingCode, registerTarget, remoteCall, PeerError } from "../src/modules/peers/service";
 
 /** B is this process's real application: its real routes, services and database, behind the real control router. A is a bare in-memory controller. */
@@ -38,9 +39,14 @@ test("the allow-list: what a peer can reach, and what it cannot", () => {
   assert.equal(matchRule("POST", "/projects/12/deploy")?.grant, "projects:write");
   assert.equal(matchRule("GET", "/projects/12/domains")?.grant, "projects:read");
   assert.equal(matchRule("GET", "/actions/running")?.grant, "projects:read");
+  assert.equal(matchRule("GET", "/projects/12/env-files")?.grant, "projects:env");
+  assert.equal(matchRule("PUT", "/projects/12/env-files/3")?.grant, "projects:env");
+  assert.equal(matchRule("DELETE", "/projects/12")?.grant, "projects:destroy");
+  assert.equal(matchRule("POST", "/projects/12/stop-purge")?.grant, "projects:destroy");
+  assert.equal(matchRule("POST", "/projects/12/containers/web/drop-volumes")?.grant, "projects:destroy");
   // Not on the list at all, whatever the application router has:
   for (const [method, path] of [
-    ["DELETE", "/projects/12"], ["POST", "/projects/12/stop-purge"], ["POST", "/projects/12/containers/web/drop-volumes"], ["GET", "/projects/12/env-files"], ["POST", "/projects/12/upload"],
+    ["POST", "/projects/12/upload"],
     ["GET", "/peers"], ["DELETE", "/peers/controllers/1"], ["POST", "/admin/password"], ["GET", "/system/update"], ["POST", "/credentials"], ["GET", "/encryption"], ["POST", "/domains"], ["POST", "/api-tokens"],
     ["GET", "/projects/12/../../peers"], ["POST", "/projects/abc/deploy"], ["GET", "/projects/12/webhook"],
     // the controls that keep a Compose file away from the host are not project configuration
@@ -125,10 +131,14 @@ test("a controller is held to its grants, and routes outside the allow-list do n
     assert.equal((await remoteCall(pairReader.id, { method: "GET", path: "/credentials" }, reader)).status, 403, "credential aliases need write");
 
     // write: still not host administration, other peers, env files or deletion
-    for (const [method, path] of [["GET", "/peers"], ["POST", "/admin/password"], ["GET", "/projects/1/env-files"], ["DELETE", "/projects/1"], ["POST", "/projects/1/stop-purge"]] as const) {
+    for (const [method, path] of [["GET", "/peers"], ["POST", "/admin/password"]] as const) {
       const answer = await remoteCall(pairWriter.id, { method, path, body: method === "GET" ? undefined : {}, operationId: method === "GET" ? undefined : opId() }, writer);
       assert.equal(answer.status, 404, `${method} ${path}`);
     }
+    // Write is not env, and not destroy: each is its own grant.
+    assert.equal((await remoteCall(pairWriter.id, { method: "GET", path: "/projects/1/env-files" }, writer)).status, 403);
+    assert.equal((await remoteCall(pairWriter.id, { method: "DELETE", path: "/projects/1", body: {}, operationId: opId() }, writer)).status, 403);
+    assert.equal((await remoteCall(pairWriter.id, { method: "POST", path: "/projects/1/stop-purge", body: {}, operationId: opId() }, writer)).status, 403);
     const credentials = await remoteCall(pairWriter.id, { method: "GET", path: "/credentials" }, writer);
     assert.equal(credentials.status, 200);
     assert.ok(!JSON.stringify(credentials.body).includes("secret_enc"), "aliases and types only");
@@ -181,4 +191,92 @@ test("a peer cannot inject raw nginx directives, and sees only the actions start
     assert.equal((await remoteCall(target.id, { method: "GET", path: `/actions/${hostAction}` }, a)).status, 404);
     assert.equal((await remoteCall(target.id, { method: "GET", path: `/actions/${hostAction}/log` }, a)).status, 404);
   } finally { a.close(); await b.stop(); }
+});
+
+test("env files: masked for projects:env, clear only with projects:secrets, kept values never travel, and no value is stored in the operations table", async () => {
+  const { readEnvVariables } = await import("../src/modules/projects/envFiles");
+  const b = await startB();
+  const envOnly = controller("EnvOnly");
+  const secretsToo = controller("Secrets");
+  const writer = controller("Writer");
+  try {
+    const envTarget = await registerTarget(issuePairingCode({ endpoint: b.url, grants: ["projects:env"] }, b.db).code, envOnly);
+    const secretsTarget = await registerTarget(issuePairingCode({ endpoint: b.url, grants: ["projects:secrets"] }, b.db).code, secretsToo);
+    const writeTarget = await registerTarget(issuePairingCode({ endpoint: b.url, grants: ["projects:write"] }, b.db).code, writer);
+    const created = await remoteCall(writeTarget.id, { method: "POST", path: "/projects", body: { name: "with-env", sourceType: "upload" }, operationId: opId() }, writer);
+    const projectId = (created.body as { id: number }).id;
+
+    // create (write-only values): the answer is masked
+    const createOp = opId();
+    const file = await remoteCall(envTarget.id, { method: "POST", path: `/projects/${projectId}/env-files`, body: { relativePath: ".env", variables: [{ key: "DB_PASSWORD", value: "s3cret-value" }, { key: "MODE", value: "prod" }] }, operationId: createOp }, envOnly);
+    assert.equal(file.status, 201);
+    const created1 = file.body as { id: number; variables: { key: string; value: string; masked?: boolean }[] };
+    assert.deepEqual(created1.variables.map((v) => [v.key, v.value, v.masked]), [["DB_PASSWORD", "", true], ["MODE", "", true]]);
+    assert.ok(!JSON.stringify(file.body).includes("s3cret-value"));
+
+    // the same write replayed returns the masked first answer; the table never held a value
+    const replay = await remoteCall(envTarget.id, { method: "POST", path: `/projects/${projectId}/env-files`, body: { relativePath: ".env", variables: [{ key: "DB_PASSWORD", value: "s3cret-value" }, { key: "MODE", value: "prod" }] }, operationId: createOp }, envOnly);
+    assert.equal(replay.replayed, true);
+    const stored = (b.db.prepare("SELECT body FROM peer_operations").all() as { body: string | null }[]).map((row) => row.body ?? "").join("\n");
+    assert.ok(!stored.includes("s3cret-value"), "no value in peer_operations");
+
+    // read: masked
+    const listed = await remoteCall(envTarget.id, { method: "GET", path: `/projects/${projectId}/env-files` }, envOnly);
+    assert.ok(!JSON.stringify(listed.body).includes("s3cret-value"));
+    assert.equal((listed.body as { variables: { masked: boolean }[] }[])[0].variables[0].masked, true);
+
+    // edit without knowing the values: keep one, change one, add one
+    const updated = await remoteCall(envTarget.id, { method: "PUT", path: `/projects/${projectId}/env-files/${created1.id}`, body: { relativePath: ".env", variables: [{ key: "DB_PASSWORD", keep: true }, { key: "MODE", value: "staging" }, { key: "EXTRA", value: "1" }] }, operationId: opId() }, envOnly);
+    assert.equal(updated.status, 200);
+    assert.ok(!JSON.stringify(updated.body).includes("staging") && !JSON.stringify(updated.body).includes("s3cret-value"), "the update's answer is masked too");
+    assert.deepEqual(Object.keys((updated.body as Record<string, unknown>)).sort(), ["createdAt", "id", "projectId", "relativePath", "unreadable", "updatedAt", "variables"], "an allowlisted shape, not the row");
+    const row = b.db.prepare("SELECT * FROM project_env_files WHERE id = ?").get(created1.id) as Parameters<typeof readEnvVariables>[0];
+    assert.deepEqual(Object.fromEntries(readEnvVariables(row).map((v) => [v.key, v.value])), { DB_PASSWORD: "s3cret-value", MODE: "staging", EXTRA: "1" }, "the kept value is the peer's own");
+    const unknownKey = await remoteCall(envTarget.id, { method: "PUT", path: `/projects/${projectId}/env-files/${created1.id}`, body: { relativePath: ".env", variables: [{ key: "NOPE", keep: true }] }, operationId: opId() }, envOnly);
+    assert.equal(unknownKey.status, 400);
+
+    // keeping everything is a round trip that changes nothing
+    const keepAll = await remoteCall(envTarget.id, { method: "PUT", path: `/projects/${projectId}/env-files/${created1.id}`, body: { relativePath: ".env", variables: ["DB_PASSWORD", "MODE", "EXTRA"].map((key) => ({ key, keep: true })) }, operationId: opId() }, envOnly);
+    assert.equal(keepAll.status, 200);
+    assert.deepEqual(Object.fromEntries(readEnvVariables(b.db.prepare("SELECT * FROM project_env_files WHERE id = ?").get(created1.id) as Parameters<typeof readEnvVariables>[0]).map((v) => [v.key, v.value])), { DB_PASSWORD: "s3cret-value", MODE: "staging", EXTRA: "1" });
+    // an empty value is a value, not "keep"
+    const blank = await remoteCall(envTarget.id, { method: "PUT", path: `/projects/${projectId}/env-files/${created1.id}`, body: { relativePath: ".env", variables: [{ key: "DB_PASSWORD", keep: true }, { key: "MODE", value: "" }, { key: "EXTRA", keep: true }] }, operationId: opId() }, envOnly);
+    assert.equal(blank.status, 200);
+    assert.equal(readEnvVariables(b.db.prepare("SELECT * FROM project_env_files WHERE id = ?").get(created1.id) as Parameters<typeof readEnvVariables>[0]).find((v) => v.key === "MODE")?.value, "");
+    const everything = (b.db.prepare("SELECT body FROM peer_operations").all() as { body: string | null }[]).map((row) => row.body ?? "").join("\n");
+    assert.ok(!everything.includes("s3cret-value") && !everything.includes("staging"), "no value in peer_operations, from a create or an update");
+
+    // secrets: the values; the audit trail says so only when a value really left
+    const before = getAuditEntries(500).filter((entry) => entry.action === "peer.secrets-read").length;
+    const failed = await remoteCall(secretsTarget.id, { method: "PUT", path: `/projects/${projectId}/env-files/${created1.id}`, body: { relativePath: ".env", variables: [{ key: "NOPE", keep: true }] }, operationId: opId() }, secretsToo);
+    assert.equal(failed.status, 400);
+    assert.equal(getAuditEntries(500).filter((entry) => entry.action === "peer.secrets-read").length, before, "an error answer reveals nothing and is not logged as a reveal");
+    const revealed = await remoteCall(secretsTarget.id, { method: "GET", path: `/projects/${projectId}/env-files` }, secretsToo);
+    assert.equal(JSON.stringify(revealed.body).includes("s3cret-value"), true);
+    assert.equal(getAuditEntries(500).filter((entry) => entry.action === "peer.secrets-read").length, before + 1);
+  } finally { envOnly.close(); secretsToo.close(); writer.close(); await b.stop(); }
+});
+
+test("deleting a project needs projects:destroy, and it removes the project on the peer", async () => {
+  const b = await startB();
+  const writer = controller("Writer");
+  const destroyer = controller("Destroyer");
+  try {
+    const writeTarget = await registerTarget(issuePairingCode({ endpoint: b.url, grants: ["projects:write"] }, b.db).code, writer);
+    const destroyTarget = await registerTarget(issuePairingCode({ endpoint: b.url, grants: ["projects:destroy"] }, b.db).code, destroyer);
+    const created = await remoteCall(writeTarget.id, { method: "POST", path: "/projects", body: { name: "to-delete", sourceType: "upload" }, operationId: opId() }, writer);
+    const projectId = (created.body as { id: number }).id;
+    assert.equal((await remoteCall(writeTarget.id, { method: "DELETE", path: `/projects/${projectId}`, body: {}, operationId: opId() }, writer)).status, 403);
+    assert.equal(count(b.db, "to-delete"), 1);
+    const deleted = await remoteCall(destroyTarget.id, { method: "DELETE", path: `/projects/${projectId}`, body: {}, operationId: opId() }, destroyer);
+    assert.equal(deleted.status, 204);
+    assert.equal(count(b.db, "to-delete"), 0);
+  } finally { writer.close(); destroyer.close(); await b.stop(); }
+});
+
+test("masking is an allowlist: an extra field on an env file does not reach a masked caller", () => {
+  const masked = maskEnv({ id: 1, projectId: 2, relativePath: ".env", variables: [{ key: "A", value: "secret" }], unreadable: false, createdAt: "x", updatedAt: "y", content: "A=secret", previous: [{ key: "A", value: "old" }] }) as Record<string, unknown>;
+  assert.ok(!JSON.stringify(masked).includes("secret") && !JSON.stringify(masked).includes("old"));
+  assert.equal("content" in masked, false);
+  assert.deepEqual(maskEnv({ error: "nope", detail: "A=secret" }), { error: "nope" });
 });

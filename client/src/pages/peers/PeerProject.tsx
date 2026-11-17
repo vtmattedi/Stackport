@@ -6,6 +6,7 @@ import { api } from "../../api/client";
 import { PeerBanner } from "../../components/PeerBanner";
 import { PeerActions } from "./PeerActions";
 import { PeerDomains } from "./PeerDomains";
+import { PeerEnv } from "./PeerEnv";
 import { PeerSettings } from "./PeerSettings";
 import { TimeAgo } from "../../components/TimeAgo";
 import { Alert, AlertDescription } from "../../components/ui/alert";
@@ -15,8 +16,8 @@ import { queryKeys } from "../../lib/queryKeys";
 import { usePeer } from "./PeerLayout";
 import { ProjectStateBadge } from "./projectState";
 
-type Tab = "overview" | "domains" | "deploys" | "logs" | "settings";
-const TABS: { id: Tab; label: string }[] = [{ id: "overview", label: "Overview" }, { id: "domains", label: "Hostnames" }, { id: "deploys", label: "Deploys" }, { id: "logs", label: "Logs" }, { id: "settings", label: "Settings" }];
+type Tab = "overview" | "domains" | "env" | "deploys" | "logs" | "settings";
+const TABS: { id: Tab; label: string; needs?: "projects:env" }[] = [{ id: "overview", label: "Overview" }, { id: "domains", label: "Hostnames" }, { id: "env", label: "Environment", needs: "projects:env" }, { id: "deploys", label: "Deploys" }, { id: "logs", label: "Logs" }, { id: "settings", label: "Settings" }];
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return <div className="grid grid-cols-[10rem_1fr] gap-2 border-b border-border py-2 text-[13px] last:border-b-0"><span className="text-[var(--dim)]">{label}</span><span className="min-w-0 break-words">{children}</span></div>;
@@ -58,7 +59,7 @@ function PeerProjectView({ projectId }: { projectId: number }) {
           </div>
           <PeerActions peer={peer} project={detail} />
           <div className="mb-4 flex flex-wrap gap-1.5" role="tablist">
-            {TABS.map(({ id, label }) => (
+            {TABS.filter(({ needs }) => !needs || peer.grants.includes(needs)).map(({ id, label }) => (
               <Button key={id} type="button" role="tab" aria-selected={tab === id} size="sm" variant={tab === id ? "default" : "outline"} onClick={() => setTab(id)}>{label}</Button>
             ))}
           </div>
@@ -79,6 +80,7 @@ function PeerProjectView({ projectId }: { projectId: number }) {
           )}
 
           {tab === "domains" && <PeerDomains peer={peer} projectId={projectId} />}
+          {tab === "env" && <PeerEnv peer={peer} projectId={projectId} />}
           {tab === "settings" && <PeerSettings peer={peer} project={detail} />}
 
           {tab === "deploys" && (
