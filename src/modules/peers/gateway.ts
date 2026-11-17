@@ -136,8 +136,9 @@ function isProjectAction(id: string): boolean {
   return row?.project_id !== null && row?.project_id !== undefined;
 }
 
-/** A status that says "try again" is not an outcome to remember: a retry with the same operation id must be able to run once the cause has passed. */
-const NOT_RECORDED = new Set([409, 429, 503]);
+/** A status that says "try again", or that a server error cut the work short, is not an outcome to remember: a retry with the same operation id must be able to run once the cause has passed.
+ *  (The handlers behind a write are guarded by their own conflicts: a name that exists, a project action already running.) */
+export const notRecorded = (status: number): boolean => status === 409 || status === 429 || status >= 500;
 
 /** An operation that has been running longer than this without recording a result is treated as lost (a crash), not as still running. */
 const IN_PROGRESS_LOST_MS = 10 * 60_000;
@@ -174,10 +175,6 @@ export function createGateway(api: Router, getDb: () => Database.Database): Requ
     const db = getDb();
     const envRoute = ENV_FILES.test(target);
     const secrets = hasGrant(req.peer?.grants ?? [], "projects:secrets");
-    if (envRoute && req.method === "PUT") {
-      const problem = resolveKeptValues(req, target, db);
-      if (problem) { refuse(res, 400, problem, "bad-request"); return; }
-    }
     if (envRoute) {
       // Masked unless the caller may see secrets; and a clear value being shown is audited as such.
       const json = res.json.bind(res) as (body: unknown) => Response;
@@ -230,7 +227,7 @@ export function createGateway(api: Router, getDb: () => Database.Database): Requ
         // A value is never stored in the operations table, whoever was allowed to see it: a replay of an env write is the masked answer.
         if (envRoute && body) { try { body = JSON.stringify(maskEnv(JSON.parse(body))); } catch { /* not JSON: an error page, which holds no value */ } }
         try {
-          if (NOT_RECORDED.has(res.statusCode)) db.prepare("DELETE FROM peer_operations WHERE controller_id = ? AND operation_id = ?").run(controller.id, operationId);
+          if (notRecorded(res.statusCode)) db.prepare("DELETE FROM peer_operations WHERE controller_id = ? AND operation_id = ?").run(controller.id, operationId);
           else {
             db.prepare("UPDATE peer_operations SET status = ?, body = ?, content_type = ? WHERE controller_id = ? AND operation_id = ?")
               .run(res.statusCode, body, String(res.getHeader("content-type") ?? "") || null, controller.id, operationId);
@@ -239,6 +236,12 @@ export function createGateway(api: Router, getDb: () => Database.Database): Requ
         auditLog(`peer:${controller.instanceId}`, "peer.request", `${req.method} ${target}`, res.statusCode < 400 ? "ok" : "fail", { operationId, status: res.statusCode, grant: rule.grant });
         return end(chunk, ...rest);
       }) as typeof res.end;
+    }
+
+    // Kept values are read from the file as it is now, so only for a request that runs: a replay (above) never re-reads state the first attempt changed.
+    if (envRoute && req.method === "PUT") {
+      const problem = resolveKeptValues(req, target, db);
+      if (problem) { refuse(res, 400, problem, "bad-request"); return; }
     }
 
     // The route sees an authenticated principal and none of the caller's own credentials.

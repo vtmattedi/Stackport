@@ -23,7 +23,8 @@ export async function reportStatus(grants: readonly Grant[]): Promise<PeerStatus
   return {
     host: host ? snapshot.host : null,
     projects: projects ? snapshot.projects : [],
-    actions: projects ? snapshot.actions : [],
+    // Only actions started for a project: updates, backups and other host-level actions are not a project controller's to see (the same rule as the gateway).
+    actions: projects ? snapshot.actions.filter((action) => action.projectId !== null) : [],
     alerts: snapshot.alerts.filter(keep),
     ageSeconds: statusHub.ageSeconds(),
   };

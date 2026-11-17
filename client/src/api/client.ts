@@ -141,7 +141,9 @@ export function newOperationId(): string {
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
-    message: string
+    message: string,
+    /** The peer's or server's own code for the refusal (`operation-in-progress`, `forbidden`, ...), when it gave one. */
+    public readonly code?: string
   ) {
     super(message);
     this.name = "ApiError";
@@ -179,8 +181,9 @@ async function request<T>(
   if (!res.ok) {
     const body = (await res.json().catch(() => ({ error: "Request failed" }))) as {
       error?: string;
+      code?: string;
     };
-    throw new ApiError(res.status, body.error ?? "Request failed");
+    throw new ApiError(res.status, body.error ?? "Request failed", body.code);
   }
 
   if (res.status === 204) return undefined as T;

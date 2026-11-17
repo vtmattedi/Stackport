@@ -108,7 +108,7 @@ export async function registerTarget(code: string, db: Database.Database = getDa
   if (response.body.instance?.id !== decoded.instanceId) throw new PeerError(502, "The server that answered is not the instance that issued the code.", "identity-mismatch");
   if (!response.body.versions?.some((v) => PROTOCOL_VERSIONS.includes(v))) throw new PeerError(502, "The peer does not speak a protocol version this instance understands.", "version-mismatch");
 
-  return addTarget({ instanceId: decoded.instanceId, name: response.body.instance.name, endpoint: decoded.endpoint, certFingerprint: decoded.fingerprint, key: response.body.key, grants: normalizeGrants(response.body.grants), protocol: 1 }, db);
+  return addTarget({ instanceId: decoded.instanceId, name: cleanName(response.body.instance.name) ?? "Stackport", endpoint: decoded.endpoint, certFingerprint: decoded.fingerprint, key: response.body.key, grants: normalizeGrants(response.body.grants), protocol: 1 }, db);
 }
 
 // ── controlling side: keeping a target current ────────────────────────────────
@@ -226,9 +226,18 @@ export function forgetRemoteCache(targetId: number): void {
 function assertFromPeer(response: { status: number; verified: boolean }): void {
   // The peer's rate limiter answers before it knows who is calling, so its answer is not signed: that is "slow down", not an impostor.
   if (response.status === 429) throw new PeerError(503, "The peer is rate limiting this instance; try again shortly.", "rate-limited");
+  // Refused for size before the caller was known, so unsigned as well: too large for the channel, not an impostor.
+  if (response.status === 413) throw new PeerError(413, "That is too large for the control channel (16 kB).", "too-large");
   if (response.status === 426) throw new PeerError(502, "The peer does not speak a protocol version this instance understands.", "version-mismatch");
   if (response.status === 421) throw new PeerError(502, "The server at this address is not the registered instance.", "identity-mismatch");
   if (!response.verified) throw new PeerError(502, response.status === 401 ? "The peer did not accept this instance's credentials (check both clocks, or re-pair)." : "The peer's answer was not signed with the shared key: it may not be the registered instance.", response.status === 401 ? "unauthenticated" : "identity-mismatch");
+}
+
+/** Reads that run `docker compose config`, git or the GitHub API on the peer take longer than a status read; a slow host must not look like an unreachable one. */
+const SLOW_READS = /\/(ingress-targets|compose-policy|compose-variables|compose-env-files|branches|deploy-preview|rollback-preview)(\?|$)/;
+function timeoutFor(method: string, path: string): number {
+  if (method !== "GET") return 30_000;
+  return SLOW_READS.test(path) ? 70_000 : 15_000;
 }
 
 export interface RemoteCall { status: number; body: unknown; replayed: boolean; text: string; contentType: string | null }
@@ -244,7 +253,7 @@ export async function remoteCall(id: number, call: { method: string; path: strin
   try {
     const response = await signedCall<{ error?: string; code?: string } | null>({
       endpoint: target.endpoint, fingerprint: target.certFingerprint, key, selfId: self.id, targetId: target.instanceId,
-      method: call.method, path: `/control/v1/api${call.path}`, body: call.body, operationId: call.operationId, timeoutMs: call.method === "GET" ? 10_000 : 30_000,
+      method: call.method, path: `/control/v1/api${call.path}`, body: call.body, operationId: call.operationId, timeoutMs: timeoutFor(call.method, call.path),
     });
     assertFromPeer(response);
     // A signed 401 is the peer refusing this instance's credentials or clock. Passed on as a 401 it would sign the admin out of this instance's own UI.

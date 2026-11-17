@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import migration from "../src/migrations/021_peers";
 import { ensureInstanceIdentity, setInstanceName } from "../src/modules/backup/instance";
 import { getAuditEntries } from "../src/shared/auditStore";
-import { maskEnv, matchRule } from "../src/modules/peers/gateway";
+import { maskEnv, matchRule, notRecorded } from "../src/modules/peers/gateway";
 import { issuePairingCode, registerTarget, remoteCall, PeerError } from "../src/modules/peers/service";
 
 /** B is this process's real application: its real routes, services and database, behind the real control router. A is a bare in-memory controller. */
@@ -279,4 +279,9 @@ test("masking is an allowlist: an extra field on an env file does not reach a ma
   assert.ok(!JSON.stringify(masked).includes("secret") && !JSON.stringify(masked).includes("old"));
   assert.equal("content" in masked, false);
   assert.deepEqual(maskEnv({ error: "nope", detail: "A=secret" }), { error: "nope" });
+});
+
+test("only a settled answer is remembered under an operation id: a retry can run again after a server error, a busy slot or a rate limit", () => {
+  for (const status of [409, 429, 500, 502, 503, 504]) assert.equal(notRecorded(status), true, String(status));
+  for (const status of [200, 201, 204, 400, 403, 404]) assert.equal(notRecorded(status), false, String(status));
 });

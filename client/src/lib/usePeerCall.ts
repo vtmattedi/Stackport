@@ -19,7 +19,10 @@ export function usePeerCall(peerId: number) {
       pending.current.delete(intent);
       return result;
     } catch (error) {
-      if (error instanceof ApiError && error.status < 500) pending.current.delete(intent);
+      // Settled: the peer answered that it did nothing (a refusal), or that the outcome is unknowable and wants a new id. Not settled: a lost answer (a 5xx), or
+      // the first attempt still running on the peer: the retry must carry the same id.
+      const settled = error instanceof ApiError && error.status < 500 && error.code !== "operation-in-progress";
+      if (settled) pending.current.delete(intent);
       throw error;
     }
   }, [peerId]);

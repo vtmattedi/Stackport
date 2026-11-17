@@ -136,7 +136,7 @@ function parseBody(req: Request, res: Response, next: NextFunction): void {
  *  It must be mounted before the application's JSON parser: that parser would consume the body this router needs to see unparsed. */
 export function createControlRouter(getDb: () => Database.Database = getDatabase, options: { api?: Router } = {}): Router {
   const router = Router();
-  const pairLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many pairing attempts, try again later." } });
+  const pairLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, skipSuccessfulRequests: true, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many pairing attempts, try again later." } });
   const auth = authenticate(getDb);
   // The signature covers the body, so it has to be read before the caller is known: the limit is what a stranger can make this server hold,
   // and stays small. A route that must accept more (env files, uploads) will need its own bounded limit and a justification.
@@ -188,6 +188,9 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
   if (options.api) router.use("/v1/api", ...authed, createGateway(options.api, getDb));
 
   // ── projects (read) ─────────────────────────────────────────────────────────
+  // A curated summary (list, detail, deploys, logs) for lists, the sidebar and monitoring: built field by field, so a column added later is not shown by accident.
+  // Operating on a project goes through the gateway above, which serves the application's own shapes. The two do not overlap on a path; what both must keep
+  // (project-level actions only, masked env values) is decided in one place each: peerStatus.ts and gateway.ts.
   // Served from this instance's own services; the caller only reads. Mutations arrive with their own grants in later routes.
   const projectId = (req: Request, res: Response): number | null => {
     const id = Number(req.params["id"]);
