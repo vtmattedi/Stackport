@@ -60,6 +60,7 @@ beforeEach(() => {
   transferDeps.engine = async () => docker;
   transferDeps.deploy = async () => { docker.deployed = true; return { ok: true, output: "" }; };
   transferDeps.publish = async () => undefined;
+  transferDeps.issueSsl = async () => ({ ok: true, output: "" });
   transferDeps.purge = async () => undefined;
   Object.assign(timing, { pollMs: 20, renewMs: 50, healthTimeoutMs: 2000, stepTimeoutMs: 20_000, confirmTimeoutMs: 20_000 });
 });
@@ -154,6 +155,48 @@ test("a move stops the source, verifies the copy, starts it, and removes the sou
     assert.equal((b.db.prepare("SELECT state FROM project_transfers_in").get() as { state: string }).state, "committed");
     assert.equal((b.db.prepare("SELECT state FROM project_moves_out").get() as { state: string }).state, "committed");
     assert.equal(actionRegistry.get(projectRepoKey(projectId))?.status, "success", "the slot is released");
+  } finally { a.close(); await b.stop(); }
+});
+
+test("the hostname keeps where it routed and its TLS, the project keeps its branch and commit, and the certificate is issued when the move is confirmed", async () => {
+  const b = await startB();
+  const a = controller("Alpha");
+  try {
+    const projectId = seedProject(b.db);
+    b.db.exec("DELETE FROM managed_domains");
+    b.db.prepare("INSERT INTO managed_domains (name, is_default) VALUES ('example.com', 1)").run();
+    const added = Number(b.db.prepare("INSERT INTO project_domains (project_id, domain, use_ssl, service, container_port) VALUES (?, 'shop.example.com', 1, 'web', 3000)").run(projectId).lastInsertRowid);
+    b.db.prepare("UPDATE projects SET health_check_domain_id = ?, auto_deploy_branch = 'main' WHERE id = ?").run(added, projectId);
+    b.db.prepare("INSERT INTO project_deployments (project_id, commit_sha, branch, status) VALUES (?, 'abc1234def', 'v2', 'active')").run(projectId);
+    const deploys: { branch: string | null; commit: string | null }[] = [];
+    transferDeps.deploy = async (_id, branch, commit) => { deploys.push({ branch: branch ?? null, commit: commit ?? null }); docker.deployed = true; return { ok: true, output: "" }; };
+    const issued: string[] = [];
+    transferDeps.issueSsl = async (_id, domain) => { issued.push(domain); return { ok: true, output: "" }; };
+
+    const peerId = await pair(b, a, ["projects:transfer", "projects:destroy"]);
+    const ref = { kind: "peer", peerId } as const;
+    const run = startMove({ source: ref, target: ref, projectId, projectName: "Shop", name: "Shop on target", domains: [{ domain: "new.example.com", from: "shop.example.com" }], allowSameInstance: true }, a);
+    await until(a, run.id, (r) => r.state === "awaiting-confirmation", "the copy to be started");
+
+    const copy = b.db.prepare("SELECT id, health_check_domain_id, auto_deploy_branch FROM projects WHERE name = 'Shop on target'").get() as { id: number; health_check_domain_id: number; auto_deploy_branch: string };
+    const domain = b.db.prepare("SELECT * FROM project_domains WHERE project_id = ?").get(copy.id) as { id: number; domain: string; service: string; container_port: number; use_ssl: number; managed_domain_id: number | null; label: string | null };
+    assert.equal(domain.domain, "new.example.com");
+    assert.equal(domain.service, "web", "the compose service it routed to comes along");
+    assert.equal(domain.container_port, 3000, "and the container port");
+    assert.equal(domain.use_ssl, 0, "no certificate exists here yet: it starts on HTTP");
+    assert.equal(domain.label, "new", "it is a hostname of the target's own managed domain");
+    assert.ok(domain.managed_domain_id);
+    assert.equal(copy.health_check_domain_id, domain.id, "the health check goes through it");
+    assert.equal(copy.auto_deploy_branch, "main", "the configured branch is the source's");
+    assert.deepEqual(deploys, [{ branch: "v2", commit: "abc1234def" }], "the first deploy is the branch and commit that ran on the source");
+    assert.deepEqual(issued, [], "no certificate before the move is confirmed");
+
+    await decide(run.id, "confirm", a);
+    await until(a, run.id, (r) => r.state === "done", "the move to finish");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(issued, ["new.example.com"], "the certificate is issued for the hostname that served TLS on the source");
+    const notes = JSON.parse((b.db.prepare("SELECT warnings_json FROM project_transfers_in").get() as { warnings_json: string }).warnings_json) as { warnings: string[] };
+    assert.ok(notes.warnings.some((w) => w.includes("new.example.com") && w.includes("issued")), "and the transfer says so");
   } finally { a.close(); await b.stop(); }
 });
 

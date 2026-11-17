@@ -1,8 +1,8 @@
 {
   "name": "stackport",
-  "version": "1.4.6",
-  "builtAt": "2026-11-17T19:05:02.205Z",
-  "gitCommit": "41ce17b",
-  "gitBranch": "feat/project-archive-and-move",
-  "gitMessage": "fix(moves): migration 24 adds the transfer columns to databases that already ran 23"
+  "version": "1.4.7",
+  "builtAt": "2026-11-17T20:47:47.867Z",
+  "gitCommit": "a6d265c",
+  "gitBranch": "fix/move-carry-ssl-target-branch",
+  "gitMessage": "Merge pull request #53 from vtmattedi/feat/project-archive-and-move"
 }
