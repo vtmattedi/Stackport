@@ -76,6 +76,9 @@ import type {
   ComposeVariableStatus,
   PeersOverview,
   PeerTarget,
+  MoveDomains,
+  MoveEndpoint,
+  MoveRun,
   PairingCodeResult,
   PeerRead,
   PeerStatusReport,
@@ -651,4 +654,12 @@ export const api = {
   getPeerProjectDeploys: (peerId: number, projectId: number) => request<PeerRead<{ deploys: RemoteDeploy[] }>>(`/peers/targets/${peerId}/projects/${projectId}/deploys`),
   getPeerProjectLogs: (peerId: number, projectId: number, tail: number) => request<PeerRead<{ ok: boolean; output: string }>>(`/peers/targets/${peerId}/projects/${projectId}/logs?tail=${tail}`),
   forgetController: (id: number) => request<void>(`/peers/controllers/${id}/record`, { method: "DELETE" }),
+  // Moving a project between instances
+  getMoves: () => request<{ moves: MoveRun[] }>("/peers/moves"),
+  getMove: (id: string) => request<MoveRun>(`/peers/moves/${id}`),
+  getMoveDomains: (target: MoveEndpoint) => request<MoveDomains>(`/peers/moves/domains/${target.kind === "local" ? "local" : target.peerId}`),
+  startMove: (input: { source: MoveEndpoint; target: MoveEndpoint; projectId: number; projectName: string; name: string; domains: { domain: string; service?: string; containerPort?: number | null }[] }) =>
+    request<MoveRun>("/peers/moves", { method: "POST", body: JSON.stringify(input) }),
+  confirmMove: (id: string) => request<MoveRun>(`/peers/moves/${id}/confirm`, { method: "POST" }),
+  abortMove: (id: string) => request<MoveRun>(`/peers/moves/${id}/abort`, { method: "POST" }),
 };

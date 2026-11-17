@@ -19,5 +19,8 @@ export const queryKeys = {
   peerProject: (peerId: number, id: number) => ["peers", peerId, "project", id] as const,
   peerDeploys: (peerId: number, id: number) => ["peers", peerId, "project", id, "deploys"] as const,
   peerEnv: (peerId: number, id: number) => ["peers", peerId, "project", id, "env"] as const,
+  moves: ["peer-list", "moves"] as const,
+  move: (id: string) => ["peer-list", "moves", id] as const,
+  moveDomains: (target: string) => ["peer-list", "move-domains", target] as const,
   peerLogs: (peerId: number, id: number) => ["peers", peerId, "project", id, "logs"] as const,
 };

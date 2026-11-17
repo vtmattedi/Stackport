@@ -1313,7 +1313,7 @@ export interface NetworkGroupView {
 }
 
 /** Settings > Peers (GET /peers). Keys and pairing codes are never listed. */
-export type PeerGrant = "projects:read" | "projects:write" | "projects:env" | "projects:secrets" | "projects:shell" | "projects:destroy" | "host:read";
+export type PeerGrant = "projects:read" | "projects:write" | "projects:env" | "projects:secrets" | "projects:shell" | "projects:destroy" | "projects:transfer" | "host:read";
 export type PeerState = "online" | "offline" | "revoked" | "identity-mismatch" | "version-mismatch" | "unknown";
 export interface PeerTarget {
   id: number; instanceId: string; name: string; endpoint: string; certFingerprint: string | null; grants: PeerGrant[]; protocol: number; createdAt: string; lastSeenAt: string | null;
@@ -1331,6 +1331,25 @@ export interface PeersOverview {
   controlling: PeerTarget[];
   controlledBy: PeerController[];
 }
+/** Moving a project between instances: this instance is the controller, and each side is this instance or a paired peer. */
+export type MoveEndpoint = { kind: "local" } | { kind: "peer"; peerId: number };
+export type MoveRunState = "preparing" | "transferring" | "importing" | "starting" | "awaiting-confirmation" | "committing" | "done" | "aborting" | "aborted" | "failed" | "interrupted" | "needs-attention";
+export interface MoveStep { name: string; status: "running" | "ok" | "failed"; detail: string; at: string }
+export interface MoveRun {
+  id: string;
+  source: MoveEndpoint;
+  target: MoveEndpoint;
+  projectName: string;
+  state: MoveRunState;
+  steps: MoveStep[];
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** What the target last said about its copy, and the source about its move (null when it cannot be reached or the move has ended). */
+  transfer: { state: string; receivedBytes: number; digest: string | null; warnings: string[]; notCarried: string[]; hostnames: string[] } | null;
+  sourceMove: { state: string; sentBytes: number; digest: string | null } | null;
+}
+export interface MoveDomains { bases: { name: string; isDefault: boolean }[]; used: string[] }
 export interface PairingCodeResult { code: string; expiresAt: string; grants: PeerGrant[] }
 
 /** A peer's projects, as the peer itself reports them (GET /peers/targets/:id/projects ...). `stale` means the peer could not be reached and this is its last answer. */

@@ -50,6 +50,7 @@ const migration: Migration = {
         project_name TEXT NOT NULL,
         state TEXT NOT NULL,
         steps_json TEXT NOT NULL DEFAULT '[]',
+        refs_json TEXT NOT NULL DEFAULT '{}',
         error TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL

@@ -27,7 +27,7 @@ export interface MoveRequest { source: EndpointRef; target: EndpointRef; project
 export interface Step { name: string; status: "running" | "ok" | "failed"; detail: string; at: string }
 export interface MoveRun { id: string; source: EndpointRef; target: EndpointRef; projectName: string; state: MoveRunState; steps: Step[]; error: string | null; createdAt: string; updatedAt: string; transfer: TransferView | null; sourceMove: MoveView | null }
 
-interface Row { id: string; source_json: string; target_json: string; project_name: string; state: MoveRunState; steps_json: string; error: string | null; created_at: string; updated_at: string }
+interface Row { id: string; source_json: string; target_json: string; project_name: string; state: MoveRunState; steps_json: string; refs_json: string; error: string | null; created_at: string; updated_at: string }
 
 // ── the two sides, local or remote, behind one interface ─────────────────────
 
@@ -169,14 +169,20 @@ export function listMoves(db: Database.Database = getDatabase()): MoveRun[] {
 /** The record, with what each side last said (a side that cannot be reached is simply not shown). */
 export async function getMoveRun(id: string, db: Database.Database = getDatabase()): Promise<MoveRun> {
   const r = read(id, db);
-  const liveState = live.get(id);
+  const refs = JSON.parse(r.refs_json) as { transferId?: string; sourceMoveId?: string };
   const target = targetOf(JSON.parse(r.target_json) as EndpointRef, db);
   const source = sourceOf(JSON.parse(r.source_json) as EndpointRef, db);
+  // What each side says about its part, also after the move ended (the notes about hostnames and what was not carried matter most then). A side that cannot be reached is simply not shown.
   const [transfer, sourceMove] = await Promise.all([
-    liveState?.transferId && !TERMINAL.includes(r.state) ? target.get(liveState.transferId).catch(() => null) : Promise.resolve(null),
-    liveState?.sourceMoveId && !TERMINAL.includes(r.state) ? source.get(liveState.sourceMoveId).catch(() => null) : Promise.resolve(null),
+    refs.transferId ? target.get(refs.transferId).catch(() => null) : Promise.resolve(null),
+    refs.sourceMoveId ? source.get(refs.sourceMoveId).catch(() => null) : Promise.resolve(null),
   ]);
   return toRun(r, { transfer, sourceMove });
+}
+
+function remember(id: string, db: Database.Database, refs: { transferId?: string; sourceMoveId?: string }): void {
+  const current = JSON.parse(read(id, db).refs_json) as object;
+  db.prepare("UPDATE peer_moves SET refs_json = ? WHERE id = ?").run(JSON.stringify({ ...current, ...refs }), id);
 }
 
 function save(id: string, db: Database.Database, patch: { state?: MoveRunState; error?: string | null; steps?: Step[] }): void {
@@ -251,6 +257,7 @@ async function run(id: string, request: MoveRequest & { name: string }, db: Data
     step("Prepare the target", "running");
     const ticket = await target.prepare(request.name, request.domains ?? []);
     ctx.transferId = ticket.transferId;
+    remember(id, db, { transferId: ticket.transferId });
     const address = await target.address();
     step("Prepare the target", "ok", "The target is ready to receive the project.");
 
@@ -258,6 +265,7 @@ async function run(id: string, request: MoveRequest & { name: string }, db: Data
     step("Stop the project and copy it", "running");
     const begun = await source.begin(request.projectId, { endpoint: address.endpoint, fingerprint: address.fingerprint, transferId: ticket.transferId, token: ticket.token }, ticket.archiveKey);
     ctx.sourceMoveId = begun.id;
+    remember(id, db, { sourceMoveId: begun.id });
     let sourceView: MoveView = begun;
     await waitFor(id, source, () => ctx, async () => {
       sourceView = await source.get(begun.id);

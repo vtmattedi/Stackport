@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader, Network } from "lucide-react";
 import type { StatusSummary } from "../../api/types";
 import { TimeAgo } from "../../components/TimeAgo";
+import { MovesPanel } from "./MovesPanel";
 import { Badge } from "../../components/ui/badge";
 import { api } from "../../api/client";
 import { formatRate } from "../../lib/format";
@@ -67,6 +68,7 @@ export default function FleetPage() {
           </table>
         </div>
       )}
+      <MovesPanel />
       <p className="mt-3 text-xs text-[var(--dim)]">Each peer keeps its own history and stays the source of truth. These numbers are what it last reported to this instance.</p>
     </main>
   );
