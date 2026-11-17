@@ -1,6 +1,8 @@
 import { projectRepoDir } from "../../modules/projects/workspace";
 import { createProjectEnvFile, deleteProjectEnvFile, EnvFileUnreadableError, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../../modules/projects/envFiles";
 import { previewDeploy, previewRollback } from "../../modules/deployments/preview";
+import { listProjectDeploys } from "../../modules/deployments/deployList";
+import { parseLogQuery } from "../../modules/deployments/logQuery";
 import { Router, Request, Response, NextFunction } from "express";
 import { getDatabase } from "../../config/database";
 import { requireAuth } from "../../modules/identity/middleware/session";
@@ -44,7 +46,7 @@ import { setComposePolicyEnforced } from "../../modules/deployments/compose/enfo
 import { checkProjectIngress } from "../../modules/ingress/health";
 import { getProjectBranches } from "../../modules/automation/githubPolling";
 import { runCertbotAction } from "../../modules/ingress/certificates/operations";
-import { actionRegistry, DEPLOY_KINDS_SQL, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../../modules/actions/registry";
+import { actionRegistry, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../../modules/actions/registry";
 import { deleteProjectActionLogs } from "../../modules/actions/log";
 import { clampHours, getProjectResourceSnapshot, getProjectResourcesSummary, getProjectResourcesTimeseries, type ResourceMetric } from "../../modules/observability/queries/projectResources";
 import { createProject as adminCreateProject, updateProject, setProjectPaused as pauseProject, ProjectAdminError } from "../../modules/projects/operations";
@@ -1146,13 +1148,11 @@ router.get("/:id/logs", requireAuth, async (req: Request<{ id: string }>, res: R
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
 
-  const tail = Math.min(Math.max(parseInt(String(req.query["tail"] ?? "100"), 10) || 100, 10), 1000);
-  const service = typeof req.query["service"] === "string" && req.query["service"].trim()
-    ? req.query["service"].trim()
-    : undefined;
+  const query = parseLogQuery(req.query);
+  if (!query) { res.status(400).json({ error: "Invalid service name" }); return; }
 
   try {
-    const result = await getProjectLogs(id, tail, service);
+    const result = await getProjectLogs(id, query.tail, query.service);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Failed to fetch logs" });
@@ -1374,49 +1374,13 @@ router.get("/:id/branches", requireAuth, async (req: Request<{ id: string }>, re
   }
 });
 
-interface DeployActionRow {
-  id: string;
-  project_id: number;
-  kind: string;
-  commit_sha: string | null;
-  commit_message: string | null;
-  commit_author: string | null;
-  branch: string | null;
-  triggered_by: string;
-  status: string;
-  started_at: string;
-  finished_at: string | null;
-  log_path: string | null;
-}
-
 /** Recent deploy-type actions (manual, auto, webhook, rollback, ...) from the actions log. */
 router.get("/:id/deploys", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
-
-  const db = getDatabase();
-  if (!db.prepare("SELECT id FROM projects WHERE id = ?").get(id)) {
-    res.status(404).json({ error: "Project not found" });
-    return;
-  }
-
-  const rows = db.prepare(
-    `SELECT * FROM actions WHERE project_id = ? AND kind IN (${DEPLOY_KINDS_SQL}) ORDER BY started_at DESC LIMIT 50`
-  ).all(id) as DeployActionRow[];
-  res.json(rows.map((r) => ({
-    id: r.id,
-    projectId: r.project_id,
-    kind: r.kind,
-    commitSha: r.commit_sha,
-    commitMessage: r.commit_message,
-    commitAuthor: r.commit_author,
-    branch: r.branch,
-    triggeredBy: r.triggered_by,
-    status: r.status,
-    createdAt: r.started_at,
-    completedAt: r.finished_at,
-    hasLog: r.log_path !== null,
-  })));
+  const deploys = listProjectDeploys(id);
+  if (!deploys) { res.status(404).json({ error: "Project not found" }); return; }
+  res.json(deploys);
 });
 
 /** Deletes every stored action log for the project (Clear logs). Action history stays. */

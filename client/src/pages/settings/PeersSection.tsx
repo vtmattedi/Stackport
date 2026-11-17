@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Copy, Link2, Loader, Plus, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Copy, Link2, FolderDot, Loader, Plus, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
 import { api } from "../../api/client";
-import type { PairingCodeResult, PeerController, PeerGrant, PeersOverview, PeerState, PeerTarget } from "../../api/types";
+import type { PairingCodeResult, PeerController, PeerGrant, PeerState, PeerTarget } from "../../api/types";
 import { copyText } from "../../components/ApiTokenRow";
 import { AppSelect } from "../../components/AppSelect";
 import { useConfirm } from "../../components/ConfirmDialog";
@@ -15,6 +16,8 @@ import { Input } from "../../components/ui/input";
 import { Stack } from "../../components/ui/stack";
 import { Hint, Prose } from "../../components/ui/text";
 import { notify } from "../../lib/notify";
+import { PEER_STATE } from "../../lib/peerState";
+import { usePeers } from "../../lib/usePeers";
 
 const GRANT_INFO: Record<PeerGrant, { label: string; hint: string }> = {
   "projects:read": { label: "View", hint: "List projects and see their status, logs and history." },
@@ -28,14 +31,6 @@ const GRANT_INFO: Record<PeerGrant, { label: string; hint: string }> = {
 /** Granting one of these also grants what it needs; the server says which, so the form shows the set it will actually issue. */
 const expand = (picked: PeerGrant[], implications: Record<PeerGrant, PeerGrant[]>): PeerGrant[] => [...new Set(picked.flatMap((grant) => [grant, ...(implications[grant] ?? [])]))];
 
-const STATE: Record<PeerState, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
-  online: { label: "Online", variant: "default" },
-  offline: { label: "Offline", variant: "secondary" },
-  revoked: { label: "Access revoked", variant: "destructive" },
-  "identity-mismatch": { label: "Identity changed", variant: "destructive" },
-  "version-mismatch": { label: "Incompatible version", variant: "destructive" },
-  unknown: { label: "Not checked yet", variant: "outline" },
-};
 
 const TTL_OPTIONS = [
   { value: "10", label: "10 minutes" },
@@ -52,7 +47,8 @@ function GrantBadges({ grants }: { grants: PeerGrant[] }) {
 /** Settings > Peers: name this instance, let another Stackport control it (a pairing code), and control others (paste one). */
 export default function PeersSection() {
   const confirm = useConfirm();
-  const [data, setData] = useState<PeersOverview | null>(null);
+  // One query for the sidebar, the peer pages and this page: there is a single copy of the peers.
+  const { data = null, refetch } = usePeers();
   const [name, setName] = useState("");
   const [savingName, setSavingName] = useState(false);
   const [picked, setPicked] = useState<PeerGrant[]>(["projects:read"]);
@@ -66,21 +62,20 @@ export default function PeersSection() {
   const [busy, setBusy] = useState<number | null>(null);
 
   const load = useCallback(async () => {
-    try {
-      const next = await api.getPeers();
-      setData(next);
-      setName((current) => current || next.self.name);
-      setFingerprint((current) => current || (next.selfSignedFingerprint && isIpHost(window.location.hostname) ? next.selfSignedFingerprint : ""));
-    } catch (err) {
-      notify.error(err, "Couldn't load the peers");
-    }
-  }, []);
+    try { await refetch({ throwOnError: true }); } catch (err) { notify.error(err, "Couldn't load the peers"); }
+  }, [refetch]);
 
   useEffect(() => {
-    void load();
     const timer = window.setInterval(() => { void load(); }, 15_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  // The first answer fills the fields that start from what this instance already knows.
+  useEffect(() => {
+    if (!data) return;
+    setName((current) => current || data.self.name);
+    setFingerprint((current) => current || (data.selfSignedFingerprint && isIpHost(window.location.hostname) ? data.selfSignedFingerprint : ""));
+  }, [data]);
 
   async function saveName(event: React.FormEvent) {
     event.preventDefault();
@@ -145,7 +140,7 @@ export default function PeersSection() {
     setBusy(target.id);
     try {
       const status = await api.refreshPeer(target.id);
-      if (status.state !== "online") notify.error(new Error(status.message ?? STATE[status.state as PeerState]?.label ?? status.state), `${target.name} is not reachable`);
+      if (status.state !== "online") notify.error(new Error(status.message ?? PEER_STATE[status.state as PeerState]?.label ?? status.state), `${target.name} is not reachable`);
       void load();
     } catch (err) {
       notify.error(err, "Couldn't check the peer");
@@ -248,7 +243,7 @@ export default function PeersSection() {
           ) : (
             <ul>
               {data.controlling.map((target) => {
-                const state = STATE[target.status.state] ?? STATE.unknown;
+                const state = PEER_STATE[target.status.state] ?? PEER_STATE.unknown;
                 return (
                   <li key={target.id} className="grid gap-1.5 border-b border-border py-3 text-[13px] last:border-b-0">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -256,6 +251,7 @@ export default function PeersSection() {
                       <Badge variant={state.variant}>{state.label}</Badge>
                       <span className="mono text-xs text-[var(--dim)]">{target.endpoint}</span>
                       <span className="ml-auto flex gap-1.5">
+                        <Button asChild variant="outline" size="sm"><Link to={`/peers/${target.id}`}><FolderDot size={13} />Projects</Link></Button>
                         <Button type="button" variant="outline" size="sm" disabled={busy === target.id} onClick={() => void refresh(target)}>
                           {busy === target.id ? <Loader size={13} className="spin" /> : <RefreshCw size={13} />}Check
                         </Button>

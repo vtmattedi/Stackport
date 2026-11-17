@@ -2,10 +2,12 @@ import express, { Router, type NextFunction, type Request, type RequestHandler, 
 import rateLimit from "express-rate-limit";
 import type Database from "better-sqlite3";
 import { getDatabase } from "../../config/database";
-import { auditLog } from "../../shared/logger";
+import { auditLog, logger } from "../../shared/logger";
 import { ensureInstanceIdentity } from "../backup/instance";
 import { hasGrant, type Grant } from "./grants";
 import { PeerError } from "./errors";
+import { parseLogQuery } from "../deployments/logQuery";
+import { getRemoteProject, listRemoteProjects, remoteDeploys, remoteLogs } from "./remoteProjects";
 import { acceptPairing } from "./service";
 import { HEADERS, KEY_PATTERN, MAX_CLOCK_SKEW_MS, PROTOCOL_NAME, PROTOCOL_VERSIONS, safeEqual, signRequest, signResponse } from "./signing";
 import { confirmControllerKey, controllerKeys, recordNonce, revokeController, rotateControllerKey, touchController, type Controller } from "./store";
@@ -154,6 +156,50 @@ export function createControlRouter(getDb: () => Database.Database = getDatabase
     revokeController(controller.id, getDb());
     auditLog(`peer:${controller.instanceId}`, "peer.released", controller.instanceId, "ok", { operationId: req.peer?.operationId });
     res.json({ revoked: true });
+  });
+
+  // ── projects (read) ─────────────────────────────────────────────────────────
+  // Served from this instance's own services; the caller only reads. Mutations arrive with their own grants in later routes.
+  const projectId = (req: Request, res: Response): number | null => {
+    const id = Number(req.params["id"]);
+    if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid project id.", code: "bad-request" }); return null; }
+    return id;
+  };
+  const notFound = (res: Response): void => { res.status(404).json({ error: "Project not found.", code: "not-found" }); };
+  const failed = (res: Response, error: unknown): void => {
+    logger.error({ error: error instanceof Error ? error.message : String(error) }, "peer.projects.read-failed");
+    res.status(500).json({ error: "This instance could not read the project.", code: "internal" });
+  };
+
+  router.get("/v1/projects", ...authed, requireGrant("projects:read"), async (_req: Request, res: Response): Promise<void> => {
+    try { res.json({ projects: await listRemoteProjects() }); } catch (error) { failed(res, error); }
+  });
+
+  router.get("/v1/projects/:id", ...authed, requireGrant("projects:read"), async (req: Request, res: Response): Promise<void> => {
+    const id = projectId(req, res);
+    if (id === null) return;
+    try {
+      const project = await getRemoteProject(id);
+      if (project) res.json(project); else notFound(res);
+    } catch (error) { failed(res, error); }
+  });
+
+  router.get("/v1/projects/:id/deploys", ...authed, requireGrant("projects:read"), (req: Request, res: Response): void => {
+    const id = projectId(req, res);
+    if (id === null) return;
+    const deploys = remoteDeploys(id);
+    if (deploys) res.json({ deploys }); else notFound(res);
+  });
+
+  router.get("/v1/projects/:id/logs", ...authed, requireGrant("projects:read"), async (req: Request, res: Response): Promise<void> => {
+    const id = projectId(req, res);
+    if (id === null) return;
+    const query = parseLogQuery(req.query);
+    if (!query) { res.status(400).json({ error: "Invalid service name.", code: "bad-request" }); return; }
+    try {
+      const logs = await remoteLogs(id, query.tail, query.service);
+      if (logs) res.json(logs); else notFound(res);
+    } catch (error) { failed(res, error); }
   });
 
   router.use((_req: Request, res: Response): void => { res.status(404).json({ error: "Unknown control endpoint.", code: "not-found" }); });

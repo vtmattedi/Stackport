@@ -1329,3 +1329,34 @@ export interface PeersOverview {
   controlledBy: PeerController[];
 }
 export interface PairingCodeResult { code: string; expiresAt: string; grants: PeerGrant[] }
+
+/** A peer's projects, as the peer itself reports them (GET /peers/targets/:id/projects ...). `stale` means the peer could not be reached and this is its last answer. */
+export interface PeerRead<T> { data: T; stale: boolean; fetchedAt: string }
+export type RemoteProjectState = "ready" | "problem" | "down" | "not-deployed" | "paused";
+export interface RemoteProject {
+  id: number;
+  name: string;
+  group: string | null;
+  sourceType: "github" | "upload";
+  githubRepo: string | null;
+  branch: string | null;
+  paused: boolean;
+  favorite: boolean;
+  status: { state: RemoteProjectState; containers: { running: number; total: number }; health: "ok" | "failing" | "unknown" | "none"; lastCheckedAt: string | null; traffic: { windowS: number; requests: number; serverErrors: number; errorRatePct: number | null; p95Ms: number | null } | null } | null;
+  domains: { id: number; domain: string }[];
+  lastCommit: { sha: string; message: string | null; author: string | null; at: string | null } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface RemoteProjectDetail extends RemoteProject {
+  composeFile: string | null;
+  availableComposeFiles: string[];
+  deployTrigger: string;
+  healthCheck: { endpoint: string | null; intervalS: number; graceS: number };
+  hardenedDefaults: boolean;
+  composePolicyEnforced: boolean;
+  volumesManaged: boolean;
+  ingressIsolated: boolean;
+  networkGroup: string | null;
+}
+export interface RemoteDeploy { id: string; kind: string; commitSha: string | null; commitMessage: string | null; commitAuthor: string | null; branch: string | null; triggeredBy: string; status: string; createdAt: string; completedAt: string | null; hasLog: boolean }

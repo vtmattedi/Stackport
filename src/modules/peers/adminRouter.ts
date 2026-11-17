@@ -5,10 +5,11 @@ import { SELF_SIGNED_CERT_PATH } from "../ingress/nginx/selfSignedCert";
 import { requireAuth } from "../identity/middleware/session";
 import { auditLog } from "../../shared/logger";
 import { ensureInstanceIdentity, setInstanceName } from "../backup/instance";
+import { parseLogQuery } from "../deployments/logQuery";
 import { GRANTS, GrantError, grantImplications } from "./grants";
 import { checkPeer, forgetPeer, peerStatus } from "./monitor";
 import { PeerIdentityError, PeerUnreachable } from "./client";
-import { issuePairingCode, PeerError, registerTarget, removeTargetAndNotify, rotateTargetKey } from "./service";
+import { forgetRemoteCache, issuePairingCode, PeerError, registerTarget, remoteGet, removeTargetAndNotify, rotateTargetKey } from "./service";
 import { deleteRevokedController, listControllers, listTargets, revokeController } from "./store";
 
 /** Admin management of peers from this instance's own UI (session auth). Pairing codes and keys are never listed: a code is shown once at creation, a key never. */
@@ -95,9 +96,51 @@ router.delete("/targets/:id", requireAuth, async (req: Request<{ id: string }>, 
   try {
     const { notified } = await removeTargetAndNotify(id);
     forgetPeer(id);
+    forgetRemoteCache(id);
     auditLog(req.user ?? "unknown", "peer.remove", String(id), "ok", { notified });
     res.json({ notified });
   } catch (error) { handle(res, error); }
+});
+
+// ── a peer's projects (read only) ─────────────────────────────────────────────
+// Each call is made by this instance to the peer's own control API, signed, and answered from the peer's own services: this instance
+// keeps no copy beyond the last answer in memory, which an unreachable peer falls back to (marked stale).
+
+function projectParam(req: Request<{ id: string; projectId: string }>, res: Response): number | null {
+  const id = Number(req.params.projectId);
+  if (!Number.isInteger(id) || id < 1) { res.status(400).json({ error: "Invalid project id" }); return null; }
+  return id;
+}
+
+router.get("/targets/:id/projects", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
+  const id = idParam(req, res);
+  if (id === null) return;
+  try { res.json(await remoteGet(id, "/control/v1/projects")); } catch (error) { handle(res, error); }
+});
+
+router.get("/targets/:id/projects/:projectId", requireAuth, async (req: Request<{ id: string; projectId: string }>, res: Response): Promise<void> => {
+  const id = idParam(req, res);
+  const projectId = id === null ? null : projectParam(req, res);
+  if (id === null || projectId === null) return;
+  try { res.json(await remoteGet(id, `/control/v1/projects/${projectId}`)); } catch (error) { handle(res, error); }
+});
+
+router.get("/targets/:id/projects/:projectId/deploys", requireAuth, async (req: Request<{ id: string; projectId: string }>, res: Response): Promise<void> => {
+  const id = idParam(req, res);
+  const projectId = id === null ? null : projectParam(req, res);
+  if (id === null || projectId === null) return;
+  try { res.json(await remoteGet(id, `/control/v1/projects/${projectId}/deploys`)); } catch (error) { handle(res, error); }
+});
+
+router.get("/targets/:id/projects/:projectId/logs", requireAuth, async (req: Request<{ id: string; projectId: string }>, res: Response): Promise<void> => {
+  const id = idParam(req, res);
+  const projectId = id === null ? null : projectParam(req, res);
+  if (id === null || projectId === null) return;
+  const query = parseLogQuery(req.query);
+  if (!query) { res.status(400).json({ error: "Invalid service name" }); return; }
+  const service = query.service ? `&service=${encodeURIComponent(query.service)}` : "";
+  // Logs can hold secrets the application printed: they are shown, never kept.
+  try { res.json(await remoteGet(id, `/control/v1/projects/${projectId}/logs?tail=${query.tail}${service}`, { cache: false })); } catch (error) { handle(res, error); }
 });
 
 /** Forgets a controller that was already revoked, with its stored key. */

@@ -195,3 +195,58 @@ export async function removeTargetAndNotify(id: number, db: Database.Database = 
 }
 
 export type { Controller, Target };
+
+// ── controlling side: reading a peer's data ───────────────────────────────────
+
+export interface RemoteResult<T> {
+  data: T;
+  /** True when the peer could not be reached and this is what it last said. */
+  stale: boolean;
+  fetchedAt: string;
+}
+
+/** What each peer last said, in memory only: it lets an offline peer keep showing what was known, marked stale. A restart empties it, and nothing here
+ *  is written to disk or to a backup. Responses that can carry secrets (logs) are never kept. */
+const remoteCache = new Map<string, { data: unknown; fetchedAt: string }>();
+const REMOTE_CACHE_MAX = 200;
+
+export function forgetRemoteCache(targetId: number): void {
+  for (const key of remoteCache.keys()) if (key.startsWith(`${targetId}:`)) remoteCache.delete(key);
+}
+
+/** Signed GET to a peer's control API. A refusal or an unsigned answer is an error here; only "could not reach it" may fall back to the last answer. */
+export async function remoteGet<T>(id: number, path: string, options: { cache?: boolean } = {}, db: Database.Database = getDatabase()): Promise<RemoteResult<T>> {
+  const target = getTarget(id, db);
+  const key = targetKey(id, db);
+  if (!target || !key) throw new PeerError(404, "No such peer.", "not-found");
+  const self = ensureInstanceIdentity(db);
+  const cacheKey = `${id}:${path}`;
+  const useCache = options.cache !== false;
+  try {
+    const response = await signedCall<T & { error?: string; code?: string }>({ endpoint: target.endpoint, fingerprint: target.certFingerprint, key, selfId: self.id, targetId: target.instanceId, method: "GET", path });
+    // Anything but an answer from the registered peer ends the fallback: a peer that refused, was replaced or changed must not be shown from memory once it goes quiet.
+    if (response.status === 426) { forgetRemoteCache(id); throw new PeerError(502, "The peer does not speak a protocol version this instance understands.", "version-mismatch"); }
+    if (response.status === 421) { forgetRemoteCache(id); throw new PeerError(502, "The server at this address is not the registered instance.", "identity-mismatch"); }
+    if (!response.verified) { forgetRemoteCache(id); throw new PeerError(502, response.status === 401 ? "The peer did not accept this instance's credentials (check both clocks, or re-pair)." : "The peer's answer was not signed with the shared key: it may not be the registered instance.", response.status === 401 ? "unauthenticated" : "identity-mismatch"); }
+    if (response.status === 403) { forgetRemoteCache(id); throw new PeerError(403, response.body?.code === "peer-revoked" ? "The peer has revoked this instance's access." : response.body?.error ?? "The peer has not granted this.", response.body?.code === "peer-revoked" ? "peer-revoked" : "forbidden"); }
+    if (response.status === 404) throw new PeerError(404, response.body?.error ?? "Not found on the peer.", "not-found");
+    if (response.status !== 200) throw new PeerError(502, response.body?.error ?? `The peer answered with status ${response.status}.`, "peer-error");
+    if (response.body === null || typeof response.body !== "object") throw new PeerError(502, "The peer's answer was not understood.", "peer-error");
+    const fetchedAt = new Date().toISOString();
+    if (useCache) {
+      remoteCache.delete(cacheKey);
+      remoteCache.set(cacheKey, { data: response.body, fetchedAt });
+      if (remoteCache.size > REMOTE_CACHE_MAX) remoteCache.delete(remoteCache.keys().next().value as string);
+    }
+    updateTarget(id, { seen: true }, db);
+    return { data: response.body as T, stale: false, fetchedAt };
+  } catch (error) {
+    if (error instanceof PeerIdentityError) { forgetRemoteCache(id); throw new PeerError(502, error.message, "identity-mismatch"); }
+    if (error instanceof PeerUnreachable) {
+      const last = useCache ? remoteCache.get(cacheKey) : undefined;
+      if (last) return { data: last.data as T, stale: true, fetchedAt: last.fetchedAt };
+      throw new PeerError(502, error.message, "unreachable");
+    }
+    throw error;
+  }
+}

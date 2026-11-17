@@ -77,6 +77,10 @@ import type {
   PeersOverview,
   PeerTarget,
   PairingCodeResult,
+  PeerRead,
+  RemoteProject,
+  RemoteProjectDetail,
+  RemoteDeploy,
 } from "./types";
 
 // The session itself is an httpOnly cookie the browser holds and scripts cannot read
@@ -616,5 +620,9 @@ export const api = {
   rotatePeerKey: (id: number) => request<void>(`/peers/targets/${id}/rotate-key`, { method: "POST" }),
   removePeer: (id: number) => request<{ notified: boolean }>(`/peers/targets/${id}`, { method: "DELETE" }),
   revokeController: (id: number) => request<void>(`/peers/controllers/${id}`, { method: "DELETE" }),
+  getPeerProjects: (peerId: number) => request<PeerRead<{ projects: RemoteProject[] }>>(`/peers/targets/${peerId}/projects`),
+  getPeerProject: (peerId: number, projectId: number) => request<PeerRead<RemoteProjectDetail>>(`/peers/targets/${peerId}/projects/${projectId}`),
+  getPeerProjectDeploys: (peerId: number, projectId: number) => request<PeerRead<{ deploys: RemoteDeploy[] }>>(`/peers/targets/${peerId}/projects/${projectId}/deploys`),
+  getPeerProjectLogs: (peerId: number, projectId: number, tail: number) => request<PeerRead<{ ok: boolean; output: string }>>(`/peers/targets/${peerId}/projects/${projectId}/logs?tail=${tail}`),
   forgetController: (id: number) => request<void>(`/peers/controllers/${id}/record`, { method: "DELETE" }),
 };
