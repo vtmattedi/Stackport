@@ -1093,8 +1093,21 @@ STAGED_CONTAINER_FILE=""
 # Reads the archive passphrase without echo into STACKPORT_BACKUP_PASSPHRASE (exported so docker
 # can pass it by name: it never appears in a process list). A value already in the environment wins.
 backup_passphrase() {
-  local mode="${1:-}" first second
+  local mode="${1:-}" first second file
   [[ -n "${STACKPORT_BACKUP_PASSPHRASE:-}" ]] && return 0
+  # The dashboard's restore hands the passphrase over in a file (it must not be in an argument list or `docker inspect`): read once, then removed.
+  # The file sits in the app's data directory, which the app owns, so it is read as a plain file only, and no more than a passphrase's worth.
+  file="${STACKPORT_BACKUP_PASSPHRASE_FILE:-}"
+  if [[ -n "$file" ]]; then
+    if [[ -f "$file" && ! -L "$file" ]]; then
+      first="$(head -c 1024 "$file" | head -n 1)"
+      rm -f "$file"
+      [[ -n "$first" ]] || { error "the passphrase file is empty"; exit 1; }
+      export STACKPORT_BACKUP_PASSPHRASE="$first"
+      return 0
+    fi
+    error "the passphrase file is missing"; exit 1
+  fi
   [[ -t 0 ]] || { error "no passphrase: set STACKPORT_BACKUP_PASSPHRASE or run on a terminal"; exit 1; }
   read -r -s -p "Backup passphrase: " first; echo
   if [[ "$mode" == "confirm" ]]; then

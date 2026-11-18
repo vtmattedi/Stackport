@@ -1,8 +1,8 @@
 {
   "name": "stackport-vps-manager-client",
-  "version": "1.4.7",
-  "builtAt": "2026-11-17T20:47:48.201Z",
-  "gitCommit": "a6d265c",
-  "gitBranch": "fix/move-carry-ssl-target-branch",
-  "gitMessage": "Merge pull request #53 from vtmattedi/feat/project-archive-and-move"
+  "version": "1.4.8",
+  "builtAt": "2026-11-18T03:43:49.047Z",
+  "gitCommit": "4750869",
+  "gitBranch": "feat/full-backup-restore-ui",
+  "gitMessage": "Merge pull request #54 from vtmattedi/fix/move-carry-ssl-target-branch"
 }

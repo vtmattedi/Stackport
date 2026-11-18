@@ -69,13 +69,13 @@ export async function currentImage(): Promise<string> {
  *  swapping the app does not kill it. Chroot runs the host's own CLI with its actual
  *  paths, credentials and Docker socket; host networking lets its localhost health
  *  checks work. */
-export function updaterRunArgs(image: string, name: string, command: string[], opts: {detach: boolean}): string[] {
+export function updaterRunArgs(image: string, name: string, command: string[], opts: {detach: boolean; /** Extra KEY=value pairs for the host command (never a secret: they show in `docker inspect`). */ env?: string[]}): string[] {
   return ["run", opts.detach ? "--detach" : "--rm", "--name", name,
     "--label", `${LABEL}=true`, "--label", "com.docker.compose.project=stackport",
     "--network", "host", "--mount", "type=bind,src=/,dst=/host",
     "--entrypoint", "chroot", image, "/host", "/usr/bin/env", "-i",
     "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    "HOME=/root", ...command];
+    "HOME=/root", ...(opts.env ?? []), ...command];
 }
 
 let launching = false;

@@ -1,5 +1,5 @@
 import { Outlet, useLocation } from "react-router-dom";
-import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, KeyRound, ShieldCheck, Lock, Shield, Plug, Globe, Radio, Link2 } from "lucide-react";
+import { Settings as SettingsIcon, SlidersHorizontal, GitBranch, Bell, KeyRound, ShieldCheck, Lock, Shield, Plug, Globe, Radio, Link2, Archive } from "lucide-react";
 import SubShell, { SubShellSectionHeader } from "../../components/SubShell";
 
 export const SETTINGS_SECTIONS = [
@@ -13,6 +13,7 @@ export const SETTINGS_SECTIONS = [
   { path: "mcp", label: "MCP", icon: KeyRound, group: "Integrations", description: "The tools Claude and other clients get, and the tokens that unlock them." },
   { path: "peers", label: "Peers", icon: Link2, group: "Integrations", description: "Other Stackport installations: let one control this instance, or control another from here. Pairing is explicit, one-way and revocable." },
   { path: "live-status", label: "Live status", icon: Radio, group: "Integrations", description: "A secured WebSocket that streams host metrics, project status, running actions and alerts to an adapter you run." },
+  { path: "backup", label: "Backup", icon: Archive, group: "Security", description: "A full backup of this instance with every project's data, to download; and a full restore from one made on another Stackport." },
   { path: "encryption", label: "Encryption", icon: Lock, group: "Security", description: "Re-encrypt the stored secrets under the current key, to finish a key rotation." },
 ] as const;
 
