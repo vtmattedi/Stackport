@@ -6,6 +6,7 @@ import { execFile } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { config } from "../../../config/env";
+import { FULL_BACKUP_MAX_UPLOAD_BYTES } from "../../../shared/backupLimits";
 import { getDatabase } from "../../../config/database";
 import { rowToProject, type Project, type ProjectRow } from "../../projects/types";
 import { listAllRoutableProjectDomains, type ProjectDomain } from "../domains";
@@ -338,8 +339,8 @@ function locationBlock(target: NginxTarget): string {
   // nginx from loading Stackport's own admin route. Also refresh DNS after recreation.
   const proxy = `resolver 127.0.0.11 valid=10s ipv6=off;\n        set $stackport_upstream ${upstreamUrl};\n        proxy_pass $stackport_upstream;`;
 
-  return `
-    location / {
+  const render = (location: string, directives: string): string => `
+    location ${location} {
         ${proxy}
         proxy_http_version 1.1;
 
@@ -349,8 +350,20 @@ function locationBlock(target: NginxTarget): string {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;${indentExtraConfig(target.extraConfig)}
+        proxy_set_header X-Forwarded-Proto $scheme;${indentExtraConfig(directives)}
     }`;
+
+  const normal = render("/", target.extraConfig);
+  if (target.projectId !== undefined || target.service !== STACKPORT_APP_SERVICE) return normal;
+  // Stream large archives straight to the authenticated API, including on a
+  // fresh destination using bootstrap HTTPS. Keep other routes' limits intact.
+  return normal + render("= /api/backup/restore/upload", [
+    `client_max_body_size ${FULL_BACKUP_MAX_UPLOAD_BYTES};`,
+    "client_body_timeout 3600s;",
+    "proxy_request_buffering off;",
+    "proxy_send_timeout 3600s;",
+    "proxy_read_timeout 3600s;",
+  ].join("\n")) + render("= /api/backup/restore/inspect", "proxy_read_timeout 3600s;");
 }
 
 async function certificateExists(domain: string): Promise<boolean> {

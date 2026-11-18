@@ -7,6 +7,7 @@ import type Database from "better-sqlite3";
 import { config } from "../../config/env";
 import { getDatabase } from "../../config/database";
 import { auditLog, logger } from "../../shared/logger";
+import { FULL_BACKUP_MAX_UPLOAD_BYTES } from "../../shared/backupLimits";
 import { currentVolumeRoots } from "../deployments/compose/managedVolumes";
 import { deployProject, getProjectById } from "../deployments/operations";
 import { healthChecker } from "../deployments/health";
@@ -17,7 +18,7 @@ import { currentImage, updaterRunArgs } from "../maintenance/selfUpdate";
 import { ArchiveError, readArchiveAsync, readEntryBufferAsync, writeEntryToAsync } from "./archive";
 import { FULL_FORMAT, FULL_MANIFEST, INSTANCE_PART, type FullManifest, type FullProject } from "./fullBackup";
 import { INSTANCE_NAME_KEY } from "./instance";
-import { importProject } from "./projectArchive";
+import { importProject, type ImportProjectResult } from "./projectArchive";
 import { describeInstallation, verifyArchive, type CurrentInstallation, type Finding, type RestoreMode } from "./restore";
 import { DockerVolumeEngine, type VolumeEngine } from "./volumeEngine";
 
@@ -74,13 +75,16 @@ export const restoreDeps = {
     return { ok: applied.ok, output: applied.ok ? cert.output : applied.output };
   },
   deploy: (projectId: number, branch: string | null, commit: string | null): Promise<{ ok: boolean; output: string }> => deployProject(projectId, "manual", branch, commit),
-  publish: async (): Promise<void> => { await writeNginxConfig(); },
+  publish: async (): Promise<void> => {
+    const result = await writeNginxConfig();
+    if (!result.ok) throw new Error(result.output || "The restored routes could not be applied.");
+  },
 };
 
 // ── 1. upload and inspect ──────────────────────────────────────────────────
 
 /** Receives the file from the request body. One request: a restore that is cut short starts again. */
-export async function receiveUpload(body: NodeJS.ReadableStream, declaredSize: number | null, maxBytes = 200 * 1024 ** 3): Promise<{ size: number }> {
+export async function receiveUpload(body: NodeJS.ReadableStream, declaredSize: number | null, maxBytes = FULL_BACKUP_MAX_UPLOAD_BYTES): Promise<{ size: number }> {
   if (declaredSize !== null && (!Number.isSafeInteger(declaredSize) || declaredSize <= 0 || declaredSize > maxBytes)) throw new RestoreError(413, "The file's size is not acceptable.", "too-large");
   if (fs.existsSync(planFile())) throw new RestoreError(409, "A restore is already in progress on this instance: finish or cancel it first.", "busy");
   fs.rmSync(restoreDir(), { recursive: true, force: true });
@@ -164,7 +168,8 @@ export async function inspectFull(passphrase: string, db: Database.Database = ge
   // The instance part is a complete level-1 archive: it is verified the way `stackport restore` verifies one (checksums, schema, every stored secret decryptable).
   const checked = verifyArchive(path.join(partsDir(), "parts", "instance.spbackup"), passphrase, restoreDir());
   if (checked.findings.some((f) => f.level === "error")) { fs.rmSync(partsDir(), { recursive: true, force: true }); throw new RestoreError(400, checked.findings.filter((f) => f.level === "error").map((f) => f.message).join(" "), "unverified"); }
-  fs.rmSync(uploadFile(), { force: true }); // the parts are what is kept
+  // Keep the sealed upload until completion so a refreshed preview can be
+  // verified again with its passphrase; the dashboard offers "Show it".
   fs.writeFileSync(path.join(restoreDir(), "inspected.json"), JSON.stringify({ manifest: full, inspectedAt: new Date().toISOString() }), { mode: 0o600 });
   const name = (db.prepare("SELECT value FROM app_meta WHERE key = ?").get(INSTANCE_NAME_KEY) as { value: string } | undefined)?.value ?? null;
   return {
@@ -184,7 +189,14 @@ export interface RestorePlan {
   mode: RestoreMode;
   startedAt: string;
   source: { id: string; name: string };
-  projects: (FullProject & { file: string })[];
+  projects: (FullProject & { file: string; imported?: ImportProjectResult; completed?: boolean })[];
+}
+
+/** Keep verified imports across a failed deploy or process restart, without importing their data twice. */
+function savePlan(plan: RestorePlan): void {
+  const staged = `${planFile()}.tmp`;
+  fs.writeFileSync(staged, JSON.stringify(plan), { mode: 0o600 });
+  fs.renameSync(staged, planFile());
 }
 
 function readInspected(): FullManifest {
@@ -202,7 +214,7 @@ export async function confirmFull(input: { passphrase: string; mode: RestoreMode
   if (fs.existsSync(planFile())) throw new RestoreError(409, "A restore is already in progress.", "busy");
 
   const plan: RestorePlan = { mode: input.mode, startedAt: new Date().toISOString(), source: manifest.source.instance, projects: manifest.projects.map((p) => ({ ...p, file: path.basename(p.name) })) };
-  fs.writeFileSync(planFile(), JSON.stringify(plan), { mode: 0o600 });
+  savePlan(plan);
   fs.writeFileSync(passphraseFile(), input.passphrase, { mode: 0o600 });
   try {
     await restoreDeps.launchHostRestore(path.posix.join(hostRestoreDir(), "parts", "parts", "instance.spbackup"), input.mode, path.posix.join(hostRestoreDir(), ".passphrase"));
@@ -258,27 +270,38 @@ export async function finishProjects(passphrase: string, db: Database.Database =
       const file = path.join(partsDir(), "parts", project.file);
       try {
         outcome.state = "importing";
-        if (!fs.existsSync(file)) { outcome.state = "done"; outcome.message = "Already restored."; continue; }
-        const result = await importProject({
+        if (!project.imported && !fs.existsSync(file)) throw new Error("The project's archive is missing; it has not been restored.");
+        const result = project.imported ?? await importProject({
           archivePath: file, passphrase, name: project.projectName, engine, requireVerified: true, allowRawNginx: true, db,
           // The same hostnames as on the source, without TLS until a certificate exists here.
           domains: project.hostnames.map((h) => ({ domain: h.domain, from: h.domain, useSsl: false })),
         });
+        if (!project.imported) {
+          project.imported = result;
+          savePlan(plan);
+        }
+        if (getProjectById(result.projectId)?.name !== project.projectName) throw new Error("The previously imported project is missing or was renamed; it cannot be resumed automatically.");
+        for (const domain of result.sslHostnames) sslToIssue.push({ projectId: result.projectId, domain });
+        if (project.completed) { outcome.state = "done"; outcome.message = "Already restored."; continue; }
         applyAuth(result.projectId, project, db);
         const notes = [...result.warnings];
-        for (const domain of result.sslHostnames) sslToIssue.push({ projectId: result.projectId, domain });
         // A recovered project that was running is started again; a clone, and anything that was stopped or paused, stays as it is.
         if (plan.mode === "recover" && project.wasRunning && !project.paused) {
           outcome.state = "starting";
           db.prepare("UPDATE projects SET paused = 0, updated_at = ? WHERE id = ?").run(new Date().toISOString(), result.projectId);
-          const deployed = await restoreDeps.deploy(result.projectId, result.deployedBranch, result.deployedCommit);
-          if (!deployed.ok) { db.prepare("UPDATE projects SET paused = 1 WHERE id = ?").run(result.projectId); notes.push(`It did not start: ${deployed.output.slice(-300)}. It is paused; deploy it from its page.`); }
+          const deployed = await restoreDeps.deploy(result.projectId, result.deployedBranch, result.deployedCommit).catch((error: unknown) => ({ ok: false, output: error instanceof Error ? error.message : String(error) }));
+          if (!deployed.ok) {
+            db.prepare("UPDATE projects SET paused = 1 WHERE id = ?").run(result.projectId);
+            throw new Error(`It did not start: ${deployed.output.slice(-300)}. Its verified data is kept; retry restoring the projects.`);
+          }
           const started = getProjectById(result.projectId);
           if (started && deployed.ok) healthChecker.schedule(started);
         } else {
           db.prepare("UPDATE projects SET paused = 1 WHERE id = ?").run(result.projectId);
           notes.push(plan.mode === "clone" ? "Restored paused (a clone)." : "Restored paused, as it was.");
         }
+        project.completed = true;
+        savePlan(plan);
         fs.rmSync(file, { force: true });
         outcome.state = "done";
         outcome.message = notes.join(" ") || null;
@@ -289,7 +312,13 @@ export async function finishProjects(passphrase: string, db: Database.Database =
         auditLog("system", "full-restore.project", project.projectName, "fail", { error: outcome.message });
       }
     }
-    try { await restoreDeps.publish(); } catch (error) { logger.warn({ error: error instanceof Error ? error.message : String(error) }, "full-restore.nginx-failed"); }
+    try { await restoreDeps.publish(); } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const outcome of current.outcomes) {
+        if (outcome.state === "done") { outcome.state = "failed"; outcome.message = `Data restored, but routing failed: ${message}. Retry restoring the projects.`; }
+      }
+      logger.warn({ error: message }, "full-restore.nginx-failed");
+    }
     for (const { projectId, domain } of plan.mode === "recover" ? sslToIssue : []) {
       const result = await restoreDeps.issueSsl(projectId, domain).catch((error: unknown) => ({ ok: false, output: error instanceof Error ? error.message : String(error) }));
       const owner = current.outcomes.find((o) => o.name === getProjectById(projectId)?.name);

@@ -24,7 +24,9 @@ function upload(file: File, onProgress: (sent: number) => void): Promise<void> {
     request.upload.onprogress = (event) => onProgress(event.loaded);
     request.onload = () => {
       if (request.status >= 200 && request.status < 300) { resolve(); return; }
-      let message = "The upload failed";
+      let message = request.status === 413
+        ? "The server rejected the backup as too large. Update Stackport on this destination; if it is already updated, check the upload limit of any proxy in front of it."
+        : "The upload failed";
       try { message = (JSON.parse(request.responseText) as { error?: string }).error ?? message; } catch { /* keep */ }
       reject(new Error(message));
     };
@@ -210,9 +212,9 @@ function RestoreCard() {
               <Alert variant="destructive"><TriangleAlert size={14} /><AlertDescription>The host restore failed; this instance is unchanged.<pre className="mt-2 max-h-60 overflow-auto text-xs">{status?.host.output}</pre>
                 <Button type="button" size="sm" variant="outline" className="mt-2" onClick={() => void cancel()}>Discard the backup</Button></AlertDescription></Alert>
             ) : null}
-            {plan && hostDone && !finish && (
+            {plan && hostDone && !finish?.running && (
               <div className="flex flex-wrap items-end gap-3">
-                <Alert><CheckCircle2 size={14} /><AlertDescription>The instance is restored. Its {plan.projects.length} project{plan.projects.length === 1 ? "" : "s"} still need to be brought back; their data is read from the uploaded backup, which needs the passphrase once more.</AlertDescription></Alert>
+                <Alert><CheckCircle2 size={14} /><AlertDescription>{finish ? "Some projects or routes need another attempt. Verified imports are kept, and completed projects are skipped." : <>The instance is restored. Its {plan.projects.length} project{plan.projects.length === 1 ? "" : "s"} still need to be brought back; their data is read from the uploaded backup, which needs the passphrase once more.</>}</AlertDescription></Alert>
                 <Field label="Passphrase" htmlFor="finish-pass"><Input id="finish-pass" type="password" autoComplete="off" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></Field>
                 <Button type="button" disabled={busy || !passphrase} onClick={() => void bringBack()}>{busy && <Loader size={13} className="spin" />}Bring the projects back</Button>
                 <Button type="button" variant="outline" onClick={() => void cancel()}>Skip the projects</Button>
