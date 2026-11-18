@@ -1,8 +1,8 @@
 {
   "name": "stackport",
-  "version": "1.4.8",
-  "builtAt": "2026-11-18T03:43:48.819Z",
-  "gitCommit": "4750869",
-  "gitBranch": "feat/full-backup-restore-ui",
-  "gitMessage": "Merge pull request #54 from vtmattedi/fix/move-carry-ssl-target-branch"
+  "version": "1.4.9",
+  "builtAt": "2026-11-18T20:07:45.509Z",
+  "gitCommit": "88cc5bf",
+  "gitBranch": "fix/full-backup-recovery",
+  "gitMessage": "Merge pull request #55 from vtmattedi/feat/full-backup-restore-ui"
 }

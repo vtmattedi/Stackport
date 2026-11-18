@@ -100,16 +100,20 @@ async function giveBack(projectId: number, original: Original, engine: VolumeEng
   if (!project) return null;
   try {
     if (original.wasRunning) {
+      // Compose refuses paused projects. Keep the action slot while temporarily
+      // clearing the backup's pause, including for projects originally paused.
+      db.prepare("UPDATE projects SET paused = 0, updated_at = ? WHERE id = ?").run(now(), projectId);
       const started = await fullDeps.start(projectId);
       if (!started.ok) return `${project.name} could not be started again: ${started.output.slice(-300)}`;
       if (engine && !(await engine.runningContainers(expectedComposeProjectName(project))).length) return `${project.name} was started again but has no running containers.`;
     }
-    db.prepare("UPDATE projects SET paused = ?, updated_at = ? WHERE id = ?").run(original.paused ? 1 : 0, now(), projectId);
-    const restored = getProjectById(projectId);
-    if (restored) healthChecker.schedule(restored);
     return null;
   } catch (error) {
     return `${project.name} could not be restored: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    db.prepare("UPDATE projects SET paused = ?, updated_at = ? WHERE id = ?").run(original.paused ? 1 : 0, now(), projectId);
+    const restored = getProjectById(projectId);
+    if (restored) healthChecker.schedule(restored);
   }
 }
 
@@ -131,6 +135,7 @@ export class FullBackupError extends Error {
 export async function startFullBackup(passphrase: string, db: Database.Database = getDatabase()): Promise<FullView> {
   if (typeof passphrase !== "string" || passphrase.length < 12) throw new FullBackupError(400, "Use a passphrase of at least 12 characters.", "bad-passphrase");
   if (db.prepare("SELECT 1 FROM full_backups WHERE state = 'running'").get()) throw new FullBackupError(409, "A full backup is already running.", "busy");
+  if (db.prepare("SELECT 1 FROM full_backups WHERE quiesced_json <> '{}'").get()) throw new FullBackupError(409, "A previous backup still has projects awaiting recovery.", "busy");
   const engine = await fullDeps.engine();
   const projects = db.prepare("SELECT id FROM projects ORDER BY id").all() as { id: number }[];
   if (!engine && projects.length) throw new FullBackupError(503, "A full backup needs Docker (the privileged helper reads each project's data); Docker is not reachable from here.", "needs-helper");
@@ -146,6 +151,7 @@ async function run(id: string, passphrase: string, engine: VolumeEngine | null, 
   const dir = workDir(id);
   const quiesced: Record<string, Original> = {};
   const problems: string[] = [];
+  const recoveryAttempted = new Set<number>();
   const final = path.join(backupsDir(), `stackport-full-${now().replace(/[:.]/g, "-").slice(0, 19)}-${id.slice(0, 8)}.spbackup`);
   try {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -166,25 +172,37 @@ async function run(id: string, passphrase: string, engine: VolumeEngine | null, 
       const manifest = await new Promise<Awaited<ReturnType<typeof exportProject>>>((resolve, reject) => {
         const slot = actionRegistry.tryStart(projectRepoKey(project.id), "backup", { projectId: project.id, triggeredBy: "backup" }, async () => {
           try {
-            quiesced[String(project.id)] = original;
-            setQuiesced(id, quiesced, db); // recorded before anything is touched: a restart now gives the project back
-            db.prepare("UPDATE projects SET paused = 1, updated_at = ? WHERE id = ?").run(now(), project.id);
-            healthChecker.unschedule(project.id);
-            if (original.wasRunning) {
-              const stopped = await fullDeps.stop(project.id);
-              if (!stopped.ok) throw new Error(`${project.name} could not be stopped: ${stopped.output.slice(-300)}`);
-              if (engine && (await engine.runningContainers(expectedComposeProjectName(project))).length) throw new Error(`${project.name} still has running containers after it was stopped.`);
+            let manifest: Awaited<ReturnType<typeof exportProject>> | undefined;
+            let copyError: unknown;
+            try {
+              quiesced[String(project.id)] = original;
+              setQuiesced(id, quiesced, db); // recorded before anything is touched: a restart now gives the project back
+              db.prepare("UPDATE projects SET paused = 1, updated_at = ? WHERE id = ?").run(now(), project.id);
+              healthChecker.unschedule(project.id);
+              if (original.wasRunning) {
+                const stopped = await fullDeps.stop(project.id);
+                if (!stopped.ok) throw new Error(`${project.name} could not be stopped: ${stopped.output.slice(-300)}`);
+                if (engine && (await engine.runningContainers(expectedComposeProjectName(project))).length) throw new Error(`${project.name} still has running containers after it was stopped.`);
+              }
+              manifest = await exportProject({ projectId: project.id, outPath: partPath, passphrase, engine, db });
+            } catch (error) {
+              copyError = error;
             }
-            resolve(await exportProject({ projectId: project.id, outPath: partPath, passphrase, engine, db }));
+            recoveryAttempted.add(project.id);
+            const problem = await giveBack(project.id, original, engine, db);
+            if (!problem) {
+              delete quiesced[String(project.id)];
+              setQuiesced(id, quiesced, db);
+            }
+            if (problem) throw new Error([copyError instanceof Error ? copyError.message : copyError ? String(copyError) : null, problem].filter(Boolean).join(" "));
+            if (copyError) throw copyError;
+            if (!manifest) throw new Error(`${project.name} was not archived.`);
+            // Do not advance or report success until this project's recovery ends.
+            resolve(manifest);
             return { ok: true, output: "backed up" };
           } catch (error) {
             reject(error);
             return { ok: false, output: error instanceof Error ? error.message : String(error) };
-          } finally {
-            const problem = await giveBack(project.id, original, engine, db);
-            delete quiesced[String(project.id)];
-            setQuiesced(id, quiesced, db);
-            if (problem) problems.push(problem);
           }
         });
         if (!slot) reject(new Error(`${project.name} is busy with another action; try again when it has finished.`));
@@ -194,7 +212,6 @@ async function run(id: string, passphrase: string, engine: VolumeEngine | null, 
         id: project.id, projectName: project.name, wasRunning: original.wasRunning, paused: original.paused, digest: manifest.digest, hostnames: manifest.hostnames, auth: authOf(project.id, db),
       });
     }
-    if (problems.length) throw new Error(problems.join(" "));
 
     step(id, "Sealing the backup into one file", db);
     const identity = ensureInstanceIdentity(db);
@@ -222,8 +239,14 @@ async function run(id: string, passphrase: string, engine: VolumeEngine | null, 
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Anything still stopped is given back before the failure is reported.
-    for (const [projectId, original] of Object.entries(quiesced)) { const problem = await giveBack(Number(projectId), original, engine, db); if (problem) problems.push(problem); }
-    db.prepare("UPDATE full_backups SET state = 'failed', error = ?, quiesced_json = '{}', updated_at = ? WHERE id = ?").run(message, now(), id);
+    for (const [projectId, original] of Object.entries(quiesced)) {
+      if (recoveryAttempted.has(Number(projectId))) continue; // a failed recovery is retried by the monitor under its own action slot
+      const problem = await giveBack(Number(projectId), original, engine, db);
+      if (problem) problems.push(problem);
+      else { delete quiesced[String(projectId)]; setQuiesced(id, quiesced, db); }
+    }
+    const failure = [...new Set([message, ...problems])].join(" ");
+    db.prepare("UPDATE full_backups SET state = 'failed', error = ?, quiesced_json = ?, updated_at = ? WHERE id = ?").run(failure, JSON.stringify(quiesced), now(), id);
     auditLog("system", "full-backup.finished", id, "fail", { error: message });
   } finally {
     inFlight.delete(id);
@@ -250,7 +273,7 @@ export function fullBackupFile(id: string, db: Database.Database = getDatabase()
 
 export function deleteFullBackup(id: string, db: Database.Database = getDatabase()): boolean {
   const r = row(id, db);
-  if (!r || r.state === "running") return false;
+  if (!r || r.state === "running" || r.quiesced_json !== "{}") return false;
   if (r.file && r.file === path.basename(r.file)) fs.rmSync(path.join(backupsDir(), r.file), { force: true });
   db.prepare("DELETE FROM full_backups WHERE id = ?").run(id);
   return true;
@@ -258,20 +281,34 @@ export function deleteFullBackup(id: string, db: Database.Database = getDatabase
 
 /** A restart in the middle of a backup: the projects it had stopped are given back, and the job is marked failed. Old files are removed (they hold every secret). */
 export async function reconcileFullBackups(db: Database.Database = getDatabase()): Promise<void> {
-  for (const r of db.prepare("SELECT * FROM full_backups WHERE state = 'running'").all() as Row[]) {
+  for (const r of db.prepare("SELECT * FROM full_backups WHERE state = 'running' OR quiesced_json <> '{}'").all() as Row[]) {
     if (inFlight.has(r.id)) continue;
-    const problems: string[] = [];
-    const engine = await fullDeps.engine().catch(() => null);
-    for (const [projectId, original] of Object.entries(JSON.parse(r.quiesced_json) as Record<string, Original>)) {
-      const problem = await giveBack(Number(projectId), original, engine, db);
-      if (problem) problems.push(problem);
+    inFlight.add(r.id);
+    try {
+      const problems: string[] = [];
+      const quiesced = JSON.parse(r.quiesced_json) as Record<string, Original>;
+      const engine = await fullDeps.engine().catch(() => null);
+      for (const [projectId, original] of Object.entries(quiesced)) {
+        const problem = await new Promise<string | null>((resolve) => {
+          const slot = actionRegistry.tryStart(projectRepoKey(Number(projectId)), "backup-recovery", { projectId: Number(projectId), triggeredBy: "backup" }, async () => {
+            const failure = await giveBack(Number(projectId), original, engine, db).catch((error: unknown) => error instanceof Error ? error.message : String(error));
+            resolve(failure);
+            return { ok: failure === null, output: failure ?? "recovered" };
+          });
+          if (!slot) resolve(`Project ${projectId} is busy; recovery will be retried.`);
+        });
+        if (problem) problems.push(problem);
+        else { delete quiesced[String(projectId)]; setQuiesced(r.id, quiesced, db); }
+      }
+      db.prepare("UPDATE full_backups SET state = 'failed', error = ?, quiesced_json = ?, updated_at = ? WHERE id = ?")
+        .run(r.state === "failed" && r.error ? r.error : `Interrupted by a restart.${problems.length ? ` ${problems.join(" ")}` : " Every project was given back."}`, JSON.stringify(quiesced), now(), r.id);
+      fs.rmSync(workDir(r.id), { recursive: true, force: true });
+      auditLog("system", "full-backup.interrupted", r.id, problems.length ? "fail" : "ok", { problems });
+    } finally {
+      inFlight.delete(r.id);
     }
-    db.prepare("UPDATE full_backups SET state = 'failed', error = ?, quiesced_json = '{}', updated_at = ? WHERE id = ?")
-      .run(`Interrupted by a restart.${problems.length ? ` ${problems.join(" ")}` : " Every project was given back."}`, now(), r.id);
-    fs.rmSync(workDir(r.id), { recursive: true, force: true });
-    auditLog("system", "full-backup.interrupted", r.id, problems.length ? "fail" : "ok", { problems });
   }
-  for (const r of db.prepare("SELECT * FROM full_backups WHERE state != 'running'").all() as Row[]) {
+  for (const r of db.prepare("SELECT * FROM full_backups WHERE state != 'running' AND quiesced_json = '{}'").all() as Row[]) {
     if (Date.parse(r.updated_at) < Date.now() - KEEP_MS) deleteFullBackup(r.id, db);
   }
 }

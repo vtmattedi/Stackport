@@ -39,7 +39,8 @@ router.get("/full/:id/download", requireAuth, (req: Request<{ id: string }>, res
   fs.createReadStream(file.path).on("error", () => res.destroy()).pipe(res);
 });
 router.delete("/full/:id", requireAuth, (req: Request<{ id: string }>, res: Response) => {
-  if (!deleteFullBackup(req.params.id)) { res.status(404).json({ error: "Backup not found, or still running." }); return; }
+  if (!getFullBackup(req.params.id)) { res.status(404).json({ error: "Backup not found." }); return; }
+  if (!deleteFullBackup(req.params.id)) { res.status(409).json({ error: "The backup is still running or its projects are awaiting recovery." }); return; }
   res.json({ ok: true });
 });
 
