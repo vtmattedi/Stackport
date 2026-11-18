@@ -1403,3 +1403,22 @@ export interface StatusSummary {
   runningActions: number;
   alerts: { total: number; critical: number };
 }
+
+// ── full backup and restore ────────────────────────────────────────────────
+export interface FullBackupView { id: string; state: "running" | "done" | "failed"; steps: { at: string; text: string }[]; file: string | null; size: number | null; error: string | null; createdAt: string }
+export interface RestorePreview {
+  source: { instance: { id: string; name: string }; createdAt: string; stackportVersion: string };
+  projects: { id: number; name: string; size: number; wasRunning: boolean; hostnames: string[] }[];
+  instanceSize: number;
+  findings: { level: "error" | "warn"; message: string }[];
+  current: { exists: boolean; instanceId: string | null; instanceName: string | null; projects: number; name: string | null };
+  notCarried: string[];
+  confirmName: string;
+}
+export interface RestoreProjectOutcome { id: number; name: string; state: "waiting" | "importing" | "starting" | "done" | "failed"; message: string | null }
+export interface RestoreStatus {
+  plan: { mode: "recover" | "clone"; startedAt: string; source: { id: string; name: string }; projects: { id: number; projectName: string }[] } | null;
+  host: { state: "none" | "running" | "done" | "failed"; output: string };
+  finish: { running: boolean; finished: boolean; mode: "recover" | "clone"; outcomes: RestoreProjectOutcome[] } | null;
+  preview: boolean;
+}

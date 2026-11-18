@@ -17,6 +17,7 @@ import domainsRouter from "./domains";
 import encryptionRouter from "../../modules/maintenance/encryption/routes";
 import statusStreamRouter from "./statusStream";
 import peersRouter from "../../modules/peers/adminRouter";
+import fullBackupRouter from "./fullBackup";
 
 const router = Router();
 
@@ -38,5 +39,6 @@ router.use("/domains", domainsRouter);
 router.use("/encryption", encryptionRouter);
 router.use("/status-stream", statusStreamRouter);
 router.use("/peers", peersRouter);
+router.use("/backup", fullBackupRouter);
 
 export default router;

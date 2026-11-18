@@ -60,6 +60,7 @@ export const TABLE_TIERS: Record<string, TableTier> = {
   project_transfers_in: "never", // a restore must not resurrect a half-finished move
   project_moves_out: "never",
   peer_moves: "never",
+  full_backups: "never",
 };
 
 /** The `app_meta` rows an archive keeps. Everything else (heartbeats, pending flags, last-outcome notes) is runtime state. */
