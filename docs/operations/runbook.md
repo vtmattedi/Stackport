@@ -80,6 +80,12 @@ From 1.4.10, server startup checks Stackport's saved hostname when publishing an
 
 When you add or rename a routed hostname, Stackport requests a certificate and redirects HTTP to HTTPS once it is ready. Set **Allow non-secure HTTP** to serve the hostname over plain HTTP instead. A new HTTPS route serves the HTTP-01 challenge and returns 503 for other HTTP requests until it has a certificate. Point every name on the route at this server, including both the bare domain and `www` if they share a route. If issuance fails, check DNS and the Certbot email, then use **Issue cert** on the domain. If a hostname rename fails before the new route is ready, Stackport keeps the old route so you can retry. Stackport also obtains a certificate before switching its own address.
 
+Use **Branch deployments** on a GitHub project to add one deployment per branch. Each deployment builds and runs independently and gets a generated hostname under the default base domain. Point wildcard DNS for that base domain at Stackport, or create a DNS record for each generated hostname. Stackport uses the primary route if the branch exposes the same service and port, or the branch's sole available target. Choose the route in **Domains** when several targets remain.
+
+Choose **Separate env files** to enter branch-specific values, or **Shared env files** to use the primary deployment's managed values on each deploy. Branch deployments start with manual deployment enabled. Their checkouts and Docker data use separate names, so Compose files must omit fixed container names and use deployment-specific tags for built images. A full backup carries the parent and its branch deployments together.
+
+For GitHub App projects, choose **Post the preview URL on the pull request** to publish the HTTPS link to a matching open PR after deployment. Grant the App **Pull requests: Read and write** if the installation does not already have it. GitHub permission failures appear in the action log.
+
 `npm run test:ingress:docker` exercises this startup path with real nginx, a saved hostname and a locally issued test certificate, then checks that a later startup reuses it. Readiness, challenge serving, certificate detection, config generation, validation and reload use production code; the external CA is substituted. It needs local `stackport:ci`, `nginx:1.29-alpine` and `certbot/certbot` images, uses disposable Docker resources and publishes no host ports.
 
 ```bash

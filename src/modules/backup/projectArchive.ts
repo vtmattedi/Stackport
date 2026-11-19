@@ -206,7 +206,8 @@ function readDbContent(db: Database.Database, projectId: number): Pick<ProjectCo
   if (!row) throw new ProjectArchiveError("The project does not exist.", "not-found");
   const config: Record<string, unknown> = {};
   for (const column of CARRIED_COLUMNS) config[column] = column === "deploy_trigger" && row[column] === "webhook" ? "poller" : (row[column] ?? null);
-  const env = (db.prepare("SELECT * FROM project_env_files WHERE project_id = ? ORDER BY relative_path").all(projectId) as ProjectEnvFileRow[]).map((file) => {
+  const envOwner = row["branch_share_env"] === 1 && typeof row["branch_parent_id"] === "number" ? row["branch_parent_id"] : projectId;
+  const env = (db.prepare("SELECT * FROM project_env_files WHERE project_id = ? ORDER BY relative_path").all(envOwner) as ProjectEnvFileRow[]).map((file) => {
     const variables = tryReadEnvVariables(file);
     if (!variables) throw new ProjectArchiveError(`The values of ${file.relative_path} cannot be decrypted with this instance's keys, so they cannot be carried. Fix the key or delete the file first.`, "env-unreadable");
     return { path: file.relative_path, variables };

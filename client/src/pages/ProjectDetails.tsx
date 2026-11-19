@@ -51,6 +51,7 @@ import {
 } from "./project/useProjectData";
 import { DeploymentsCard } from "./project/DeploymentsCard";
 import { SettingsTab } from "./project/SettingsTab";
+import { BranchDeploymentsTab } from "./project/BranchDeploymentsTab";
 import { DomainsTab } from "./project/DomainsTab";
 import { DetailRow } from "./project/shared";
 import { IngressHealthCard } from "./project/IngressHealthCard";
@@ -241,6 +242,7 @@ const PROJECT_TABS = [
   { id: "overview", label: "Overview" },
   { id: "deploys", label: "Deploys" },
   { id: "domains", label: "Domains" },
+  { id: "branches", label: "Branch deployments" },
   { id: "settings", label: "Settings" },
 ] as const;
 type ProjectTab = (typeof PROJECT_TABS)[number]["id"];
@@ -506,7 +508,7 @@ export default function ProjectDetails() {
     try {
       await api.deleteProject(project.id);
       notify.success(`${projectName} deleted.`, { id: toastId });
-      navigate("/projects");
+      navigate(project.branchParentId ? `/projects/${project.branchParentId}/branches` : "/projects");
     } catch (err) {
       notify.error(err, `Failed to delete ${projectName}`, { id: toastId });
       setDeletingProject(false);
@@ -533,7 +535,8 @@ export default function ProjectDetails() {
   const repoBusy = pullingRepo || deploying || composingProject || recreatingProject || forceRebuilding ||
     stoppingProject || purgingProject || uploadingFiles || redeployingService !== null || droppingVolumesService !== null;
   /** Branch a Pull/Redeploy will check out: the explicit pick, else the auto-deploy branch. */
-  const selectedBranch = pullBranch || project?.autoDeployBranch || "";
+  const selectedBranch = (project?.branchParentId ? project.autoDeployBranch : pullBranch || project?.autoDeployBranch) || "";
+  const checkoutBranch = project?.branchParentId ? undefined : pullBranch || undefined;
   const expectedStackName = project ? expectedComposeProjectName(project) : "";
   const dockerStack = docker?.stack ?? null;
   const monitoredContainers = healthMonitoredContainers(dockerStack);
@@ -558,7 +561,8 @@ export default function ProjectDetails() {
     ? explainProjectStatus(project, dockerStack, docker?.available ?? false, displayStatus)
     : "";
 
-  if (tabParam !== undefined && tabParam !== tab) return <Navigate to={`/projects/${projectId}/overview`} replace />;
+  const supportsBranches = project?.sourceType === "github" && !project.branchParentId;
+  if (tabParam !== undefined && (tabParam !== tab || (project && tab === "branches" && !supportsBranches))) return <Navigate to={`/projects/${projectId}/overview`} replace />;
 
   return (
     <>
@@ -566,12 +570,12 @@ export default function ProjectDetails() {
         <div className={cn("page-title", styles.pageTitle)}>
           <span className={styles.titleName}>
             <FolderDot size={20} />
-            {project?.name ?? "Project"}
+            {project?.branchParentId ? project.autoDeployBranch : project?.name ?? "Project"}
           </span>
           <div className={styles.titleActions}>
-            <Link className="btn btn-ghost btn-sm" to="/projects">
+            <Link className="btn btn-ghost btn-sm" to={project?.branchParentId ? `/projects/${project.branchParentId}/branches` : "/projects"}>
               <ArrowLeft size={13} />
-              Projects
+              {project?.branchParentId ? "Branch deployments" : "Projects"}
             </Link>
           </div>
         </div>
@@ -628,9 +632,9 @@ export default function ProjectDetails() {
                   <div className={styles.branchGroup} role="group" aria-label="Branch">
                     <GitBranch size={13} className={styles.branchGroupIcon} />
                     <AppSelect
-                      value={pullBranch}
+                      value={project.branchParentId ? "" : pullBranch}
                       onValueChange={setPullBranch}
-                      disabled={repoBusy || project.paused}
+                      disabled={repoBusy || project.paused || !!project.branchParentId}
                       triggerClassName={styles.branchSelect}
                       placeholder="Select a branch"
                       options={[
@@ -647,7 +651,7 @@ export default function ProjectDetails() {
                       variant="ghost"
                       size="icon-sm"
                       onClick={() => void loadBranches(true)}
-                      disabled={loadingBranches || !project.githubRepo}
+                      disabled={loadingBranches || !project.githubRepo || !!project.branchParentId}
                       title="Refresh branch list from GitHub"
                       aria-label="Refresh branch list"
                     >
@@ -658,7 +662,7 @@ export default function ProjectDetails() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      onClick={() => void runProjectCommand("pull", pullBranch ? { branch: pullBranch } : undefined)}
+                      onClick={() => void runProjectCommand("pull", checkoutBranch ? { branch: checkoutBranch } : undefined)}
                       disabled={repoBusy || !project.githubRepo || !selectedBranch || project.paused}
                       title={selectedBranch ? `Pull ${selectedBranch} from GitHub (no rebuild)` : "Pick a branch first"}
                     >
@@ -668,12 +672,12 @@ export default function ProjectDetails() {
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() => void handleDeploy(pullBranch || undefined)}
+                      onClick={() => void handleDeploy(checkoutBranch)}
                       disabled={repoBusy || !project.githubRepo || !selectedBranch || project.paused}
                       title={selectedBranch ? `Pull ${selectedBranch}, then docker compose up -d --build` : "Pick a branch first"}
                     >
                       {deploying ? <Loader size={13} className="spin" /> : <Rocket size={13} />}
-                      Redeploy
+                      {project.branchParentId && !project.lastCommitSha ? "Deploy branch" : "Redeploy"}
                     </Button>
                   </div>
                 )}
@@ -690,9 +694,9 @@ export default function ProjectDetails() {
                   </Button>
                 )}
                 <div className={styles.toolbarActions}>
-                  <Button type="button" variant="outline" size="sm" onClick={() => setEnvManagerOpen(true)}>
+                  <Button type="button" variant="outline" size="sm" onClick={() => project.branchShareEnv ? navigate(`/projects/${project.branchParentId}`) : setEnvManagerOpen(true)}>
                     <KeyRound size={13} />
-                    Env
+                    {project.branchShareEnv ? "Shared env" : "Env"}
                     <span className={styles.actionCount}>{envFiles.length}</span>
                   </Button>
                   <Button
@@ -873,7 +877,7 @@ export default function ProjectDetails() {
 
             <Tabs value={tab} onValueChange={(next) => navigate(`/projects/${project.id}/${next}`)} className={styles.projectTabs}>
               <TabsList variant="line" aria-label="Project sections">
-                {PROJECT_TABS.map(({ id: value, label }) => (
+                {PROJECT_TABS.filter(({ id: value }) => value !== "branches" || supportsBranches).map(({ id: value, label }) => (
                   <TabsTrigger key={value} value={value}>{label}</TabsTrigger>
                 ))}
               </TabsList>
@@ -1082,6 +1086,7 @@ export default function ProjectDetails() {
               </>
             )}
 
+            {tab === "branches" && supportsBranches && <BranchDeploymentsTab key={project.id} project={project} domains={domains} />}
             {tab === "domains" && <IngressHealthCard projectId={project.id} />}
             {tab === "domains" && (
               <DomainsTab project={project} setProject={setProject} domains={domains} setDomains={setDomains} />

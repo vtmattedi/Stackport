@@ -130,6 +130,7 @@ export function validateComposePolicy(doc: unknown): { ok: boolean; violations: 
 
 /** Where the project's files live; bind mounts must stay inside it. */
 export interface ResolvedPolicyContext {
+  branchNamespace?: string;
   projectDir: string;
   /** Lets the ingress alias rules name the project (sp<id>-<service>). */
   projectId?: number;
@@ -366,6 +367,19 @@ export function validateResolvedComposePolicy(resolved: unknown, context: Resolv
   for (const [name, value] of Object.entries(services ?? {})) {
     const service = asRecord(value);
     if (!service) continue;
+    if (context.branchNamespace) {
+      if (service["container_name"] !== undefined) {
+        add(name, "container_name", "a fixed container name is shared by all branches.", "Remove container_name so Compose assigns a name to each deployment.");
+      }
+      const build = asRecord(service["build"]);
+      const image = service["image"];
+      if (build && typeof image === "string" && !image.startsWith(`${context.branchNamespace}-`)) {
+        add(name, "image", "building to a fixed image tag can replace another branch's image.", "Remove image from this built service, or prefix it with ${COMPOSE_PROJECT_NAME}-.");
+      }
+      if (build && Array.isArray(build["tags"]) && build["tags"].length) {
+        add(name, "build.tags", "additional image tags are shared across branches.", "Remove build.tags from this service.");
+      }
+    }
     checkResolvedVolumes(name, service, context, add);
     checkResolvedHardening(name, service, add);
     checkResolvedBuild(name, service, context, add);
@@ -407,14 +421,14 @@ export interface PolicyOutcome { ok: boolean; message: string; warning?: string 
  *  cannot be checked is not allowed to run, whatever the reason (a timeout or a config too
  *  large for the buffer would otherwise let anything through). A project that predates the
  *  policy only gets a warning. */
-export function evaluateResolvedPolicy(resolution: ComposeResolution, options: { enforced: boolean; projectDir: string; projectId?: number }): PolicyOutcome {
+export function evaluateResolvedPolicy(resolution: ComposeResolution, options: ResolvedPolicyContext & { enforced: boolean }): PolicyOutcome {
   if (!resolution.ok) {
     if (options.enforced) {
       return { ok: false, message: `Deployment refused: the Compose configuration could not be resolved, so it cannot be checked against the policy (${resolution.reason}). Fix the file or its env files and deploy again.\n` };
     }
     return { ok: true, message: "", warning: `Warning — the Compose configuration could not be resolved (${resolution.reason}), so the compose policy was not checked for this project.\n` };
   }
-  const result = validateResolvedComposePolicy(resolution.doc, { projectDir: options.projectDir, projectId: options.projectId });
+  const result = validateResolvedComposePolicy(resolution.doc, options);
   if (result.ok) return { ok: true, message: "" };
   if (options.enforced) return { ok: false, message: formatPolicyRejection(result.violations) };
   return {

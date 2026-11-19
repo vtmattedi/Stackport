@@ -8,7 +8,9 @@ import { currentVolumeRoots, managedVolumesRoot } from "../src/modules/deploymen
 import { backupsDir, deleteFullBackup, fullBackupFile, fullDeps, getFullBackup, reconcileFullBackups, startFullBackup } from "../src/modules/backup/fullBackup";
 import { cancelRestore, confirmFull, finishProjects, inspectFull, readPlan, receiveUpload, restoreDeps, restoreStatus } from "../src/modules/backup/fullRestore";
 import type { VolumeEngine, VolumeSource } from "../src/modules/backup/volumeEngine";
-import { sealEnvVariables } from "../src/modules/projects/envFiles";
+import { listProjectEnvFiles, sealEnvVariables } from "../src/modules/projects/envFiles";
+import { createBranchDeployment, listBranchDeployments } from "../src/modules/projects/branchDeployments";
+import { addManagedDomain } from "../src/modules/ingress/managedDomains";
 import { expectedComposeProjectName } from "../src/modules/projects/workspace";
 import { getProjectById } from "../src/modules/deployments/operations";
 import { closeDatabase } from "../src/config/database";
@@ -86,11 +88,13 @@ async function until<T>(read: () => T | null | Promise<T | null>, what: string):
 test("a full backup stops each project only while it is copied, and restores on another instance with its data, route, branch and commit", async () => {
   const { getDatabase } = await import("../src/config/database");
   const db = getDatabase();
-  const id = Number(db.prepare("INSERT INTO projects (name, source_type, internal_port, paused, auto_deploy_branch) VALUES ('Shop','github', 3000, 0, 'main')").run().lastInsertRowid);
+  const id = Number(db.prepare("INSERT INTO projects (name, source_type, internal_port, paused, auto_deploy_branch, github_repo) VALUES ('Shop','github', 3000, 0, 'main', 'owner/shop')").run().lastInsertRowid);
   const sealed = sealEnvVariables([{ key: "DB_PASSWORD", value: "s3cret-value" }]);
   db.prepare("INSERT INTO project_env_files (project_id, relative_path, variables_json, variables_enc) VALUES (?, '.env', ?, ?)").run(id, sealed.json, sealed.enc);
   db.prepare("INSERT INTO project_domains (project_id, domain, use_ssl, service, container_port) VALUES (?, 'shop.example.com', 1, 'web', 3000)").run(id);
   db.prepare("INSERT INTO project_deployments (project_id, commit_sha, branch, status) VALUES (?, 'abc1234def', 'v2', 'active')").run(id);
+  addManagedDomain("example.com");
+  const previewBranch = createBranchDeployment(id, { branch: "feature/preview", env: "shared" });
   const roots = currentVolumeRoots();
   fs.mkdirSync(`${roots.containerDataRoot}/volumes/${id}`, { recursive: true });
   docker.volumes.set(`bind:${managedVolumesRoot(roots, id).host}`, { "db/PG_VERSION": "16", "uploads/a.png": "A" });
@@ -127,7 +131,7 @@ test("a full backup stops each project only while it is copied, and restores on 
   await assert.rejects(() => inspectFull("not the passphrase"), /./);
   const preview = await inspectFull(PASS, target);
   assert.deepEqual((await inspectFull(PASS, target)).projects, preview.projects, "a reloaded preview can recheck the uploaded archive");
-  assert.deepEqual(preview.projects.map((p) => [p.name, p.hostnames, p.wasRunning]), [["Shop", ["shop.example.com"], true]]);
+  assert.deepEqual(preview.projects.map((p) => [p.name, p.hostnames, p.wasRunning]), [["Shop", ["shop.example.com"], true], [previewBranch.name, ["shop-feature-preview.example.com"], false]]);
   assert.equal(preview.current.projects, 1);
 
   await assert.rejects(() => confirmFull({ passphrase: PASS, mode: "recover", confirm: "wrong name" }, target), /Type the name/);
@@ -143,7 +147,7 @@ test("a full backup stops each project only while it is copied, and restores on 
   await confirmFull({ passphrase: PASS, mode: "recover", confirm: preview.confirmName }, target);
   assert.equal(launched.length, 1);
   assert.match(launched[0].file, /restore\/parts\/parts\/instance\.spbackup$/);
-  assert.equal(readPlan()?.projects.length, 1);
+  assert.equal(readPlan()?.projects.length, 2);
 
   const restoredDb = getDatabase();
   assert.equal((restoredDb.prepare("SELECT COUNT(*) AS n FROM projects").get() as { n: number }).n, 0, "the level-1 restore replaced B's old project records");
@@ -157,17 +161,21 @@ test("a full backup stops each project only while it is copied, and restores on 
   await assert.rejects(() => finishProjects("", restoredDb), /passphrase/);
   await finishProjects(PASS, restoredDb);
   await until(() => (readPlan() === null ? true : null), "the restore to finish");
-  const copy = restoredDb.prepare("SELECT id, name, paused FROM projects").get() as { id: number; name: string; paused: number };
+  const copy = restoredDb.prepare("SELECT id, name, paused FROM projects WHERE branch_parent_id IS NULL").get() as { id: number; name: string; paused: number };
   assert.equal(copy.name, "Shop");
   assert.equal(copy.paused, 0, "it was running, so it runs");
   assert.deepEqual(deploys, [{ branch: "v2", commit: "abc1234def" }], "the branch and commit that ran");
   const domain = restoredDb.prepare("SELECT domain, service, container_port, use_ssl FROM project_domains WHERE project_id = ?").get(copy.id) as { domain: string; service: string; container_port: number; use_ssl: number };
   assert.deepEqual({ ...domain }, { domain: "shop.example.com", service: "web", container_port: 3000, use_ssl: 0 });
-  assert.deepEqual(issued, ["shop.example.com"], "the certificate is asked for the hostname that served TLS");
+  assert.ok(issued.includes("shop.example.com"), "the certificate is asked for the hostname that served TLS");
   assert.deepEqual(docker.volumes.get(`bind:${managedVolumesRoot(currentVolumeRoots(), copy.id).host}`), { "db/PG_VERSION": "16", "uploads/a.png": "A" }, "the data is back on B, verified");
   const { tryReadEnvVariables } = await import("../src/modules/projects/envFiles");
   const env = restoredDb.prepare("SELECT * FROM project_env_files WHERE project_id = ?").get(copy.id) as Parameters<typeof tryReadEnvVariables>[0];
   assert.equal(tryReadEnvVariables(env)?.[0]?.value, "s3cret-value", "the restored environment secret decrypts");
+  const [restoredBranch] = listBranchDeployments(copy.id);
+  assert.equal(restoredBranch.autoDeployBranch, "feature/preview");
+  assert.equal(restoredBranch.branchShareEnv, true);
+  assert.equal(listProjectEnvFiles(restoredBranch.id)[0].projectId, copy.id);
 });
 
 test("a file that is not a full backup is refused, and so is an empty or oversized upload", async () => {

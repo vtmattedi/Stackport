@@ -1,3 +1,4 @@
+import { announceBranchPreview } from "../github/branchPreview";
 import { ensureProjectProxyNetwork } from "../deployments/operations";
 import { projectCertificateDeps, provisionProjectDomainTls } from "./certificates/project";
 import { renameProjectHostname, type RenameDeps } from "./managedDomains";
@@ -18,6 +19,7 @@ export function startProjectDomainTls(domain: ProjectDomain, actor: string): Ret
   return actionRegistry.tryStart(projectSslKey(projectId, domainId), "ssl-issue", { projectId, domainId, domain: domain.domain }, async () => {
     const result = await provisionProjectDomainTls(domain, realRenameDeps(projectId));
     auditLog(actor, "project.ssl-issue", domain.domain, result.ok ? "ok" : "fail");
-    return result;
+    const preview = result.ok ? await announceBranchPreview(projectId) : "";
+    return { ...result, output: [result.output, preview].filter(Boolean).join("\n") };
   });
 }

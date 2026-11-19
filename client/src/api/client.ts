@@ -347,7 +347,7 @@ export const api = {
   setProjectDomainSsl: (projectId: number, domainId: number, useSsl: boolean) =>
     request<ProjectDomain>(`/projects/${projectId}/domains/${domainId}`, { method: "PATCH", body: JSON.stringify({ useSsl }) }),
   setProjectDomainRoute: (projectId: number, domainId: number, service: string, containerPort: number) =>
-    request<ProjectDomain>(`/projects/${projectId}/domains/${domainId}/route`, { method: "PATCH", body: JSON.stringify({ service, containerPort }) }),
+    request<ProjectDomain & { sslActionId?: string }>(`/projects/${projectId}/domains/${domainId}/route`, { method: "PATCH", body: JSON.stringify({ service, containerPort }) }),
   listTcpExposures: (projectId: number) =>
     request<TcpExposure[]>(`/projects/${projectId}/tcp-exposures`),
   addTcpExposure: (projectId: number, publicPort: number, service: string, containerPort: number) =>
@@ -431,6 +431,10 @@ export const api = {
     request<{ deleted: number }>(`/projects/${projectId}/action-logs`, { method: "DELETE" }),
   cancelProjectAction: (projectId: number) =>
     request<{ ok: boolean }>(`/projects/${projectId}/actions/cancel`, { method: "POST" }),
+  listBranchDeployments: (projectId: number) =>
+    request<(Project & { domains: ProjectDomain[] })[]>(`/projects/${projectId}/branch-deployments`),
+  createBranchDeployment: (projectId: number, input: { branch: string; env: "shared" | "separate"; commentOnPullRequest: boolean }) =>
+    request<Project & { domains: ProjectDomain[] }>(`/projects/${projectId}/branch-deployments`, { method: "POST", body: JSON.stringify(input) }),
   /** Cached branch list (kept fresh by the GitHub poller); `refresh` forces a live GitHub fetch. */
   getProjectBranches: (projectId: number, refresh = false) =>
     request<ProjectBranchesResult>(`/projects/${projectId}/branches${refresh ? "?refresh=1" : ""}`),

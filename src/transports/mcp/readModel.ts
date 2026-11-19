@@ -24,6 +24,7 @@ import { checkProjectIngress, type IngressStatus } from "../../modules/ingress/h
  */
 
 export interface ProjectSummaryView {
+  branchParentId?: number;
   id: number;
   name: string;
   group: string | null;
@@ -72,6 +73,7 @@ export function safeRepo(value: string | null): string | null {
 function summarize(project: Project): ProjectSummaryView {
   return {
     id: project.id,
+    ...(project.branchParentId ? { branchParentId: project.branchParentId } : {}),
     name: project.name,
     group: project.groupName,
     sourceType: project.sourceType,

@@ -223,15 +223,16 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
           {configError && <div className="alert alert-error">{configError}</div>}
 
           <form id={runtimeFormId} className={styles.runtimeForm} onSubmit={(e) => void saveProjectConfig(e)}>
-            <ProjectGroupField value={configGroupName} onValueChange={setConfigGroupName} projects={allProjects ?? []} disabled={savingConfig} />
+            <ProjectGroupField value={configGroupName} onValueChange={setConfigGroupName} projects={allProjects ?? []} disabled={savingConfig || !!project.branchParentId} />
             <ConfigSection title="Repository" storageKey="repository">
               <div className="field field-wide">
                 <label>GitHub repo <span className="hint mono">(owner/repo)</span></label>
-                <input type="text" value={configRepo} onChange={(e) => setConfigRepo(e.target.value)} />
+                <input type="text" disabled={!!project.branchParentId} value={configRepo} onChange={(e) => setConfigRepo(e.target.value)} />
               </div>
               <div className="field">
                 <label>GitHub token</label>
                 <GitHubTokenSelect
+                  disabled={!!project.branchParentId}
                   credentials={credentials}
                   value={configGithubCredentialId}
                   onValueChange={setConfigGithubCredentialId}
@@ -240,10 +241,11 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
               <div className="field">
                 <label>
                   <GitBranch size={12} />
-                  Auto-deploy branch
-                  <span className="hint"> (new commits here deploy automatically)</span>
+                  {project.branchParentId ? "Deployment branch" : "Auto-deploy branch"}
+                  {!project.branchParentId && <span className="hint"> (new commits here deploy automatically)</span>}
                 </label>
                 <ActionSelect
+                  disabled={!!project.branchParentId}
                   value={configAutoDeployBranch}
                   onValueChange={setConfigAutoDeployBranch}
                   options={[
@@ -393,7 +395,7 @@ export function SettingsTab({ project, setProject, domains, credentials, branche
 
         <PolicyCard project={project} setProject={setProject} />
         <HardeningCard project={project} setProject={setProject} />
-        <GithubAuthCard project={project} setProject={setProject} />
+        {!project.branchParentId && <GithubAuthCard project={project} setProject={setProject} />}
         <IsolationCard project={project} setProject={setProject} />
 
         <NetworkGroupCard project={project} />
