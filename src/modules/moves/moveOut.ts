@@ -1,3 +1,4 @@
+import { hasBranchDeployments } from "../projects/branchDeployments";
 /* eslint-disable security/detect-object-injection -- the keys are fixed column names in this module. */
 /* eslint-disable security/detect-non-literal-fs-filename -- paths are Stackport's own transfer directory and a move id it generated. */
 import { randomUUID } from "crypto";
@@ -121,6 +122,9 @@ export async function beginMove(input: BeginInput, db: Database.Database = getDa
   if (typeof input.archiveKey !== "string" || input.archiveKey.length < 20) throw new MoveError(400, "The archive key is not valid.", "bad-request");
   const project = getProjectById(input.projectId);
   if (!project) throw new MoveError(404, "Project not found.", "not-found");
+  if (project.branchParentId || hasBranchDeployments(project.id)) {
+    throw new MoveError(409, "Use a full backup to move a project with its branch deployments.", "branch-deployments");
+  }
   const engine = await deps.engine();
   if (!engine) throw new MoveError(503, "Moving a project needs Docker (the privileged helper reads its data); Docker is not reachable from here.", "needs-helper");
   if (db.prepare(`SELECT 1 FROM project_moves_out WHERE project_id = ? AND state IN (${ACTIVE.map(() => "?").join(",")}) OR (project_id = ? AND state = 'needs-attention')`).get(project.id, ...ACTIVE, project.id)) {

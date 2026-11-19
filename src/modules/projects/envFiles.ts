@@ -105,14 +105,30 @@ function rowToEnvFile(row: ProjectEnvFileRow): ProjectEnvFile {
   };
 }
 
+/** Shared deployments read the primary project's current values at deploy time. */
+export function projectEnvOwner(projectId: number): number {
+  const row = getDatabase().prepare("SELECT branch_parent_id FROM projects WHERE id = ? AND branch_share_env = 1")
+    .get(projectId) as { branch_parent_id: number | null } | undefined;
+  return row?.branch_parent_id ?? projectId;
+}
+
+export class SharedProjectEnvError extends Error {
+  constructor() { super("This deployment shares env files. Edit them on the primary project."); }
+}
+
+function requireOwnEnvFiles(projectId: number): void {
+  if (projectEnvOwner(projectId) !== projectId) throw new SharedProjectEnvError();
+}
+
 export function listProjectEnvFiles(projectId: number): ProjectEnvFile[] {
   const rows = getDatabase()
     .prepare("SELECT * FROM project_env_files WHERE project_id = ? ORDER BY relative_path ASC")
-    .all(projectId) as ProjectEnvFileRow[];
+    .all(projectEnvOwner(projectId)) as ProjectEnvFileRow[];
   return rows.map(rowToEnvFile);
 }
 
 export function createProjectEnvFile(projectId: number, relativePath: string, variables: EnvVariable[]): ProjectEnvFile {
+  requireOwnEnvFiles(projectId);
   const now = new Date().toISOString();
   const sealed = sealEnvVariables(variables);
   const result = getDatabase()
@@ -127,6 +143,7 @@ export function createProjectEnvFile(projectId: number, relativePath: string, va
 }
 
 export function updateProjectEnvFile(id: number, projectId: number, relativePath: string, variables: EnvVariable[]): ProjectEnvFile | null {
+  requireOwnEnvFiles(projectId);
   const existing = getDatabase().prepare("SELECT * FROM project_env_files WHERE id = ? AND project_id = ?").get(id, projectId) as ProjectEnvFileRow | undefined;
   // Saving over values we cannot read would destroy them for good.
   if (existing && tryReadEnvVariables(existing) === null) throw new EnvFileUnreadableError(existing.relative_path);
@@ -143,6 +160,7 @@ export function updateProjectEnvFile(id: number, projectId: number, relativePath
 }
 
 export function deleteProjectEnvFile(id: number, projectId: number): boolean {
+  requireOwnEnvFiles(projectId);
   const result = getDatabase()
     .prepare("DELETE FROM project_env_files WHERE id = ? AND project_id = ?")
     .run(id, projectId);

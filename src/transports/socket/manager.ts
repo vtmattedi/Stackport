@@ -31,7 +31,7 @@ async function fetchChannel(channel: Channel): Promise<unknown> {
       return getSystemSnapshot();
     case "projects": {
       const rows = getDatabase()
-        .prepare("SELECT * FROM projects ORDER BY favorite DESC, name ASC")
+        .prepare("SELECT * FROM projects WHERE branch_parent_id IS NULL ORDER BY favorite DESC, name ASC")
         .all() as ProjectRow[];
       return attachDomains(rows.map(rowToProject));
     }

@@ -128,6 +128,11 @@ function validManifest(value: unknown): value is FullManifest {
   const part = (p: unknown): boolean => !!p && typeof (p as { name?: unknown }).name === "string" && Number.isSafeInteger((p as { size: number }).size) && /^[0-9a-f]{64}$/.test(String((p as { sha256: unknown }).sha256));
   return !!m && m.kind === "full" && m.format === FULL_FORMAT && typeof m.createdAt === "string" && !!m.source?.instance && part(m.instance) && m.instance.name === INSTANCE_PART
     && Array.isArray(m.projects) && m.projects.every((p) => part(p) && p.name === `parts/project-${p.id}.spbackup` && Number.isInteger(p.id) && typeof p.projectName === "string" && p.projectName.length > 0 && p.projectName.length <= 200 && Array.isArray(p.hostnames))
+    && m.projects.every((p) => p.branchDeployment === undefined || (
+      p.branchDeployment && Number.isInteger(p.branchDeployment.parentId) && p.branchDeployment.parentId < p.id
+      && typeof p.branchDeployment.sharedEnv === "boolean" && typeof p.branchDeployment.commentOnPullRequest === "boolean"
+      && m.projects.some((parent) => parent.id === p.branchDeployment?.parentId && parent.branchDeployment === undefined)
+    ))
     && new Set(m.projects.map((p) => p.id)).size === m.projects.length && Array.isArray(m.notCarried);
 }
 
@@ -213,7 +218,7 @@ export async function confirmFull(input: { passphrase: string; mode: RestoreMode
   if (typeof input.passphrase !== "string" || !input.passphrase) throw new RestoreError(400, "The passphrase is required.", "bad-passphrase");
   if (fs.existsSync(planFile())) throw new RestoreError(409, "A restore is already in progress.", "busy");
 
-  const plan: RestorePlan = { mode: input.mode, startedAt: new Date().toISOString(), source: manifest.source.instance, projects: manifest.projects.map((p) => ({ ...p, file: path.basename(p.name) })) };
+  const plan: RestorePlan = { mode: input.mode, startedAt: new Date().toISOString(), source: manifest.source.instance, projects: [...manifest.projects].sort((a, b) => a.id - b.id).map((p) => ({ ...p, file: path.basename(p.name) })) };
   savePlan(plan);
   fs.writeFileSync(passphraseFile(), input.passphrase, { mode: 0o600 });
   try {
@@ -270,6 +275,9 @@ export async function finishProjects(passphrase: string, db: Database.Database =
       const file = path.join(partsDir(), "parts", project.file);
       try {
         outcome.state = "importing";
+        const branch = project.branchDeployment;
+        const parent = branch ? plan.projects.find((candidate) => candidate.id === branch.parentId) : undefined;
+        if (branch && !parent?.completed) throw new Error("Restore the primary project before its branch deployment.");
         if (!project.imported && !fs.existsSync(file)) throw new Error("The project's archive is missing; it has not been restored.");
         const result = project.imported ?? await importProject({
           archivePath: file, passphrase, name: project.projectName, engine, requireVerified: true, allowRawNginx: true, db,
@@ -283,6 +291,20 @@ export async function finishProjects(passphrase: string, db: Database.Database =
         if (getProjectById(result.projectId)?.name !== project.projectName) throw new Error("The previously imported project is missing or was renamed; it cannot be resumed automatically.");
         for (const domain of result.sslHostnames) sslToIssue.push({ projectId: result.projectId, domain });
         if (project.completed) { outcome.state = "done"; outcome.message = "Already restored."; continue; }
+        if (branch && parent?.imported) {
+          const owner = getProjectById(parent.imported.projectId);
+          const child = getProjectById(result.projectId);
+          if (!owner?.githubRepo || !child?.autoDeployBranch || owner.githubRepo !== child.githubRepo) throw new Error("The branch deployment does not match its restored primary project.");
+          db.transaction(() => {
+            db.prepare("UPDATE projects SET branch_parent_id = ?, branch_share_env = ?, branch_comment = ? WHERE id = ?")
+              .run(owner.id, branch.sharedEnv ? 1 : 0, branch.commentOnPullRequest ? 1 : 0, child.id);
+            if (branch.sharedEnv) db.prepare("DELETE FROM project_env_files WHERE project_id = ?").run(child.id);
+            if (plan.mode === "clone" || !project.wasRunning || project.paused) {
+              const markTls = db.prepare("UPDATE project_domains SET use_ssl = 1 WHERE project_id = ? AND domain = ?");
+              for (const domain of result.sslHostnames) markTls.run(child.id, domain);
+            }
+          }).immediate();
+        }
         applyAuth(result.projectId, project, db);
         const notes = [...result.warnings];
         // A recovered project that was running is started again; a clone, and anything that was stopped or paused, stays as it is.

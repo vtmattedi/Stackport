@@ -35,6 +35,7 @@ export interface FullPart { name: string; size: number; sha256: string }
 /** How the source reached GitHub for a project: the instance backup carries the credentials and the App's installations under their ids, so the binding is restored by id. */
 export interface FullProjectAuth { credentialId: number | null; githubCredentialId: number | null; mode: string | null; installationId: number | null; repositoryId: number | null }
 export interface FullProject extends FullPart {
+  branchDeployment?: { parentId: number; sharedEnv: boolean; commentOnPullRequest: boolean };
   id: number; projectName: string; wasRunning: boolean; paused: boolean; digest: string; hostnames: SourceHostname[]; auth: FullProjectAuth;
 }
 export interface FullManifest {
@@ -210,6 +211,7 @@ async function run(id: string, passphrase: string, engine: VolumeEngine | null, 
       projects.push({
         name: `parts/project-${project.id}.spbackup`, size: fs.statSync(partPath).size, sha256: await sha256Stream(partPath),
         id: project.id, projectName: project.name, wasRunning: original.wasRunning, paused: original.paused, digest: manifest.digest, hostnames: manifest.hostnames, auth: authOf(project.id, db),
+        ...(project.branchParentId ? { branchDeployment: { parentId: project.branchParentId, sharedEnv: !!project.branchShareEnv, commentOnPullRequest: !!project.branchComment } } : {}),
       });
     }
 

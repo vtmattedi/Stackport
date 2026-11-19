@@ -1,23 +1,38 @@
+import { hasBranchDeployments } from "./branchDeployments";
 import type Database from "better-sqlite3";
 import { getDatabase } from "../../config/database";
 import { logger } from "../../shared/logger";
 import { deleteProjectActionLogs } from "../actions/log";
 import { disableWebhook } from "../automation/githubWebhooks";
 import { healthChecker } from "../deployments/health";
-import { leaveNetworkGroup } from "../deployments/operations";
-import { removeIngressNetwork } from "../ingress/networks";
+import { leaveNetworkGroup, stopProject } from "../deployments/operations";
+import { dockerRun, removeIngressNetwork } from "../ingress/networks";
 import { removeIsolatedNetworkQuietly } from "../ingress/isolation";
 import { removeProjectTcpRuntime } from "../ingress/tcp";
+import { expectedComposeProjectName } from "./workspace";
 import type { ProjectRow } from "./types";
 
 export type DestroyOutcome = { ok: true } | { ok: false; error: string };
 
-/** Removes a project's record and everything Stackport runs on its behalf (TCP proxies, webhook, networks, action logs). It does not stop containers or remove
- *  volumes: that is `stopAndPurgeProject`, which a caller that wants the data gone runs first. The delete route and a committed move both end here. */
+/** Removes a project's record and everything Stackport runs on its behalf (TCP proxies, webhook, networks, action logs). Branch deployments are stopped here so their containers cannot be left behind.
+ *  Volumes remain available unless a caller separately purges them. */
 export async function destroyProject(id: number, db: Database.Database = getDatabase()): Promise<DestroyOutcome> {
   const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
   if (!row) return { ok: false, error: "Project not found" };
+  if (hasBranchDeployments(id)) return { ok: false, error: "Remove this project's branch deployments first." };
 
+  if (row.branch_parent_id && row.compose_file) {
+    try {
+      const name = expectedComposeProjectName(row);
+      const containers = await dockerRun(["ps", "-a", "-q", "--filter", `label=com.docker.compose.project=${name}`]);
+      if (containers.trim()) {
+        const stop = await stopProject(id);
+        if (!stop.ok) return { ok: false, error: stop.output || "Could not stop the branch deployment." };
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
   await leaveNetworkGroup({ id, name: row.name }).catch(() => undefined);
   try {
     await removeProjectTcpRuntime(id);

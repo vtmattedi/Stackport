@@ -27,7 +27,6 @@ Progress and prioritization live in the [Stackport Linear project](https://linea
 
 - [Backend module ownership](engineering/backend-modules.md)
 - [Real-host verification checklist](engineering/real-host-verification.md)
-- [Staging gate](engineering/staging-gate.md)
 - [Security boundaries and deferred work](engineering/security-boundaries.md)
 - [Web Push reliability contract](engineering/web-push-reliability.md)
 - [UI screenshots tooling](engineering/ui-screenshots.md)
@@ -39,4 +38,4 @@ Progress and prioritization live in the [Stackport Linear project](https://linea
 
 ## Maintenance rule
 
-A completed feature should update the **current technical overview and relevant operating guide**, not leave its implementation plan as an active reference. Retire superseded plans after verifying no source, CI, or documentation link relies on them. Keep postmortems for their enduring safety lessons. For material changes affecting running infrastructure, follow the [staging gate](engineering/staging-gate.md).
+A completed feature should update the **current technical overview and relevant operating guide**, not leave its implementation plan as an active reference. Retire superseded plans after verifying no source, CI, or documentation link relies on them. Keep postmortems for their enduring safety lessons.

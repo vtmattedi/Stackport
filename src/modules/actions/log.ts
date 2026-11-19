@@ -3,7 +3,7 @@ import path from "path";
 import { config } from "../../config/env";
 import { getDatabase } from "../../config/database";
 import { decryptSecret } from "../../shared/crypto";
-import { readEnvVariables } from "../projects/envFiles";
+import { projectEnvOwner, readEnvVariables } from "../projects/envFiles";
 
 /**
  * Action output on disk: one file per action under <LOG_DIR>/actions, readable only by
@@ -63,7 +63,7 @@ export function collectSecrets(projectId?: number): string[] {
     try { secrets.add(decryptSecret(row.secret_enc)); } catch { /* unreadable: nothing to mask */ }
   }
   if (projectId !== undefined) {
-    const rows = db.prepare("SELECT variables_json, variables_enc FROM project_env_files WHERE project_id = ?").all(projectId) as { variables_json: string; variables_enc: string | null }[];
+    const rows = db.prepare("SELECT variables_json, variables_enc FROM project_env_files WHERE project_id = ?").all(projectEnvOwner(projectId)) as { variables_json: string; variables_enc: string | null }[];
     for (const row of rows) {
       for (const variable of readEnvVariables(row)) {
         if (typeof variable.value === "string") secrets.add(variable.value);

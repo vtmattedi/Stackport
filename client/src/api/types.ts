@@ -31,6 +31,9 @@ export interface DeployTriggerResult {
 }
 
 export interface Project {
+  branchParentId?: number | null;
+  branchShareEnv?: boolean;
+  branchComment?: boolean;
   groupName: string | null;
   id: number;
   name: string;

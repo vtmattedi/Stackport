@@ -1,8 +1,8 @@
 {
   "name": "stackport-vps-manager-client",
-  "version": "1.4.11",
-  "builtAt": "2026-11-19T03:34:17.586Z",
-  "gitCommit": "66bdbda",
-  "gitBranch": "feat/ssl-first-domains",
-  "gitMessage": "Merge pull request #57 from vtmattedi/fix/stackport-hostname-tls"
+  "version": "1.4.12",
+  "builtAt": "2026-11-19T04:06:07.682Z",
+  "gitCommit": "9e41946",
+  "gitBranch": "feat/project-branch-deployments",
+  "gitMessage": "Merge pull request #58 from vtmattedi/feat/ssl-first-domains"
 }

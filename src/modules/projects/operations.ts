@@ -1,3 +1,4 @@
+import { branchCheckoutConflict, hasBranchDeployments } from "./branchDeployments";
 /* eslint-disable security/detect-object-injection -- keys come from a fixed list of project fields. */
 import { getDatabase } from "../../config/database";
 import { rowToCredential, type Credential, type CredentialRow } from "../credentials/types";
@@ -181,6 +182,23 @@ export function updateProject(projectId: number, input: UpdateProjectInput, opti
     ? parseNginxExtraBlocks(input.nginxExtraBlocks)
     : existing.nginx_extra_blocks ?? null;
 
+  if (existing.branch_parent_id && (autoDeployBranch !== existing.auto_deploy_branch || githubRepo !== existing.github_repo)) {
+    throw new ProjectAdminError(409, "A branch deployment keeps its repository and branch. Add another deployment to use a different branch.");
+  }
+  if (existing.branch_parent_id && groupName !== existing.group_name) {
+    throw new ProjectAdminError(409, "Change the group on the primary project to move its branch deployments with it.");
+  }
+  if (existing.branch_parent_id && (githubCredentialId !== existing.github_credential_id || credentialId !== existing.credential_id)) {
+    throw new ProjectAdminError(409, "Manage repository credentials on the primary project.");
+  }
+  if (githubRepo !== existing.github_repo && hasBranchDeployments(projectId)) {
+    throw new ProjectAdminError(409, "Remove the branch deployments before changing this project's repository.");
+  }
+  if (autoDeployBranch !== existing.auto_deploy_branch) {
+    const conflict = branchCheckoutConflict(rowToProject(existing), autoDeployBranch);
+    if (conflict) throw new ProjectAdminError(409, conflict);
+  }
+
   // A project bound to the App is bound to a repository id, so a new name here would leave the binding pointing at the
   // old repository: clones and webhooks would go to different places. It moves back to a token first.
   if (existing.github_auth_mode === "app" && (githubRepo ?? "").toLowerCase() !== (existing.github_repo ?? "").toLowerCase()) {
@@ -192,14 +210,20 @@ export function updateProject(projectId: number, input: UpdateProjectInput, opti
   ensurePortAvailable(internalPort, projectId);
 
   const now = new Date().toISOString();
-  db.prepare(
-    `UPDATE projects
-     SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_domain_id = ?, health_check_interval_s = ?,
-         deploy_health_grace_s = ?, auto_rollback_unhealthy = ?,
-         github_repo = ?, credential_id = ?, github_credential_id = ?,
-         auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
-     WHERE id = ?`
-  ).run(name, groupName, internalPort, healthCheckEndpoint, healthCheckDomainId, healthCheckIntervalS, deployHealthGraceS, autoRollbackUnhealthy ? 1 : 0, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE projects
+       SET name = ?, group_name = ?, internal_port = ?, health_check_endpoint = ?, health_check_domain_id = ?, health_check_interval_s = ?,
+           deploy_health_grace_s = ?, auto_rollback_unhealthy = ?,
+           github_repo = ?, credential_id = ?, github_credential_id = ?,
+           auto_deploy_branch = ?, nginx_extra_config = ?, nginx_extra_blocks = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(name, groupName, internalPort, healthCheckEndpoint, healthCheckDomainId, healthCheckIntervalS, deployHealthGraceS, autoRollbackUnhealthy ? 1 : 0, githubRepo, credentialId, githubCredentialId, autoDeployBranch, nginxExtraConfig, nginxExtraBlocks, now, projectId);
+    if (groupName !== existing.group_name || githubCredentialId !== existing.github_credential_id || credentialId !== existing.credential_id) {
+      db.prepare("UPDATE projects SET group_name = ?, github_credential_id = ?, credential_id = ?, updated_at = ? WHERE branch_parent_id = ?")
+        .run(groupName, githubCredentialId, credentialId, now, projectId);
+    }
+  }).immediate();
   resetGithubTrackingIfChanged(db, projectId, existing, githubRepo, autoDeployBranch);
   moveWebhookIfRepoChanged(projectId, existing.github_repo, githubRepo);
 

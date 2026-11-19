@@ -7,6 +7,9 @@ export interface ProjectBranch {
 }
 
 export interface Project {
+  branchParentId?: number | null;
+  branchShareEnv?: boolean;
+  branchComment?: boolean;
   groupName: string | null;
   id: number;
   name: string;
@@ -89,6 +92,9 @@ function parseHookStatus(value: unknown): HookStatus {
 }
 
 export interface ProjectRow {
+  branch_parent_id?: number | null;
+  branch_share_env?: number;
+  branch_comment?: number;
   group_name: string | null;
   id: number;
   name: string;
@@ -147,6 +153,9 @@ export function rowToProject(row: ProjectRow): Project {
   return {
     groupName: row.group_name ?? null,
     id: row.id,
+    branchParentId: row.branch_parent_id ?? null,
+    branchShareEnv: row.branch_share_env === 1,
+    branchComment: row.branch_comment === 1,
     name: row.name,
     internalPort: row.internal_port,
     healthCheckEndpoint: row.health_check_endpoint,

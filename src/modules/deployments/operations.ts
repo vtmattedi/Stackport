@@ -1,5 +1,10 @@
+import { announceBranchPreview } from "../github/branchPreview";
+import { branchCheckoutConflict } from "../projects/branchDeployments";
+export { isValidBranchName } from "../projects/branchName";
 /* eslint-disable security/detect-non-literal-fs-filename -- paths are inside a project's checkout: its directory plus a Compose file name picked from the files found there; any path a project supplies goes through resolveContainedPath first. */
-import { listProjectEnvFiles, normalizeEnvRelativePath, type ProjectEnvFile } from "../projects/envFiles";
+import { listProjectEnvFiles } from "../projects/envFiles";
+import { writeDeploymentEnv } from "./env";
+export { writeEnvFiles } from "./env";
 export { listProjectEnvFiles, createProjectEnvFile, updateProjectEnvFile, deleteProjectEnvFile, normalizeEnvRelativePath, parseEnvVariables, type EnvVariable, type ProjectEnvFile, type ProjectEnvFileRow } from "../projects/envFiles";
 import { deployRoot, projectRepoDir, slugify, expectedComposeProjectName } from "../projects/workspace";
 export { deployRoot, projectRepoDir, slugify, expectedComposeProjectName } from "../projects/workspace";
@@ -28,11 +33,11 @@ import { seedManagedDirectory } from "./compose/seedVolumes";
 import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networkGroups";
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
-import { listRoutedServiceNames } from "../ingress/domains";
+import { getProjectHealthCheckDomain, listProjectDomains, listRoutedServiceNames } from "../ingress/domains";
 import { projectCertificateDeps, provisionProjectDomainTls } from "../ingress/certificates/project";
 import { findUnroutedManagedHostname, routeReservedHostname } from "../ingress/managedDomains";
 import { beginDeployReport, finishDeployReport } from "../github/reporting";
-import { writeNginxConfig } from "../ingress/nginx/configWriter";
+import { hasUsableCertificate, writeNginxConfig } from "../ingress/nginx/configWriter";
 import { ensureBuildCapacity } from "../maintenance/storage/operations";
 import { getActiveDeployment, markActiveDeploymentUnhealthy, recordFailedDeployment, recordSuccessfulDeployment, resolveRollbackTarget } from "./history";
 import { healthCheckUrl, probeHealth, type HealthProbe } from "./health";
@@ -233,12 +238,15 @@ export interface ProjectComposePolicy {
 export async function getProjectComposePolicy(projectId: number): Promise<ProjectComposePolicy> {
   const { repoPath, composeFile } = await resolveSelectedComposeFile(projectId);
   const violations = [...validateComposePolicy(await readRawComposeDoc(repoPath, composeFile)).violations, ...await checkComposeFileReferences(repoPath, composeFile)];
-  const enforced = isComposePolicyEnforced(projectId);
-  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile, expectedComposeProjectName(getProjectById(projectId)!));
+  const project = getProjectById(projectId)!;
+  const namespace = expectedComposeProjectName(project);
+  const branchNamespace = project.branchParentId ? namespace : undefined;
+  const enforced = !!branchNamespace || isComposePolicyEnforced(projectId);
+  const resolution = await resolveComposeConfigDetailed(repoPath, composeFile, namespace);
   if (!resolution.ok) return { composeFile, violations, resolved: { checked: false, reason: resolution.reason, violations: [] }, enforced };
   const fingerprint = (v: PolicyViolation): string => JSON.stringify([v.section ?? "services", v.service, v.key, v.problem]);
   const known = new Set(violations.map(fingerprint));
-  const resolvedOnly = validateResolvedComposePolicy(resolution.doc, { projectDir: repoPath, projectId }).violations.filter((v) => !known.has(fingerprint(v)));
+  const resolvedOnly = validateResolvedComposePolicy(resolution.doc, { projectDir: repoPath, projectId, branchNamespace }).violations.filter((v) => !known.has(fingerprint(v)));
   return { composeFile, violations, resolved: { checked: true, violations: resolvedOnly }, enforced };
 }
 
@@ -449,7 +457,9 @@ async function checkComposePolicy(projectId: number, repoPath: string, composeFi
 
   // The raw file passed; now check what Compose will actually run (S1). A file that can't be
   // resolved is refused for a project that enforces the policy: it can't be checked.
-  return evaluateResolvedPolicy(resolution, { enforced: isComposePolicyEnforced(projectId), projectDir: repoPath, projectId });
+  const project = getProjectById(projectId);
+  const branchNamespace = project?.branchParentId ? expectedComposeProjectName(project) : undefined;
+  return evaluateResolvedPolicy(resolution, { enforced: !!branchNamespace || isComposePolicyEnforced(projectId), projectDir: repoPath, projectId, branchNamespace });
 }
 
 /** The arguments that resolve a Compose file. `--profile '*'` turns every profile on, so a
@@ -550,6 +560,9 @@ async function runCompose(
   timeoutMs: number
 ): Promise<RunResult> {
   await fs.mkdir(dockerConfigDir(), { recursive: true });
+  const project = getProjectById(projectId);
+  if (!project) throw new Error(`Project ${projectId} not found`);
+  const composeProjectName = expectedComposeProjectName(project);
   let resolution: ComposeResolution | null = null;
   if (composeFile) {
     // Phase 1.7 — StackPort-owned augmentation, ephemeral (never committed, same
@@ -585,7 +598,7 @@ async function runCompose(
 
     if (composeSubcommandNeedsPolicy(args[0])) {
       // Resolved once: the policy, the mount rewrite and the hardening all work from the same snapshot.
-      resolution = await resolveComposeConfigDetailed(repoPath, composeFile);
+      resolution = await resolveComposeConfigDetailed(repoPath, composeFile, composeProjectName);
       const policy = await checkComposePolicy(projectId, repoPath, composeFile, resolution);
       if (!policy.ok) {
         emit(projectId, action, "stderr", policy.message);
@@ -627,14 +640,9 @@ async function runCompose(
   if (args[0] === "build" || (args[0] === "up" && args.includes("--build"))) {
     env["DOCKER_BUILDKIT"] = "1";
   }
-  // The repository may declare a top-level Compose `name:` shared with another
-  // Stackport project. Always use the immutable project-specific namespace instead.
-  const project = getProjectById(projectId);
-  if (!project) throw new Error(`Project ${projectId} not found`);
-  const composeProjectName = expectedComposeProjectName(project);
-  // Fail closed rather than silently creating a second stack when upgrading an
-  // existing deployment whose Compose file used a different explicit name.
-  if (composeFile && (args[0] === "up" || args[0] === "down")) {
+  // A branch deployment has always owned its own namespace. Legacy-name checks apply
+  // only to primary deployments that may have created a stack without -p.
+  if (!project.branchParentId && composeFile && (args[0] === "up" || args[0] === "down")) {
     const raw = await readRawComposeDoc(repoPath, composeFile);
     const declaredName = raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)["name"] : null;
@@ -691,20 +699,35 @@ async function runCompose(
 /** Routes the hostname reserved for a project (domain manager) once the stack is up and its Compose file declares exactly one
  *  routable port. With several ports it is left for a person: guessing is how traffic reaches the wrong service. */
 async function routeReservedHostnameAfterUp(projectId: number, action: ProjectDeployEvent["action"]): Promise<void> {
-  if (!findUnroutedManagedHostname(projectId)) return; // the cheap check first: most projects have nothing to route
-  const targets = await getProjectIngressTargets(projectId).catch(() => []);
-  const routed = routeReservedHostname(projectId, targets);
-  if (!routed) return;
-  if (routed.useSsl) {
+  const parentId = getProjectById(projectId)?.branchParentId;
+  const pending = findUnroutedManagedHostname(projectId);
+  let addedRoute = false;
+  if (pending) {
+    let targets = await getProjectIngressTargets(projectId).catch(() => []);
+    if (parentId && targets.length > 1) {
+      const parent = getProjectById(parentId);
+      const route = getProjectHealthCheckDomain(parentId, parent?.healthCheckDomainId ?? null);
+      const matching = targets.filter((target) => target.service === route?.service && target.containerPort === route?.containerPort);
+      if (matching.length === 1) targets = matching;
+    }
+    addedRoute = !!routeReservedHostname(projectId, targets);
+  }
+  // A preview can be redeployed after its DNS record is in place to retry a failed issuance.
+  const secure = parentId ? listProjectDomains(projectId).filter((domain) => domain.useSsl && domain.service && domain.containerPort)
+    : addedRoute && pending?.useSsl ? [pending] : [];
+  for (const domain of secure) {
+    if (!(addedRoute && domain.id === pending?.id) && await hasUsableCertificate(domain.domain)) continue;
     // A deployment health check may use this hostname as soon as Compose returns.
-    emit(projectId, action, "status", `Preparing HTTPS for ${routed.domain}\n`);
-    const ssl = await provisionProjectDomainTls(routed, projectCertificateDeps(() => ensureProjectProxyNetwork(projectId)));
-    if (!ssl.ok) throw new Error(`Certificate setup for ${routed.domain} failed: ${ssl.output}`);
-  } else {
+    emit(projectId, action, "status", `Preparing HTTPS for ${domain.domain}\n`);
+    const ssl = await provisionProjectDomainTls(domain, projectCertificateDeps(() => ensureProjectProxyNetwork(projectId)));
+    if (!ssl.ok) {
+      emit(projectId, action, "stderr", `Certificate setup for ${domain.domain} failed: ${ssl.output}\n`);
+    }
+  }
+  if (addedRoute && !pending?.useSsl) {
     await ensureProjectProxyNetwork(projectId);
     await writeNginxConfig();
   }
-  logger.info({ projectId, hostname: routed.domain, service: routed.service, port: routed.containerPort }, "domains: reserved hostname routed");
 }
 
 const COMPOSE_FILE_EXT_RE = /\.(ya?ml)$/i;
@@ -947,23 +970,15 @@ export async function cleanOrphanFolder(folderPath: string): Promise<{ ok: boole
   return { ok: true, log: log.join("") };
 }
 
-const BRANCH_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
-
-/** Guards against git argument/flag injection — branch names flow into `git` argv as literal args. */
-export function isValidBranchName(value: string): boolean {
-  return BRANCH_NAME_RE.test(value)
-    && !value.includes("..")
-    && !value.includes("//")
-    && !value.endsWith("/")
-    && !value.endsWith(".lock");
-}
-
 export const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/;
 
 /** With `commitSha`, checks out exactly that commit (it must be on the branch)
  *  instead of the branch tip, so an auto-deploy runs the commit that triggered it
  *  rather than whatever was pushed after it. */
 async function ensureRepo(project: Project, repoPath: string, action: ProjectDeployEvent["action"], branch?: string | null, commitSha?: string | null): Promise<RunResult[]> {
+  const conflict = branchCheckoutConflict(project, branch);
+  if (conflict) return [{ ok: false, output: conflict, stdout: "", command: "git checkout" }];
+  if (project.branchParentId) branch = project.autoDeployBranch;
   if (commitSha && !COMMIT_SHA_RE.test(commitSha)) {
     return [{ ok: false, output: `Invalid commit SHA "${commitSha}".`, stdout: "", command: "git checkout" }];
   }
@@ -1150,25 +1165,6 @@ export async function getProjectComposeFileContent(projectId: number): Promise<{
   }
 }
 
-export async function writeEnvFiles(repoPath: string, envFiles: ProjectEnvFile[]): Promise<string[]> {
-  const written: string[] = [];
-  for (const envFile of envFiles) {
-    const normalized = normalizeEnvRelativePath(envFile.relativePath);
-    if (!normalized) throw new Error(`Invalid env path: ${envFile.relativePath}`);
-    // Writing an empty .env for values we cannot read would start the project with blank secrets.
-    if (envFile.unreadable) throw new Error(`Cannot write ${envFile.relativePath}: its stored values cannot be decrypted with the configured keys. Restore the key (ENCRYPTION_KEY, or the old one as ENCRYPTION_KEY_PREVIOUS) and deploy again.`);
-    const target = resolveContainedPath(repoPath, normalized);
-    if (!target) {
-      throw new Error(`Env path escapes repository: ${envFile.relativePath}`);
-    }
-    const content = envFile.variables.map(({ key, value }) => `${key}=${value}`).join("\n") + "\n";
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, content, "utf8");
-    written.push(normalized);
-  }
-  return written;
-}
-
 function actionStartedLabel(action: "build" | "deploy" | "compose" | "recreate"): string {
   if (action === "build") return "Build";
   if (action === "compose") return "Docker compose";
@@ -1201,6 +1197,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
     return { ok: false, projectId, repoPath: "", output: "Project is paused", action };
   }
 
+  const branchEnv = project.branchParentId ? listProjectEnvFiles(projectId) : undefined;
   const repoPath = projectRepoDir(project);
   const deployedBranch = branch ?? project.autoDeployBranch;
   const output: string[] = [];
@@ -1254,7 +1251,7 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
   actionRegistry.annotate(projectRepoKey(projectId), { commitSha, branch: deployedBranch });
 
   try {
-    const written = await writeEnvFiles(repoPath, listProjectEnvFiles(projectId));
+    const written = await writeDeploymentEnv(project, repoPath, branchEnv);
     const message = written.length > 0 ? `Wrote env files:\n${written.map((item) => `- ${item}`).join("\n")}\n` : "No env files configured.\n";
     emit(projectId, action, "status", message);
     output.push(message);
@@ -1304,6 +1301,13 @@ async function runProjectAction(projectId: number, action: "build" | "deploy" | 
         { commitSha, branch: deployedBranch, composeFileName: composeFile, triggeredBy },
         "docker compose up failed — see output for details"
       );
+    }
+  }
+  if (composeArgs[0] === "up" && compose.ok && healthy && project.branchComment) {
+    const message = await announceBranchPreview(projectId);
+    if (message) {
+      emit(projectId, action, "status", `${message}\n`);
+      output.push(message);
     }
   }
   const ok = compose.ok && healthy;
@@ -1446,6 +1450,7 @@ export async function redeployProjectService(projectId: number, service: string)
     return { ok: false, projectId, repoPath: "", output: "Invalid service name", action };
   }
 
+  const branchEnv = project.branchParentId ? listProjectEnvFiles(projectId) : undefined;
   const repoPath = projectRepoDir(project);
   const hasCheckout = await hasProjectSource(project, repoPath);
   if (!hasCheckout) {
@@ -1471,7 +1476,7 @@ export async function redeployProjectService(projectId: number, service: string)
   emit(projectId, action, "status", `Redeploy started for service: ${service}\n`);
 
   try {
-    const written = await writeEnvFiles(repoPath, listProjectEnvFiles(projectId));
+    const written = await writeDeploymentEnv(project, repoPath, branchEnv);
     const message = written.length > 0 ? `Wrote env files:\n${written.map((item) => `- ${item}`).join("\n")}\n` : "No env files configured.\n";
     emit(projectId, action, "status", message);
     output.push(message);
@@ -1626,6 +1631,7 @@ export async function forceRebuildProject(projectId: number): Promise<DeployResu
     return { ok: false, projectId, repoPath: "", output: "Project is paused", action };
   }
 
+  const branchEnv = project.branchParentId ? listProjectEnvFiles(projectId) : undefined;
   const repoPath = projectRepoDir(project);
   const output: string[] = [];
   emit(projectId, action, "status", "Force rebuild started\n");
@@ -1646,7 +1652,7 @@ export async function forceRebuildProject(projectId: number): Promise<DeployResu
   }
 
   try {
-    const written = await writeEnvFiles(repoPath, listProjectEnvFiles(projectId));
+    const written = await writeDeploymentEnv(project, repoPath, branchEnv);
     const message = written.length > 0 ? `Wrote env files:\n${written.map((item) => `- ${item}`).join("\n")}\n` : "No env files configured.\n";
     emit(projectId, action, "status", message);
     output.push(message);
@@ -1880,6 +1886,7 @@ export async function rollbackProject(projectId: number, deploymentId?: number, 
     throw new Error("Rollback target is missing its commit or compose file");
   }
 
+  const branchEnv = project.branchParentId ? listProjectEnvFiles(projectId) : undefined;
   const repoPath = projectRepoDir(project);
   const output: string[] = [];
   emit(projectId, action, "status", `Rolling back to ${previous.commitSha.slice(0, 7)} (${previous.composeFileName})\n`);
@@ -1901,6 +1908,7 @@ export async function rollbackProject(projectId: number, deploymentId?: number, 
   }
 
   try {
+    if (project.branchParentId) await writeDeploymentEnv(project, repoPath, branchEnv);
     await fs.writeFile(path.join(repoPath, previous.composeFileName), previous.effectiveCompose, "utf8");
   } catch (err) {
     const message = `Rollback failed: could not restore compose file (${err instanceof Error ? err.message : String(err)}).\n`;

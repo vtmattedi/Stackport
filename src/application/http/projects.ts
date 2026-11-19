@@ -1,5 +1,6 @@
+import { BranchDeploymentError, createBranchDeployment, hasBranchDeployments, listBranchDeployments } from "../../modules/projects/branchDeployments";
 import { projectRepoDir } from "../../modules/projects/workspace";
-import { createProjectEnvFile, deleteProjectEnvFile, EnvFileUnreadableError, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../../modules/projects/envFiles";
+import { createProjectEnvFile, deleteProjectEnvFile, EnvFileUnreadableError, listProjectEnvFiles, projectEnvOwner, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../../modules/projects/envFiles";
 import { previewDeploy, previewRollback } from "../../modules/deployments/preview";
 import { listProjectDeploys } from "../../modules/deployments/deployList";
 import { parseLogQuery } from "../../modules/deployments/logQuery";
@@ -147,9 +148,31 @@ async function runProjectNginxFlow(source: string, project: { id: number; name: 
   }
 }
 
+router.get("/:id/branch-deployments", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const parent = getProjectById(Number(req.params.id));
+  if (!parent || parent.branchParentId) { res.status(404).json({ error: "Project not found." }); return; }
+  res.json(listBranchDeployments(parent.id));
+});
+
+router.post("/:id/branch-deployments", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
+  const parentId = Number(req.params.id);
+  if (actionRegistry.get(projectRepoKey(parentId))?.status === "running") {
+    res.status(409).json({ error: "Wait for the primary project's action to finish." });
+    return;
+  }
+  try {
+    const deployment = createBranchDeployment(parentId, (req.body ?? {}) as Record<string, unknown>);
+    auditLog(req.user ?? "unknown", "project.branch-create", deployment.name, "ok", { parentId: deployment.branchParentId, projectId: deployment.id });
+    res.status(201).json(deployment);
+  } catch (err) {
+    if (err instanceof BranchDeploymentError) { res.status(err.status).json({ error: err.message }); return; }
+    throw err;
+  }
+});
+
 router.get("/", requireAuth, (_req: Request, res: Response): void => {
   const rows = getDatabase()
-    .prepare("SELECT * FROM projects ORDER BY favorite DESC, name ASC")
+    .prepare("SELECT * FROM projects WHERE branch_parent_id IS NULL ORDER BY favorite DESC, name ASC")
     .all() as ProjectRow[];
   res.json(attachDomains(rows.map(rowToProject)));
 });
@@ -255,6 +278,7 @@ router.get("/:id/env-files", requireAuth, (req: Request<{ id: string }>, res: Re
 router.post("/:id/env-files", requireAuth, (req: Request<{ id: string }>, res: Response): void => {
   const id = parseInt(req.params.id, 10);
   if (isNaN(id)) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (projectEnvOwner(id) !== id) { res.status(409).json({ error: "Edit the shared env files on the primary project." }); return; }
   if (!getDatabase().prepare("SELECT id FROM projects WHERE id = ?").get(id)) {
     res.status(404).json({ error: "Project not found" });
     return;
@@ -285,6 +309,7 @@ router.put("/:id/env-files/:envId", requireAuth, (req: Request<{ id: string; env
   const id = parseInt(req.params.id, 10);
   const envId = parseInt(req.params.envId, 10);
   if (isNaN(id) || isNaN(envId)) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (projectEnvOwner(id) !== id) { res.status(409).json({ error: "Edit the shared env files on the primary project." }); return; }
 
   const { relativePath, variables } = req.body as Record<string, unknown>;
   if (typeof relativePath !== "string") {
@@ -322,6 +347,7 @@ router.delete("/:id/env-files/:envId", requireAuth, (req: Request<{ id: string; 
   const id = parseInt(req.params.id, 10);
   const envId = parseInt(req.params.envId, 10);
   if (isNaN(id) || isNaN(envId)) { res.status(400).json({ error: "Invalid id" }); return; }
+  if (projectEnvOwner(id) !== id) { res.status(409).json({ error: "Edit the shared env files on the primary project." }); return; }
 
   if (!deleteProjectEnvFile(envId, id)) {
     res.status(404).json({ error: "Env file not found" });
@@ -713,6 +739,7 @@ router.put("/:id/github-auth", requireAuth, async (req: Request<{ id: string }>,
   const project = getProjectById(id);
   if (!project) { res.status(404).json({ error: "Project not found" }); return; }
   if (actionRegistry.get(projectRepoKey(id))?.status === "running") { res.status(409).json({ error: "An action is running for this project. Try again when it has finished." }); return; }
+  if (project.branchParentId) { res.status(409).json({ error: "Manage repository access on the primary project." }); return; }
   const mode: unknown = req.body?.mode;
   try {
     if (mode === "token") {
@@ -1004,9 +1031,10 @@ router.patch("/:id/domains/:domainId/route", requireAuth, async (req: Request<{ 
   if (!updated) { res.status(404).json({ error: "Domain not found" }); return; }
 
   auditLog(req.user ?? "unknown", "project.domain-route", `${project.name}:${updated.domain}`, "ok", { service: route.service, containerPort: route.containerPort });
-  res.json(updated);
-  if (updated.useSsl && (!old?.service || !old.containerPort)) startProjectDomainTls(updated, req.user ?? "unknown");
-  else void runProjectNginxFlow("project.domain-route", project);
+  const startSsl = updated.useSsl && (!old?.service || !old.containerPort);
+  const sslAction = startSsl ? startProjectDomainTls(updated, req.user ?? "unknown") : null;
+  res.json({ ...updated, sslActionId: sslAction?.id });
+  if (!startSsl) void runProjectNginxFlow("project.domain-route", project);
 });
 
 router.delete("/:id/domains/:domainId", requireAuth, (req: Request<{ id: string; domainId: string }>, res: Response): void => {
@@ -1358,13 +1386,29 @@ router.delete("/:id", requireAuth, async (req: Request<{ id: string }>, res: Res
   const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | undefined;
   if (!row) { res.status(404).json({ error: "Project not found" }); return; }
 
+  if (hasBranchDeployments(id)) { res.status(409).json({ error: "Remove this project's branch deployments first." }); return; }
+
   // A project in the middle of a move belongs to the move until it ends: deleting it would break the way back.
   const current = actionRegistry.get(projectRepoKey(id));
   if (current?.status === "running" && current.kind === "move") {
     res.status(409).json({ error: "This project is being moved to another instance. Abort the move first.", code: "project-moving" });
     return;
   }
-  const destroyed = await destroyProject(id);
+  let destroyed: Awaited<ReturnType<typeof destroyProject>>;
+  if (row.branch_parent_id) {
+    let finish!: (result: Awaited<ReturnType<typeof destroyProject>>) => void;
+    const completed = new Promise<Awaited<ReturnType<typeof destroyProject>>>((resolve) => { finish = resolve; });
+    // This slot outlives the deleted row, so the action has no project foreign key.
+    const started = actionRegistry.tryStart(projectRepoKey(id), "branch-remove", undefined, async () => {
+      const result = await destroyProject(id).catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err) }));
+      finish(result);
+      return { ok: result.ok, output: result.ok ? "Branch deployment removed." : result.error };
+    });
+    if (!started) { res.status(409).json({ error: "Wait for the branch deployment's action to finish." }); return; }
+    destroyed = await completed;
+  } else {
+    destroyed = await destroyProject(id);
+  }
   if (!destroyed.ok) { res.status(502).json({ error: destroyed.error }); return; }
 
   auditLog(req.user ?? "unknown", "project.delete", row.name, "ok");

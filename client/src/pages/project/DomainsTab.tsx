@@ -188,6 +188,23 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
     }
   }
 
+  async function routeReservedDomain(domain: ProjectDomain, target: string) {
+    if (!target) return;
+    const [service, port] = target.split(":");
+    setDomainError("");
+    try {
+      const updated = await api.setProjectDomainRoute(project.id, domain.id, service, Number(port));
+      setDomains((current) => current.map((item) => item.id === updated.id ? updated : item));
+      if (updated.sslActionId) {
+        const final = await waitForActionResult(updated.sslActionId);
+        if (!final.ok) setDomainError(final.log || "Certificate issuance failed.");
+        refreshSystem();
+      }
+    } catch (err) {
+      setDomainError(err instanceof Error ? err.message : "Could not set the route.");
+    }
+  }
+
   async function removeDomainRow(domain: ProjectDomain) {
     if (!project) return;
     const ok = await confirm({
@@ -328,8 +345,8 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
           ) : (
             <div className={styles.ingressList}>
               {domains.map((domain) => (
+                <div key={domain.id}>
                 <DomainRow
-                  key={domain.id}
                   domain={domain}
                   cert={certbotEntryFor(domain.domain)}
                   certRecord={certbotRecordFor(domain.domain)}
@@ -340,6 +357,9 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
                   onRemove={() => void removeDomainRow(domain)}
                   onRename={() => { setRenaming(domain); setRenameLabel(""); setRenameAllowHttp(false); setRenameResult(null); }}
                 />
+                {!domain.service && <ProjectIngressSelect projectId={project.id} composeFile={project.composeFile}
+                  refreshKey={project.updatedAt} value="" onValueChange={(value) => void routeReservedDomain(domain, value)} />}
+                </div>
               ))}
             </div>
           )}
