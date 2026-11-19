@@ -2,7 +2,7 @@ import { execFile } from "child_process";
 import { pollingCadenceS } from "../../../config/pollingCadence";
 import { auditLog } from "../../../shared/logger";
 import { reloadNginx, CERTBOT_WEBROOT_PATH } from "../nginx/configWriter";
-import { invalidateCertCaches } from "./operations";
+import { invalidateCertCaches, withCertbotLock } from "./operations";
 import { notifyAboutCertificates } from "./notify";
 
 /** Periodically renew all due certificates in a temporary Certbot container. */
@@ -26,7 +26,7 @@ class CertbotRenewalMonitor {
     if (this.running) return;
     this.running = true;
     try {
-      const result = await new Promise<{ ok: boolean; output: string }>((resolve) => {
+      const result = await withCertbotLock(() => new Promise<{ ok: boolean; output: string }>((resolve) => {
         execFile("docker", [
           "run", "--rm",
           "-v", "/etc/letsencrypt:/etc/letsencrypt",
@@ -36,7 +36,7 @@ class CertbotRenewalMonitor {
         ], { timeout: 600_000 }, (err, stdout, stderr) => {
           resolve({ ok: !err, output: [stdout, stderr].filter(Boolean).join("\n").trim() });
         });
-      });
+      }));
       invalidateCertCaches();
       if (result.ok) {
         const reload = await reloadNginx();

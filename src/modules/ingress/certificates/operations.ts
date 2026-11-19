@@ -3,7 +3,7 @@ import * as path from "path";
 import { getDatabase } from "../../../config/database";
 import { pollingCadenceS } from "../../../config/pollingCadence";
 import { SingleFlightCache } from "../../../shared/singleFlightCache";
-import { CERTBOT_WEBROOT_PATH, DOMAIN_RE, getNginxAppConfig, getNginxLayerStatus } from "../nginx/configWriter";
+import { CERTBOT_WEBROOT_PATH, DOMAIN_RE, getNginxLayerStatus, routedCertificateAlias } from "../nginx/configWriter";
 
 export type CertbotMode = "real";
 export type CertbotAction = "issue" | "renew" | "delete";
@@ -220,25 +220,7 @@ async function resolveRoutedDomain(domain: string) {
   if (!DOMAIN_RE.test(normalized) || !lists.domains.includes(normalized)) {
     return null;
   }
-  return {
-    domain: normalized,
-    type: domainType(normalized, lists.domainList, lists.subdomainList),
-  };
-}
-
-function shouldIssueWwwAlias(domain: string, type: CertbotDomainType): boolean {
-  return type === "domain" && !domain.startsWith("www.") && domain !== getNginxAppConfig().domain;
-}
-
-/** The second name a certificate has to cover: `www.` for a bare domain, or the bare domain for a hostname that is
- *  canonical on `www.` and has the bare domain redirecting to it (domain manager). */
-export function certificateAlias(domain: string, type: CertbotDomainType): string | null {
-  if (shouldIssueWwwAlias(domain, type)) return `www.${domain}`;
-  if (domain.startsWith("www.")) {
-    const canonical = getDatabase().prepare("SELECT 1 FROM project_domains WHERE redirect_apex = 1 AND lower(domain) = lower(?)").get(domain);
-    if (canonical) return domain.slice(4);
-  }
-  return null;
+  return { domain: normalized };
 }
 
 export async function getCertbotStatus(): Promise<CertbotStatus> {
@@ -283,9 +265,8 @@ export async function getCertbotStatus(): Promise<CertbotStatus> {
 
 async function containerAction(
   domain: string,
-  type: CertbotDomainType,
   action: CertbotAction,
-  opts: { staging?: boolean } = {}
+  opts: { staging?: boolean; alias?: string | null } = {}
 ): Promise<CertbotActionResult> {
   const letsencryptMount = ["-v", "/etc/letsencrypt:/etc/letsencrypt"];
   const webrootMount = ["-v", `${CERTBOT_WEBROOT_PATH}:/var/www/certbot`];
@@ -297,9 +278,8 @@ async function containerAction(
     if (!email) {
       return { ok: false, mode: "real", domain, action, output: "CERTBOT_EMAIL is required for certbot issue actions." };
     }
-    args = ["certonly", "--webroot", "-w", "/var/www/certbot", "-d", domain];
-    const alias = certificateAlias(domain, type);
-    if (alias) args.push("-d", alias);
+    args = ["certonly", "--webroot", "-w", "/var/www/certbot", "--cert-name", domain, "-d", domain];
+    if (opts.alias) args.push("-d", opts.alias);
     args.push("--non-interactive", "--agree-tos", "-m", email);
     if (opts.staging) args.push("--staging");
   } else if (action === "renew") {
@@ -321,7 +301,30 @@ async function containerAction(
   };
 }
 
-export async function runCertbotAction(domain: string, action: CertbotAction, opts: { staging?: boolean } = {}): Promise<CertbotActionResult> {
+// All invocations share Certbot's configuration directory and its lock.
+let pendingCertbot: Promise<unknown> = Promise.resolve();
+
+export function withCertbotLock<T>(run: () => Promise<T>): Promise<T> {
+  const result = pendingCertbot.then(run);
+  pendingCertbot = result.catch(() => undefined);
+  return result;
+}
+
+/** The candidate admin hostname answers HTTP-01 through nginx's default server until cutover. */
+export function issueAdminHostnameCertificate(domain: string): Promise<CertbotActionResult> {
+  return withCertbotLock(async () => {
+    if (!DOMAIN_RE.test(domain)) throw new Error("Invalid Stackport hostname.");
+    const result = await containerAction(domain, "issue");
+    if (result.ok) invalidateCertCaches();
+    return result;
+  });
+}
+
+export function runCertbotAction(domain: string, action: CertbotAction, opts: { staging?: boolean } = {}): Promise<CertbotActionResult> {
+  return withCertbotLock(() => runRoutedCertbotAction(domain, action, opts));
+}
+
+async function runRoutedCertbotAction(domain: string, action: CertbotAction, opts: { staging?: boolean }): Promise<CertbotActionResult> {
   const resolved = await resolveRoutedDomain(domain);
   if (!resolved) {
     return {
@@ -333,7 +336,8 @@ export async function runCertbotAction(domain: string, action: CertbotAction, op
     };
   }
 
-  const result = await containerAction(resolved.domain, resolved.type, action, opts);
+  const alias = action === "issue" ? await routedCertificateAlias(resolved.domain) : null;
+  const result = await containerAction(resolved.domain, action, { ...opts, alias });
   if (result.ok) invalidateCertCaches();
   return result;
 }

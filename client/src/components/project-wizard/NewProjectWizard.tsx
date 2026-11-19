@@ -141,7 +141,7 @@ const INITIAL: WizardState = {
   domainLabel: "",
   domainBaseId: null,
   ingress: "",
-  useSsl: false,
+  useSsl: true,
   sslReady: false,
   steps: IDLE_STEPS,
   deployLog: "",
@@ -253,7 +253,7 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
   const runIdRef = useRef(0);
   const logTargetRef = useRef<"fetch" | "deploy">("fetch");
   // A ref, not state: the SSL step reads it in the same run that the domain step set it.
-  const routedDomainRef = useRef<{ id: number; key: string } | null>(null);
+  const routedDomainRef = useRef<{ id: number; key: string; sslActionId?: string } | null>(null);
   const { project, source } = state;
   const github = useGithubRepositories();
   const sourceChoice: "app" | "token" | "upload" = source === "upload" ? "upload" : state.authMode === "app" ? "app" : "token";
@@ -555,18 +555,20 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
       }
       case "domain": {
         if (!chosenBase) return { ok: false, error: "Choose a base domain for the hostname." };
-        const key = `${domain}|${state.ingress}`;
+        const key = `${domain}|${state.ingress}|${state.useSsl}`;
         if (routedDomainRef.current?.key === key) return { ok: true, log: `${domain} is already routed.` };
         // Retrying after the domain or route changed in Configure: replace the one this wizard added.
         if (routedDomainRef.current) await api.removeProjectDomain(current.id, routedDomainRef.current.id).catch(() => undefined);
-        const added = await api.addManagedProjectDomain(current.id, { managedDomainId: chosenBase.id, label, service: ingressService, containerPort: Number(ingressPort) });
-        routedDomainRef.current = { id: added.id, key };
+        const added = await api.addManagedProjectDomain(current.id, { managedDomainId: chosenBase.id, label, service: ingressService, containerPort: Number(ingressPort), allowHttp: !state.useSsl });
+        routedDomainRef.current = { id: added.id, key, sslActionId: added.sslActionId };
         return { ok: true, log: `Routed ${domain} to ${ingressService}:${ingressPort}. Nginx rebuild queued.` };
       }
       case "ssl": {
         const domainId = routedDomainRef.current?.id;
         if (domainId == null) return { ok: false, error: "The domain wasn't added, so there's nothing to certify." };
-        const final = await issueProjectDomainSsl(current.id, domainId);
+        const sslActionId = routedDomainRef.current?.sslActionId;
+        if (routedDomainRef.current) routedDomainRef.current.sslActionId = undefined;
+        const final = sslActionId ? await waitForActionResult(sslActionId) : await issueProjectDomainSsl(current.id, domainId);
         return final?.ok
           ? { ok: true, log: final.log }
           : { ok: false, log: final?.log, error: "SSL issuance failed. Check that the domain points at this server, then retry." };
@@ -939,11 +941,11 @@ export function NewProjectWizard({ projects, credentials, resumeProject, onClose
                     />
                   </div>
                 </div>
-                <label className="wizard-switch-row" style={{ opacity: domain && state.sslReady ? 1 : 0.55 }}>
-                  <Switch checked={state.useSsl && !!domain} onCheckedChange={(useSsl) => set({ useSsl })} disabled={!domain || !state.sslReady || busy} />
+                <label className="wizard-switch-row" style={{ opacity: domain ? 1 : 0.55 }}>
+                  <Switch checked={!!domain && !state.useSsl} onCheckedChange={(allowHttp) => set({ useSsl: !allowHttp })} disabled={!domain || busy} />
                   <span>
-                    <span><Lock size={12} />Use SSL</span>
-                    <span>{!state.sslReady ? "Certbot email or tooling isn't set up" : !domain ? "Set a domain to issue a certificate" : "Issue a Let's Encrypt certificate after the first start"}</span>
+                    <span><Lock size={12} />Allow non-secure HTTP</span>
+                    <span>{!domain ? "Set a domain to choose how it is served" : !state.useSsl ? "Serve this hostname over plain HTTP" : !state.sslReady ? "Set a certificate email in Host > Certbot before deploying" : "Stackport issues a certificate and redirects HTTP to HTTPS"}</span>
                   </span>
                 </label>
               </Section>

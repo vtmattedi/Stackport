@@ -1,3 +1,4 @@
+import { startProjectDomainTls } from "../../modules/ingress/hostnameOps";
 import { createProjectEnvFile, deleteProjectEnvFile, listProjectEnvFiles, normalizeEnvRelativePath, parseEnvVariables, updateProjectEnvFile } from "../../modules/projects/envFiles";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -356,12 +357,13 @@ function registerTools(server: McpServer): void {
     "stackport_add_project_domain",
     {
       title: "Add Project Domain",
-      description: "Route a domain to a detected Compose service/container port. Pull the repository first and use the ingress-targets tool to discover valid targets.",
+      description: "Route a domain to a detected Compose service/container port. HTTPS is requested by default when applying nginx. Pull the repository first and use the ingress-targets tool to discover valid targets.",
       inputSchema: {
         projectId: projectIdSchema,
         domain: z.string().min(1),
         service: z.string().min(1),
         containerPort: z.coerce.number().int().min(1).max(65535),
+        allowHttp: z.boolean().optional(),
         applyNginx: z.boolean().optional().default(true),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -369,7 +371,11 @@ function registerTools(server: McpServer): void {
     async (input) => {
       const targets = await getProjectIngressTargets(input.projectId);
       if (!targets.some(target => target.service === input.service && target.containerPort === input.containerPort)) throw new Error("Choose a detected ingress target from the project Compose config.");
-      const domain = addProjectDomain(input.projectId, input.domain, false, input.service, input.containerPort);
+      const domain = addProjectDomain(input.projectId, input.domain, input.allowHttp !== true, input.service, input.containerPort);
+      if (input.applyNginx && domain.useSsl) {
+        const action = startProjectDomainTls(domain, "mcp");
+        return toolResult({ domain, sslActionId: action?.id });
+      }
       await ensureProjectProxyNetwork(input.projectId);
       const nginx = await applyNginx(input.applyNginx);
       return toolResult({ domain, nginx });
@@ -410,6 +416,10 @@ function registerTools(server: McpServer): void {
     },
     async (input) => {
       const domain = setProjectDomainSsl(input.projectId, input.domainId, input.useSsl);
+      if (input.applyNginx && domain?.useSsl && domain.service && domain.containerPort) {
+        const action = startProjectDomainTls(domain, "mcp");
+        return toolResult({ domain, sslActionId: action?.id });
+      }
       const nginx = domain ? await applyNginx(input.applyNginx) : null;
       return toolResult({ domain, nginx });
     }

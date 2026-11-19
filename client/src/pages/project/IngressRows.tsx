@@ -37,10 +37,9 @@ export function DomainRow({ domain, cert, certRecord, certbotAvailable, onToggle
         ) : (
           <span className={cn(styles.statusPill, styles.statusDown)}>no cert</span>
         )}
-        <label className={cn(styles.sslToggle, !certbotAvailable && styles.sslToggleDisabled)}
-          title={certbotAvailable ? undefined : "Certbot isn't available on this server"}>
-          <Switch checked={domain.useSsl} onCheckedChange={onToggleSsl} disabled={!certbotAvailable} />
-          <span>Use SSL</span>
+        <label className={styles.sslToggle}>
+          <Switch checked={!domain.useSsl} onCheckedChange={(allowHttp) => onToggleSsl(!allowHttp)} />
+          <span>Allow non-secure HTTP</span>
         </label>
       </div>
       <div className="row-actions">

@@ -42,7 +42,7 @@ export interface WriteDeps {
   now(): number;
 }
 
-export interface WriteParams { branch?: string; deploymentId?: number; networkGroup?: string | null; networkServices?: string[]; hostname?: string }
+export interface WriteParams { branch?: string; deploymentId?: number; networkGroup?: string | null; networkServices?: string[]; hostname?: string; allowHttp?: boolean }
 
 export const CONFIRMATION_TTL_MS = 5 * 60_000;
 
@@ -79,7 +79,7 @@ function canonical(params: WriteParams): string {
   return JSON.stringify({
     branch: params.branch ?? null, deploymentId: params.deploymentId ?? null,
     networkGroup: params.networkGroup ?? null, networkServices: params.networkServices ? [...params.networkServices].sort() : null,
-    hostname: params.hostname ?? null,
+    hostname: params.hostname ?? null, allowHttp: params.allowHttp === true,
   });
 }
 
@@ -295,9 +295,10 @@ export interface HostnamePlan {
   label: string;
   canonical: Canonical;
   newHostname: string;
+  allowHttp?: boolean;
 }
 
-export interface HostnameInput { hostname?: string; managedDomain: string; label: string; canonical?: Canonical }
+export interface HostnameInput { hostname?: string; managedDomain: string; label: string; canonical?: Canonical; allowHttp?: boolean }
 
 /** What the hostname tool needs from the rest of Stackport (replaceable in tests). */
 export interface HostnameDeps {
@@ -329,18 +330,18 @@ export function defaultHostnameDeps(): HostnameDeps {
       if (replaces && replaces.domain.toLowerCase() === newHostname.toLowerCase()) throw new ProjectDomainError(400, "That is already this hostname.");
       ensureDomainAvailable(newHostname);
       if (label === "@" && canonical === "www") ensureDomainAvailable(base.name);
-      return { projectId, replaces, managedDomainId: base.id, label, canonical, newHostname };
+      return { projectId, replaces, managedDomainId: base.id, label, canonical, newHostname, allowHttp: input.allowHttp === true };
     },
     start: (plan, actor) => {
       const kind = plan.replaces ? "domain-rename" : "domain-add";
       return actionRegistry.tryStart(projectRepoKey(plan.projectId), kind, { projectId: plan.projectId, triggeredBy: MCP_TRIGGER }, async () => {
         const deps = realRenameDeps(plan.projectId);
         if (plan.replaces) {
-          const result = await renameProjectHostname(plan.projectId, plan.replaces.id, { managedDomainId: plan.managedDomainId, label: plan.label, canonical: plan.canonical }, deps);
+          const result = await renameProjectHostname(plan.projectId, plan.replaces.id, { managedDomainId: plan.managedDomainId, label: plan.label, canonical: plan.canonical, allowHttp: plan.allowHttp }, deps);
           auditLog(actor, "mcp.write.hostname.finished", String(plan.projectId), result.ok ? "ok" : "fail", { hostname: plan.newHostname, reason: result.reason });
           return { ok: result.ok, output: [...result.steps, ...(result.reason ? [result.reason] : [])].join("\n") };
         }
-        addManagedProjectDomain(plan.projectId, plan.managedDomainId, plan.label, "", null, plan.canonical);
+        addManagedProjectDomain(plan.projectId, plan.managedDomainId, plan.label, "", null, plan.canonical, !plan.allowHttp);
         const applied = await deps.applyNginx();
         auditLog(actor, "mcp.write.hostname.finished", String(plan.projectId), applied.ok ? "ok" : "fail", { hostname: plan.newHostname });
         return { ok: applied.ok, output: `Added ${plan.newHostname} (not routed yet: pick a service).` };
@@ -356,18 +357,19 @@ function registerHostnameTool(server: McpServer, token: ApiToken, deps: WriteDep
     tool,
     {
       title: "Set project hostname (destructive)",
-      description: "DESTRUCTIVE: changes where traffic for this project goes. Renames one of the project's hostnames (or adds one when it has none) to a label on a managed domain, or to the bare domain with label \"@\". The new hostname is added, routed and, if the old one had SSL, given a certificate first; then the old hostname stops answering at once, with no redirect, so anyone using it gets an error. For the bare domain, canonical chooses which name is served: \"apex\" (www redirects to it) or \"www\" (the bare domain redirects to www). Adding or removing a managed domain is not available here. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to run it.",
+      description: "DESTRUCTIVE: changes where traffic for this project goes. Renames one of the project's hostnames (or adds one when it has none) to a label on a managed domain, or to the bare domain with label \"@\". The new hostname is added, routed and given a certificate first by default; then the old hostname stops answering at once, with no redirect, so anyone using it gets an error. For the bare domain, canonical chooses which name is served: \"apex\" (www redirects to it) or \"www\" (the bare domain redirects to www). Adding or removing a managed domain is not available here. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to run it.",
       inputSchema: {
         projectId: z.number().int().positive(),
         managedDomain: z.string().min(3).max(253).describe("One of the managed domains, as listed by stackport_list_managed_domains."),
         label: z.string().min(1).max(63).describe("The label in front of the managed domain, or @ for the bare domain."),
         hostname: z.string().min(3).max(253).optional().describe("The hostname to change. Optional when the project has exactly one."),
         canonical: z.enum(["apex", "www"]).optional().describe("With label @: which name is served, the other redirects to it. Default apex."),
+        allowHttp: z.boolean().optional().describe("Serve plain HTTP instead of requesting HTTPS. Defaults to false."),
         confirmationId: z.string().uuid().optional(),
       },
       annotations: DESTRUCTIVE,
     },
-    async (input: { projectId: number; managedDomain: string; label: string; hostname?: string; canonical?: Canonical; confirmationId?: string }) => {
+    async (input: HostnameInput & { projectId: number; confirmationId?: string }) => {
       const { projectId, confirmationId } = input;
       const refuse = (reason: string, message: string): CallToolResult => {
         auditLog(actor, "mcp.write", tool, "fail", { tokenId: token.id, projectId, reason });
@@ -378,17 +380,17 @@ function registerHostnameTool(server: McpServer, token: ApiToken, deps: WriteDep
       if (!mayActOn(token, project)) return refuse("outside-group", `This token may only act on projects in the group "${token.projectGroup}". Project ${projectId} is not in it.`);
 
       let plan: HostnamePlan;
-      try { plan = hosts.preview(projectId, { hostname: input.hostname, managedDomain: input.managedDomain, label: input.label, canonical: input.canonical }); }
+      try { plan = hosts.preview(projectId, { hostname: input.hostname, managedDomain: input.managedDomain, label: input.label, canonical: input.canonical, allowHttp: input.allowHttp }); }
       catch (err) {
         if (err instanceof ProjectDomainError) return refuse("invalid", err.message);
         throw err;
       }
       // The confirmation is for exactly this change: the hostname it replaces and the one it creates.
-      const params: WriteParams = { hostname: `${plan.replaces?.domain ?? "-"}>${plan.newHostname}` };
+      const params: WriteParams = { hostname: `${plan.replaces?.domain ?? "-"}>${plan.newHostname}`, allowHttp: plan.allowHttp };
       if (!confirmationId) {
         const redirect = plan.label === "@" ? ` ${plan.canonical === "www" ? `The bare domain redirects to ${plan.newHostname}.` : "www redirects to it."}` : "";
         const summary = plan.replaces
-          ? `Rename the hostname ${plan.replaces.domain} of "${project.name}" to ${plan.newHostname}. The new hostname is added and routed first${plan.replaces.useSsl ? ", and a certificate is issued for it" : ""}; then ${plan.replaces.domain} stops answering at once, with no redirect.${redirect}`
+          ? `Rename the hostname ${plan.replaces.domain} of "${project.name}" to ${plan.newHostname}. The new hostname is added and routed first${plan.allowHttp ? " over plain HTTP" : ", and a certificate is issued for it when routed"}; then ${plan.replaces.domain} stops answering at once, with no redirect.${redirect}`
           : `Add the hostname ${plan.newHostname} to "${project.name}". It is not routed to a service yet.${redirect}`;
         const { id, expiresAt } = store.issue(token.id, "hostname", projectId, params);
         auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, projectId, from: plan.replaces?.domain ?? null, to: plan.newHostname });

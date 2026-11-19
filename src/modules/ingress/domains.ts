@@ -198,7 +198,7 @@ export function addProjectDomain(
  *  routing model. Separate from setProjectDomainSsl (which the SSL-issue flow drives
  *  through its own two-stage apply) since route target and SSL state change
  *  independently. */
-export function setProjectDomainRoute(projectId: number, domainId: number, service: string, containerPort: number): ProjectDomain | null {
+export function setProjectDomainRoute(projectId: number, domainId: number, service: string, containerPort: number | null): ProjectDomain | null {
   const db = getDatabase();
   const now = new Date().toISOString();
   const result = db.prepare(
@@ -209,12 +209,17 @@ export function setProjectDomainRoute(projectId: number, domainId: number, servi
   return rowToProjectDomain(row);
 }
 
-export function removeProjectDomain(projectId: number, domainId: number): boolean {
-  const result = getDatabase()
-    .prepare("DELETE FROM project_domains WHERE id = ? AND project_id = ?")
-    .run(domainId, projectId);
-  if (result.changes > 0) reconcileProjectHealthCheckDomain(projectId);
-  return result.changes > 0;
+export function removeProjectDomain(projectId: number, domainId: number, replacementId?: number): boolean {
+  const db = getDatabase();
+  return db.transaction(() => {
+    if (replacementId !== undefined) {
+      db.prepare("UPDATE projects SET health_check_domain_id = ? WHERE id = ? AND health_check_domain_id = ?")
+        .run(replacementId, projectId, domainId);
+    }
+    const result = db.prepare("DELETE FROM project_domains WHERE id = ? AND project_id = ?").run(domainId, projectId);
+    if (result.changes > 0) reconcileProjectHealthCheckDomain(projectId);
+    return result.changes > 0;
+  })();
 }
 
 export function setProjectDomainSsl(projectId: number, domainId: number, useSsl: boolean): ProjectDomain | null {

@@ -34,12 +34,12 @@ const call = (method: string, path: string, body?: unknown): Promise<Response> =
 
 // ---- a hostname for a new project
 
-test("a new project reserves <name>.<default domain>, unrouted, with SSL off; a taken label gets a number", () => {
+test("a new project reserves <name>.<default domain>, unrouted, with HTTPS enabled; a taken label gets a number", () => {
   reset();
   assert.equal(reserveHostnameForProject(project("none-yet"), "none-yet"), null, "with no managed domain nothing is reserved");
   addManagedDomain("example.com");
   const first = reserveHostnameForProject(project("My Shop"), "My Shop")!;
-  assert.deepEqual([first.domain, first.service, first.containerPort, first.useSsl, first.label], ["my-shop.example.com", "", null, false, "my-shop"]);
+  assert.deepEqual([first.domain, first.service, first.containerPort, first.useSsl, first.label], ["my-shop.example.com", "", null, true, "my-shop"]);
   assert.equal(reserveHostnameForProject(project("my shop"), "my shop")?.domain, "my-shop-2.example.com");
   assert.equal(reserveHostnameForProject(project("my-shop"), "my-shop")?.domain, "my-shop-3.example.com");
 });
@@ -92,10 +92,10 @@ function harness(options: { nginx?: (call: number) => boolean; cert?: boolean } 
   reset();
   const baseDomain = addManagedDomain("example.com");
   const projectId = project("rename-me");
-  const old = addManagedProjectDomain(projectId, baseDomain.id, "old", "web", 3000);
+  const old = addManagedProjectDomain(projectId, baseDomain.id, "old", "web", 3000, "apex", false);
   const log: string[] = [];
   let applies = 0;
-  const snapshot = (): string => listProjectDomains(projectId).map((d) => `${d.domain}${d.useSsl ? "(ssl)" : ""}`).sort().join(",");
+  const snapshot = (): string => listProjectDomains(projectId).filter((d) => d.service).map((d) => `${d.domain}${d.useSsl ? "(ssl)" : ""}`).sort().join(",");
   const deps: RenameDeps = {
     applyNginx: async () => { applies += 1; log.push(`nginx#${applies} [${snapshot()}]`); return (options.nginx?.(applies) ?? true) ? { ok: true, message: "" } : { ok: false, message: "unknown directive" }; },
     issueCertificate: async (domain) => { log.push(`cert ${domain} [${snapshot()}]`); return options.cert === false ? { ok: false, message: "rate limited" } : { ok: true, message: "" }; },
@@ -103,23 +103,22 @@ function harness(options: { nginx?: (call: number) => boolean; cert?: boolean } 
   return { deps, log, projectId, oldId: old.id };
 }
 
-test("rename without SSL: the new hostname is routed first, and only then is the old one removed", async () => {
+test("rename with explicit plain HTTP: the new hostname is routed first, and only then is the old one removed", async () => {
   const h = harness();
-  const result = await renameProjectHostname(h.projectId, h.oldId, { managedDomainId: listManagedDomains()[0].id, label: "fresh" }, h.deps);
+  const result = await renameProjectHostname(h.projectId, h.oldId, { managedDomainId: listManagedDomains()[0].id, label: "fresh", allowHttp: true }, h.deps);
   assert.equal(result.ok, true, result.reason);
   assert.deepEqual(h.log, ["nginx#1 [fresh.example.com,old.example.com]", "nginx#2 [fresh.example.com]"], "both exist while nginx first applies; the old one is gone only afterwards");
   assert.deepEqual(listProjectDomains(h.projectId).map((d) => [d.domain, d.service, d.containerPort, d.label]), [["fresh.example.com", "web", 3000, "fresh"]]);
 });
 
-test("rename with SSL: a certificate is issued for the new name before the old one is removed", async () => {
+test("rename defaults to HTTPS even for an old HTTP route: a certificate is issued for the new name before the old one is removed", async () => {
   const h = harness();
-  setProjectDomainSsl(h.projectId, h.oldId, true);
   const result = await renameProjectHostname(h.projectId, h.oldId, { managedDomainId: listManagedDomains()[0].id, label: "fresh" }, h.deps);
   assert.equal(result.ok, true, result.reason);
   assert.deepEqual(h.log, [
-    "nginx#1 [fresh.example.com,old.example.com(ssl)]",
-    "cert fresh.example.com [fresh.example.com,old.example.com(ssl)]",
-    "nginx#2 [fresh.example.com(ssl),old.example.com(ssl)]",
+    "nginx#1 [fresh.example.com(ssl),old.example.com]",
+    "cert fresh.example.com [fresh.example.com(ssl),old.example.com]",
+    "nginx#2 [fresh.example.com(ssl),old.example.com]",
     "nginx#3 [fresh.example.com(ssl)]",
   ]);
   assert.equal(listProjectDomains(h.projectId)[0].useSsl, true);
@@ -141,6 +140,24 @@ test("if nginx refuses the new hostname, nothing changes for the old one", async
   assert.equal(result.ok, false);
   assert.match(result.reason ?? "", /nginx refused/);
   assert.deepEqual(listProjectDomains(h.projectId).map((d) => d.domain), ["old.example.com"]);
+});
+
+test("a failed final nginx cutover restores the old route and its health check selection", async () => {
+  const h = harness({ nginx: (n) => n !== 3 });
+  const result = await renameProjectHostname(h.projectId, h.oldId, { domain: "new.example.org" }, h.deps);
+  assert.equal(result.ok, false);
+  assert.match(result.reason ?? "", /could not remove old\.example\.com/);
+  assert.deepEqual(listProjectDomains(h.projectId).map((d) => [d.id, d.service, d.containerPort]), [[h.oldId, "web", 3000]]);
+  assert.deepEqual(getDatabase().prepare("SELECT health_check_domain_id FROM projects WHERE id = ?").get(h.projectId), { health_check_domain_id: h.oldId });
+  assert.equal(h.log.at(-1), "nginx#4 [old.example.com]");
+});
+
+test("a successful rename transfers the health check to the replacement hostname", async () => {
+  const h = harness();
+  addProjectDomain(h.projectId, "second.example.com", false, "web", 3000);
+  const result = await renameProjectHostname(h.projectId, h.oldId, { domain: "new.example.org" }, h.deps);
+  assert.ok(result.ok);
+  assert.deepEqual(getDatabase().prepare("SELECT health_check_domain_id FROM projects WHERE id = ?").get(h.projectId), { health_check_domain_id: result.hostname?.id });
 });
 
 test("a rename to a taken, invalid or identical hostname is refused before anything is added", async () => {

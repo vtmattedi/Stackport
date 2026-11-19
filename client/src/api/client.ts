@@ -50,7 +50,6 @@ import type {
   GithubImportOutcome,
   ManagedDomain,
   McpToolInfo,
-  HostnameRenameResult,
   HostnameOverview,
   NetworkGroupView,
   AppVersionInfo,
@@ -341,8 +340,8 @@ export const api = {
     request<ComposeVariableStatus[]>(`/projects/${projectId}/compose-variables`),
   getProjectComposeEnvFiles: (projectId: number, composeFile?: string) =>
     request<ComposeEnvFileRef[]>(`/projects/${projectId}/compose-env-files${buildQuery({composeFile})}`),
-  addProjectDomain: (projectId: number, domain: string, service: string, containerPort: number) =>
-    request<ProjectDomain>(`/projects/${projectId}/domains`, { method: "POST", body: JSON.stringify({ domain, service, containerPort }) }),
+  addProjectDomain: (projectId: number, domain: string, service: string, containerPort: number, allowHttp = false) =>
+    request<ProjectDomain & { sslActionId?: string }>(`/projects/${projectId}/domains`, { method: "POST", body: JSON.stringify({ domain, service, containerPort, allowHttp }) }),
   removeProjectDomain: (projectId: number, domainId: number) =>
     request<{ ok: boolean }>(`/projects/${projectId}/domains/${domainId}`, { method: "DELETE" }),
   setProjectDomainSsl: (projectId: number, domainId: number, useSsl: boolean) =>
@@ -506,8 +505,8 @@ export const api = {
     request<GithubRepositoryInspection>(`/github-app/repositories/${repositoryId}/inspect?installationId=${installationId}&branch=${encodeURIComponent(branch)}`),
   setProjectGithubAuth: (projectId: number, input: { mode: "app" | "token"; installationId?: number; repositoryId?: number }) =>
     request<{ githubAuthMode: "app" | null }>(`/projects/${projectId}/github-auth`, { method: "PUT", body: JSON.stringify(input) }),
-  renameProjectHostname: (projectId: number, domainId: number, input: { managedDomainId: number; label: string; canonical?: "apex" | "www" }) =>
-    request<HostnameRenameResult>(`/projects/${projectId}/domains/${domainId}/rename`, { method: "POST", body: JSON.stringify(input) }),
+  renameProjectHostname: (projectId: number, domainId: number, input: { domain?: string; managedDomainId?: number; label?: string; canonical?: "apex" | "www"; allowHttp: boolean }) =>
+    requestActionStart(`/projects/${projectId}/domains/${domainId}/rename`, { method: "POST", body: JSON.stringify({ ...input, background: true }) }),
   getManagedDomains: () => request<{ domains: ManagedDomain[] }>("/domains"),
   getHostnames: () => request<{ hostnames: HostnameOverview[] }>("/domains/hostnames"),
   addManagedDomain: (name: string, isDefault = false) =>
@@ -515,8 +514,8 @@ export const api = {
   setDefaultManagedDomain: (id: number) =>
     request<{ domains: ManagedDomain[] }>(`/domains/${id}`, { method: "PATCH", body: JSON.stringify({ isDefault: true }) }),
   removeManagedDomain: (id: number) => request<{ domains: ManagedDomain[] }>(`/domains/${id}`, { method: "DELETE" }),
-  addManagedProjectDomain: (projectId: number, input: { managedDomainId: number; label: string; canonical?: "apex" | "www"; service: string; containerPort: number }) =>
-    request<ProjectDomain>(`/projects/${projectId}/domains`, { method: "POST", body: JSON.stringify(input) }),
+  addManagedProjectDomain: (projectId: number, input: { managedDomainId: number; label: string; canonical?: "apex" | "www"; service: string; containerPort: number; allowHttp?: boolean }) =>
+    request<ProjectDomain & { sslActionId?: string }>(`/projects/${projectId}/domains`, { method: "POST", body: JSON.stringify(input) }),
   getGithubSettings: () => request<GithubSettings>("/github-app"),
   startGithubManifest: (input: { modules: string[]; owner: string; isPublic: boolean }) =>
     request<GithubManifestStart>("/github-app/manifest/start", { method: "POST", body: JSON.stringify(input) }),
@@ -547,7 +546,7 @@ export const api = {
     request<DockerStorageThresholds>("/system/docker/storage-thresholds", { method: "PUT", body: JSON.stringify(thresholds) }),
   reloadNginx: () => request<{ ok: boolean; output: string }>("/system/nginx/reload", { method: "POST" }),
   applyNginx: () => requestActionStart("/system/nginx/apply"),
-  updateNginxAppConfig: (data: { enabled: boolean; domain: string; useSsl: boolean }) =>
+  updateNginxAppConfig: (data: { enabled: boolean; domain: string; allowHttp: boolean }) =>
     requestActionStart("/system/nginx/app", { method: "PUT", body: JSON.stringify(data) }),
   getSystemActions: () => request<SystemActionsSnapshot>("/system/actions"),
   getNginxDocument: (kind: NginxDocumentKind) =>

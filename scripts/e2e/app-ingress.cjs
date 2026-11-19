@@ -14,9 +14,12 @@ try{
   docker(['network','create',prefix]);
   for(const volume of volumes)docker(['volume','create',volume]);
   const mounts=['--mount',`type=volume,src=${volumes[0]},dst=/fixture/nginx`,'--mount',`type=volume,src=${volumes[1]},dst=/etc/letsencrypt`,'--mount',`type=volume,src=${volumes[2]},dst=/var/lib/stackport/certbot-webroot`];
-  docker(['create','--pull=never','--name',backend,'--network',prefix,'--network-alias','stackport',...mounts,'--mount','type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock','-e','NODE_ENV=test','-e','JWT_SECRET=local-ingress-fixture','-e','WEBHOOK_SECRET=local-ingress-fixture-hook','-e','SQLITE_PATH=/fixture/data/stackport.sqlite','-e','DEPLOY_ROOT=/fixture/data/repos','-e','NGINX_PATH=/fixture/nginx','-e','STACKPORT_DOMAIN=installer.example.test','-e',`FIXTURE_NGINX=${nginx}`,'--entrypoint','sleep','stackport:ci','infinity']);
+  docker(['create','--pull=never','--name',backend,'--network',prefix,'--network-alias','stackport','--network-alias','sp1-web',...mounts,'--mount','type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock','-e','NODE_ENV=test','-e','JWT_SECRET=local-ingress-fixture','-e','WEBHOOK_SECRET=local-ingress-fixture-hook','-e','SQLITE_PATH=/fixture/data/stackport.sqlite','-e','DEPLOY_ROOT=/fixture/data/repos','-e','NGINX_PATH=/fixture/nginx','-e','STACKPORT_DOMAIN=installer.example.test','-e',`FIXTURE_NGINX=${nginx}`,'--entrypoint','sleep','stackport:ci','infinity']);
   docker(['start',backend]);
   docker(['cp',path.resolve('dist')+'/.',backend+':/app/dist']);
+  for (const dependency of ['tldts', 'tldts-core']) {
+    docker(['cp',path.resolve('node_modules',dependency)+'/.',backend+':/app/node_modules/'+dependency]);
+  }
   docker(['cp',path.join(__dirname,'fixtures','app-ingress.cjs'),backend+':/tmp/fixture.cjs']);
   docker(['exec',backend,'mkdir','-p','/tmp/bin']);
   const shim=path.join(workDir,'docker');

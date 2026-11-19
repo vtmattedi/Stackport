@@ -29,6 +29,7 @@ import { getNetworkGroup, listProjectsInNetworkGroups } from "../projects/networ
 import { buildHardeningOverride, getHardeningDefaults, isHardeningEnabled } from "./compose/hardening";
 import { buildVolumesOverride, currentVolumeRoots, planManagedVolumes } from "./compose/managedVolumes";
 import { listRoutedServiceNames } from "../ingress/domains";
+import { projectCertificateDeps, provisionProjectDomainTls } from "../ingress/certificates/project";
 import { findUnroutedManagedHostname, routeReservedHostname } from "../ingress/managedDomains";
 import { beginDeployReport, finishDeployReport } from "../github/reporting";
 import { writeNginxConfig } from "../ingress/nginx/configWriter";
@@ -680,7 +681,7 @@ async function runCompose(
     catch (err) { emit(projectId, action, "stderr", `Warning — could not join the network group: ${err instanceof Error ? err.message : String(err)}
 `); }
     // A hostname reserved at creation has no route until the Compose file says where it goes.
-    try { await routeReservedHostnameAfterUp(projectId); }
+    try { await routeReservedHostnameAfterUp(projectId, action); }
     catch (err) { emit(projectId, action, "stderr", `Warning — could not route the reserved hostname: ${err instanceof Error ? err.message : String(err)}
 `); }
   }
@@ -689,13 +690,20 @@ async function runCompose(
 
 /** Routes the hostname reserved for a project (domain manager) once the stack is up and its Compose file declares exactly one
  *  routable port. With several ports it is left for a person: guessing is how traffic reaches the wrong service. */
-async function routeReservedHostnameAfterUp(projectId: number): Promise<void> {
+async function routeReservedHostnameAfterUp(projectId: number, action: ProjectDeployEvent["action"]): Promise<void> {
   if (!findUnroutedManagedHostname(projectId)) return; // the cheap check first: most projects have nothing to route
   const targets = await getProjectIngressTargets(projectId).catch(() => []);
   const routed = routeReservedHostname(projectId, targets);
   if (!routed) return;
-  await ensureProjectProxyNetwork(projectId);
-  await writeNginxConfig();
+  if (routed.useSsl) {
+    // A deployment health check may use this hostname as soon as Compose returns.
+    emit(projectId, action, "status", `Preparing HTTPS for ${routed.domain}\n`);
+    const ssl = await provisionProjectDomainTls(routed, projectCertificateDeps(() => ensureProjectProxyNetwork(projectId)));
+    if (!ssl.ok) throw new Error(`Certificate setup for ${routed.domain} failed: ${ssl.output}`);
+  } else {
+    await ensureProjectProxyNetwork(projectId);
+    await writeNginxConfig();
+  }
   logger.info({ projectId, hostname: routed.domain, service: routed.service, port: routed.containerPort }, "domains: reserved hostname routed");
 }
 

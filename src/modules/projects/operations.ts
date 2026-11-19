@@ -123,7 +123,7 @@ export function createProject(input: CreateProjectInput): Project {
     if (input.domain !== undefined && input.domain !== null && input.domain !== "") {
       try {
         const target = resolveBaseHostname(input.domain);
-        addProjectDomain(projectId, target.hostname, false, "", null, { managedDomainId: target.managedDomainId, label: target.label });
+        addProjectDomain(projectId, target.hostname, true, "", null, { managedDomainId: target.managedDomainId, label: target.label });
       } catch (err) {
         if (err instanceof ProjectDomainError) throw new ProjectAdminError(err.statusCode, err.message);
         throw err;

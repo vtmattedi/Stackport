@@ -1,7 +1,7 @@
 import { getDatabase } from "../../config/database";
 import { DOMAIN_RE } from "./domainName";
 import { getNginxAppConfig } from "./nginx/appConfig";
-import { addProjectDomain, ensureDomainAvailable, getProjectDomain, listProjectDomains, ProjectDomainError, removeProjectDomain, setProjectDomainRoute, setProjectDomainSsl, type ProjectDomain } from "./domains";
+import { addProjectDomain, ensureDomainAvailable, getProjectDomain, listProjectDomains, ProjectDomainError, removeProjectDomain, setProjectDomainRoute, type ProjectDomain } from "./domains";
 
 /**
  * The domain manager (see Stackport.md, domain routing model): the base domains Stackport manages, and hostnames made as a label on one
@@ -180,16 +180,16 @@ export function reserveLabel(base: ManagedDomain, name: string): string {
  * domain); `www` makes `www.example.com` the hostname and `example.com` redirects to it. Either way one certificate covers both.
  * `www` chosen as a plain label is a hostname of its own, with no redirect.
  */
-export function addManagedProjectDomain(projectId: number, managedDomainId: unknown, labelInput: unknown, service = "", containerPort: number | null = null, canonical: Canonical = "apex"): ProjectDomain {
+export function addManagedProjectDomain(projectId: number, managedDomainId: unknown, labelInput: unknown, service = "", containerPort: number | null = null, canonical: Canonical = "apex", useSsl = true): ProjectDomain {
   const base = typeof managedDomainId === "number" ? getManagedDomain(managedDomainId) : null;
   if (!base) throw new ProjectDomainError(400, "Choose one of the managed domains.");
   const label = validateLabel(labelInput, base.name);
   if (label === APEX_LABEL && canonical === "www") {
     // The bare domain is answered by the redirect, so it has to be free too.
     ensureDomainAvailable(base.name);
-    return addProjectDomain(projectId, `www.${base.name}`, false, service, containerPort, { managedDomainId: base.id, label: "www", redirectApex: true });
+    return addProjectDomain(projectId, `www.${base.name}`, useSsl, service, containerPort, { managedDomainId: base.id, label: "www", redirectApex: true });
   }
-  return addProjectDomain(projectId, hostnameFor(label, base.name), false, service, containerPort, { managedDomainId: base.id, label });
+  return addProjectDomain(projectId, hostnameFor(label, base.name), useSsl, service, containerPort, { managedDomainId: base.id, label });
 }
 
 /**
@@ -248,12 +248,12 @@ export function listHostnames(): HostnameOverview[] {
 // ---- a hostname for a new project
 
 /** Reserves `<project-name>.<default domain>` for a project that has just been created, with no route yet: the Compose file
- *  is not known until the repository is cloned. SSL stays off. Returns null when no base domain is managed. */
+ *  is not known until the repository is cloned. Returns null when no base domain is managed. */
 export function reserveHostnameForProject(projectId: number, projectName: string): ProjectDomain | null {
   const base = getDefaultManagedDomain();
   if (!base) return null;
   const label = reserveLabel(base, projectName);
-  return addProjectDomain(projectId, hostnameFor(label, base.name), false, "", null, { managedDomainId: base.id, label });
+  return addProjectDomain(projectId, hostnameFor(label, base.name), true, "", null, { managedDomainId: base.id, label });
 }
 
 /** The project's one managed hostname that has no route yet. With none, or with several, there is no way to know which
@@ -283,51 +283,56 @@ export interface RenameDeps {
 export interface RenameResult { ok: boolean; steps: string[]; reason?: string; hostname?: ProjectDomain }
 
 /**
- * Renames a hostname. The new one is added and routed first, its certificate is issued if the old one had SSL, and only then
+ * Renames a hostname. The new one is added and routed first, its certificate is issued unless plain HTTP was requested, and only then
  * is the old one removed: at no point is the project without a working hostname. If any step before the removal fails the new
  * hostname is taken away again and the old one is untouched. The old hostname stops working at once, with no redirect.
  * Renaming a project never renames its hostname; this is the only way one changes.
  */
 export async function renameProjectHostname(
-  projectId: number, domainId: number, target: { managedDomainId: unknown; label: unknown; canonical?: Canonical }, deps: RenameDeps,
+  projectId: number, domainId: number, target: { domain?: unknown; managedDomainId?: unknown; label?: unknown; canonical?: Canonical; allowHttp?: boolean }, deps: RenameDeps,
 ): Promise<RenameResult> {
   const steps: string[] = [];
   const old = getProjectDomain(projectId, domainId);
   if (!old) return { ok: false, steps, reason: "Hostname not found." };
   let created: ProjectDomain;
   try {
-    created = addManagedProjectDomain(projectId, target.managedDomainId, target.label, old.service, old.containerPort, target.canonical ?? "apex");
+    created = target.managedDomainId === undefined
+      ? addProjectDomain(projectId, target.domain, target.allowHttp !== true, old.service, old.containerPort)
+      : addManagedProjectDomain(projectId, target.managedDomainId, target.label, old.service, old.containerPort, target.canonical ?? "apex", target.allowHttp !== true);
   } catch (err) {
     return { ok: false, steps, reason: err instanceof ProjectDomainError ? err.message : "The new hostname could not be added." };
-  }
-  if (created.domain.toLowerCase() === old.domain.toLowerCase()) {
-    removeProjectDomain(projectId, created.id);
-    return { ok: false, steps, reason: "That is already this hostname." };
   }
   steps.push(`Added ${created.domain}${old.service ? ` routed to ${old.service}:${old.containerPort}` : ""}.`);
 
   const undo = async (reason: string): Promise<RenameResult> => {
     removeProjectDomain(projectId, created.id);
-    await deps.applyNginx().catch(() => undefined);
-    steps.push(`Undone: ${old.domain} is as it was.`);
+    const restored = await deps.applyNginx().catch((err: unknown) => ({ ok: false, message: String(err) }));
+    steps.push(restored.ok ? `Restored ${old.domain}.` : `Kept ${old.domain} in settings. Nginx cleanup failed: ${restored.message}`);
     return { ok: false, steps, reason };
   };
 
-  const applied = await deps.applyNginx();
-  if (!applied.ok) return undo(`nginx refused the new hostname: ${applied.message.trim() || "no message"}.`);
-  steps.push("nginx serves the new hostname.");
-
-  if (old.useSsl) {
-    const issued = await deps.issueCertificate(created.domain);
-    if (!issued.ok) return undo(`A certificate could not be issued for ${created.domain}: ${issued.message.trim() || "no message"}.`);
-    setProjectDomainSsl(projectId, created.id, true);
-    const secured = await deps.applyNginx();
-    if (!secured.ok) { setProjectDomainSsl(projectId, created.id, false); return undo(`nginx refused the certificate for ${created.domain}: ${secured.message.trim() || "no message"}.`); }
-    steps.push(`A certificate was issued for ${created.domain}.`);
+  if (created.service && created.containerPort) {
+    try {
+      const applied = await deps.applyNginx();
+      if (!applied.ok) return undo(`nginx refused the new hostname: ${applied.message.trim() || "no message"}.`);
+      if (created.useSsl) {
+        const issued = await deps.issueCertificate(created.domain);
+        if (!issued.ok) return undo(`A certificate could not be issued for ${created.domain}: ${issued.message.trim() || "no message"}.`);
+        const secured = await deps.applyNginx();
+        if (!secured.ok) return undo(`nginx refused the certificate for ${created.domain}: ${secured.message.trim() || "no message"}.`);
+        steps.push(`HTTPS is ready for ${created.domain}.`);
+      }
+      // Keep the original row and its health-check selection until nginx accepts the cutover.
+      setProjectDomainRoute(projectId, old.id, "", null);
+      const final = await deps.applyNginx();
+      if (!final.ok) throw new Error(`Nginx could not remove ${old.domain}: ${final.message}`);
+    } catch (err) {
+      setProjectDomainRoute(projectId, old.id, old.service, old.containerPort);
+      return undo(err instanceof Error ? err.message : String(err));
+    }
   }
 
-  removeProjectDomain(projectId, old.id);
-  const final = await deps.applyNginx();
-  steps.push(`${old.domain} was removed and no longer answers.${final.ok ? "" : ` (nginx reported: ${final.message.trim()}; the next apply retries it)`}`);
+  removeProjectDomain(projectId, old.id, created.id);
+  steps.push(`Removed ${old.domain}.`);
   return { ok: true, steps, hostname: getProjectDomain(projectId, created.id) ?? created };
 }

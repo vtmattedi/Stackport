@@ -44,7 +44,6 @@ import {
 import { setComposePolicyEnforced } from "../../modules/deployments/compose/enforcement";
 import { checkProjectIngress } from "../../modules/ingress/health";
 import { getProjectBranches } from "../../modules/automation/githubPolling";
-import { runCertbotAction } from "../../modules/ingress/certificates/operations";
 import { actionRegistry, projectRepoKey, projectSslKey, projectSslKeyPrefix, respondActionStarted, respondActionBusy } from "../../modules/actions/registry";
 import { deleteProjectActionLogs } from "../../modules/actions/log";
 import { destroyProject } from "../../modules/projects/destroy";
@@ -76,7 +75,7 @@ import {
 import { defaultIsolationDeps, switchToIsolated, switchToShared, type IsolationResult } from "../../modules/ingress/isolation";
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
 import { modeAvailable } from "../../modules/github/ci";
-import { realRenameDeps } from "../../modules/ingress/hostnameOps";
+import { realRenameDeps, startProjectDomainTls } from "../../modules/ingress/hostnameOps";
 import { addManagedProjectDomain, getManagedDomain, renameProjectHostname, reserveHostnameForProject, validateLabel } from "../../modules/ingress/managedDomains";
 import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
 import { GithubAppError } from "../../modules/github/app";
@@ -931,7 +930,7 @@ router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, re
   const project = getProjectById(id);
   if (!project) { res.status(404).json({ error: "Project not found" }); return; }
 
-  const { domain, service, containerPort, managedDomainId, label, canonical } = req.body as Record<string, unknown>;
+  const { domain, service, containerPort, managedDomainId, label, canonical, allowHttp } = req.body as Record<string, unknown>;
   if (managedDomainId !== undefined) {
     // The name is checked first, so a bad label is reported as one rather than as a missing service.
     const chosen = typeof managedDomainId === "number" ? getManagedDomain(managedDomainId) : null;
@@ -946,8 +945,8 @@ router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, re
   try {
     // A hostname is a label (or @, the bare domain) on a managed base domain; a full hostname is for what is not on one.
     created = managedDomainId !== undefined
-      ? addManagedProjectDomain(id, managedDomainId, label, route.service, route.containerPort, canonical === "www" ? "www" : "apex")
-      : addProjectDomain(id, domain, false, route.service, route.containerPort);
+      ? addManagedProjectDomain(id, managedDomainId, label, route.service, route.containerPort, canonical === "www" ? "www" : "apex", allowHttp !== true)
+      : addProjectDomain(id, domain, allowHttp !== true, route.service, route.containerPort);
   } catch (err) {
     if (err instanceof ProjectDomainError) { res.status(err.statusCode).json({ error: err.message }); return; }
     throw err;
@@ -955,11 +954,12 @@ router.post("/:id/domains", requireAuth, async (req: Request<{ id: string }>, re
 
   auditLog(req.user ?? "unknown", "project.domain-add", `${project.name}:${created.domain}`, "ok", { service: route.service, containerPort: route.containerPort });
   healthChecker.schedule(project);
-  res.json(created);
-  void runProjectNginxFlow("project.domain-add", project);
+  const sslAction = created.useSsl ? startProjectDomainTls(created, req.user ?? "unknown") : null;
+  res.json({ ...created, sslActionId: sslAction?.id });
+  if (!created.useSsl) void runProjectNginxFlow("project.domain-add", project);
 });
 
-/** Renames a managed hostname: the new one is added, routed and (if the old one had SSL) certified first, and only then is
+/** Renames a managed hostname: the new one is added, routed and certified first unless HTTP was explicitly allowed, and only then is
  *  the old one removed, which stops answering at once with no redirect. Runs in the project's action slot. */
 router.post("/:id/domains/:domainId/rename", requireAuth, async (req: Request<{ id: string; domainId: string }>, res: Response): Promise<void> => {
   const id = Number(req.params.id);
@@ -968,22 +968,23 @@ router.post("/:id/domains/:domainId/rename", requireAuth, async (req: Request<{ 
   const project = getProjectById(id);
   if (!project) { res.status(404).json({ error: "Project not found" }); return; }
   if (!getProjectDomain(id, domainId)) { res.status(404).json({ error: "Domain not found" }); return; }
-  const { managedDomainId, label, canonical } = req.body as Record<string, unknown>;
-
-  let outcome: Awaited<ReturnType<typeof renameProjectHostname>> | null = null;
-  let finished!: () => void;
-  const done = new Promise<void>((resolve) => { finished = resolve; });
-  const started = actionRegistry.tryStart(projectRepoKey(id), "domain-rename", { projectId: id, triggeredBy: "manual" }, async () => {
+  const { domain, managedDomainId, label, canonical, allowHttp, background } = req.body as Record<string, unknown>;
+  const user = req.user ?? "unknown";
+  const key = projectRepoKey(id);
+  let result: Awaited<ReturnType<typeof renameProjectHostname>> | undefined;
+  let finish!: () => void;
+  const done = new Promise<void>((resolve) => { finish = resolve; });
+  const started = actionRegistry.tryStart(key, "domain-rename", { projectId: id, triggeredBy: "manual" }, async () => {
     try {
-      outcome = await renameProjectHostname(id, domainId, { managedDomainId, label, canonical: canonical === "www" ? "www" : "apex" }, realRenameDeps(id));
-      return { ok: outcome.ok, output: [...outcome.steps, ...(outcome.reason ? [outcome.reason] : [])].join("\n") };
-    } finally { finished(); }
+      result = await renameProjectHostname(id, domainId, { domain, managedDomainId, label, canonical: canonical === "www" ? "www" : "apex", allowHttp: allowHttp === true }, realRenameDeps(id));
+      auditLog(user, "project.domain-rename", project.name, result.ok ? "ok" : "fail", { reason: result.reason });
+      healthChecker.schedule(project);
+      return { ok: result.ok, output: [...result.steps, ...(result.reason ? [result.reason] : [])].join("\n") };
+    } finally { finish(); }
   });
-  if (started === null) { res.status(409).json({ ok: false, error: "An action is running for this project. Try again when it has finished." }); return; }
+  if (!started) { respondActionBusy(res, key, "An action is running for this project."); return; }
+  if (background === true) { respondActionStarted(res, started); return; }
   await done;
-  const result = outcome as Awaited<ReturnType<typeof renameProjectHostname>> | null;
-  auditLog(req.user ?? "unknown", "project.domain-rename", project.name, result?.ok ? "ok" : "fail", { reason: result?.reason });
-  healthChecker.schedule(project);
   res.json(result ?? { ok: false, steps: [], reason: "The rename did not finish." });
 });
 
@@ -998,12 +999,14 @@ router.patch("/:id/domains/:domainId/route", requireAuth, async (req: Request<{ 
   const route = await validateDomainRoute(project, service, containerPort);
   if (!route.ok) { res.status(400).json({ error: route.error }); return; }
 
+  const old = getProjectDomain(id, domainId);
   const updated = setProjectDomainRoute(id, domainId, route.service, route.containerPort);
   if (!updated) { res.status(404).json({ error: "Domain not found" }); return; }
 
   auditLog(req.user ?? "unknown", "project.domain-route", `${project.name}:${updated.domain}`, "ok", { service: route.service, containerPort: route.containerPort });
   res.json(updated);
-  void runProjectNginxFlow("project.domain-route", project);
+  if (updated.useSsl && (!old?.service || !old.containerPort)) startProjectDomainTls(updated, req.user ?? "unknown");
+  else void runProjectNginxFlow("project.domain-route", project);
 });
 
 router.delete("/:id/domains/:domainId", requireAuth, (req: Request<{ id: string; domainId: string }>, res: Response): void => {
@@ -1037,7 +1040,8 @@ router.patch("/:id/domains/:domainId", requireAuth, (req: Request<{ id: string; 
 
   auditLog(req.user ?? "unknown", "project.domain-ssl", `${project.name}:${updated.domain}`, "ok", { useSsl });
   res.json(updated);
-  void runProjectNginxFlow("project.domain-ssl", project);
+  if (updated.useSsl && updated.service && updated.containerPort) startProjectDomainTls(updated, req.user ?? "unknown");
+  else void runProjectNginxFlow("project.domain-ssl", project);
 });
 
 router.post("/:id/domains/:domainId/ssl/issue", requireAuth, (req: Request<{ id: string; domainId: string }>, res: Response): void => {
@@ -1054,71 +1058,9 @@ router.post("/:id/domains/:domainId/ssl/issue", requireAuth, (req: Request<{ id:
     return;
   }
 
-  const user = req.user ?? "unknown";
   const key = projectSslKey(id, domainId);
-  const started = actionRegistry.tryStart(key, "ssl-issue", { projectId: id, domainId, domain: domainRow.domain }, async () => {
-    const flowId = nginxFlowId("project.ssl-issue", id);
-    emitNginxFlow({
-      id: flowId,
-      status: "started",
-      source: "project.ssl-issue",
-      projectId: id,
-      projectName: `${project.name} (${domainRow.domain})`,
-      domainId,
-      message: `${project.name}: preparing HTTP route for certificate issuance on ${domainRow.domain}.`,
-    });
-
-    setProjectDomainSsl(id, domainId, false);
-    await ensureProjectProxyNetwork(id);
-    const preApply = await writeNginxConfig();
-    if (!preApply.ok) {
-      emitNginxFlow({
-        id: flowId,
-        status: "failed",
-        source: "project.ssl-issue",
-        projectId: id,
-        projectName: `${project.name} (${domainRow.domain})`,
-        domainId,
-        message: `${project.name}: nginx HTTP route failed before certificate issuance.`,
-        output: preApply.output,
-      });
-      auditLog(user, "project.ssl-issue", `${project.name}:${domainRow.domain}`, "fail");
-      return { ok: false, output: preApply.output };
-    }
-
-    const cert = await runCertbotAction(domainRow.domain, "issue");
-    if (!cert.ok) {
-      emitNginxFlow({
-        id: flowId,
-        status: "failed",
-        source: "project.ssl-issue",
-        projectId: id,
-        projectName: `${project.name} (${domainRow.domain})`,
-        domainId,
-        message: `${project.name}: certificate issuance failed.`,
-        output: cert.output,
-      });
-      auditLog(user, "project.ssl-issue", `${project.name}:${domainRow.domain}`, "fail");
-      return { ok: false, output: cert.output };
-    }
-
-    setProjectDomainSsl(id, domainId, true);
-    const sslApply = await writeNginxConfig();
-    const output = [cert.output, "", "$ nginx apply", sslApply.output || (sslApply.ok ? "ok" : "failed")].filter(Boolean).join("\n");
-    emitNginxFlow({
-      id: flowId,
-      status: sslApply.ok ? "success" : "failed",
-      source: "project.ssl-issue",
-      projectId: id,
-      projectName: `${project.name} (${domainRow.domain})`,
-      domainId,
-      message: sslApply.ok ? `${project.name}: SSL route is live for ${domainRow.domain}.` : `${project.name}: certificate issued but nginx SSL apply failed.`,
-      output,
-    });
-
-    auditLog(user, "project.ssl-issue", `${project.name}:${domainRow.domain}`, sslApply.ok ? "ok" : "fail");
-    return { ok: sslApply.ok, output };
-  });
+  const updated = setProjectDomainSsl(id, domainId, true) ?? domainRow;
+  const started = startProjectDomainTls(updated, req.user ?? "unknown");
   if (!started) { respondActionBusy(res, key, "An SSL action is already running for this domain"); return; }
   respondActionStarted(res, started);
 });
