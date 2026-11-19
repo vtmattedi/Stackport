@@ -76,6 +76,10 @@ the reason a command fails is usually in the output you would be throwing away.
 
 ## Other checks
 
+From 1.4.10, server startup checks Stackport's saved hostname when publishing and HTTPS are enabled. If its certificate is missing, startup applies the HTTP challenge route, requests the certificate using the saved Certbot settings, then reapplies nginx for HTTPS. DNS must reach this host and a Certbot email must be configured. A failure is logged and retried on the next startup. Existing certificates, explicit HTTP settings and disabled publishing are preserved; the installer's `STACKPORT_DOMAIN` does not replace a saved hostname.
+
+`npm run test:ingress:docker` exercises this startup path with real nginx, a saved hostname and a locally issued test certificate, then checks that a later startup reuses it. Readiness, challenge serving, certificate detection, config generation, validation and reload use production code; the external CA is substituted. It needs local `stackport:ci`, `nginx:1.29-alpine` and `certbot/certbot` images, uses disposable Docker resources and publishes no host ports.
+
 ```bash
 docker exec stackport-nginx nginx -t      # is the generated config valid?
 docker network ls | wc -l                 # network count; available address pools depend on Docker configuration

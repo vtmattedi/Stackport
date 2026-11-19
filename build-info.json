@@ -1,8 +1,8 @@
 {
   "name": "stackport",
-  "version": "1.4.9",
-  "builtAt": "2026-11-18T20:07:45.509Z",
-  "gitCommit": "88cc5bf",
-  "gitBranch": "fix/full-backup-recovery",
-  "gitMessage": "Merge pull request #55 from vtmattedi/feat/full-backup-restore-ui"
+  "version": "1.4.10",
+  "builtAt": "2026-11-19T02:15:30.405Z",
+  "gitCommit": "2bfd9cc",
+  "gitBranch": "fix/stackport-hostname-tls",
+  "gitMessage": "Merge pull request #56 from vtmattedi/fix/full-backup-recovery"
 }

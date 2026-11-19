@@ -1,6 +1,6 @@
 {
   "name": "stackport",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "description": "Small VPS manager for running multiple projects on one server",
   "main": "dist/index.js",
   "engines": {
@@ -26,6 +26,7 @@
     "typecheck": "tsc --noEmit && tsc -p tests",
     "test": "node --import tsx --import ./tests/setup.ts --test \"tests/**/*.test.ts\"",
     "test:backup:docker": "node --import tsx --import ./tests/setup.ts scripts/e2e/backup-upload.cjs && node --import tsx --import ./tests/setup.ts scripts/e2e/backup-volume.cjs",
+    "test:ingress:docker": "npm run build:api:compile && node scripts/e2e/app-ingress.cjs",
     "e2e:status": "tsx scripts/e2e-status-stream.ts",
     "ui:shots": "tsx scripts/ui/screenshots.ts"
   },
