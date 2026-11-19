@@ -14,13 +14,15 @@ import {
   getNginxRuntime,
   readNginxDocument,
   reloadNginx,
-  setNginxAppConfig,
+  hasUsableCertificate,
   writeNginxConfig,
   writeNginxTemplate,
   type NginxDocumentKind,
 } from "../../modules/ingress/nginx/configWriter";
+import { APP_NGINX_BOOTSTRAP_PENDING_KEY, getNginxAppConfig, setNginxAppConfig, validateNginxAppConfig } from "../../modules/ingress/nginx/appConfig";
 import {
   getCertbotStatus,
+  issueAdminHostnameCertificate,
   runCertbotAction,
   setCertbotEmail,
   type CertbotAction,
@@ -363,7 +365,7 @@ router.post("/nginx/apply", requireAuth, (req: Request, res: Response): void => 
 });
 
 router.put("/nginx/app", requireAuth, (req: Request, res: Response): void => {
-  const { enabled, domain, useSsl } = req.body as Record<string, unknown>;
+  const { enabled, domain, useSsl, allowHttp } = req.body as Record<string, unknown>;
   if (typeof enabled !== "boolean" || typeof domain !== "string") {
     res.status(400).json({ error: "enabled and domain are required" });
     return;
@@ -372,7 +374,7 @@ router.put("/nginx/app", requireAuth, (req: Request, res: Response): void => {
   const user = req.user ?? "unknown";
   let appConfig;
   try {
-    appConfig = setNginxAppConfig({ enabled, domain, useSsl: useSsl !== false });
+    appConfig = validateNginxAppConfig({ enabled, domain, useSsl: allowHttp === undefined ? useSsl !== false : allowHttp !== true });
   } catch (err) {
     auditLog(user, "system.nginx-app-config", "stackport", "fail");
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -382,17 +384,41 @@ router.put("/nginx/app", requireAuth, (req: Request, res: Response): void => {
   const key = nginxKey();
   const started = actionRegistry.tryStart(key, "nginx-app", { app: appConfig }, async () => {
     const flowId = `system.nginx-app:${Date.now()}`;
-    emitNginxGlobal("started", flowId, "StackPort publishing saved. Applying nginx config.");
+    emitNginxGlobal("started", flowId, "Preparing Stackport's address.");
+    const previous = getNginxAppConfig();
+    let saved = false;
     try {
+      let certificateOutput = "";
+      if (appConfig.enabled && appConfig.useSsl && !await hasUsableCertificate(appConfig.domain)) {
+        const prepared = await writeNginxConfig();
+        if (!prepared.ok) throw new Error(prepared.output);
+        const certificate = await issueAdminHostnameCertificate(appConfig.domain);
+        if (!certificate.ok) throw new Error(certificate.output);
+        if (!await hasUsableCertificate(appConfig.domain)) throw new Error(`No valid certificate was found for ${appConfig.domain}.`);
+        certificateOutput = certificate.output;
+      }
+      setNginxAppConfig(appConfig);
+      saved = true;
       const result = await writeNginxConfig();
-      emitNginxGlobal(result.ok ? "success" : "failed", flowId, result.ok ? "StackPort publishing is live." : "StackPort publishing apply failed.", result.output);
-      auditLog(user, "system.nginx-app-config", appConfig.domain || "stackport", result.ok ? "ok" : "fail");
-      return { ok: result.ok, output: result.output, meta: { app: appConfig } };
+      if (!result.ok) throw new Error(result.output);
+      getDatabase().prepare("DELETE FROM app_meta WHERE key = ?").run(APP_NGINX_BOOTSTRAP_PENDING_KEY);
+      emitNginxGlobal("success", flowId, "Stackport's address is live.", result.output);
+      auditLog(user, "system.nginx-app-config", appConfig.domain || "stackport", "ok");
+      return { ok: true, output: [certificateOutput, result.output].filter(Boolean).join("\n"), meta: { app: appConfig } };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      let msg = err instanceof Error ? err.message : String(err);
+      if (saved) {
+        try {
+          setNginxAppConfig(previous);
+          const rollback = await writeNginxConfig();
+          if (!rollback.ok) msg += `\nNginx could not reapply the previous address: ${rollback.output}`;
+        } catch (error) {
+          msg += `\nCould not restore the previous address: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
       emitNginxGlobal("failed", flowId, "StackPort publishing apply failed.", msg);
       auditLog(user, "system.nginx-app-config", "stackport", "fail");
-      return { ok: false, output: msg, meta: { app: appConfig } };
+      return { ok: false, output: msg };
     }
   });
   if (!started) { respondActionBusy(res, key, "An nginx action is already running"); return; }

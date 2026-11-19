@@ -72,7 +72,7 @@ interface SystemActionsValue {
   /** Start a nginx apply, tracking a toast until it finishes. */
   applyNginx: () => Promise<ActionRecord | null>;
   /** Update the STACKPORT app's published domain/port/ssl and apply nginx, tracking a toast until it finishes. */
-  updateNginxAppConfig: (cfg: { enabled: boolean; domain: string; useSsl: boolean }) => Promise<ActionRecord | null>;
+  updateNginxAppConfig: (cfg: { enabled: boolean; domain: string; allowHttp: boolean }) => Promise<ActionRecord | null>;
   /** Start a certbot issue/renew/delete for a domain, tracking a toast until it finishes. */
   certbotAction: (domain: string, action: CertbotOp) => Promise<ActionRecord | null>;
   /** Start a docker build cache prune, tracking a toast until it finishes. */
@@ -186,7 +186,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     return final;
   }, [refreshSystem]);
 
-  const updateNginxAppConfig = useCallback(async (cfg: { enabled: boolean; domain: string; useSsl: boolean }): Promise<ActionRecord | null> => {
+  const updateNginxAppConfig = useCallback(async (cfg: { enabled: boolean; domain: string; allowHttp: boolean }): Promise<ActionRecord | null> => {
     const final = await runAction(() => api.updateNginxAppConfig(cfg), "Stackport nginx publishing");
     refreshSystem();
     return final;

@@ -13,6 +13,8 @@ import { CheckRow } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
 import { Stack } from "../../components/ui/stack";
+import { Switch } from "../../components/ui/switch";
+import { waitForActionResult } from "../../context/ActionTracker";
 import { Hint } from "../../components/ui/text";
 import { jsonEqual, useSystemActions, useSystemSelector } from "../../context/SystemContext";
 import { notify } from "../../lib/notify";
@@ -31,7 +33,7 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
   setDomains: (next: Updater<ProjectDomain[]>) => void;
 }) {
   const confirm = useConfirm();
-  const { certbotAction, issueProjectDomainSsl } = useSystemActions();
+  const { certbotAction, issueProjectDomainSsl, refreshSystem } = useSystemActions();
   const [tcpExposures, setTcpExposures] = useProjectTcpExposures(project.id, true);
   const [newDomainInput, setNewDomainInput] = useState("");
   // Base domains the admin manages (Settings > Domains): a new hostname is a label on one of them. With none, or when
@@ -41,6 +43,8 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
   const [label, setLabel] = useState("");
   const [canonical, setCanonical] = useState<"apex" | "www">("apex");
   const [typeFull, setTypeFull] = useState(false);
+  const [allowHttp, setAllowHttp] = useState(false);
+  const [renameAllowHttp, setRenameAllowHttp] = useState(false);
   const [renaming, setRenaming] = useState<ProjectDomain | null>(null);
   const [renameLabel, setRenameLabel] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
@@ -89,8 +93,8 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
     setDomainError("");
     try {
       const created = useManaged && baseId !== null
-        ? await api.addManagedProjectDomain(project.id, { managedDomainId: baseId, label: label.trim(), canonical: bareDomain ? canonical : undefined, service: newDomainService.trim(), containerPort: port })
-        : await api.addProjectDomain(project.id, newDomainInput.trim(), newDomainService.trim(), port);
+        ? await api.addManagedProjectDomain(project.id, { managedDomainId: baseId, label: label.trim(), canonical: bareDomain ? canonical : undefined, service: newDomainService.trim(), containerPort: port, allowHttp })
+        : await api.addProjectDomain(project.id, newDomainInput.trim(), newDomainService.trim(), port, allowHttp);
       setDomains((current) => [...current, created]);
       if (project.healthCheckDomainId === null) {
         setProject((current) => current ? { ...current, healthCheckDomainId: created.id } : current);
@@ -99,6 +103,13 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
       setLabel("");
       setNewDomainService("");
       setNewDomainPort("");
+      setAllowHttp(false);
+      if (created.sslActionId) {
+        void waitForActionResult(created.sslActionId).then((final) => {
+          if (!final.ok) setDomainError(final.log || "Certificate issuance failed.");
+          refreshSystem();
+        }).catch((err: unknown) => notify.error(err, "Could not track certificate issuance"));
+      }
     } catch (err) {
       setDomainError(err instanceof ApiError ? err.message : "Failed to add domain");
     } finally {
@@ -107,10 +118,11 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
   }
 
   async function renameDomain() {
-    if (!project || !renaming || baseId === null || !renameLabel.trim()) return;
+    if (!project || !renaming || !renameLabel.trim()) return;
+    const managedRename = renaming.managedDomainId !== null && baseId !== null;
     const ok = await confirm({
       title: `Rename ${renaming.domain}?`,
-      description: "The new hostname is added, routed and, if this one has SSL, given a certificate first. Only then is this one removed: it stops answering at once, with no redirect.",
+      description: renameAllowHttp ? "The old hostname is removed once the new HTTP route is ready." : "The old hostname stays active while Stackport prepares HTTPS for the new address.",
       confirmLabel: "Rename",
       destructive: true,
     });
@@ -118,9 +130,14 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
     setRenameBusy(true);
     setRenameResult(null);
     try {
-      const result = await api.renameProjectHostname(project.id, renaming.id, { managedDomainId: baseId, label: renameLabel.trim(), canonical: renameLabel.trim() === "@" ? canonical : undefined });
-      setRenameResult(result);
-      if (result.ok) {
+      const started = await api.renameProjectHostname(project.id, renaming.id, {
+        ...(managedRename ? { managedDomainId: baseId, label: renameLabel.trim(), canonical: renameLabel.trim() === "@" ? canonical : undefined } : { domain: renameLabel.trim() }),
+        allowHttp: renameAllowHttp,
+      });
+      const result = started.action ? await waitForActionResult(started.action.id) : null;
+      setRenameResult({ ok: !!result?.ok, steps: result?.log.split("\n").filter(Boolean) ?? [], reason: result?.ok ? undefined : "The hostname could not be changed." });
+      refreshSystem();
+      if (result?.ok) {
         setDomains(await api.listProjectDomains(project.id));
         setRenaming(null);
         setRenameLabel("");
@@ -274,6 +291,7 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
               Add domain
             </Button>
           </div>
+          <CheckRow control={<Switch checked={allowHttp} onCheckedChange={setAllowHttp} disabled={addingDomain} />} title="Allow non-secure HTTP" hint="By default, Stackport issues a certificate and redirects HTTP to HTTPS." />
           {managed.length > 0 && (
             <Stack gap={2}>
               {previewHostname && <Hint>Hostname: <code className="mono">{previewHostname}</code></Hint>}
@@ -289,8 +307,9 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
           {renaming && (
             <div className="row-actions">
               <span className="muted-text">Rename <code className="mono">{renaming.domain}</code> to</span>
-              <Input type="text" placeholder="label, or @" value={renameLabel} onChange={(e) => setRenameLabel(e.target.value)} className={styles.domainInput} aria-label="New label" />
-              <AppSelect value={baseId === null ? "" : String(baseId)} onValueChange={(value) => setBaseId(Number(value))} options={baseOptions} placeholder="Base domain" triggerClassName="w-[180px]! flex-none!" />
+              <Input type="text" placeholder={renaming.managedDomainId === null ? "new.example.com" : "label, or @"} value={renameLabel} onChange={(e) => setRenameLabel(e.target.value)} className={styles.domainInput} aria-label="New label" />
+              {renaming.managedDomainId !== null && <AppSelect value={baseId === null ? "" : String(baseId)} onValueChange={(value) => setBaseId(Number(value))} options={baseOptions} placeholder="Base domain" triggerClassName="w-[180px]! flex-none!" />}
+              <CheckRow control={<Switch checked={renameAllowHttp} onCheckedChange={setRenameAllowHttp} disabled={renameBusy} />} title="Allow non-secure HTTP" />
               <Button type="button" size="default" disabled={renameBusy || !renameLabel.trim()} onClick={() => void renameDomain()}>
                 {renameBusy ? <Loader size={12} className="spin" /> : null} Rename
               </Button>
@@ -319,7 +338,7 @@ export function DomainsTab({ project, setProject, domains, setDomains }: {
                   onIssue={() => void issueDomainSsl(domain)}
                   onCertAction={(action) => void handleCertAction(domain.domain, action)}
                   onRemove={() => void removeDomainRow(domain)}
-                  onRename={domain.managedDomainId !== null && managed.length > 0 ? () => { setRenaming(domain); setRenameLabel(""); setRenameResult(null); } : undefined}
+                  onRename={() => { setRenaming(domain); setRenameLabel(""); setRenameAllowHttp(false); setRenameResult(null); }}
                 />
               ))}
             </div>

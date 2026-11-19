@@ -11,7 +11,7 @@ import {
   addManagedDomain, addManagedProjectDomain, adoptHostnames, getDefaultManagedDomain, getManagedDomain, hostnameFor, listManagedDomains, removeManagedDomain,
   reserveLabel, resolveBaseHostname, setDefaultManagedDomain, slugify, validateLabel,
 } from "../src/modules/ingress/managedDomains";
-import { certificateAlias } from "../src/modules/ingress/certificates/operations";
+import { routedCertificateAlias } from "../src/modules/ingress/nginx/configWriter";
 import app from "../src/app";
 
 let server: Server;
@@ -181,16 +181,23 @@ test("www chosen as a plain label is a hostname of its own with no redirect", ()
   assert.deepEqual([created.domain, created.label, created.redirectApex], ["www.example.com", "www", false]);
 });
 
-test("the certificate covers both names: www for a bare domain, the bare domain for a canonical www", () => {
+test("the certificate covers both names: www for a bare domain, the bare domain for a canonical www", async () => {
   reset();
   const d = addManagedDomain("example.com");
   addManagedProjectDomain(project("cert-apex"), d.id, "@", "web", 3000);
-  assert.equal(certificateAlias("example.com", "domain"), "www.example.com");
+  assert.equal(await routedCertificateAlias("example.com"), "www.example.com");
   reset();
   const d2 = addManagedDomain("example.com");
   addManagedProjectDomain(project("cert-www"), d2.id, "@", "web", 3000, "www");
-  assert.equal(certificateAlias("www.example.com", "domain"), "example.com");
-  assert.equal(certificateAlias("shop.example.com", "subdomain"), null);
+  assert.equal(await routedCertificateAlias("www.example.com"), "example.com");
+  reset();
+  const standalone = addManagedDomain("example.com");
+  addManagedProjectDomain(project("standalone-subdomain-tls"), standalone.id, "shop", "web", 3000);
+  assert.equal(await routedCertificateAlias("shop.example.com"), null, "the only routed subdomain does not need a www alias");
+  addProjectDomain(project("unmanaged-apex-tls"), "example.com.br", true, "web", 3000);
+  assert.equal(await routedCertificateAlias("example.com.br"), "www.example.com.br");
+  addProjectDomain(project("separate-www-tls"), "www.example.com.br", true, "web", 3000);
+  assert.equal(await routedCertificateAlias("example.com.br"), null, "a separately routed www has its own certificate");
 });
 
 test("nginx: canonical apex has www redirecting to it; canonical www has the bare domain redirecting to www, and neither name is served twice", async () => {
@@ -200,7 +207,7 @@ test("nginx: canonical apex has www redirecting to it; canonical www has the bar
 
   reset();
   const apex = addManagedDomain("example.com");
-  addManagedProjectDomain(project("nginx-apex"), apex.id, "@", "web", 3000);
+  addManagedProjectDomain(project("nginx-apex"), apex.id, "@", "web", 3000, "apex", false);
   let config = await render();
   assert.ok(serverNames(config).includes("www.example.com"));
   assert.match(config, /server_name www\.example\.com;[\s\S]*?return 301 http:\/\/example\.com\$request_uri;/);
@@ -208,7 +215,7 @@ test("nginx: canonical apex has www redirecting to it; canonical www has the bar
 
   reset();
   const www = addManagedDomain("example.com");
-  addManagedProjectDomain(project("nginx-www"), www.id, "@", "web", 3000, "www");
+  addManagedProjectDomain(project("nginx-www"), www.id, "@", "web", 3000, "www", false);
   config = await render();
   assert.match(config, /server_name example\.com;[\s\S]*?return 301 http:\/\/www\.example\.com\$request_uri;/, "the bare domain redirects to www");
   assert.ok(!/server_name www\.example\.com;[\s\S]{0,200}return 301/.test(config), "www itself is served, not redirected");

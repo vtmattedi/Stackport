@@ -46,7 +46,7 @@ export function StackportAddress() {
     setSaving(true);
     setSaveResult(null);
     try {
-      const final = await updateNginxAppConfig({ enabled, domain, useSsl });
+      const final = await updateNginxAppConfig({ enabled, domain, allowHttp: !useSsl });
       const saved = final?.meta?.["app"] as NginxAppConfig | undefined;
       if (saved) {
         setEnabled(saved.enabled);
@@ -95,12 +95,12 @@ export function StackportAddress() {
             hint={`Nginx forwards the hostname to this server's port ${app.port}. While this is on, projects cannot use that port.`}
           />
           <Field label="Hostname" htmlFor="stackport-hostname" hint="Create its DNS record yourself. Stackport does not check it." className="max-w-md">
-            <Input id="stackport-hostname" type="text" placeholder="stackport.example.com" value={domain} onChange={(event) => { setDomain(event.target.value); setDirty(true); }} />
+            <Input id="stackport-hostname" type="text" placeholder="stackport.example.com" value={domain} onChange={(event) => { setDomain(event.target.value); if (domain.trim().toLowerCase() === app.domain && event.target.value.trim().toLowerCase() !== app.domain) setUseSsl(true); setDirty(true); }} />
           </Field>
           <CheckRow
-            control={<Switch checked={useSsl} onCheckedChange={(value) => { setUseSsl(value); setDirty(true); }} />}
-            title="Use HTTPS"
-            hint="When a certificate exists, Nginx serves Stackport over HTTPS and redirects HTTP."
+            control={<Switch checked={!useSsl} onCheckedChange={(allowHttp) => { setUseSsl(!allowHttp); setDirty(true); }} />}
+            title="Allow non-secure HTTP"
+            hint="By default, Stackport obtains a certificate before switching to this address and redirects HTTP to HTTPS."
           />
           {showCert && (
             <Stack gap={2}>

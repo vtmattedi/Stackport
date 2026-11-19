@@ -77,7 +77,7 @@ test("a failed HTTP apply does not attempt certificate issuance", async () => {
 });
 
 for (const throws of [false, true]) {
-  test(`certificate ${throws ? "exception" : "failure"} leaves HTTP available and is retried on the next startup`, async () => {
+  test(`certificate ${throws ? "exception" : "failure"} leaves the HTTP challenge available and is retried on the next startup`, async () => {
     const saved = setNginxAppConfig({ enabled: true, domain: "sp.example.com", useSsl: true });
     appIngressDeps.issue = async (domain) => {
       events.push(`issue:failed:${domain}`);

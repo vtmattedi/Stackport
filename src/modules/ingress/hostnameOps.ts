@@ -1,22 +1,23 @@
 import { ensureProjectProxyNetwork } from "../deployments/operations";
-import { runCertbotAction } from "./certificates/operations";
+import { projectCertificateDeps, provisionProjectDomainTls } from "./certificates/project";
 import { renameProjectHostname, type RenameDeps } from "./managedDomains";
-import { writeNginxConfig } from "./nginx/configWriter";
+import { actionRegistry, projectSslKey } from "../actions/registry";
+import type { ProjectDomain } from "./domains";
+import { auditLog } from "../../shared/logger";
 
-/** The real dependencies of a hostname change: nginx applied from the current rows, and a certificate if the old one had SSL.
+/** The real dependencies of a hostname change: nginx applied from the current rows, with certificate issuance for HTTPS.
  *  Shared by the HTTP route and the MCP tool so the two cannot drift. */
 export function realRenameDeps(projectId: number): RenameDeps {
-  return {
-    applyNginx: async () => {
-      await ensureProjectProxyNetwork(projectId);
-      const result = await writeNginxConfig();
-      return { ok: result.ok, message: result.output ?? "" };
-    },
-    issueCertificate: async (domain) => {
-      const cert = await runCertbotAction(domain, "issue");
-      return { ok: cert.ok, message: cert.output };
-    },
-  };
+  return projectCertificateDeps(() => ensureProjectProxyNetwork(projectId));
 }
 
 export { renameProjectHostname };
+
+export function startProjectDomainTls(domain: ProjectDomain, actor: string): ReturnType<typeof actionRegistry.tryStart> {
+  const { projectId, id: domainId } = domain;
+  return actionRegistry.tryStart(projectSslKey(projectId, domainId), "ssl-issue", { projectId, domainId, domain: domain.domain }, async () => {
+    const result = await provisionProjectDomainTls(domain, realRenameDeps(projectId));
+    auditLog(actor, "project.ssl-issue", domain.domain, result.ok ? "ok" : "fail");
+    return result;
+  });
+}

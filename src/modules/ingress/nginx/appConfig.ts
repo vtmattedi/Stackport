@@ -8,6 +8,8 @@ const APP_NGINX_DOMAIN_KEY = "nginx_app_domain";
 
 const APP_NGINX_USE_SSL_KEY = "nginx_app_use_ssl";
 
+export const APP_NGINX_BOOTSTRAP_PENDING_KEY = "nginx_app_bootstrap_pending";
+
 export interface NginxAppConfig {
   enabled: boolean;
   domain: string;
@@ -28,7 +30,7 @@ export function getNginxAppConfig(): NginxAppConfig {
   };
 }
 
-export function setNginxAppConfig(input: { enabled: boolean; domain: string; useSsl?: boolean }): NginxAppConfig {
+export function validateNginxAppConfig(input: { enabled: boolean; domain: string; useSsl?: boolean }): NginxAppConfig {
   const domain = input.domain.trim().toLowerCase();
   if (input.enabled && !DOMAIN_RE.test(domain)) {
     throw new Error("domain must be a valid hostname before enabling app Nginx publishing");
@@ -48,14 +50,22 @@ export function setNginxAppConfig(input: { enabled: boolean; domain: string; use
     }
   }
 
+  return { enabled: input.enabled, domain, useSsl: input.useSsl !== false, port: config.port };
+}
+
+export function setNginxAppConfig(input: { enabled: boolean; domain: string; useSsl?: boolean }): NginxAppConfig {
+  const app = validateNginxAppConfig(input);
+  const db = getDatabase();
   const now = new Date().toISOString();
   const upsert = db.prepare(`
     INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `);
-  upsert.run(APP_NGINX_ENABLED_KEY, input.enabled ? "1" : "0", now);
-  upsert.run(APP_NGINX_DOMAIN_KEY, domain, now);
-  upsert.run(APP_NGINX_USE_SSL_KEY, input.useSsl === false ? "0" : "1", now);
+  db.transaction(() => {
+    upsert.run(APP_NGINX_ENABLED_KEY, app.enabled ? "1" : "0", now);
+    upsert.run(APP_NGINX_DOMAIN_KEY, app.domain, now);
+    upsert.run(APP_NGINX_USE_SSL_KEY, app.useSsl ? "1" : "0", now);
+  })();
 
-  return getNginxAppConfig();
+  return app;
 }

@@ -1,6 +1,6 @@
 {
   "name": "stackport",
-  "version": "1.4.10",
+  "version": "1.4.11",
   "description": "Small VPS manager for running multiple projects on one server",
   "main": "dist/index.js",
   "engines": {
@@ -71,6 +71,7 @@
     "recharts": "^3.8.1",
     "resend": "^6.12.4",
     "socket.io": "^4.8.3",
+    "tldts": "^7.5.4",
     "typeorm": "^1.0.0",
     "web-push": "^3.6.7",
     "ws": "^8.22.2",

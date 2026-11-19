@@ -1,7 +1,8 @@
 import { config } from "../../config/env";
 import { getDatabase } from "../../config/database";
-import { getNginxAppConfig, setNginxAppConfig, writeNginxConfig } from "./nginx/configWriter";
-import { getCertbotStatus, runCertbotAction } from "./certificates/operations";
+import { hasUsableCertificate, writeNginxConfig } from "./nginx/configWriter";
+import { APP_NGINX_BOOTSTRAP_PENDING_KEY, getNginxAppConfig, setNginxAppConfig } from "./nginx/appConfig";
+import { runCertbotAction } from "./certificates/operations";
 import { ensureSelfSignedCert } from "./nginx/selfSignedCert";
 import { execFile } from "child_process";
 import { logger } from "../../shared/logger";
@@ -12,8 +13,7 @@ export const appIngressDeps = {
   }),
   sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
   apply: (): Promise<{ ok: boolean; output: string }> => writeNginxConfig(),
-  hasCertificate: async (domain: string): Promise<boolean> =>
-    (await getCertbotStatus()).entries.some((entry) => entry.domain === domain && entry.hasCertificate),
+  hasCertificate: hasUsableCertificate,
   issue: (domain: string): Promise<{ ok: boolean; output: string }> => runCertbotAction(domain, "issue"),
   selfSigned: ensureSelfSignedCert,
 };
@@ -33,7 +33,7 @@ export async function ensureAppIngress(): Promise<void> {
   }
   const app = getNginxAppConfig();
   const db = getDatabase();
-  const pendingKey = "nginx_app_bootstrap_pending";
+  const pendingKey = APP_NGINX_BOOTSTRAP_PENDING_KEY;
   const pending = db.prepare("SELECT value FROM app_meta WHERE key = ?").get(pendingKey);
   if (app.domain && !pending) {
     try {
@@ -49,7 +49,7 @@ export async function ensureAppIngress(): Promise<void> {
       logger.info({ domain: app.domain }, "appIngress: requesting the missing certificate for the saved hostname");
       const cert = await appIngressDeps.issue(app.domain);
       if (!cert.ok) {
-        logger.error({ domain: app.domain, output: cert.output }, "appIngress: certificate issuance failed, staying on HTTP");
+        logger.error({ domain: app.domain, output: cert.output }, "appIngress: certificate issuance failed");
         return;
       }
       const sslApply = await appIngressDeps.apply();
@@ -77,7 +77,7 @@ export async function ensureAppIngress(): Promise<void> {
 
   try {
     db.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, '1')").run(pendingKey);
-    setNginxAppConfig({ enabled: true, domain: config.stackportDomain, useSsl: false });
+    setNginxAppConfig({ enabled: true, domain: config.stackportDomain, useSsl: true });
     const preApply = await appIngressDeps.apply();
     if (!preApply.ok) {
       // eslint-disable-next-line no-console
@@ -88,11 +88,10 @@ export async function ensureAppIngress(): Promise<void> {
     const cert = await appIngressDeps.issue(config.stackportDomain);
     if (!cert.ok) {
       // eslint-disable-next-line no-console
-      console.error("[appIngress] certificate issuance failed, staying on HTTP:", cert.output);
+      console.error("[appIngress] certificate issuance failed:", cert.output);
       return;
     }
 
-    setNginxAppConfig({ enabled: true, domain: config.stackportDomain, useSsl: true });
     const sslApply = await appIngressDeps.apply();
     if (!sslApply.ok) {
       // eslint-disable-next-line no-console
