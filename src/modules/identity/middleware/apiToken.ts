@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { resourceMetadataUrl } from "../oauth/router";
 import { verifyApiToken, type ApiToken, type ApiTokenScope } from "../apiTokens";
 
 declare global {
@@ -18,6 +19,9 @@ export function requireApiToken(scope: ApiTokenScope) {
     const raw = header?.startsWith("Bearer ") ? header.slice(7).trim() : "";
     const token = raw ? verifyApiToken(raw, scope) : null;
     if (!token) {
+      // Tells an OAuth-capable MCP client where to start (RFC 9728), so adding the bare URL is enough.
+      const metadata = resourceMetadataUrl(req);
+      if (metadata) res.set("WWW-Authenticate", `Bearer resource_metadata="${metadata}"`);
       res.status(401).json({ error: "A valid API token is required" });
       return;
     }

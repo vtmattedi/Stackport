@@ -1229,6 +1229,27 @@ export interface ApiToken {
   revokedAt: string | null;
 }
 
+/** GET /oauth/requests/:id: what an MCP client is asking to connect with (server: modules/identity/routes/oauth.ts). */
+export interface OAuthRequestInfo {
+  clientName: string;
+  redirectHost: string;
+  redirectUri: string;
+  /** True when the client runs on this machine; false when the approval is sent to a web address. */
+  local: boolean;
+  expiresAt: string;
+  groups: string[];
+}
+
+/** An MCP client the admin approved through OAuth and that can still renew its access. */
+export interface OAuthConnection {
+  id: number;
+  clientName: string;
+  scopes: string[];
+  projectGroup: string | null;
+  connectedAt: string;
+  expiresAt: string;
+}
+
 /** GET /projects/:id/deploy-preview and /rollback-preview (server: modules/deployments/preview.ts). */
 export interface PreviewCommit {
   sha: string;

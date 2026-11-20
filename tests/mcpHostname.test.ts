@@ -14,7 +14,7 @@ import { listManagedDomainsView } from "../src/transports/mcp/readModel";
 before(() => { initializeDatabase(); });
 
 const token = (overrides: Partial<ApiToken> = {}): ApiToken => ({
-  id: 9, name: "ci", prefix: "spk_abc", scopes: ["read", "write"], projectGroup: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null, ...overrides,
+  id: 9, name: "ci", prefix: "spk_abc", scopes: ["read", "write"], projectGroup: null, oauthClientId: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null, ...overrides,
 });
 
 function reset(): void {

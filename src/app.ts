@@ -8,6 +8,7 @@ import { errorHandler } from "./application/http/errorHandler";
 import router from "./application/http/routes";
 import githubHooksRouter from "./modules/automation/routes/githubHooks";
 import mcpRouter from "./transports/mcp/http";
+import { oauthRouter } from "./modules/identity/oauth/router";
 import { createControlRouter } from "./modules/peers/controlRouter";
 import { getReadiness } from "./modules/maintenance/readiness";
 import { runningSha } from "./modules/maintenance/version";
@@ -84,6 +85,8 @@ app.get("/health/ready", async (_req, res) => {
   });
 });
 
+// OAuth for MCP clients: /.well-known metadata, /register, /authorize, /token, /revoke (the consent page is the dashboard's /oauth/consent).
+app.use(oauthRouter);
 app.use("/mcp", mcpRouter);
 app.use("/api", router);
 app.use("/api", (_req, res) => {

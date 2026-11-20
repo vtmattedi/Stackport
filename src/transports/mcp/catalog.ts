@@ -30,7 +30,7 @@ export interface McpToolInfo {
 }
 
 function token(scopes: ApiToken["scopes"]): ApiToken {
-  return { id: 0, name: "catalog", prefix: "", scopes, projectGroup: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null };
+  return { id: 0, name: "catalog", prefix: "", scopes, projectGroup: null, oauthClientId: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null };
 }
 
 interface JsonSchemaProperty { type?: string | string[]; description?: string; enum?: unknown[]; anyOf?: { type?: string }[]; items?: { type?: string } }

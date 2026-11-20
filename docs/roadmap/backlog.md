@@ -4,7 +4,6 @@ These are **historical proposals or open follow-ups**, not v1.4/1.5 commitments.
 
 - **A1** — deploy a prebuilt image pinned by digest, with the same Compose policy protections as repository builds.
 - **A3** — consider blue-green deployments/build-before-swap to reduce in-place replacement outages; requires service/data compatibility rules.
-- **MCP-2** — OAuth for remote MCP connectors (authorization code/PKCE/discovery) remains separate from the dedicated Stackport Control channel.
 - **U4b** — show managed/external volume mappings on project pages, with correct host paths and permissions.
 - **B1** — pin the chosen deployment revision across rollback preview and confirmation to avoid TOCTOU.
 - **B2** — review Nginx WebSocket/upgrade connection headers and ordinary upstream keepalive.

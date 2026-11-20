@@ -11,7 +11,7 @@ import { MAX_CONCURRENT_PER_TOKEN, MAX_OUTPUT_CHARS, MAX_READS_PER_MINUTE, ReadL
 
 before(() => { initializeDatabase(); });
 
-const tokenOf = (overrides: Partial<ApiToken> = {}): ApiToken => ({ id: 3, name: "ops", prefix: "spk_x", scopes: ["read", "logs"], projectGroup: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null, ...overrides });
+const tokenOf = (overrides: Partial<ApiToken> = {}): ApiToken => ({ id: 3, name: "ops", prefix: "spk_x", scopes: ["read", "logs"], projectGroup: null, oauthClientId: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null, ...overrides });
 
 interface Seen { tail: number; service?: string }
 

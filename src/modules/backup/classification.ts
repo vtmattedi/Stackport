@@ -24,7 +24,8 @@ export const TABLE_TIERS: Record<string, TableTier> = {
   github_app_installations: "l1",
   github_app_repositories: "l1",
   push_config: "l1",
-  api_tokens: "l1", // hashes only; a clone drops them
+  api_tokens: "l1", // hashes only; a clone drops them. The short-lived tokens OAuth clients hold (oauth_client_id set) are dropped from every archive.
+  oauth_clients: "l1", // registrations only (name, redirect addresses); a clone drops them, since a new instance has a new issuer
   managed_domains: "l1",
   peer_targets: "l1", // a clone drops these: pairings never carry over to a copy
   peer_controllers: "l1",
@@ -40,6 +41,11 @@ export const TABLE_TIERS: Record<string, TableTier> = {
 
   // Never — sessions and one-time credentials, queues, caches, samples, logs and delivery history.
   auth_tokens: "never",
+  // OAuth for MCP: in-flight approvals, one-time codes and refresh tokens are live credentials, so no archive carries them (like sessions).
+  // Client registrations are not credentials and stay in l1 (below), so a recovered instance's clients do not have to register again.
+  oauth_requests: "never",
+  oauth_codes: "never",
+  oauth_refresh_tokens: "never",
   setup_credentials: "never",
   actions: "never",
   push_subscriptions: "never",

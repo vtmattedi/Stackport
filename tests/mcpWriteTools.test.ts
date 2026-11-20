@@ -16,7 +16,7 @@ const PROJECTS: Record<number, ProjectLike> = {
 };
 
 const token = (overrides: Partial<ApiToken> = {}): ApiToken => ({
-  id: 7, name: "ci", prefix: "spk_abc", scopes: ["read", "write"], projectGroup: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null, ...overrides,
+  id: 7, name: "ci", prefix: "spk_abc", scopes: ["read", "write"], projectGroup: null, oauthClientId: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null, ...overrides,
 });
 
 interface Started { kind: WriteKind; projectId: number; params: WriteParams; actor: string }

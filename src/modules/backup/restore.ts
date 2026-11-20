@@ -198,6 +198,9 @@ export function applyCloneTransforms(db: Database.Database): string[] {
   run("app_meta", "UPDATE app_meta SET value = '0' WHERE key = 'status_stream_enabled' AND value <> '0'", "turned the live-status stream off");
   run("api_tokens", "DELETE FROM api_tokens", "removed API tokens");
   run("auth_tokens", "DELETE FROM auth_tokens", "ended all sessions");
+  for (const table of ["oauth_refresh_tokens", "oauth_codes", "oauth_requests", "oauth_clients"]) {
+    run(table, `DELETE FROM ${table}`, `ended MCP OAuth connections (${table})`);
+  }
   for (const table of ["github_app_repositories", "github_app_installations", "github_app"]) {
     run(table, `DELETE FROM ${table}`, `removed the GitHub App registration (${table})`);
   }

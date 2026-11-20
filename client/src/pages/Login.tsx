@@ -1,5 +1,5 @@
 import { useState, useEffect, type FC } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { GitCommitHorizontal, Globe2, KeyRound, Lock, Rocket, Server, User } from "lucide-react";
 import { api, markSignedIn, isAuthenticated, setSetupToken, clearSetupToken } from "../api/client";
 import { ApiError } from "../api/client";
@@ -16,8 +16,16 @@ import StackPortLoading from "@/components/StackPortLoading";
 // page — the two flows share almost all of their form/field UI.
 type Mode = "checking" | "login" | "setup-login" | "setup-create-admin" | "setup-recovery";
 
+/** Where to go after signing in: the page that sent the visitor here, if it is a path on this site, else the projects list. */
+function afterLogin(next: string | null): string {
+  // A single leading slash and no backslash or control character, so it cannot become another site's address.
+  return next && /^\/(?![/\\])[^\\\u0000-\u001f]*$/.test(next) ? next : "/projects";
+}
+
 const Login: FC = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const destination = afterLogin(searchParams.get("next"));
 
   const [mode, setMode] = useState<Mode>("checking");
   const [username, setUsername] = useState("");
@@ -32,13 +40,13 @@ const Login: FC = () => {
 
   useEffect(() => {
     if (isAuthenticated()) {
-      navigate("/projects", { replace: true });
+      navigate(destination, { replace: true });
       return;
     }
     api.getSetupStatus()
       .then((status) => setMode(status.initialized ? "login" : "setup-login"))
       .catch(() => setMode("login"));
-  }, [navigate]);
+  }, [navigate, destination]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -47,7 +55,7 @@ const Login: FC = () => {
     try {
       await api.login(username, password);
       markSignedIn();
-      navigate("/projects", { replace: true });
+      navigate(destination, { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Login failed");
     } finally {
