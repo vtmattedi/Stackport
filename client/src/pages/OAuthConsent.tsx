@@ -26,6 +26,7 @@ export default function OAuthConsent() {
   const [problem, setProblem] = useState<string | null>(null);
   const [access, setAccess] = useState("read");
   const [logs, setLogs] = useState(false);
+  const [actionLogs, setActionLogs] = useState(false);
   const [group, setGroup] = useState(ALL_PROJECTS);
   const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
   const [recognised, setRecognised] = useState(false);
@@ -43,7 +44,7 @@ export default function OAuthConsent() {
     setBusy(kind);
     try {
       const { redirectUrl } = kind === "approve"
-        ? await api.approveOAuthRequest(requestId, { scope: access === "write" ? "write" : "read", logs, projectGroup: (access === "write" || logs) && group !== ALL_PROJECTS ? group : null, ...(info && !info.local ? { confirmHost: info.redirectHost } : {}) })
+        ? await api.approveOAuthRequest(requestId, { scope: access === "write" ? "write" : "read", logs, actionLogs, projectGroup: (access === "write" || logs || actionLogs) && group !== ALL_PROJECTS ? group : null, ...(info && !info.local ? { confirmHost: info.redirectHost } : {}) })
         : await api.denyOAuthRequest(requestId);
       // Back to the client, which finishes the exchange. Never follow anything that is not https, a local address or an app link.
       if (/^(?:javascript|data|vbscript|file|blob):/i.test(redirectUrl.trim())) throw new Error("The client's redirect address is not allowed.");
@@ -74,7 +75,7 @@ export default function OAuthConsent() {
             <Field label="Access">
               <AppSelect value={access} onValueChange={setAccess} options={ACCESS_OPTIONS} />
             </Field>
-            {(access === "write" || logs) && (
+            {(access === "write" || logs || actionLogs) && (
               <Field label="Projects">
                 <AppSelect
                   value={group}
@@ -86,7 +87,12 @@ export default function OAuthConsent() {
             <CheckRow
               control={<Switch checked={logs} onCheckedChange={setLogs} />}
               title="Allow reading container logs"
-              hint="Adds one tool that returns a project's recent logs. An app can print sensitive data into its logs."
+              hint="Running applications can print sensitive data in their logs."
+            />
+            <CheckRow
+              control={<Switch checked={actionLogs} onCheckedChange={setActionLogs} />}
+              title="Allow reading deployment action logs"
+              hint="Build, deploy, pull, and certificate output can contain sensitive data."
             />
             {!info.local && (
               <CheckRow

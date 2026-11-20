@@ -47,6 +47,27 @@ export function readActionLog(id: string): string | null {
   }
 }
 
+/** A bounded snapshot of the end of an action's stored output. */
+export function readActionLogTail(id: string, maxBytes: number): { output: string; truncated: boolean } | null {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    const fd = fs.openSync(actionLogPath(id), "r");
+    try {
+      const { size } = fs.fstatSync(fd);
+      const start = Math.max(0, size - maxBytes);
+      const bytes = Buffer.alloc(size - start);
+      const read = fs.readSync(fd, bytes, 0, bytes.length, start);
+      const output = bytes.subarray(0, read).toString("utf8");
+      const firstLine = start ? output.indexOf("\n") : -1;
+      return { output: output.slice(firstLine + 1), truncated: start > 0 };
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
 function removeFile(file: string): void {
   // Only ever a path this module recorded in actions.log_path.
   // eslint-disable-next-line security/detect-non-literal-fs-filename

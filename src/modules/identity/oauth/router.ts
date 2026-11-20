@@ -12,7 +12,7 @@ import { oauthProvider } from "./provider";
  * issuer in the discovery metadata. Without either, OAuth is simply not offered and the request falls through untouched.
  */
 
-export const OAUTH_SCOPES = ["read", "write", "logs"];
+export const OAUTH_SCOPES = ["read", "write", "logs", "action_logs"];
 
 /** Only these paths belong to OAuth. Everything else skips this module before any lookup, so it costs the rest of the app nothing. */
 const OAUTH_EXACT_PATHS = new Set(["/register", "/authorize", "/token", "/revoke"]);

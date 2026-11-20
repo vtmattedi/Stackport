@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { before, test } from "node:test";
@@ -11,13 +11,39 @@ import { setProjectDomainRoute } from "../src/modules/ingress/domains";
 import { announceBranchPreview } from "../src/modules/github/branchPreview";
 import { GithubClient } from "../src/modules/github/client";
 import { bindProjectToApp, getProjectBinding, unbindProjectFromApp } from "../src/modules/github/binding";
-import { writeDeploymentEnv } from "../src/modules/deployments/env";
+import { writeDeploymentEnv, writeEnvFiles } from "../src/modules/deployments/env";
+import { pullProject } from "../src/modules/deployments/operations";
 import { branchCheckoutConflict, createBranchDeployment, listBranchDeployments } from "../src/modules/projects/branchDeployments";
 import { createProjectEnvFile, deleteProjectEnvFile, listProjectEnvFiles, updateProjectEnvFile } from "../src/modules/projects/envFiles";
 import { createProject, updateProject } from "../src/modules/projects/operations";
 import { expectedComposeProjectName, projectRepoDir } from "../src/modules/projects/workspace";
 
 before(() => { initializeDatabase(); addManagedDomain("example.com"); });
+
+test("the first pull uses the configured branch rather than the repository default", async (t) => {
+  const project = createProject({ name: "First clone", githubRepo: "owner/branch-fixture", autoDeployBranch: "release" });
+  const origin = path.join(path.dirname(process.env["SQLITE_PATH"]!), "branch-fixture");
+  fs.mkdirSync(origin);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: origin, stdio: "pipe" });
+  git("init", "-qb", "main");
+  fs.writeFileSync(path.join(origin, "compose.yaml"), "services: {}\n");
+  git("add", "compose.yaml");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "Compose");
+  git("switch", "-qc", "release");
+  fs.writeFileSync(path.join(origin, "release-only"), "release\n");
+  git("add", "release-only");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "Release");
+  git("switch", "-q", "main");
+
+  const url = "https://github.com/owner/branch-fixture.git";
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, "spawn", ((cmd: string, args: string[], opts: SpawnOptions) =>
+    spawn(cmd, args.map((arg) => arg === url ? origin : arg), opts)) as typeof spawn);
+
+  const result = await pullProject(project.id);
+  assert.equal(result.ok, true, result.output);
+  assert.ok(fs.existsSync(path.join(projectRepoDir(project), "release-only")));
+});
 
 test("a project has multiple independent deployments and generated HTTPS URLs", () => {
   const main = createProject({ name: "App", githubRepo: "owner/app", autoDeployBranch: "main" });
@@ -90,6 +116,23 @@ test("redeploying a shared branch clears old secrets and restores the source's t
   await writeDeploymentEnv(branch, dir);
   assert.match(fs.readFileSync(tracked, "utf8"), /^VALUE=repo-default\r?\n$/);
   assert.equal(fs.existsSync(untracked), false);
+});
+
+test("primary deployments remove stale managed env copies and preserve unrelated files", async () => {
+  const project = createProject({ name: "Primary env cleanup", sourceType: "upload" });
+  const dir = projectRepoDir(project);
+  const variables = [{ key: "FIXTURE", value: "fixture-only" }];
+  const current = createProjectEnvFile(project.id, "current.env", variables);
+  await writeDeploymentEnv(project, dir);
+  const legacy = createProjectEnvFile(project.id, "legacy.env", variables);
+  await writeEnvFiles(dir, [legacy]); // Original primary deployment wrote no inventory.
+  const uploaded = createProjectEnvFile(project.id, "uploaded.env", variables);
+  fs.writeFileSync(path.join(dir, "uploaded.env"), "ORIGINAL=source\n");
+  for (const file of [legacy, current, uploaded]) deleteProjectEnvFile(file.id, project.id);
+  await writeDeploymentEnv(project, dir);
+  assert.equal(fs.existsSync(path.join(dir, "legacy.env")), false);
+  assert.equal(fs.existsSync(path.join(dir, "current.env")), false);
+  assert.equal(fs.readFileSync(path.join(dir, "uploaded.env"), "utf8"), "ORIGINAL=source\n");
 });
 
 test("changing the primary GitHub App binding also changes its branch deployments", () => {

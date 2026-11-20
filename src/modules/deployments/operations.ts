@@ -978,7 +978,7 @@ export const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/;
 async function ensureRepo(project: Project, repoPath: string, action: ProjectDeployEvent["action"], branch?: string | null, commitSha?: string | null): Promise<RunResult[]> {
   const conflict = branchCheckoutConflict(project, branch);
   if (conflict) return [{ ok: false, output: conflict, stdout: "", command: "git checkout" }];
-  if (project.branchParentId) branch = project.autoDeployBranch;
+  const effectiveBranch = project.branchParentId ? project.autoDeployBranch : branch ?? project.autoDeployBranch;
   if (commitSha && !COMMIT_SHA_RE.test(commitSha)) {
     return [{ ok: false, output: `Invalid commit SHA "${commitSha}".`, stdout: "", command: "git checkout" }];
   }
@@ -1012,14 +1012,13 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   }
   const gitEnv = buildGitEnv(process.env, authHeader, gitUrlScope(githubCloneUrl(project.githubRepo)));
   if (!hasCheckout) {
-    const clone = await run(project.id, action, "git", ["clone", ...(branch ? ["-b", branch] : []), githubCloneUrl(project.githubRepo), repoPath], {
+    const clone = await run(project.id, action, "git", ["clone", ...(effectiveBranch ? ["-b", effectiveBranch] : []), githubCloneUrl(project.githubRepo), repoPath], {
       timeoutMs: 300_000,
       env: gitEnv,
     });
     if (!clone.ok || !commitSha) return [clone];
-    const pinnedBranch = branch ?? project.autoDeployBranch;
-    if (!pinnedBranch) return [clone, noBranchResult()];
-    return [clone, ...await checkoutPinnedCommit(project.id, action, repoPath, commitSha, pinnedBranch)];
+    if (!effectiveBranch) return [clone, noBranchResult()];
+    return [clone, ...await checkoutPinnedCommit(project.id, action, repoPath, commitSha, effectiveBranch)];
   }
 
   // Discard local modifications before pulling — e.g. composeNetworking.ts's
@@ -1051,7 +1050,6 @@ async function ensureRepo(project: Project, repoPath: string, action: ProjectDep
   // explicitly given, since after the first SHA-pinned checkout the working tree is
   // permanently in detached-HEAD state — there's no "currently checked out branch"
   // to introspect the way a floating `git pull` used to allow.
-  const effectiveBranch = branch ?? project.autoDeployBranch;
   if (!effectiveBranch) return [fetch, noBranchResult()];
   if (commitSha) return [fetch, ...await checkoutPinnedCommit(project.id, action, repoPath, commitSha, effectiveBranch)];
 

@@ -193,7 +193,7 @@ test("the repository list shows what the App can use and which are projects, and
 test("creating a project from a repository over MCP is two steps, creates exactly what was described, and deploys nothing", async () => {
   await world();
   const h = await mcp(tokenOf());
-  const preview = await h.call({ repository: "acme/blog", name: "my-blog" });
+  const preview = await h.call({ repository: "https://github.com/acme/blog.git", name: "my-blog" });
   assert.equal(preview.isError, false);
   assert.match(String(preview.body?.["summary"]), /Create the project "my-blog" from acme\/blog \(branch main\)/);
   assert.match(String(preview.body?.["summary"]), /controls what runs on this host/);

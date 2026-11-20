@@ -3,9 +3,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { ApiToken } from "../../modules/identity/apiTokens";
+import { oauthConnectionForAccessToken } from "../../modules/identity/oauth/provider";
 import { actionRegistry, projectRepoKey } from "../../modules/actions/registry";
 import { resolveRollbackTarget } from "../../modules/deployments/history";
-import { deployProject, getProjectById, isValidBranchName, restartBlocker, restartProject, rollbackProject, stopProject } from "../../modules/deployments/operations";
+import { deployProject, getProjectById, isValidBranchName, pullProject, restartBlocker, restartProject, rollbackProject, stopProject } from "../../modules/deployments/operations";
 import { auditLog } from "../../shared/logger";
 import { listNetworkGroups } from "../../modules/projects/networkGroups";
 import { assignNetworkGroup, NetworkGroupError, validateNetworkGroupAssignment } from "../../modules/deployments/networkGroupAssignment";
@@ -28,7 +29,7 @@ import { parseProjectGroupName } from "../../modules/projects/operations";
  * act on a first call. Every call is audited, with the token as the actor.
  */
 
-export type WriteKind = "deploy" | "rollback" | "restart" | "stop" | "network_group" | "hostname" | "repository";
+export type WriteKind = "deploy" | "pull" | "rollback" | "restart" | "stop" | "network_group" | "hostname" | "repository" | "setup";
 
 export interface ProjectLike { id: number; name: string; groupName: string | null; lastStatus: string; autoDeployBranch: string | null }
 
@@ -42,11 +43,11 @@ export interface WriteDeps {
   now(): number;
 }
 
-export interface WriteParams { branch?: string; deploymentId?: number; networkGroup?: string | null; networkServices?: string[]; hostname?: string; allowHttp?: boolean }
+export interface WriteParams { branch?: string; deploymentId?: number; networkGroup?: string | null; networkServices?: string[]; hostname?: string; allowHttp?: boolean; configuration?: string }
 
 export const CONFIRMATION_TTL_MS = 5 * 60_000;
 
-interface Pending { tokenId: number; kind: WriteKind; projectId: number; params: string; expiresAt: number; resolvedDeploymentId?: number }
+interface Pending { owner: number | string; kind: WriteKind; projectId: number; params: string; expiresAt: number; resolvedDeploymentId?: number }
 
 /** One-time confirmations. Held in memory: a restart drops them, which only means asking again. */
 export class ConfirmationStore {
@@ -55,21 +56,21 @@ export class ConfirmationStore {
   constructor(private readonly now: () => number = Date.now) {}
 
   /** `resolvedDeploymentId`: the revision a rollback preview named, so the one that runs is the one that was shown. */
-  issue(tokenId: number, kind: WriteKind, projectId: number, params: WriteParams, resolvedDeploymentId?: number): { id: string; expiresAt: number } {
+  issue(owner: number | string, kind: WriteKind, projectId: number, params: WriteParams, resolvedDeploymentId?: number): { id: string; expiresAt: number } {
     const at = this.now();
     for (const [id, entry] of this.pending) if (entry.expiresAt <= at) this.pending.delete(id);
     const id = randomUUID();
     const expiresAt = at + CONFIRMATION_TTL_MS;
-    this.pending.set(id, { tokenId, kind, projectId, params: canonical(params), expiresAt, ...(resolvedDeploymentId !== undefined ? { resolvedDeploymentId } : {}) });
+    this.pending.set(id, { owner, kind, projectId, params: canonical(params), expiresAt, ...(resolvedDeploymentId !== undefined ? { resolvedDeploymentId } : {}) });
     return { id, expiresAt };
   }
 
   /** The confirmation, once, for the token, tool, project and parameters it was issued for; otherwise null. */
-  consume(id: string, tokenId: number, kind: WriteKind, projectId: number, params: WriteParams): Pending | null {
+  consume(id: string, owner: number | string, kind: WriteKind, projectId: number, params: WriteParams): Pending | null {
     const entry = this.pending.get(id);
     if (!entry) return null;
     this.pending.delete(id);
-    const valid = entry.expiresAt > this.now() && entry.tokenId === tokenId && entry.kind === kind
+    const valid = entry.expiresAt > this.now() && entry.owner === owner && entry.kind === kind
       && entry.projectId === projectId && entry.params === canonical(params);
     return valid ? entry : null;
   }
@@ -80,10 +81,15 @@ function canonical(params: WriteParams): string {
     branch: params.branch ?? null, deploymentId: params.deploymentId ?? null,
     networkGroup: params.networkGroup ?? null, networkServices: params.networkServices ? [...params.networkServices].sort() : null,
     hostname: params.hostname ?? null, allowHttp: params.allowHttp === true,
+    configuration: params.configuration ?? null,
   });
 }
 
-const confirmations = new ConfirmationStore();
+export const confirmations = new ConfirmationStore();
+
+export function confirmationOwner(token: ApiToken): string | number {
+  return (token.oauthClientId ? oauthConnectionForAccessToken(token.id) : undefined) ?? token.id;
+}
 
 const MCP_TRIGGER = "mcp";
 
@@ -101,6 +107,7 @@ export function defaultWriteDeps(): WriteDeps {
     start: (kind, project, params, actor) => {
       const run = async (): Promise<{ ok: boolean; output: string }> => {
         const result = kind === "deploy" ? await deployProject(project.id, "manual", params.branch ?? null)
+          : kind === "pull" ? await pullProject(project.id, params.branch ?? null)
           : kind === "rollback" ? await rollbackProject(project.id, params.deploymentId)
           : kind === "restart" ? await restartProject(project.id)
           : await stopProject(project.id);
@@ -149,6 +156,17 @@ const SPECS: ToolSpec[] = [
       if (params.branch !== undefined && !isValidBranchName(params.branch)) return { error: "Invalid branch name." };
       const branch = params.branch ?? project.autoDeployBranch ?? "the project's configured branch";
       return { summary: `Deploy "${project.name}" from ${branch}: pull, build and recreate changed containers. The project is currently ${project.lastStatus}.` };
+    },
+  },
+  {
+    kind: "pull",
+    title: "Pull a project branch (destructive)",
+    description: "DESTRUCTIVE: updates the project checkout so Compose files and routing can be inspected before deployment. It does not rebuild or restart running containers. Two steps: preview the pull, then call again with the confirmationId.",
+    extra: { branch: z.string().min(1).max(200).optional() },
+    preview: (project, params) => {
+      if (params.branch !== undefined && !isValidBranchName(params.branch)) return { error: "Invalid branch name." };
+      const branch = params.branch ?? project.autoDeployBranch ?? "the project's default branch";
+      return { summary: `Update the checkout for "${project.name}" from ${branch}, without rebuilding or restarting containers.` };
     },
   },
   {
@@ -258,7 +276,7 @@ function registerNetworkGroupTool(server: McpServer, token: ApiToken, deps: Writ
         const summary = preview.group === null
           ? `Take "${project.name}" out of its network group${preview.currentGroup ? ` "${preview.currentGroup}"` : ""}. Its services stop being reachable from, and stop reaching, the other projects in it.`
           : `Put "${project.name}" in network group "${preview.group}" and share ${preview.services.length ? preview.services.map((s) => `${s} (as ${groupAlias(projectId, s)})`).join(", ") : "no services"}. Other projects in the group: ${peerNames}. They can reach what is shared, and the shared services can reach what they share, on any port.`;
-        const { id, expiresAt } = store.issue(token.id, "network_group", projectId, params);
+        const { id, expiresAt } = store.issue(confirmationOwner(token), "network_group", projectId, params);
         auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, projectId, group: preview.group, services: preview.services });
         return data({
           requiresConfirmation: true,
@@ -268,7 +286,7 @@ function registerNetworkGroupTool(server: McpServer, token: ApiToken, deps: Writ
           next: `Nothing has changed. To proceed, call ${tool} again with the same arguments and this confirmationId.`,
         });
       }
-      if (!store.consume(confirmationId, token.id, "network_group", projectId, params)) {
+      if (!store.consume(confirmationId, confirmationOwner(token), "network_group", projectId, params)) {
         return refuse("bad-confirmation", "That confirmationId is unknown, expired, already used, or was issued for different arguments. Call the tool without it to get a new one.");
       }
       const result = await net.apply(projectId, preview.group, preview.services);
@@ -392,11 +410,11 @@ function registerHostnameTool(server: McpServer, token: ApiToken, deps: WriteDep
         const summary = plan.replaces
           ? `Rename the hostname ${plan.replaces.domain} of "${project.name}" to ${plan.newHostname}. The new hostname is added and routed first${plan.allowHttp ? " over plain HTTP" : ", and a certificate is issued for it when routed"}; then ${plan.replaces.domain} stops answering at once, with no redirect.${redirect}`
           : `Add the hostname ${plan.newHostname} to "${project.name}". It is not routed to a service yet.${redirect}`;
-        const { id, expiresAt } = store.issue(token.id, "hostname", projectId, params);
+        const { id, expiresAt } = store.issue(confirmationOwner(token), "hostname", projectId, params);
         auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, projectId, from: plan.replaces?.domain ?? null, to: plan.newHostname });
         return data({ requiresConfirmation: true, summary, confirmationId: id, expiresAt: new Date(expiresAt).toISOString(), next: `Nothing has changed. To proceed, call ${tool} again with the same arguments and this confirmationId.` });
       }
-      if (!store.consume(confirmationId, token.id, "hostname", projectId, params)) {
+      if (!store.consume(confirmationId, confirmationOwner(token), "hostname", projectId, params)) {
         return refuse("bad-confirmation", "That confirmationId is unknown, expired, already used, or was issued for different arguments. Call the tool without it to get a new one.");
       }
       const started = hosts.start(plan, actor);
@@ -413,6 +431,13 @@ export interface RepositoryPlan { repository: AppRepository; name: string; group
 
 export interface RepositoryInput { repository: string; name?: string; group?: string }
 
+function repositoryFullName(input: string): string | null {
+  const raw = input.trim();
+  const match = /^(?:https:\/\/github\.com\/)?([A-Za-z0-9-]+\/[A-Za-z0-9_.-]+)\/?$/i.exec(raw);
+  if (!match) return null;
+  return raw.includes("://") ? match[1].replace(/\.git$/i, "") : match[1];
+}
+
 /** What the repository tool needs from the rest of Stackport (replaceable in tests). */
 export interface RepositoryDeps {
   /** Validates the request against what the App can use. Throws GithubAppError with a reason. */
@@ -423,11 +448,13 @@ export interface RepositoryDeps {
 export function defaultRepositoryDeps(): RepositoryDeps {
   return {
     preview: (input, token) => {
-      const wanted = input.repository.trim().toLowerCase();
+      const repository = repositoryFullName(input.repository);
+      if (!repository) throw new GithubAppError("Provide owner/name or an HTTPS GitHub repository URL.", 400);
+      const wanted = repository.toLowerCase();
       const match = listRepositories().find((r) => r.fullName.toLowerCase() === wanted && getInstallation(r.installationId)?.status === "linked");
       if (!match) {
         const some = listRepositories().slice(0, 15).map((r) => r.fullName).join(", ");
-        throw new GithubAppError(`"${input.repository}" is not a repository the GitHub App can use.${some ? ` Some that it can: ${some}.` : " No account is connected."}`, 404);
+        throw new GithubAppError(`"${repository}" is not a repository the GitHub App can use.${some ? ` Some that it can: ${some}.` : " No account is connected."}`, 404);
       }
       const existing = projectForRepository(match.repositoryId);
       if (existing) throw new GithubAppError(`${match.fullName} already deploys as the project "${existing.name}" (id ${existing.id}).`, 409);
@@ -457,7 +484,7 @@ function registerRepositoryTool(server: McpServer, token: ApiToken, repos: Repos
       title: "Create project from a GitHub repository (destructive)",
       description: "DESTRUCTIVE: creates a project that pulls code from a repository the GitHub App can use and, once someone deploys it, runs that code on this host. Anyone who can push to the repository controls what runs. The project is bound to the repository, on its default branch, and reserves a hostname when a default domain is set; nothing is cloned or deployed by this call. Use stackport_list_github_repositories to see what is available. A token limited to a project group creates the project inside that group. Two steps: the first call returns what would happen and a confirmationId; call again with the same arguments and that id to create it.",
       inputSchema: {
-        repository: z.string().min(3).max(200).describe("owner/name, as listed by stackport_list_github_repositories."),
+        repository: z.string().min(3).max(240).describe("owner/name or an HTTPS github.com repository URL."),
         name: z.string().min(1).max(100).optional().describe("The project's name. Default: the repository's name."),
         group: z.string().max(100).optional().describe("The project group. A token limited to a group always uses its own."),
         confirmationId: z.string().uuid().optional(),
@@ -466,7 +493,7 @@ function registerRepositoryTool(server: McpServer, token: ApiToken, repos: Repos
     },
     async (input: { repository: string; name?: string; group?: string; confirmationId?: string }) => {
       const refuse = (reason: string, message: string): CallToolResult => {
-        auditLog(actor, "mcp.write", tool, "fail", { tokenId: token.id, repository: input.repository, reason });
+        auditLog(actor, "mcp.write", tool, "fail", { tokenId: token.id, reason });
         return text(message, true);
       };
       let plan: RepositoryPlan;
@@ -478,7 +505,7 @@ function registerRepositoryTool(server: McpServer, token: ApiToken, repos: Repos
       // The confirmation is for exactly this repository, name and group.
       const params: WriteParams = { hostname: `${plan.repository.repositoryId}|${plan.name}|${plan.groupName ?? ""}` };
       if (!input.confirmationId) {
-        const { id, expiresAt } = store.issue(token.id, "repository", plan.repository.repositoryId, params);
+        const { id, expiresAt } = store.issue(confirmationOwner(token), "repository", plan.repository.repositoryId, params);
         auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, repository: plan.repository.fullName });
         return data({
           requiresConfirmation: true,
@@ -488,7 +515,7 @@ function registerRepositoryTool(server: McpServer, token: ApiToken, repos: Repos
           next: `Nothing has been created. To proceed, call ${tool} again with the same arguments and this confirmationId.`,
         });
       }
-      if (!store.consume(input.confirmationId, token.id, "repository", plan.repository.repositoryId, params)) {
+      if (!store.consume(input.confirmationId, confirmationOwner(token), "repository", plan.repository.repositoryId, params)) {
         return refuse("bad-confirmation", "That confirmationId is unknown, expired, already used, or was issued for different arguments. Call the tool without it to get a new one.");
       }
       const created = repos.create(plan);
@@ -523,10 +550,6 @@ export function registerWriteTools(
       },
       async (input: { projectId: number; confirmationId?: string; branch?: string; deploymentId?: number }) => {
         const { projectId, confirmationId } = input;
-        const params: WriteParams = {
-          ...(input.branch !== undefined ? { branch: input.branch } : {}),
-          ...(input.deploymentId !== undefined ? { deploymentId: input.deploymentId } : {}),
-        };
         const tool = `stackport_${spec.kind}_project`;
         const refuse = (reason: string, message: string): CallToolResult => {
           auditLog(actor, "mcp.write", tool, "fail", { tokenId: token.id, projectId, reason });
@@ -538,11 +561,18 @@ export function registerWriteTools(
         if (!mayActOn(token, project)) {
           return refuse("outside-group", `This token may only act on projects in the group "${token.projectGroup}". Project ${projectId} is not in it.`);
         }
+        const branch = spec.kind === "deploy" || spec.kind === "pull"
+          ? input.branch ?? project.autoDeployBranch ?? undefined : undefined;
+        // Bind the resolved branch shown in the preview, including when the client omitted it.
+        const params: WriteParams = {
+          ...(branch !== undefined ? { branch } : {}),
+          ...(input.deploymentId !== undefined ? { deploymentId: input.deploymentId } : {}),
+        };
 
         if (!confirmationId) {
           const preview = await spec.preview(project, params, deps);
           if ("error" in preview) return refuse("preview-failed", preview.error);
-          const { id, expiresAt } = store.issue(token.id, spec.kind, projectId, params, preview.resolvedDeploymentId);
+          const { id, expiresAt } = store.issue(confirmationOwner(token), spec.kind, projectId, params, preview.resolvedDeploymentId);
           auditLog(actor, "mcp.write.preview", tool, "ok", { tokenId: token.id, projectId, ...params });
           return data({
             requiresConfirmation: true,
@@ -553,7 +583,7 @@ export function registerWriteTools(
           });
         }
 
-        const confirmed = store.consume(confirmationId, token.id, spec.kind, projectId, params);
+        const confirmed = store.consume(confirmationId, confirmationOwner(token), spec.kind, projectId, params);
         if (!confirmed) {
           return refuse("bad-confirmation", "That confirmationId is unknown, expired, already used, or was issued for different arguments. Call the tool without it to get a new one.");
         }

@@ -37,7 +37,6 @@ import {
   redeployProjectService,
   scanComposeFiles,
   scanProjectRepoFolders,
-  serviceExistsInCompose,
   stopProject,
   stopAndPurgeProject,
   validateComposeFileChoice,
@@ -56,7 +55,6 @@ import {
   getProjectDomain,
   listProjectDomains,
   parseContainerPort,
-  parseServiceName,
   ProjectDomainError,
   removeProjectDomain,
   setProjectDomainRoute,
@@ -77,6 +75,7 @@ import { defaultIsolationDeps, switchToIsolated, switchToShared, type IsolationR
 import { isIngressIsolated } from "../../modules/ingress/isolationState";
 import { modeAvailable } from "../../modules/github/ci";
 import { realRenameDeps, startProjectDomainTls } from "../../modules/ingress/hostnameOps";
+import { validateDomainRoute } from "../../modules/deployments/domainRoute";
 import { addManagedProjectDomain, getManagedDomain, renameProjectHostname, reserveHostnameForProject, validateLabel } from "../../modules/ingress/managedDomains";
 import { bindProjectToApp, candidatesForRepo, resolveAppRepository, unbindProjectFromApp, verifyRepositoryAccess } from "../../modules/github/binding";
 import { GithubAppError } from "../../modules/github/app";
@@ -876,29 +875,6 @@ router.get("/:id/tcp-exposures", requireAuth, (req: Request<{ id: string }>, res
   if (!getProjectById(id)) { res.status(404).json({ error: "Project not found" }); return; }
   res.json(listTcpExposures(id));
 });
-
-/** Phase 1.7 — confirms `service` is a real service in the project's current compose
- *  file before it's ever written to a domain row, same protection
- *  serviceExistsInCompose already gives every other single-service action. */
-async function validateDomainRoute(project: { id: number; name: string; composeFile: string | null }, service: unknown, containerPort: unknown): Promise<{ ok: true; service: string; containerPort: number } | { ok: false; error: string }> {
-  const parsedService = parseServiceName(service);
-  if (!parsedService) return { ok: false, error: "service must be a valid compose service name" };
-  const parsedPort = parseContainerPort(containerPort);
-  if (!parsedPort) return { ok: false, error: "containerPort must be a TCP port from 1 to 65535" };
-  if (!project.composeFile) return { ok: false, error: "Project has no active compose file yet — pull the repository first" };
-
-  const repoPath = projectRepoDir(project);
-  const exists = await serviceExistsInCompose(repoPath, project.composeFile, parsedService);
-  if (!exists) return { ok: false, error: `Service "${parsedService}" was not found in ${project.composeFile}` };
-  try {
-    const targets = await getProjectIngressTargets(project.id);
-    if (!targets.some(target => target.service === parsedService && target.containerPort === parsedPort)) {
-      return { ok: false, error: `Port ${parsedPort} is not declared for service "${parsedService}" in ${project.composeFile}` };
-    }
-  } catch (err) { return { ok: false, error: (err as Error).message }; }
-
-  return { ok: true, service: parsedService, containerPort: parsedPort };
-}
 
 router.post("/:id/tcp-exposures", requireAuth, async (req: Request<{ id: string }>, res: Response): Promise<void> => {
   const id = Number(req.params.id);

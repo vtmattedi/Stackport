@@ -492,7 +492,7 @@ export interface McpToolInfo {
   name: string;
   title: string;
   description: string;
-  scope: "read" | "write" | "logs";
+  scope: "read" | "write" | "logs" | "action_logs";
   destructive: boolean;
   twoStep: boolean;
   parameters: { name: string; type: string; required: boolean; description: string }[];

@@ -9,7 +9,7 @@ import { getDatabase } from "../../config/database";
  *
  *  `logs` is an add-on to a `read` or `write` token, chosen when it is created: it adds the container-log tool (transports/mcp/logTools.ts). Logs are
  *  what an app prints, which can be anything, so a token has no access to them unless it was made with it; existing tokens gain nothing. */
-export const API_TOKEN_SCOPES = ["read", "write", "status", "logs"] as const;
+export const API_TOKEN_SCOPES = ["read", "write", "status", "logs", "action_logs"] as const;
 export type ApiTokenScope = (typeof API_TOKEN_SCOPES)[number];
 
 const TOKEN_PREFIX = "spk_";
@@ -76,7 +76,7 @@ function rowToToken(row: ApiTokenRow): ApiToken {
   };
 }
 
-export function createApiToken(input: { name: unknown; expiresInDays?: unknown; scope?: unknown; projectGroup?: unknown; logs?: unknown }): { token: string; record: ApiToken } {
+export function createApiToken(input: { name: unknown; expiresInDays?: unknown; scope?: unknown; projectGroup?: unknown; logs?: unknown; actionLogs?: unknown }): { token: string; record: ApiToken } {
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (!name || name.length > MAX_NAME_LENGTH) {
     throw new ApiTokenError(400, `name is required and at most ${MAX_NAME_LENGTH} characters`);
@@ -93,14 +93,16 @@ export function createApiToken(input: { name: unknown; expiresInDays?: unknown; 
   const scope = input.scope ?? "read";
   if (scope !== "read" && scope !== "write" && scope !== "status") throw new ApiTokenError(400, 'scope must be "read", "write" or "status"');
   if (input.logs !== undefined && typeof input.logs !== "boolean") throw new ApiTokenError(400, "logs must be true or false");
+  if (input.actionLogs !== undefined && typeof input.actionLogs !== "boolean") throw new ApiTokenError(400, "actionLogs must be true or false");
   const logs = input.logs === true;
-  if (logs && scope === "status") throw new ApiTokenError(400, "log access only applies to read and write tokens");
+  const actionLogs = input.actionLogs === true;
+  if ((logs || actionLogs) && scope === "status") throw new ApiTokenError(400, "log access only applies to read and write tokens");
   let projectGroup: string | null = null;
   if (input.projectGroup !== undefined && input.projectGroup !== null && input.projectGroup !== "") {
     if (typeof input.projectGroup !== "string" || input.projectGroup.length > MAX_NAME_LENGTH) {
       throw new ApiTokenError(400, `projectGroup must be a group name of at most ${MAX_NAME_LENGTH} characters, or empty for every project`);
     }
-    if (scope === "read" && !logs) throw new ApiTokenError(400, "projectGroup only applies to write, status and log tokens");
+    if (scope === "read" && !logs && !actionLogs) throw new ApiTokenError(400, "projectGroup only applies to write, status and log tokens");
     projectGroup = input.projectGroup;
   }
 
@@ -108,7 +110,7 @@ export function createApiToken(input: { name: unknown; expiresInDays?: unknown; 
   const db = getDatabase();
   const result = db.prepare(
     "INSERT INTO api_tokens (name, token_hash, prefix, scopes, project_group, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(name, hashToken(token), token.slice(0, TOKEN_PREFIX.length + 6), `${scope === "write" ? "read,write" : scope}${logs ? ",logs" : ""}`, projectGroup, new Date().toISOString(), expiresAt);
+  ).run(name, hashToken(token), token.slice(0, TOKEN_PREFIX.length + 6), `${scope === "write" ? "read,write" : scope}${logs ? ",logs" : ""}${actionLogs ? ",action_logs" : ""}`, projectGroup, new Date().toISOString(), expiresAt);
   const row = db.prepare("SELECT * FROM api_tokens WHERE id = ?").get(result.lastInsertRowid) as ApiTokenRow;
   return { token, record: rowToToken(row) };
 }
