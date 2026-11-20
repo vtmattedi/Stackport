@@ -1,8 +1,8 @@
 {
   "name": "stackport-vps-manager-client",
-  "version": "1.4.12",
-  "builtAt": "2026-11-19T04:06:07.682Z",
-  "gitCommit": "9e41946",
-  "gitBranch": "feat/project-branch-deployments",
-  "gitMessage": "Merge pull request #58 from vtmattedi/feat/ssl-first-domains"
+  "version": "1.4.13",
+  "builtAt": "2026-11-20T04:25:50.064Z",
+  "gitCommit": "be3b312",
+  "gitBranch": "feat/mcp-oauth",
+  "gitMessage": "docs: MCP OAuth is supported"
 }
