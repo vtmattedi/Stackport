@@ -25,6 +25,8 @@ export interface ApiToken {
   scopes: ApiTokenScope[];
   /** A `write` or `status` token acts on (or sees) only the projects in this group; null means every project. */
   projectGroup: string | null;
+  /** Set for a token an OAuth client holds; the admin manages those under "Connected apps", not as API tokens. */
+  oauthClientId: string | null;
   createdAt: string;
   lastUsedAt: string | null;
   expiresAt: string | null;
@@ -38,6 +40,7 @@ interface ApiTokenRow {
   prefix: string;
   scopes: string;
   project_group?: string | null;
+  oauth_client_id?: string | null;
   created_at: string;
   last_used_at: string | null;
   expires_at: string | null;
@@ -54,7 +57,7 @@ function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-function parseScopes(raw: string): ApiTokenScope[] {
+export function parseScopes(raw: string): ApiTokenScope[] {
   return raw.split(",").filter((s): s is ApiTokenScope => (API_TOKEN_SCOPES as readonly string[]).includes(s));
 }
 
@@ -65,6 +68,7 @@ function rowToToken(row: ApiTokenRow): ApiToken {
     prefix: row.prefix,
     scopes: parseScopes(row.scopes),
     projectGroup: row.project_group ?? null,
+    oauthClientId: row.oauth_client_id ?? null,
     createdAt: row.created_at,
     lastUsedAt: row.last_used_at,
     expiresAt: row.expires_at,
@@ -109,8 +113,25 @@ export function createApiToken(input: { name: unknown; expiresInDays?: unknown; 
   return { token, record: rowToToken(row) };
 }
 
+/** The token an OAuth client uses on /mcp: short-lived, with the scopes the admin approved. */
+export function issueOAuthAccessToken(input: { clientId: string; clientName: string; scopes: ApiTokenScope[]; projectGroup: string | null; ttlSeconds: number }): { token: string; record: ApiToken } {
+  const token = TOKEN_PREFIX + crypto.randomBytes(32).toString("base64url");
+  const db = getDatabase();
+  const name = `OAuth: ${input.clientName}`.slice(0, MAX_NAME_LENGTH);
+  const result = db.prepare(
+    "INSERT INTO api_tokens (name, token_hash, prefix, scopes, project_group, oauth_client_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(name, hashToken(token), token.slice(0, TOKEN_PREFIX.length + 6), input.scopes.join(","), input.projectGroup, input.clientId, new Date().toISOString(), new Date(Date.now() + input.ttlSeconds * 1000).toISOString());
+  const row = db.prepare("SELECT * FROM api_tokens WHERE id = ?").get(result.lastInsertRowid) as ApiTokenRow;
+  return { token, record: rowToToken(row) };
+}
+
+export function hashApiTokenValue(raw: string): string {
+  return hashToken(raw);
+}
+
+/** Tokens an admin created by hand. OAuth access tokens are short-lived and listed as connected apps instead. */
 export function listApiTokens(): ApiToken[] {
-  const rows = getDatabase().prepare("SELECT * FROM api_tokens ORDER BY id DESC").all() as ApiTokenRow[];
+  const rows = getDatabase().prepare("SELECT * FROM api_tokens WHERE oauth_client_id IS NULL ORDER BY id DESC").all() as ApiTokenRow[];
   return rows.map(rowToToken);
 }
 

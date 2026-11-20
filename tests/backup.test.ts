@@ -24,7 +24,7 @@ function tmp(): string {
 function seed(): { scripts: string; repos: string; dir: string } {
   const db = initializeDatabase();
   // The test database file lives for the whole process: start every scenario from an empty installation.
-  for (const table of ["project_domains", "project_env_files", "projects", "credentials", "auth_tokens", "api_tokens", "notification_logs", "github_poller_config"]) db.exec(`DELETE FROM ${table}`);
+  for (const table of ["project_domains", "project_env_files", "projects", "credentials", "auth_tokens", "api_tokens", "oauth_clients", "oauth_refresh_tokens", "oauth_codes", "oauth_requests", "notification_logs", "github_poller_config"]) db.exec(`DELETE FROM ${table}`);
   db.exec("DELETE FROM sqlite_sequence");
   ensureInstanceIdentity(db);
   db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES ('admin_password_hash','$2a$bcrypt-hash')").run();
@@ -35,6 +35,10 @@ function seed(): { scripts: string; repos: string; dir: string } {
   db.prepare("INSERT INTO project_domains (project_id,domain) VALUES (1,'shop.example.com')").run();
   db.prepare("INSERT INTO auth_tokens (id,username,expires_at) VALUES ('sess','admin','2999-01-01')").run();
   db.prepare("INSERT INTO api_tokens (name,token_hash,prefix) VALUES ('ci','hash','sp_')").run();
+  db.prepare("INSERT INTO api_tokens (name,token_hash,prefix,oauth_client_id) VALUES ('OAuth: Tool','oauth-hash','spk_oa','spc_one')").run();
+  db.prepare("INSERT INTO oauth_clients (client_id,info,created_at) VALUES ('spc_one','{\"client_id\":\"spc_one\"}','2026-01-01T00:00:00.000Z')").run();
+  db.prepare("INSERT INTO oauth_refresh_tokens (token_hash,client_id,scopes,family,connected_at,created_at,expires_at) VALUES ('rt-hash','spc_one','read','fam','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z','2999-01-01T00:00:00.000Z')").run();
+  db.prepare("INSERT INTO oauth_codes (code_hash,client_id,redirect_uri,code_challenge,scopes,expires_at) VALUES ('code-hash','spc_one','http://127.0.0.1/cb','c','read','2999-01-01T00:00:00.000Z')").run();
   db.prepare("INSERT INTO notification_logs (subject) VALUES ('old mail')").run();
   const dir = tmp();
   const scripts = path.join(dir, "scripts");
@@ -134,6 +138,12 @@ test("level 1 holds settings and credentials but no project, session or runtime 
     assert.equal((sqliteRows(db, `SELECT COUNT(*) AS n FROM ${table}`)[0] as { n: number }).n, 0, table);
   }
   assert.equal(sqliteRows(db, "SELECT value FROM app_meta WHERE key='push_worker_poll_at'").length, 0, "runtime meta rows are dropped");
+  assert.equal(sqliteRows(db, "SELECT client_id FROM oauth_clients").length, 1, "OAuth client registrations are kept");
+  assert.equal(sqliteRows(db, "SELECT id FROM api_tokens WHERE oauth_client_id IS NULL").length, 1, "an admin's API token is kept");
+  assert.equal(sqliteRows(db, "SELECT id FROM api_tokens WHERE oauth_client_id IS NOT NULL").length, 0, "the access tokens an OAuth client holds are not");
+  for (const table of ["oauth_refresh_tokens", "oauth_codes", "oauth_requests"]) {
+    assert.equal((sqliteRows(db, `SELECT COUNT(*) AS n FROM ${table}`)[0] as { n: number }).n, 0, `${table} is never archived`);
+  }
   assert.ok(sqliteRows(db, "SELECT value FROM app_meta WHERE key='admin_password_hash'").length === 1);
   assert.ok(!staged.manifest.entries.some((e) => e.name.startsWith("files/repos/")));
   assert.ok(staged.manifest.components.find((c) => c.id === "projects" && !c.included));
@@ -211,6 +221,7 @@ test("clone: new instance id, no sessions/tokens/GitHub App, projects paused and
     assert.equal((clone.prepare("SELECT value FROM app_meta WHERE key='instance_id'").get() as { value: string }).value, result.instanceId);
     assert.equal((clone.prepare("SELECT value FROM app_meta WHERE key='instance_name'").get() as { value: string }).value, source.name, "the display name may be the same");
     assert.equal((clone.prepare("SELECT COUNT(*) AS n FROM api_tokens").get() as { n: number }).n, 0);
+    assert.equal((clone.prepare("SELECT COUNT(*) AS n FROM oauth_clients").get() as { n: number }).n, 0, "a clone keeps no OAuth registrations");
     assert.equal((clone.prepare("SELECT enabled FROM github_poller_config").get() as { enabled: number }).enabled, 0);
     const project = clone.prepare("SELECT paused, health_check_interval_s, auto_deploy_branch, github_hook_id, hook_public_id FROM projects").get() as Record<string, unknown>;
     assert.deepEqual(project, { paused: 1, health_check_interval_s: 0, auto_deploy_branch: null, github_hook_id: null, hook_public_id: null });

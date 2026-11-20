@@ -40,6 +40,9 @@ export function scrubDatabase(db: Database.Database, level: BackupLevel): ScrubR
         db.prepare(`DELETE FROM app_meta WHERE key NOT IN (${marks})`).run(...META_KEYS);
       } else if (!tierIncluded(tier, level)) {
         db.exec(`DELETE FROM ${quote(table)}`);
+      } else if (table === "api_tokens") {
+        // Tokens an OAuth client holds are credentials that expire within the hour; only the tokens an admin created are kept.
+        db.exec("DELETE FROM api_tokens WHERE oauth_client_id IS NOT NULL");
       }
       const after = (db.prepare(`SELECT COUNT(*) AS n FROM ${quote(table)}`).get() as { n: number }).n;
       report.tables[table] = { kept: after, dropped: before - after };

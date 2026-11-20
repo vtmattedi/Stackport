@@ -26,6 +26,7 @@ import m023 from "./023_project_moves";
 import m024 from "./024_transfer_columns";
 import m025 from "./025_full_backups";
 import m026 from "./026_branch_deployments";
+import m027 from "./027_oauth";
 
 /** A schema change that runs once, in order, recorded in `PRAGMA user_version`.
  *  `stackport rollback` runs the previous release's code on the migrated database,
@@ -38,7 +39,7 @@ export interface Migration {
 }
 
 /** Ordered by id. Append only: never edit or reorder a migration that has shipped. */
-export const MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013, m014, m015, m016, m017, m018, m019, m020, m021, m022, m023, m024, m025, m026];
+export const MIGRATIONS: Migration[] = [m001, m002, m003, m004, m005, m006, m007, m008, m009, m010, m011, m012, m013, m014, m015, m016, m017, m018, m019, m020, m021, m022, m023, m024, m025, m026, m027];
 
 export function schemaVersion(db: Database.Database): number {
   return db.pragma("user_version", { simple: true }) as number;
