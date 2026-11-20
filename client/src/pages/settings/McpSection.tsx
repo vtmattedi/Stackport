@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy, KeyRound, Loader, Plus, Search, Wrench } from "lucide-react";
+import { Copy, KeyRound, Loader, Plus, Search, Unplug, Wrench } from "lucide-react";
 import { AppSelect } from "../../components/AppSelect";
 import { useConfirm } from "../../components/ConfirmDialog";
 import { Disclosure } from "../../components/Disclosure";
@@ -12,7 +12,9 @@ import { Switch } from "../../components/ui/switch";
 import { Hint, Prose } from "../../components/ui/text";
 import { ApiTokenRow, copyText } from "../../components/ApiTokenRow";
 import { api } from "../../api/client";
-import type { ApiToken, McpToolInfo } from "../../api/types";
+import type { ApiToken, McpToolInfo, OAuthConnection } from "../../api/types";
+import { McpConnect } from "./McpConnect";
+import { TimeAgo } from "../../components/TimeAgo";
 import { useSystemSelector } from "../../context/SystemContext";
 import { notify } from "../../lib/notify";
 import mcp from "./McpSection.module.scss";
@@ -41,6 +43,46 @@ function accessLabel(token: ApiToken): string {
   const where = token.projectGroup ? `group "${token.projectGroup}"` : null;
   if (!token.scopes.includes("write")) return `${scope}${logs ? ", with container logs" : ""}${where ? `: ${where}` : ""}`;
   return `${scope}${logs ? ", with container logs" : ""}: ${where ?? "all projects"}`;
+}
+
+/** Apps the admin approved through OAuth. Disconnecting ends the app's access straight away. */
+function ConnectedApps() {
+  const confirm = useConfirm();
+  const [apps, setApps] = useState<OAuthConnection[] | null>(null);
+
+  async function load() {
+    try { setApps(await api.listOAuthConnections()); } catch (err) { notify.error(err, "Couldn't load connected apps"); setApps([]); }
+  }
+  useEffect(() => { void load(); }, []);
+
+  async function disconnect(app: OAuthConnection) {
+    const ok = await confirm({ title: `Disconnect "${app.clientName}"?`, description: "It loses access immediately and has to be approved again to reconnect.", confirmLabel: "Disconnect", destructive: true });
+    if (!ok) return;
+    try { await api.disconnectOAuthApp(app.id); notify.success("Disconnected."); void load(); } catch (err) { notify.error(err, "Couldn't disconnect"); }
+  }
+
+  return (
+    <div className="card mb-0!">
+      <div className="card-title"><Unplug size={13} />Connected apps</div>
+      {apps === null ? (
+        <Hint>Loading…</Hint>
+      ) : apps.length === 0 ? (
+        <Hint>No app has been connected with OAuth yet.</Hint>
+      ) : (
+        <ul>
+          {apps.map((app) => (
+            <li key={app.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+              <div>
+                <strong>{app.clientName}</strong>
+                <div className="text-xs text-[var(--dim)]">{app.scopes.includes("write") ? "Read and write" : "Read only"}{app.scopes.includes("logs") ? ", with container logs" : ""}{app.projectGroup ? `: group "${app.projectGroup}"` : ""} · connected <TimeAgo ts={app.connectedAt} /></div>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => void disconnect(app)}>Disconnect</Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 type ToolFilter = "all" | "read" | "logs" | "write";
@@ -212,11 +254,13 @@ export default function McpSection() {
 
   return (
     <Stack gap={4}>
+      <McpConnect endpoint={endpoint} />
+      <ConnectedApps />
       <div className="card mb-0!">
         <div className="card-title"><KeyRound size={13} />API tokens</div>
         <Stack gap={4}>
           <Stack gap={2}>
-            <Prose>A token gives access to <span className="mono">{endpoint}</span>. It works with Claude Code and Claude Desktop; claude.ai connectors need OAuth, which isn't supported yet.</Prose>
+            <Prose>A token gives access to <span className="mono">{endpoint}</span>. It works with Claude Code, Codex and any client that can send a bearer header. Clients that sign in with OAuth, such as claude.ai connectors, need no token: see Connect a client above.</Prose>
             <Hint>
               Read tokens never expose credentials or env files, and container logs only to a token created with log access (below): existing tokens cannot read logs. A <strong>read and write</strong> token can change things in all projects or in one project group (a project it creates goes
               into that group). Every change is written to the audit log.

@@ -71,6 +71,8 @@ import type {
   ProjectResourceData,
   ProjectResourceSummary,
   ApiToken,
+  OAuthRequestInfo,
+  OAuthConnection,
   ActionSummary,
   ComposeVariableStatus,
   PeersOverview,
@@ -453,6 +455,12 @@ export const api = {
   createApiToken: (name: string, expiresInDays: number | null, scope: "read" | "write" | "status" = "read", projectGroup: string | null = null, logs = false) =>
     request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays, scope, projectGroup, ...(logs ? { logs: true } : {}) }) }),
   revokeApiToken: (id: number) => request<void>(`/api-tokens/${id}`, { method: "DELETE" }),
+  getOAuthRequest: (id: string) => request<OAuthRequestInfo>(`/oauth/requests/${encodeURIComponent(id)}`),
+  approveOAuthRequest: (id: string, grant: { scope: "read" | "write"; logs: boolean; projectGroup: string | null; confirmHost?: string }) =>
+    request<{ redirectUrl: string }>(`/oauth/requests/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify(grant) }),
+  denyOAuthRequest: (id: string) => request<{ redirectUrl: string }>(`/oauth/requests/${encodeURIComponent(id)}/deny`, { method: "POST" }),
+  listOAuthConnections: () => request<OAuthConnection[]>("/oauth/connections"),
+  disconnectOAuthApp: (id: number) => request<void>(`/oauth/connections/${id}`, { method: "DELETE" }),
   getStatusStream: () => request<StatusStreamInfo>("/status-stream"),
   setStatusStream: (enabled: boolean) => request<StatusStreamInfo>("/status-stream", { method: "PUT", body: JSON.stringify({ enabled }) }),
   getProjectDeploymentRevisions: (projectId: number) =>

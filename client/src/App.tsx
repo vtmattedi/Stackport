@@ -27,6 +27,7 @@ const ProtectionsSection = lazy(() => import("./pages/settings/ProtectionsSectio
 const DomainsSection = lazy(() => import("./pages/settings/DomainsSection"));
 const GithubSection = lazy(() => import("./pages/settings/GithubSection"));
 const EncryptionSection = lazy(() => import("./pages/settings/encryption/EncryptionSection"));
+const OAuthConsent = lazy(() => import("./pages/OAuthConsent"));
 const McpSection = lazy(() => import("./pages/settings/McpSection"));
 const PeersSection = lazy(() => import("./pages/settings/PeersSection"));
 const BackupSection = lazy(() => import("./pages/settings/BackupSection"));
@@ -54,7 +55,9 @@ function LegacySystemRedirect() {
  *  navigating between pages keeps SystemProvider (and its live subscriptions and
  *  loaded data) alive instead of tearing it down and refetching everything. */
 function PrivateLayout() {
-  if (!isAuthenticated()) return <Navigate to="/" replace />;
+  const location = useLocation();
+  // The page that needed a sign-in (the OAuth consent page, above all) is remembered so Login can return to it.
+  if (!isAuthenticated()) return <Navigate to={`/?next=${encodeURIComponent(location.pathname + location.search)}`} replace />;
   return (
     <SystemProvider>
       <div className="app-shell">
@@ -86,6 +89,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Login />} />
           <Route element={<PrivateLayout />}>
+            <Route path="/oauth/consent" element={<OAuthConsent />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:id/:tab?" element={<ProjectDetails />} />
