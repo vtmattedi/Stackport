@@ -160,7 +160,7 @@ test("the scan and import endpoints need a login and validate", async () => {
 
 // ---- MCP
 
-const tokenOf = (overrides: Partial<ApiToken> = {}): ApiToken => ({ id: 5, name: "agent", prefix: "spk_x", scopes: ["read", "write"], projectGroup: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null, ...overrides });
+const tokenOf = (overrides: Partial<ApiToken> = {}): ApiToken => ({ id: 5, name: "agent", prefix: "spk_x", scopes: ["read", "write"], projectGroup: null, oauthClientId: null, createdAt: "", lastUsedAt: null, expiresAt: null, revokedAt: null, ...overrides });
 
 async function mcp(token: ApiToken) {
   const deps: WriteDeps = { getProject: () => null, rollbackTarget: () => ({ ok: false, error: "" }), start: () => null, now: Date.now };

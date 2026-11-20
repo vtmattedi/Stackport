@@ -232,12 +232,12 @@ test("the issuer never comes from a request header, and OAuth routing leaves oth
   assert.equal((await get("/.well-known/oauth-authorization-server", "evil.example")).status, 404, "a foreign Host gets no OAuth metadata");
   assert.equal((await get("/health", "evil.example")).status, 200, "and the rest of the app still answers it");
   assert.equal((await get("/api/not-a-route", "evil.example")).status, 404);
-  const challenge = await new Promise<Record<string, unknown>>((resolve, reject) => {
+  const challenge: Record<string, unknown> = await new Promise<Record<string, unknown>>((resolve, reject) => {
     const port = (server.address() as AddressInfo).port;
     const req = request({ host: "127.0.0.1", port, path: "/mcp", method: "POST", headers: { host: "evil.example\"x", "content-type": "application/json" } }, (res) => { res.resume(); resolve(res.headers); });
     req.on("error", reject);
     req.end("{}");
-  }).catch(() => ({}));
+  }).catch((): Record<string, unknown> => ({}));
   assert.equal(challenge["www-authenticate"], undefined, "a hostile Host is never echoed into the challenge");
 });
 

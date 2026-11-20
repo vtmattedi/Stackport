@@ -15,7 +15,12 @@ import { oauthProvider } from "./provider";
 export const OAUTH_SCOPES = ["read", "write", "logs"];
 
 /** Only these paths belong to OAuth. Everything else skips this module before any lookup, so it costs the rest of the app nothing. */
-const OAUTH_PATH = /^\/(?:\.well-known\/oauth-(?:authorization-server|protected-resource)(?:\/.*)?|register|authorize|token|revoke)$/;
+const OAUTH_EXACT_PATHS = new Set(["/register", "/authorize", "/token", "/revoke"]);
+const OAUTH_METADATA_PREFIXES = ["/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource"];
+
+function isOAuthPath(path: string): boolean {
+  return OAUTH_EXACT_PATHS.has(path) || OAUTH_METADATA_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
 
 const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])$/;
 
@@ -58,7 +63,7 @@ function routerFor(origin: string): RequestHandler {
 }
 
 export const oauthRouter: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
-  if (!OAUTH_PATH.test(req.path)) { next(); return; }
+  if (!isOAuthPath(req.path)) { next(); return; }
   const origin = publicOrigin(req);
   if (!origin) { res.status(404).json({ error: "OAuth for MCP is available once Stackport has an admin hostname" }); return; }
   let handler: RequestHandler;
