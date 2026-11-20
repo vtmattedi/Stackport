@@ -3,7 +3,7 @@ import {
 } from "react";
 import { io, Socket } from "socket.io-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { isAuthenticated, markSignedOut } from "../api/client";
+import { isAuthenticated, markSignedOut, redirectToLogin } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -150,13 +150,13 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       // Auth rejection: the session is gone, so forget it and go to the login page
       if (err.message === "Unauthorized" || err.message === "No token") {
         markSignedOut();
-        window.location.href = "/";
+        redirectToLogin();
       }
     });
     socket.on("auth:revoked", () => {
       markSignedOut();
       socket.disconnect();
-      window.location.href = "/";
+      redirectToLogin();
     });
     socketRef.current = socket;
     return socket;

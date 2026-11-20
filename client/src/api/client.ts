@@ -111,6 +111,12 @@ export function markSignedOut(): void {
   try { localStorage.removeItem(SIGNED_IN_KEY); } catch { /* storage unavailable */ }
 }
 
+/** Sends the browser to the sign-in page, remembering the page it was on so Login can return there (the OAuth consent page needs this). */
+export function redirectToLogin(): void {
+  const { pathname, search } = window.location;
+  window.location.href = pathname === "/" ? "/" : `/?next=${encodeURIComponent(pathname + search)}`;
+}
+
 export function isAuthenticated(): boolean {
   try { return localStorage.getItem(SIGNED_IN_KEY) === "1"; } catch { return false; }
 }
@@ -178,13 +184,13 @@ async function request<T>(
   // not an expired session, so we want to show the error in-page.
   if (res.status === 401 && !opts.skipAuthRedirect) {
     markSignedOut();
-    window.location.href = "/";
+    redirectToLogin();
     throw new ApiError(401, "Unauthorized");
   }
 
   if (res.headers.get("X-Auth-Revoked") === "1") {
     markSignedOut();
-    window.location.href = "/";
+    redirectToLogin();
   }
 
   if (!res.ok) {
@@ -243,13 +249,13 @@ async function requestActionStart(
 
   if (res.status === 401) {
     markSignedOut();
-    window.location.href = "/";
+    redirectToLogin();
     throw new ApiError(401, "Unauthorized");
   }
 
   if (res.headers.get("X-Auth-Revoked") === "1") {
     markSignedOut();
-    window.location.href = "/";
+    redirectToLogin();
   }
 
   const body = (await res.json().catch(() => null)) as ActionStartResponse | { error?: string } | null;
@@ -272,13 +278,13 @@ async function requestActionStartMultipart(path: string, formData: FormData): Pr
 
   if (res.status === 401) {
     markSignedOut();
-    window.location.href = "/";
+    redirectToLogin();
     throw new ApiError(401, "Unauthorized");
   }
 
   if (res.headers.get("X-Auth-Revoked") === "1") {
     markSignedOut();
-    window.location.href = "/";
+    redirectToLogin();
   }
 
   const body = (await res.json().catch(() => null)) as ActionStartResponse | { error?: string } | null;
