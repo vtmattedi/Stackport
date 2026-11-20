@@ -1,10 +1,22 @@
+import { createHmac } from "crypto";
 import { getDatabase } from "../../config/database";
+import { config } from "../../config/env";
 import { decryptSecret, encryptSecret } from "../../shared/crypto";
 import { normalizeRelativePath } from "../../shared/safePath";
 
 export interface EnvVariable {
   key: string;
   value: string;
+}
+
+export function renderEnvFile(variables: EnvVariable[]): string {
+  return variables.map(({ key, value }) => `${key}=${value}`).join("\n") + "\n";
+}
+
+/** Match legacy files without retaining deleted credentials or claiming unrelated files. */
+export function envFileFingerprint(content: string): string {
+  const digest = createHmac("sha256", config.encryptionKey || config.jwtSecret).update(content).digest("hex");
+  return `${Buffer.byteLength(content)}:${digest}`;
 }
 
 export interface ProjectEnvFile {
@@ -159,10 +171,49 @@ export function updateProjectEnvFile(id: number, projectId: number, relativePath
   return rowToEnvFile(row);
 }
 
+/** Applies edits without returning plaintext to the caller or replacing unrelated keys. */
+export function patchProjectEnvFile(projectId: number, relativePath: string, changes: EnvVariable[], removeKeys: string[] = []): void {
+  const db = getDatabase();
+  db.transaction(() => {
+    requireOwnEnvFiles(projectId);
+    const existing = db.prepare("SELECT * FROM project_env_files WHERE project_id = ? AND relative_path = ?")
+      .get(projectId, relativePath) as ProjectEnvFileRow | undefined;
+    if (!existing) {
+      if (changes.length > 0) createProjectEnvFile(projectId, relativePath, changes);
+      return;
+    }
+    const current = tryReadEnvVariables(existing);
+    if (!current) throw new EnvFileUnreadableError(relativePath);
+    const values = new Map(current.map(({ key, value }) => [key, value]));
+    for (const key of removeKeys) values.delete(key);
+    for (const { key, value } of changes) values.set(key, value);
+    updateProjectEnvFile(existing.id, projectId, relativePath, [...values].map(([key, value]) => ({ key, value })));
+  }).immediate();
+}
+
 export function deleteProjectEnvFile(id: number, projectId: number): boolean {
-  requireOwnEnvFiles(projectId);
-  const result = getDatabase()
-    .prepare("DELETE FROM project_env_files WHERE id = ? AND project_id = ?")
-    .run(id, projectId);
-  return result.changes > 0;
+  const db = getDatabase();
+  return db.transaction(() => {
+    requireOwnEnvFiles(projectId);
+    const file = db.prepare("DELETE FROM project_env_files WHERE id = ? AND project_id = ? RETURNING *")
+      .get(id, projectId) as ProjectEnvFileRow | undefined;
+    if (!file) return false;
+    const variables = tryReadEnvVariables(file);
+    db.prepare("INSERT OR REPLACE INTO project_env_removals (project_id, relative_path, fingerprint) VALUES (?, ?, ?)")
+      .run(projectId, file.relative_path, variables ? envFileFingerprint(renderEnvFile(variables)) : null);
+    return true;
+  }).immediate();
+}
+
+export function pendingEnvRemovals(projectId: number): { id: number; relativePath: string; fingerprint: string | null }[] {
+  return getDatabase().prepare("SELECT id, relative_path AS relativePath, fingerprint FROM project_env_removals WHERE project_id = ?")
+    .all(projectId) as { id: number; relativePath: string; fingerprint: string | null }[];
+}
+
+export function clearEnvRemovals(ids: number[]): void {
+  const db = getDatabase();
+  const remove = db.prepare("DELETE FROM project_env_removals WHERE id = ?");
+  db.transaction(() => {
+    for (const id of ids) remove.run(id);
+  })();
 }

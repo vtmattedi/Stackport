@@ -19,15 +19,17 @@ function redirectHostOf(uri: string): string {
 }
 
 function parseGrant(body: unknown): Grant | string {
-  const input = (body ?? {}) as { scope?: unknown; logs?: unknown; projectGroup?: unknown };
+  const input = (body ?? {}) as { scope?: unknown; logs?: unknown; actionLogs?: unknown; projectGroup?: unknown };
   if (input.scope !== "read" && input.scope !== "write") return 'scope must be "read" or "write"';
   if (input.logs !== undefined && typeof input.logs !== "boolean") return "logs must be true or false";
+  if (input.actionLogs !== undefined && typeof input.actionLogs !== "boolean") return "actionLogs must be true or false";
   const scopes: ApiTokenScope[] = input.scope === "write" ? ["read", "write"] : ["read"];
   if (input.logs === true) scopes.push("logs");
+  if (input.actionLogs === true) scopes.push("action_logs");
   let projectGroup: string | null = null;
   if (input.projectGroup !== undefined && input.projectGroup !== null && input.projectGroup !== "") {
     if (typeof input.projectGroup !== "string" || input.projectGroup.length > 80) return "projectGroup must be a group name or empty";
-    if (!scopes.includes("write") && !scopes.includes("logs")) return "projectGroup only applies to write and log access";
+    if (scopes.length === 1) return "projectGroup only applies to write and log access";
     if (!listApiProjectGroupNames().includes(input.projectGroup)) return "Unknown project group";
     projectGroup = input.projectGroup;
   }

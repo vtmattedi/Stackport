@@ -1,5 +1,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -8,7 +10,12 @@ import { getDatabase, initializeDatabase } from "../src/config/database";
 import { encryptSecret } from "../src/shared/crypto";
 import { createProject, updateProject } from "../src/modules/projects/operations";
 import { addProjectDomain } from "../src/modules/ingress/domains";
+import { addManagedDomain } from "../src/modules/ingress/managedDomains";
 import { createProjectEnvFile } from "../src/modules/deployments/operations";
+import { actionLogPath } from "../src/modules/actions/log";
+import { actionRegistry, projectRepoKey } from "../src/modules/actions/registry";
+import { listProjectEnvFiles } from "../src/modules/projects/envFiles";
+import { projectRepoDir } from "../src/modules/projects/workspace";
 import { createApiToken, revokeApiToken } from "../src/modules/identity/apiTokens";
 import { issueAuthToken } from "../src/modules/identity/sessions";
 import { safeRepo } from "../src/transports/mcp/readModel";
@@ -85,9 +92,134 @@ test("an API token is not accepted by the admin API", async () => {
 test("only the read-only tools exist", async () => {
   const client = await connect(token);
   const { tools } = await client.listTools();
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["stackport_get_project", "stackport_get_project_ingress_health", "stackport_get_project_network_group", "stackport_list_docker_networks", "stackport_list_github_repositories", "stackport_list_managed_domains", "stackport_list_network_groups", "stackport_list_projects", "stackport_status"]);
+  assert.deepEqual(tools.map((t) => t.name).sort(), [
+    "stackport_get_project", "stackport_get_project_action", "stackport_get_project_ingress_health",
+    "stackport_get_project_network_group", "stackport_get_project_setup", "stackport_inspect_project_repository",
+    "stackport_list_docker_networks", "stackport_list_github_repositories", "stackport_list_managed_domains",
+    "stackport_list_network_groups", "stackport_list_project_actions", "stackport_list_project_branches",
+    "stackport_list_projects", "stackport_status",
+  ]);
   assert.ok(tools.every((t) => t.annotations?.readOnlyHint === true));
   await client.close();
+});
+
+test("HTTP MCP configures branches, env files and service targets without returning secret values", async () => {
+  const client = await connect(createApiToken({ name: "setup", scope: "write" }).token);
+  const project = createProject({ name: "workflow", sourceType: "github", githubRepo: "owner/workflow", autoDeployBranch: "main" });
+  const id = project.id;
+  const checkout = projectRepoDir(project);
+  const composeFile = "compose.production.yaml";
+  await fs.mkdir(checkout, { recursive: true });
+  await fs.writeFile(path.join(checkout, composeFile), "services:\n  web:\n    image: nginx\n    expose: ['80']\n    env_file: [.env]\n");
+  addManagedDomain("mcp-preview.example.com", true);
+
+  async function call(name: string, args: Record<string, unknown> = {}) {
+    return client.callTool({ name: `stackport_${name}`, arguments: { projectId: id, ...args } });
+  }
+
+  async function confirm(name: string, args: Record<string, unknown>) {
+    const preview = payload(await call(name, args));
+    assert.equal(preview["requiresConfirmation"], true);
+    const result = await call(name, { ...args, confirmationId: preview["confirmationId"] });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    return payload(result);
+  }
+
+  try {
+    assert.equal((await confirm("set_project_branch", { branch: "release" }))["branch"], "release");
+    assert.equal((await confirm("set_project_compose_file", { composeFile }))["composeFile"], composeFile);
+
+    const value = "literal-value-kept-out-of-responses";
+    const largeValue = "value".repeat(3000);
+    const env = { relativePath: ".env", variables: [{ key: "KEEP", value }, { key: "LARGE_VALUE", value: largeValue }, { key: "REMOVE", value: "remove-me" }] };
+    const preview = await call("set_project_env_file", env);
+    assert.ok(!JSON.stringify(preview).includes(value));
+    assert.deepEqual(listProjectEnvFiles(id), []);
+    const changed = { ...env, variables: [{ key: "KEEP", value: "something-else" }], confirmationId: payload(preview)["confirmationId"] };
+    assert.equal((await call("set_project_env_file", changed)).isError, true);
+    assert.deepEqual(await confirm("set_project_env_file", env), { ok: true });
+    assert.deepEqual(await confirm("set_project_env_file", { relativePath: ".env", removeKeys: ["REMOVE"] }), { ok: true });
+
+    const formats = {
+      hex: /^[a-f0-9]{34}$/,
+      b32: /^[A-Z2-7]{28}$/,
+      b64: /^[A-Za-z0-9+/]{23}=$/,
+      b64url: /^[A-Za-z0-9_-]{23}$/,
+    };
+    const tooShort = await call("generate_project_env_value", { relativePath: ".env", key: "TOO_SHORT", size: 3, format: "b64url" });
+    assert.equal(tooShort.isError, true);
+    for (const [format, pattern] of Object.entries(formats)) {
+      const key = `GEN_${format.toUpperCase()}`;
+      assert.deepEqual(await confirm("generate_project_env_value", { relativePath: ".env", key, size: 17, format }), { ok: true });
+      const generated = listProjectEnvFiles(id)[0].variables.find((item) => item.key === key);
+      assert.match(generated?.value ?? "", pattern);
+    }
+    const stored = listProjectEnvFiles(id)[0].variables;
+    assert.equal(stored.find(({ key }) => key === "KEEP")?.value, value);
+    assert.equal(stored.find(({ key }) => key === "LARGE_VALUE")?.value, largeValue);
+    assert.ok(!stored.some(({ key }) => key === "REMOVE"));
+
+    const previewBranch = await confirm("create_branch_deployment", { branch: "preview/new", env: "shared" });
+    assert.match(String(previewBranch["url"]), /^https:\/\/.+\.mcp-preview\.example\.com\/$/);
+    const childId = previewBranch["projectId"];
+    assert.equal((await call("generate_project_env_value", { projectId: childId, relativePath: ".env", key: "KEEP", size: 24, format: "b32" })).isError, true);
+    const setup = payload(await call("get_project_setup", { projectId: childId }));
+    assert.equal((setup["env"] as { ownerProjectId: number }).ownerProjectId, id);
+    for (const item of stored) assert.ok(!JSON.stringify(setup).includes(item.value));
+    const parent = payload(await call("get_project_setup"));
+    assert.deepEqual((parent["compose"] as { targets: unknown[] }).targets, [{ service: "web", containerPort: 80 }]);
+
+    const bad = await call("add_project_domain", { domain: "preview.example.com", service: "web", containerPort: 81 });
+    assert.equal(bad.isError, true, "only declared ports can be routed");
+    const hostArgs = { domain: "preview.example.com", service: "web", containerPort: 80 };
+    const hostPreview = await call("add_project_domain", hostArgs);
+    assert.match(String(payload(hostPreview)["summary"]), /HTTPS/);
+    let finishPull!: (result: { ok: boolean }) => void;
+    const pull = new Promise<{ ok: boolean }>((resolve) => { finishPull = resolve; });
+    assert.ok(actionRegistry.tryStart(projectRepoKey(id), "pull", { projectId: id }, () => pull));
+    try {
+      const blocked = await call("add_project_domain", { ...hostArgs, confirmationId: payload(hostPreview)["confirmationId"] });
+      assert.equal(blocked.isError, true);
+      assert.match(JSON.stringify(blocked.content), /already running/);
+      assert.equal(getDatabase().prepare("SELECT id FROM project_domains WHERE domain = ?").get(hostArgs.domain), undefined);
+    } finally {
+      finishPull({ ok: true });
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test("action status and masked output respect project group and log scope", async () => {
+  const project = createProject({ name: "Action history", groupName: "team-action", sourceType: "upload" });
+  const actionId = "cbe8dcdb-ffdd-4f21-9a07-3582e9439a93";
+  const log = actionLogPath(actionId);
+  await fs.mkdir(path.dirname(log), { recursive: true });
+  await fs.writeFile(log, "Step 1\nBuild failed: test-action-secret\n");
+  createProjectEnvFile(project.id, ".env", [{ key: "APP_SECRET", value: "test-action-secret" }]);
+  getDatabase().prepare(`
+    INSERT INTO actions (id, key, kind, project_id, status, triggered_by, started_at, log_path)
+    VALUES (?, ?, 'deploy', ?, 'failed', 'mcp', ?, ?)
+  `).run(actionId, `project:${project.id}`, project.id, new Date().toISOString(), log);
+
+  const reader = await connect(createApiToken({ name: "action reader" }).token);
+  const allowed = await connect(createApiToken({ name: "action logs", actionLogs: true, projectGroup: "team-action" }).token);
+  const denied = await connect(createApiToken({ name: "other action logs", actionLogs: true, projectGroup: "other-action" }).token);
+  const statusTool = { name: "stackport_get_project_action", arguments: { actionId } };
+  const logTool = { name: "stackport_get_project_action_log", arguments: { actionId } };
+  try {
+    assert.equal(payload(await reader.callTool(statusTool))["status"], "failed");
+    assert.ok(!(await reader.listTools()).tools.some(({ name }) => name === logTool.name));
+    assert.equal((await denied.callTool(statusTool)).isError, true);
+    assert.equal((await denied.callTool(logTool)).isError, true);
+    const result = await allowed.callTool(logTool);
+    assert.match(String(payload(result)["output"]), /Build failed: \*\*\*/);
+    assert.ok(!JSON.stringify(result).includes("test-action-secret"));
+    getDatabase().prepare("UPDATE actions SET kind = 'backup' WHERE id = ?").run(actionId);
+    assert.equal((await allowed.callTool(logTool)).isError, true);
+  } finally {
+    await Promise.all([reader.close(), allowed.close(), denied.close()]);
+  }
 });
 
 function payload(res: Awaited<ReturnType<Client["callTool"]>>): Record<string, unknown> {

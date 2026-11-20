@@ -3,7 +3,7 @@ import { execFile } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { promisify } from "util";
-import { listProjectEnvFiles, normalizeEnvRelativePath, type ProjectEnvFile } from "../projects/envFiles";
+import { clearEnvRemovals, envFileFingerprint, listProjectEnvFiles, normalizeEnvRelativePath, pendingEnvRemovals, renderEnvFile, type ProjectEnvFile } from "../projects/envFiles";
 import type { Project } from "../projects/types";
 import { deployRoot } from "../projects/workspace";
 import { resolveContainedPath } from "../../shared/safePath";
@@ -21,7 +21,7 @@ export async function writeEnvFiles(repoPath: string, envFiles: ProjectEnvFile[]
     if (!target) {
       throw new Error(`Env path escapes repository: ${envFile.relativePath}`);
     }
-    const content = envFile.variables.map(({ key, value }) => `${key}=${value}`).join("\n") + "\n";
+    const content = renderEnvFile(envFile.variables);
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.writeFile(target, content, "utf8");
     written.push(normalized);
@@ -29,9 +29,8 @@ export async function writeEnvFiles(repoPath: string, envFiles: ProjectEnvFile[]
   return written;
 }
 
-/** A branch can outlive an env file on its parent. Reconcile earlier writes before running Compose. */
+/** Reconcile previously materialized managed files before running Compose. */
 export async function writeDeploymentEnv(project: Project, repoPath: string, envFiles = listProjectEnvFiles(project.id)): Promise<string[]> {
-  if (!project.branchParentId) return writeEnvFiles(repoPath, envFiles);
   const journal = path.join(deployRoot(), ".stackport", String(project.id), "env-files.json");
   let previous: string[] = [];
   try {
@@ -44,6 +43,10 @@ export async function writeDeploymentEnv(project: Project, repoPath: string, env
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
   const desired = new Set(envFiles.map((file) => file.relativePath));
+  const managed = new Set(previous);
+  const pending = pendingEnvRemovals(project.id);
+  const paths = new Map(pending.map(({ relativePath, fingerprint }) => [relativePath, fingerprint]));
+  for (const relative of managed) paths.set(relative, null);
   const save = async (files: string[]): Promise<void> => {
     await fs.mkdir(path.dirname(journal), { recursive: true });
     await fs.writeFile(journal + ".tmp", JSON.stringify(files), { mode: 0o600 });
@@ -52,19 +55,31 @@ export async function writeDeploymentEnv(project: Project, repoPath: string, env
 
   // Include pending writes so a restart partway through leaves enough information to retry.
   await save([...new Set([...previous, ...desired])]);
-  for (const relative of previous) {
+  for (const [relative, fingerprint] of paths) {
     if (desired.has(relative)) continue;
+    if (normalizeEnvRelativePath(relative) !== relative) throw new Error("Invalid path in deployment env cleanup.");
     const target = resolveContainedPath(repoPath, relative);
     if (!target) throw new Error(`Env path escapes repository: ${relative}`);
-    const tracked = await git("git", ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", relative], { cwd: repoPath, timeout: 15_000 })
+    const tracked = project.sourceType === "github" && await git("git", ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", relative], { cwd: repoPath, timeout: 15_000 })
       .then(() => true, (err: NodeJS.ErrnoException) => {
         if (Number(err.code) === 1) return false;
         throw err;
       });
     if (tracked) await git("git", ["--literal-pathspecs", "restore", "--source=HEAD", "--worktree", "--", relative], { cwd: repoPath, timeout: 15_000 });
-    else await fs.rm(target, { force: true });
+    else if (managed.has(relative) || await matchesLegacyEnvFile(target, fingerprint)) await fs.rm(target, { force: true });
   }
   const written = await writeEnvFiles(repoPath, envFiles);
   await save(written);
+  if (pending.length) clearEnvRemovals(pending.map(({ id }) => id));
   return written;
+}
+
+async function matchesLegacyEnvFile(target: string, fingerprint: string | null): Promise<boolean> {
+  if (!fingerprint) return false;
+  const stat = await fs.lstat(target).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  });
+  if (!stat?.isFile() || !fingerprint.startsWith(`${stat.size}:`)) return false;
+  return envFileFingerprint(await fs.readFile(target, "utf8")) === fingerprint;
 }

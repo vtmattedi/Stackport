@@ -82,7 +82,8 @@ function pruneExpired(): void {
   db.prepare("DELETE FROM oauth_codes WHERE expires_at < ?").run(now);
   db.prepare("DELETE FROM oauth_requests WHERE expires_at < ?").run(now);
   db.prepare("DELETE FROM api_tokens WHERE oauth_client_id IS NOT NULL AND (expires_at < ? OR revoked_at < ?)").run(weekAgo, weekAgo);
-  db.prepare("DELETE FROM oauth_refresh_tokens WHERE expires_at < ? OR revoked_at < ?").run(weekAgo, weekAgo);
+  // A rotated token is still needed to detect replay until its original expiry.
+  db.prepare("DELETE FROM oauth_refresh_tokens WHERE expires_at < ? OR (rotated_at IS NULL AND revoked_at < ?)").run(weekAgo, weekAgo);
 }
 
 const clientsStore: OAuthRegisteredClientsStore = {
@@ -99,11 +100,12 @@ const clientsStore: OAuthRegisteredClientsStore = {
     const db = getDatabase();
     const { count } = db.prepare("SELECT COUNT(*) AS count FROM oauth_clients").get() as { count: number };
     if (count >= MAX_CLIENTS) {
+      pruneExpired();
       // Registration is open (a client has no account yet), so a registration that holds no live grant and has nothing in flight is pruned once it is an hour old.
       db.prepare(`DELETE FROM oauth_clients WHERE created_at < ?
-        AND client_id NOT IN (SELECT client_id FROM oauth_refresh_tokens WHERE revoked_at IS NULL)
+        AND client_id NOT IN (SELECT client_id FROM oauth_refresh_tokens WHERE revoked_at IS NULL AND expires_at > ?)
         AND client_id NOT IN (SELECT client_id FROM oauth_requests)
-        AND client_id NOT IN (SELECT client_id FROM oauth_codes WHERE used_at IS NULL)`).run(iso(Date.now() - 3_600_000));
+        AND client_id NOT IN (SELECT client_id FROM oauth_codes WHERE used_at IS NULL)`).run(iso(Date.now() - 3_600_000), iso(Date.now()));
       const after = (db.prepare("SELECT COUNT(*) AS count FROM oauth_clients").get() as { count: number }).count;
       if (after >= MAX_CLIENTS) throw new InvalidRequestError("Too many registered clients; try again later");
     }
@@ -117,11 +119,12 @@ const clientsStore: OAuthRegisteredClientsStore = {
 function issueTokens(client: OAuthClientInformationFull, grant: Grant, continuing?: { family: string; connectedAt: string }): OAuthTokens {
   const db = getDatabase();
   pruneExpired();
+  const now = Date.now();
   const access = issueOAuthAccessToken({ clientId: client.client_id, clientName: clientName(client), scopes: grant.scopes, projectGroup: grant.projectGroup, ttlSeconds: ACCESS_TOKEN_TTL_SECONDS });
   const refresh = REFRESH_PREFIX + random(32);
   db.prepare(
     "INSERT INTO oauth_refresh_tokens (token_hash, client_id, scopes, project_group, access_token_id, family, connected_at, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(sha256(refresh), client.client_id, grant.scopes.join(","), grant.projectGroup, access.record.id, continuing?.family ?? random(16), continuing?.connectedAt ?? new Date().toISOString(), new Date().toISOString(), iso(Date.now() + REFRESH_TOKEN_TTL_MS));
+  ).run(sha256(refresh), client.client_id, grant.scopes.join(","), grant.projectGroup, access.record.id, continuing?.family ?? random(16), continuing?.connectedAt ?? iso(now), iso(now), iso(now + REFRESH_TOKEN_TTL_MS));
   return { access_token: access.token, token_type: "Bearer", expires_in: ACCESS_TOKEN_TTL_SECONDS, refresh_token: refresh, scope: grant.scopes.join(" ") };
 }
 
@@ -183,21 +186,26 @@ export function listConnectedApps(): ConnectedApp[] {
 /** Ends a connection now: the refresh token stops working and so does the access token it last issued. */
 export function disconnectApp(id: number): boolean {
   const db = getDatabase();
-  const row = db.prepare("SELECT family FROM oauth_refresh_tokens WHERE id = ? AND revoked_at IS NULL").get(id) as { family: string } | undefined;
-  if (!row) return false;
-  endFamily(row.family);
-  return true;
+  return db.transaction(() => {
+    const row = db.prepare("SELECT family FROM oauth_refresh_tokens WHERE id = ?").get(id) as { family: string } | undefined;
+    return row ? endFamily(row.family) : false;
+  }).immediate();
+}
+
+/** The connection stays the same when a refresh replaces its access token. */
+export function oauthConnectionForAccessToken(accessTokenId: number): string | undefined {
+  const row = getDatabase().prepare("SELECT family FROM oauth_refresh_tokens WHERE access_token_id = ?")
+    .get(accessTokenId) as { family: string } | undefined;
+  return row?.family;
 }
 
 /** Revokes every refresh token of one connection and the access tokens they issued. */
-function endFamily(family: string): void {
+function endFamily(family: string): boolean {
   const db = getDatabase();
-  const rows = db.prepare("SELECT id, access_token_id FROM oauth_refresh_tokens WHERE family = ?").all(family) as { id: number; access_token_id: number | null }[];
-  const now = new Date().toISOString();
-  for (const row of rows) {
-    db.prepare("UPDATE oauth_refresh_tokens SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?").run(now, row.id);
-    if (row.access_token_id !== null) revokeApiToken(row.access_token_id);
-  }
+  const now = iso(Date.now());
+  db.prepare(`UPDATE api_tokens SET revoked_at = ? WHERE revoked_at IS NULL
+    AND id IN (SELECT access_token_id FROM oauth_refresh_tokens WHERE family = ?)`).run(now, family);
+  return db.prepare("UPDATE oauth_refresh_tokens SET revoked_at = ? WHERE family = ? AND revoked_at IS NULL").run(now, family).changes > 0;
 }
 
 export const oauthProvider: OAuthServerProvider = {
@@ -221,26 +229,33 @@ export const oauthProvider: OAuthServerProvider = {
     if (!row || row.client_id !== client.client_id || Date.parse(row.expires_at) <= Date.now()) throw new InvalidGrantError("Invalid or expired authorization code");
     if (redirectUri && redirectUri !== row.redirect_uri) throw new InvalidGrantError("redirect_uri does not match the authorization request");
     // The code is single use: only the call that flips used_at gets tokens.
-    const claimed = db.prepare("UPDATE oauth_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL").run(new Date().toISOString(), hash);
-    if (claimed.changes === 0) throw new InvalidGrantError("Authorization code was already used");
-    return issueTokens(client, { scopes: parseScopes(row.scopes), projectGroup: row.project_group });
+    return db.transaction(() => {
+      const claimed = db.prepare("UPDATE oauth_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?")
+        .run(iso(Date.now()), hash, iso(Date.now()));
+      if (claimed.changes === 0) throw new InvalidGrantError("Authorization code was already used or expired");
+      return issueTokens(client, { scopes: parseScopes(row.scopes), projectGroup: row.project_group });
+    }).immediate();
   },
 
   async exchangeRefreshToken(client, refreshToken) {
     const db = getDatabase();
     const hash = sha256(refreshToken);
-    const row = db.prepare("SELECT * FROM oauth_refresh_tokens WHERE token_hash = ?").get(hash) as RefreshRow | undefined;
-    if (!row || row.client_id !== client.client_id || Date.parse(row.expires_at) <= Date.now()) throw new InvalidGrantError("Invalid or expired refresh token");
-    // A refresh token that was already rotated is being replayed: either the client or a thief holds a copy. End the whole connection, so
-    // neither copy keeps working and the admin has to approve again.
-    if (row.rotated_at) { endFamily(row.family); throw new InvalidGrantError("Refresh token was already used; the connection was ended"); }
-    if (row.revoked_at) throw new InvalidGrantError("Invalid or expired refresh token");
-    // Rotation: the old refresh token and the access token it issued stop working, and only the call that rotates it gets new ones.
-    const now = new Date().toISOString();
-    const claimed = db.prepare("UPDATE oauth_refresh_tokens SET revoked_at = ?, rotated_at = ? WHERE id = ? AND revoked_at IS NULL").run(now, now, row.id);
-    if (claimed.changes === 0) { endFamily(row.family); throw new InvalidGrantError("Refresh token was already used; the connection was ended"); }
-    if (row.access_token_id !== null) revokeApiToken(row.access_token_id);
-    return issueTokens(client, { scopes: parseScopes(row.scopes), projectGroup: row.project_group }, { family: row.family, connectedAt: row.connected_at });
+    const tokens = db.transaction(() => {
+      const row = db.prepare("SELECT * FROM oauth_refresh_tokens WHERE token_hash = ?").get(hash) as RefreshRow | undefined;
+      if (!row || row.client_id !== client.client_id || Date.parse(row.expires_at) <= Date.now()) throw new InvalidGrantError("Invalid or expired refresh token");
+      if (row.rotated_at) {
+        endFamily(row.family);
+        return null;
+      }
+      if (row.revoked_at) throw new InvalidGrantError("Invalid or expired refresh token");
+      const now = iso(Date.now());
+      db.prepare("UPDATE oauth_refresh_tokens SET revoked_at = ?, rotated_at = ? WHERE id = ?").run(now, now, row.id);
+      if (row.access_token_id !== null) revokeApiToken(row.access_token_id);
+      return issueTokens(client, { scopes: parseScopes(row.scopes), projectGroup: row.project_group }, { family: row.family, connectedAt: row.connected_at });
+    }).immediate();
+    // Throw after the transaction commits the revocation of a replayed grant.
+    if (!tokens) throw new InvalidGrantError("Refresh token was already used; the connection was ended");
+    return tokens;
   },
 
   async verifyAccessToken(token): Promise<AuthInfo> {
@@ -251,7 +266,8 @@ export const oauthProvider: OAuthServerProvider = {
 
   async revokeToken(client, request: OAuthTokenRevocationRequest) {
     const db = getDatabase();
-    const refresh = db.prepare("SELECT id FROM oauth_refresh_tokens WHERE token_hash = ? AND client_id = ?").get(sha256(request.token), client.client_id) as { id: number } | undefined;
+    const refresh = db.prepare("SELECT id FROM oauth_refresh_tokens WHERE token_hash = ? AND client_id = ? AND expires_at > ?")
+      .get(sha256(request.token), client.client_id, iso(Date.now())) as { id: number } | undefined;
     if (refresh) { disconnectApp(refresh.id); return; }
     const access = db.prepare("SELECT id FROM api_tokens WHERE token_hash = ? AND oauth_client_id = ?").get(hashApiTokenValue(request.token), client.client_id) as { id: number } | undefined;
     if (access) revokeApiToken(access.id);

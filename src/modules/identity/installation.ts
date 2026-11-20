@@ -2,8 +2,8 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { getDatabase } from "../../config/database";
 import { config } from "../../config/env";
+import { base32Encode } from "../../shared/base32";
 
-const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const INSTALLATION_INITIALIZED_KEY = "installation_initialized";
 const ADMIN_USERNAME_KEY = "admin_username";
 export const BOOTSTRAP_CREDENTIAL_TTL_MS = 24 * 60 * 60 * 1000;
@@ -25,24 +25,6 @@ interface SetupCredentialRow {
 // `openssl rand 10 | base32 | tr -d '='` example (~80 bits from 10 random bytes),
 // chosen over base64url so the credential avoids visually ambiguous characters
 // and reads/dictates cleanly over a terminal.
-function base32Encode(bytes: Buffer): string {
-  let bits = 0;
-  let value = 0;
-  let output = "";
-  for (const byte of bytes) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
-  }
-  if (bits > 0) {
-    output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
-  }
-  return output;
-}
-
 export function generateSetupPassword(): string {
   const raw = base32Encode(crypto.randomBytes(10));
   return raw.match(/.{1,5}/g)?.join("-") ?? raw;

@@ -60,6 +60,7 @@ app.use("/api/hooks", githubHooksRouter);
 // own body (the signature covers the exact bytes), so it must come before the JSON parser below, and it is still rate limited.
 app.use("/control", controlLimiter, createControlRouter(undefined, { api: router }));
 app.use(globalLimiter);
+app.use("/mcp", mcpRouter);
 app.use(
   express.json({
     limit: "10kb",
@@ -87,7 +88,6 @@ app.get("/health/ready", async (_req, res) => {
 
 // OAuth for MCP clients: /.well-known metadata, /register, /authorize, /token, /revoke (the consent page is the dashboard's /oauth/consent).
 app.use(oauthRouter);
-app.use("/mcp", mcpRouter);
 app.use("/api", router);
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "API route not found" });

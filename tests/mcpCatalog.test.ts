@@ -29,7 +29,14 @@ test("the catalog lists every tool with the scope it needs, and write tools are 
     assert.equal(by[name].twoStep, false);
   }
   const write = tools.filter((t) => t.scope === "write").map((t) => t.name).sort();
-  assert.deepEqual(write, ["stackport_create_project_from_repository", "stackport_deploy_project", "stackport_restart_project", "stackport_rollback_project", "stackport_set_network_group", "stackport_set_project_hostname", "stackport_stop_project"]);
+  assert.deepEqual(write, [
+    "stackport_add_project_domain", "stackport_create_branch_deployment", "stackport_create_project_from_repository",
+    "stackport_delete_project_env_file", "stackport_deploy_project", "stackport_generate_project_env_value",
+    "stackport_pull_project", "stackport_restart_project", "stackport_rollback_project", "stackport_set_network_group",
+    "stackport_set_project_branch", "stackport_set_project_compose_file", "stackport_set_project_domain_route",
+    "stackport_set_project_env_file", "stackport_set_project_hostname", "stackport_stop_project",
+  ]);
+  assert.equal(by["stackport_get_project_action_log"].scope, "action_logs");
   for (const t of tools.filter((x) => x.scope === "write")) {
     assert.equal(t.destructive, true, `${t.name} is marked destructive`);
     assert.equal(t.twoStep, true, `${t.name} takes two calls`);

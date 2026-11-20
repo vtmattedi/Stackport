@@ -458,11 +458,11 @@ export const api = {
     request<ProjectDeploy[]>(`/projects/${projectId}/deploys`),
   listApiTokens: () => request<ApiToken[]>("/api-tokens"),
   listMcpTools: () => request<{ tools: McpToolInfo[] }>("/api-tokens/tools"),
-  createApiToken: (name: string, expiresInDays: number | null, scope: "read" | "write" | "status" = "read", projectGroup: string | null = null, logs = false) =>
-    request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays, scope, projectGroup, ...(logs ? { logs: true } : {}) }) }),
+  createApiToken: (name: string, expiresInDays: number | null, scope: "read" | "write" | "status" = "read", projectGroup: string | null = null, logs = false, actionLogs = false) =>
+    request<{ token: string; record: ApiToken }>("/api-tokens", { method: "POST", body: JSON.stringify({ name, expiresInDays, scope, projectGroup, logs, actionLogs }) }),
   revokeApiToken: (id: number) => request<void>(`/api-tokens/${id}`, { method: "DELETE" }),
   getOAuthRequest: (id: string) => request<OAuthRequestInfo>(`/oauth/requests/${encodeURIComponent(id)}`),
-  approveOAuthRequest: (id: string, grant: { scope: "read" | "write"; logs: boolean; projectGroup: string | null; confirmHost?: string }) =>
+  approveOAuthRequest: (id: string, grant: { scope: "read" | "write"; logs: boolean; actionLogs: boolean; projectGroup: string | null; confirmHost?: string }) =>
     request<{ redirectUrl: string }>(`/oauth/requests/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify(grant) }),
   denyOAuthRequest: (id: string) => request<{ redirectUrl: string }>(`/oauth/requests/${encodeURIComponent(id)}/deny`, { method: "POST" }),
   listOAuthConnections: () => request<OAuthConnection[]>("/oauth/connections"),

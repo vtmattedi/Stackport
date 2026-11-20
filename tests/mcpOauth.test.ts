@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import crypto from "crypto";
 import type { AddressInfo } from "net";
 import type { Server } from "http";
-import { initializeDatabase } from "../src/config/database";
+import { getDatabase, initializeDatabase } from "../src/config/database";
+import { hashApiTokenValue } from "../src/modules/identity/apiTokens";
 import { issueAuthToken } from "../src/modules/identity/sessions";
+import { listProjectEnvFiles } from "../src/modules/projects/envFiles";
+import { createProject } from "../src/modules/projects/operations";
 import app from "../src/app";
 
 let server: Server;
@@ -104,7 +107,7 @@ test("approve, exchange the code with PKCE, call /mcp, refresh, and revoke", asy
   assert.equal(info.clientName, "Test client");
   assert.equal(info.redirectHost, "127.0.0.1:8123");
 
-  const code = await approve(request, { scope: "read" });
+  const code = await approve(request, { scope: "read", logs: true });
   assert.equal((await admin(`/requests/${request}/approve`, { method: "POST", body: JSON.stringify({ scope: "read" }) })).status, 404, "a request is answered once");
 
   const wrong = await tokenRequest({ grant_type: "authorization_code", client_id, code, redirect_uri: REDIRECT, code_verifier: pkce().verifier });
@@ -120,6 +123,8 @@ test("approve, exchange the code with PKCE, call /mcp, refresh, and revoke", asy
 
   const tools = await toolNames(tokens.access_token);
   assert.ok(tools.includes("stackport_list_projects"));
+  assert.ok(tools.includes("stackport_get_project_logs"));
+  assert.ok(!tools.includes("stackport_get_project_action_log"), "container log consent grants no deployment log access");
   assert.ok(!tools.some((name) => /deploy|restart|stop|rollback/.test(name)), "a read grant gets no write tools");
 
   const listed = (await (await admin("/connections")).json()) as { id: number; clientName: string }[];
@@ -139,15 +144,58 @@ test("approve, exchange the code with PKCE, call /mcp, refresh, and revoke", asy
   assert.equal(after.status, 401, "revoking the refresh token ends the access token too");
 });
 
-test("a write grant gets the write tools, and the API token list does not show OAuth tokens", async () => {
+test("OAuth refresh keeps a pending env write bound to the same grant", async () => {
+  const { id: projectId } = createProject({ name: "OAuth env test", sourceType: "upload" });
   const { client_id } = await register();
   const { verifier, challenge } = pkce();
-  const code = await approve(await authorize(client_id, challenge), { scope: "write", logs: true });
-  const tokens = (await (await tokenRequest({ grant_type: "authorization_code", client_id, code, redirect_uri: REDIRECT, code_verifier: verifier })).json()) as { access_token: string };
-  const tools = await toolNames(tokens.access_token);
-  assert.ok(tools.some((name) => /deploy/.test(name)), "write tools are offered");
-  const list = (await (await fetch(`${base}/api/api-tokens`, { headers: { authorization: `Bearer ${session}` } })).json()) as { name: string }[];
+  const code = await approve(await authorize(client_id, challenge), { scope: "write", actionLogs: true });
+  const first = await (await tokenRequest({ grant_type: "authorization_code", client_id, code, redirect_uri: REDIRECT, code_verifier: verifier })).json() as {
+    access_token: string; refresh_token: string; expires_in: number;
+  };
+  assert.equal(first.expires_in, 3600);
+  const tools = await toolNames(first.access_token);
+  assert.ok(tools.includes("stackport_deploy_project"));
+  assert.ok(tools.includes("stackport_get_project_action_log"));
+  assert.ok(!tools.includes("stackport_get_project_logs"));
+  const list = await (await fetch(`${base}/api/api-tokens`, { headers: { authorization: `Bearer ${session}` } })).json() as { name: string }[];
   assert.ok(!list.some((token) => token.name.startsWith("OAuth:")));
+
+  async function generate(bearer: string, args: Record<string, unknown>) {
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${bearer}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "stackport_generate_project_env_value", arguments: args } }),
+    });
+    assert.equal(res.status, 200);
+    return (await res.json() as { result: { structuredContent?: Record<string, unknown>; isError?: boolean } }).result;
+  }
+
+  const args = { projectId, relativePath: ".env", key: "BLIND_SECRET", size: 24, format: "b64url" };
+  const preview = await generate(first.access_token, args);
+  assert.deepEqual(listProjectEnvFiles(projectId), []);
+  assert.equal(typeof preview.structuredContent?.["confirmationId"], "string");
+
+  const hash = hashApiTokenValue(first.refresh_token);
+  const db = getDatabase();
+  const row = db.prepare("SELECT * FROM oauth_refresh_tokens WHERE token_hash = ?").get(hash) as { created_at: string; expires_at: string };
+  assert.equal(Date.parse(row.expires_at) - Date.parse(row.created_at), 30 * 86_400_000);
+  db.prepare("UPDATE oauth_refresh_tokens SET expires_at = ? WHERE token_hash = ?").run(new Date(Date.now() + 30_000).toISOString(), hash);
+
+  const refresh = await tokenRequest({ grant_type: "refresh_token", client_id, refresh_token: first.refresh_token });
+  assert.equal(refresh.status, 200);
+  const next = await refresh.json() as { access_token: string; refresh_token: string };
+  const nextHash = hashApiTokenValue(next.refresh_token);
+  const rotated = db.prepare("SELECT expires_at FROM oauth_refresh_tokens WHERE token_hash = ?").get(nextHash) as { expires_at: string };
+  assert.ok(Date.parse(rotated.expires_at) > Date.now() + 29 * 86_400_000);
+
+  const confirmationId = preview.structuredContent?.["confirmationId"];
+  const confirmed = await generate(next.access_token, { ...args, confirmationId });
+  assert.deepEqual(confirmed.structuredContent, { ok: true });
+  assert.match(listProjectEnvFiles(projectId)[0].variables[0].value, /^[A-Za-z0-9_-]{32}$/);
+  assert.equal((await generate(next.access_token, { ...args, confirmationId })).isError, true);
+
+  db.prepare("UPDATE oauth_refresh_tokens SET expires_at = ? WHERE token_hash = ?").run(new Date(Date.now() - 1_000).toISOString(), nextHash);
+  assert.equal((await tokenRequest({ grant_type: "refresh_token", client_id, refresh_token: next.refresh_token })).status, 400);
 });
 
 test("denying sends access_denied to the client and issues nothing", async () => {
@@ -205,6 +253,10 @@ test("replaying a rotated refresh token ends the whole connection", async () => 
   const code = await approve(await authorize(client_id, challenge), { scope: "read" });
   const first = (await (await tokenRequest({ grant_type: "authorization_code", client_id, code, redirect_uri: REDIRECT, code_verifier: verifier })).json()) as { access_token: string; refresh_token: string };
   const second = (await (await tokenRequest({ grant_type: "refresh_token", client_id, refresh_token: first.refresh_token })).json()) as { access_token: string; refresh_token: string };
+  const eightDaysAgo = new Date(Date.now() - 8 * 86_400_000).toISOString();
+  getDatabase().prepare("UPDATE oauth_refresh_tokens SET revoked_at = ?, rotated_at = ? WHERE token_hash = ?")
+    .run(eightDaysAgo, eightDaysAgo, hashApiTokenValue(first.refresh_token));
+  await authorize(client_id, pkce().challenge); // Triggers housekeeping while the rotated token still has time left.
   assert.equal((await tokenRequest({ grant_type: "refresh_token", client_id, refresh_token: first.refresh_token })).status, 400, "the replay is refused");
   assert.equal((await tokenRequest({ grant_type: "refresh_token", client_id, refresh_token: second.refresh_token })).status, 400, "and the newer refresh token no longer works either");
   const ping = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${second.access_token}` }, body: "{}" });

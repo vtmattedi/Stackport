@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { json, Router, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -8,8 +8,10 @@ import { requireApiToken } from "../../modules/identity/middleware/apiToken";
 import type { ApiToken } from "../../modules/identity/apiTokens";
 import { auditLog } from "../../shared/logger";
 import { getProjectIngressHealthView, getProjectNetworkView, getProjectView, getStatusView, listDockerNetworksView, listGithubRepositoriesView, listManagedDomainsView, listNetworkGroupsView, listProjectsView } from "./readModel";
-import { registerLogTools } from "./logTools";
+import { registerActionLogTool, registerLogTools } from "./logTools";
 import { registerWriteTools } from "./writeTools";
+import { registerSetupReadTools, registerSetupWriteTools } from "./setupTools";
+import { registerActionStatusTools } from "./actionTools";
 import { packageVersion } from "../../modules/maintenance/version";
 
 /**
@@ -165,9 +167,14 @@ export function buildMcpServer(token: ApiToken): McpServer {
     }
   );
 
-  if (token.scopes.includes("write")) registerWriteTools(server, token);
-  // Only a token made with log access sees the tool; for every other token it does not exist.
+  registerSetupReadTools(server, token);
+  registerActionStatusTools(server, token);
+  if (token.scopes.includes("write")) {
+    registerWriteTools(server, token);
+    registerSetupWriteTools(server, token);
+  }
   if (token.scopes.includes("logs")) registerLogTools(server, token);
+  if (token.scopes.includes("action_logs")) registerActionLogTool(server, token);
 
   return server;
 }
@@ -184,7 +191,7 @@ const perTokenLimiter = rateLimit({
   message: { error: "Too many MCP requests for this token, try again shortly" },
 });
 
-router.post("/", requireApiToken("read"), perTokenLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post("/", requireApiToken("read"), perTokenLimiter, json({ limit: "256kb" }), async (req: Request, res: Response): Promise<void> => {
   const server = buildMcpServer(req.apiToken!);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => {

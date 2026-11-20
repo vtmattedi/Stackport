@@ -1,8 +1,8 @@
 {
   "name": "stackport-vps-manager-client",
-  "version": "1.4.13",
-  "builtAt": "2026-11-20T04:25:50.064Z",
-  "gitCommit": "be3b312",
-  "gitBranch": "feat/mcp-oauth",
-  "gitMessage": "docs: MCP OAuth is supported"
+  "version": "1.4.14",
+  "builtAt": "2026-11-20T06:31:55.907Z",
+  "gitCommit": "70818ca",
+  "gitBranch": "feat/mcp-deploy-workflow",
+  "gitMessage": "feat(mcp): enable end-to-end project deployment"
 }
