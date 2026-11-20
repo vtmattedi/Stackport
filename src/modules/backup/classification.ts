@@ -33,6 +33,7 @@ export const TABLE_TIERS: Record<string, TableTier> = {
   // Level 2 — everything that describes a project.
   projects: "l2",
   project_env_files: "l2",
+  project_env_removals: "l2", // Uploaded checkouts may still contain copies waiting for removal.
   project_domains: "l2",
   tcp_exposures: "l2",
   project_deployments: "l2",

@@ -32,6 +32,7 @@ function seed(): { scripts: string; repos: string; dir: string } {
   db.prepare("INSERT INTO credentials (type,alias,secret_enc) VALUES ('github','gh',?)").run(ring.encrypt("ghp_secret"));
   db.prepare("INSERT INTO projects (name,source_type,hook_secret_enc,auto_deploy_branch,health_check_interval_s) VALUES ('Shop','upload',?, 'main', 60)").run(ring.encrypt("hook"));
   db.prepare("INSERT INTO project_env_files (project_id,relative_path,variables_json,variables_enc) VALUES (1,'.env','{}',?)").run(ring.encrypt('{"DB_PASSWORD":"s3cret"}'));
+  db.prepare("INSERT INTO project_env_removals (project_id,relative_path,fingerprint) VALUES (1,'old.env','fixture-fingerprint')").run();
   db.prepare("INSERT INTO project_domains (project_id,domain) VALUES (1,'shop.example.com')").run();
   db.prepare("INSERT INTO auth_tokens (id,username,expires_at) VALUES ('sess','admin','2999-01-01')").run();
   db.prepare("INSERT INTO api_tokens (name,token_hash,prefix) VALUES ('ci','hash','sp_')").run();
@@ -134,7 +135,7 @@ test("level 1 holds settings and credentials but no project, session or runtime 
 
   assert.equal(staged.manifest.level, 1);
   assert.equal((sqliteRows(db, "SELECT COUNT(*) AS n FROM credentials")[0] as { n: number }).n, 1);
-  for (const table of ["projects", "project_env_files", "project_domains", "auth_tokens", "notification_logs"]) {
+  for (const table of ["projects", "project_env_files", "project_env_removals", "project_domains", "auth_tokens", "notification_logs"]) {
     assert.equal((sqliteRows(db, `SELECT COUNT(*) AS n FROM ${table}`)[0] as { n: number }).n, 0, table);
   }
   assert.equal(sqliteRows(db, "SELECT value FROM app_meta WHERE key='push_worker_poll_at'").length, 0, "runtime meta rows are dropped");
@@ -165,6 +166,9 @@ test("level 2 adds projects, managed env values, domains and uploaded files", ()
   assert.equal((sqliteRows(db, "SELECT COUNT(*) AS n FROM projects")[0] as { n: number }).n, 1);
   const env = sqliteRows(db, "SELECT variables_enc FROM project_env_files")[0] as { variables_enc: string };
   assert.equal(ring.decrypt(env.variables_enc), '{"DB_PASSWORD":"s3cret"}', "secret values travel, still encrypted at the field level");
+  assert.deepEqual(sqliteRows(db, "SELECT relative_path, fingerprint FROM project_env_removals"), [
+    { relative_path: "old.env", fingerprint: "fixture-fingerprint" },
+  ]);
   assert.equal((sqliteRows(db, "SELECT COUNT(*) AS n FROM auth_tokens")[0] as { n: number }).n, 0);
   assert.ok(staged.manifest.entries.some((e) => e.name === "files/repos/1-shop/sub/app.conf"));
   assert.ok(staged.manifest.entries.some((e) => e.name === "files/scripts/deploy.sh"));
