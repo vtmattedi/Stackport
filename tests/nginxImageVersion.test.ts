@@ -42,6 +42,13 @@ test("the updater pre-pulls nginx before swapping the live application image", (
     "stage_update must acquire the target proxy image before swapping the running stack");
 });
 
+test("rolling back Stackport cannot recreate nginx from the old vulnerable Compose image", () => {
+  const script = read("stackport.sh");
+  assert.match(script, /swap_to_image "\$PREVIOUS_IMAGE" app-only/);
+  assert.match(script, /compose up -d --no-deps --build stackport/);
+  assert.match(script, /if \[\[ "\$scope" == "all" \]\]; then compose up -d --no-build/);
+});
+
 test("generated HTTPS server blocks still support HTTP/2 after the image fix", () => {
   const config = read("src/modules/ingress/nginx/configWriter.ts");
   assert.match(config, /http2 on;/);
