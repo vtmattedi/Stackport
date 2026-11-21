@@ -703,6 +703,12 @@ stage_update() {
   ETC_DIR="$ETC_DIR" VAR_DIR="$VAR_DIR" APP_DIR="$APP_DIR" bash "$STAGING_DIR/stackport.sh" selfcheck \
     || { error "new stackport.sh failed its selfcheck"; return 1; }
 
+  # Fetch the target release's ingress image before changing the running stack.
+  # A registry outage must not leave the host half-upgraded without a working proxy.
+  log "pre-pulling target nginx image"
+  docker compose -f "$STAGING_DIR/docker-compose.system.yml" --project-directory "$STAGING_DIR" pull --policy missing nginx \
+    || { error "target nginx image could not be pulled"; return 1; }
+
   log "building image for ${target:0:7}"
   DOCKER_BUILDKIT=1 docker build --quiet --build-arg "STACKPORT_COMMIT=$target" --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
     || { error "image build failed for ${target:0:7}"; return 1; }
@@ -1002,7 +1008,7 @@ http {
 EOF
   # mime.types ships inside the official nginx image — copy it out once rather than
   # hand-maintaining a duplicate that could drift from what the serving image expects.
-  docker run --rm nginx:1.27-alpine cat /etc/nginx/mime.types > "$dir/mime.types" 2>/dev/null || true
+  docker run --rm nginx:1.30.7-alpine cat /etc/nginx/mime.types > "$dir/mime.types" 2>/dev/null || true
   touch "$dir/sites-available/default"
   ln -sf ../sites-available/default "$dir/sites-enabled/default"
   chown -R "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$dir" 2>/dev/null || true
