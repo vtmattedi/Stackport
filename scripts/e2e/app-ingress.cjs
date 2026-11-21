@@ -28,7 +28,7 @@ try{
   docker(['exec',backend,'chmod','755','/tmp/bin/docker']);
   const fixturePath='/tmp/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
   docker(['exec','-e','PATH='+fixturePath,backend,'node','/tmp/fixture.cjs','prepare']);
-  docker(['create','--pull=never','--name',nginx,'--network',prefix,...mounts,'--entrypoint','nginx','nginx:1.29-alpine','-g','daemon off;']);
+  docker(['create','--pull=never','--name',nginx,'--network',prefix,...mounts,'--entrypoint','nginx','nginx:1.30.7-alpine','-g','daemon off;']);
   docker(['cp',backend+':/fixture/nginx/nginx.conf',path.join(workDir,'nginx.conf')]);
   docker(['cp',path.join(workDir,'nginx.conf'),nginx+':/etc/nginx/nginx.conf']);
   docker(['start',nginx]);
