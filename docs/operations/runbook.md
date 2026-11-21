@@ -88,6 +88,10 @@ Stackport enables HTTP/2, so an older upstream nginx build is exposed to
 HTTP/2 vulnerabilities when reachable from the internet. If an update cannot
 replace the old container, inspect `docker logs stackport-nginx` and the
 Compose output; do not assume that updating the application image patches nginx.
+A rollback performed with the fixed CLI retains the running nginx container, even
+when the older Stackport revision pins a vulnerable image. After any rollback,
+verify `nginx -v` again: reinstalling or explicitly recreating nginx from an old
+Compose file can still downgrade it.
 
 ## Do not hide errors
 
