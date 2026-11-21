@@ -1,6 +1,6 @@
 {
   "name": "stackport",
-  "version": "1.4.14",
+  "version": "1.4.15",
   "builtAt": "2026-11-20T06:31:55.628Z",
   "gitCommit": "70818ca",
   "gitBranch": "feat/mcp-deploy-workflow",
