@@ -716,11 +716,15 @@ stage_update() {
 }
 
 swap_to_image() {
-  local image="$1"
+  local image="$1" scope="${2:-all}"
+  case "$scope" in all|app-only) ;; *) error "invalid swap scope: $scope"; return 1 ;; esac
   docker tag "$image" "$APP_IMAGE" || return 1
   ensure_env_file
   compose up -d --no-build --force-recreate stackport || return 1
-  compose up -d --no-build || return 1
+  # A rollback can check out a release whose Compose file pins a vulnerable
+  # nginx version. Preserve the already-patched proxy while reverting only
+  # the Stackport app image; normal forward updates reconcile both services.
+  if [[ "$scope" == "all" ]]; then compose up -d --no-build || return 1; fi
 }
 
 # Health alone only proves Express is listening. A version is accepted only if it
@@ -846,11 +850,11 @@ rollback_stackport() {
 
   git -C "$APP_DIR" checkout --quiet "$previous"
   if docker image inspect "$PREVIOUS_IMAGE" >/dev/null 2>&1; then
-    swap_to_image "$PREVIOUS_IMAGE" || true
+    swap_to_image "$PREVIOUS_IMAGE" app-only || true
   else
     warn "no saved image for ${previous:0:7} — rebuilding it"
     ensure_env_file
-    DOCKER_BUILDKIT=1 compose up -d --build || true
+    DOCKER_BUILDKIT=1 compose up -d --no-deps --build stackport || true
   fi
 
   if ! healthcheck_stackport; then
