@@ -703,6 +703,12 @@ stage_update() {
   ETC_DIR="$ETC_DIR" VAR_DIR="$VAR_DIR" APP_DIR="$APP_DIR" bash "$STAGING_DIR/stackport.sh" selfcheck \
     || { error "new stackport.sh failed its selfcheck"; return 1; }
 
+  # Fetch the target release's ingress image before changing the running stack.
+  # A registry outage must not leave the host half-upgraded without a working proxy.
+  log "pre-pulling target nginx image"
+  docker compose -f "$STAGING_DIR/docker-compose.system.yml" --project-directory "$STAGING_DIR" pull --policy missing nginx \
+    || { error "target nginx image could not be pulled"; return 1; }
+
   log "building image for ${target:0:7}"
   DOCKER_BUILDKIT=1 docker build --quiet --build-arg "STACKPORT_COMMIT=$target" --tag "stackport:${target:0:12}" "$STAGING_DIR" >/dev/null \
     || { error "image build failed for ${target:0:7}"; return 1; }
@@ -710,11 +716,15 @@ stage_update() {
 }
 
 swap_to_image() {
-  local image="$1"
+  local image="$1" scope="${2:-all}"
+  case "$scope" in all|app-only) ;; *) error "invalid swap scope: $scope"; return 1 ;; esac
   docker tag "$image" "$APP_IMAGE" || return 1
   ensure_env_file
   compose up -d --no-build --force-recreate stackport || return 1
-  compose up -d --no-build || return 1
+  # A rollback can check out a release whose Compose file pins a vulnerable
+  # nginx version. Preserve the already-patched proxy while reverting only
+  # the Stackport app image; normal forward updates reconcile both services.
+  if [[ "$scope" == "all" ]]; then compose up -d --no-build || return 1; fi
 }
 
 # Health alone only proves Express is listening. A version is accepted only if it
@@ -840,11 +850,11 @@ rollback_stackport() {
 
   git -C "$APP_DIR" checkout --quiet "$previous"
   if docker image inspect "$PREVIOUS_IMAGE" >/dev/null 2>&1; then
-    swap_to_image "$PREVIOUS_IMAGE" || true
+    swap_to_image "$PREVIOUS_IMAGE" app-only || true
   else
     warn "no saved image for ${previous:0:7} — rebuilding it"
     ensure_env_file
-    DOCKER_BUILDKIT=1 compose up -d --build || true
+    DOCKER_BUILDKIT=1 compose up -d --no-deps --build stackport || true
   fi
 
   if ! healthcheck_stackport; then
@@ -1002,7 +1012,7 @@ http {
 EOF
   # mime.types ships inside the official nginx image — copy it out once rather than
   # hand-maintaining a duplicate that could drift from what the serving image expects.
-  docker run --rm nginx:1.27-alpine cat /etc/nginx/mime.types > "$dir/mime.types" 2>/dev/null || true
+  docker run --rm nginx:1.30.7-alpine cat /etc/nginx/mime.types > "$dir/mime.types" 2>/dev/null || true
   touch "$dir/sites-available/default"
   ln -sf ../sites-available/default "$dir/sites-enabled/default"
   chown -R "${STACKPORT_UID:-1000}:${STACKPORT_GID:-1000}" "$dir" 2>/dev/null || true

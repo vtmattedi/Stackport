@@ -20,7 +20,7 @@ interface FakeContainer { id: string; name: string; image: string; state: "runni
 
 const CONTAINERS: FakeContainer[] = [
   { id: "a1b2c3d4e5f6", name: "stackport", image: "stackport:1.3.10", state: "running", status: "Up 3 days (healthy)", ports: "127.0.0.1:3000->3000/tcp", project: "stackport", service: "stackport", cpu: "0.4%", mem: "182MiB / 3.8GiB", memPct: "4.6%" },
-  { id: "b2c3d4e5f6a1", name: "stackport-nginx", image: "nginx:1.27-alpine", state: "running", status: "Up 3 days", ports: "0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp", project: "stackport", service: "nginx", cpu: "0.1%", mem: "12MiB / 3.8GiB", memPct: "0.3%" },
+  { id: "b2c3d4e5f6a1", name: "stackport-nginx", image: "nginx:1.30.7-alpine", state: "running", status: "Up 3 days", ports: "0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp", project: "stackport", service: "nginx", cpu: "0.1%", mem: "12MiB / 3.8GiB", memPct: "0.3%" },
   { id: "c3d4e5f6a1b2", name: "1-shop-web-1", image: "shop-web", state: "running", status: "Up 2 days (healthy)", ports: "127.0.0.1:8101->3000/tcp", project: "1-shop", service: "web", cpu: "1.2%", mem: "96MiB / 3.8GiB", memPct: "2.4%" },
   { id: "d4e5f6a1b2c3", name: "1-shop-db-1", image: "postgres:17-alpine", state: "running", status: "Up 2 days (healthy)", ports: "", project: "1-shop", service: "db", cpu: "0.3%", mem: "64MiB / 3.8GiB", memPct: "1.6%" },
   { id: "e5f6a1b2c3d4", name: "2-shop-api-api-1", image: "shop-api", state: "running", status: "Up 2 days", ports: "127.0.0.1:8102->8080/tcp", project: "2-shop-api", service: "api", cpu: "0.8%", mem: "120MiB / 3.8GiB", memPct: "3.1%" },

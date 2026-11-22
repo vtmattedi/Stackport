@@ -68,6 +68,31 @@ docker inspect <container> --format '{{json .NetworkSettings.Networks}}'
 
 Missing attachments may be repaired by the next Stackport startup or a redeploy; check `docker logs stackport` for reconciliation errors. Do not manually detach working routes or change Nginx first. See [Network isolation](network-isolation.md).
 
+## NGINX security updates
+
+Stackport's public reverse proxy is the `stackport-nginx` container. After a release
+that changes its pinned image, `sudo stackport update` should recreate the proxy
+without changing managed application containers. Verify the **running binary** rather
+than relying on the version in the source tree:
+
+```bash
+sudo stackport update
+docker exec stackport-nginx nginx -v
+docker exec stackport-nginx nginx -t
+docker inspect stackport-nginx --format '{{.Config.Image}}'
+```
+
+The November 2026 NGINX2Root disclosures (including CVE-2026-123007 and
+CVE-2026-123633) require NGINX 1.30.7+ (stable) or 1.31.9+ (mainline).
+Stackport enables HTTP/2, so an older upstream nginx build is exposed to
+HTTP/2 vulnerabilities when reachable from the internet. If an update cannot
+replace the old container, inspect `docker logs stackport-nginx` and the
+Compose output; do not assume that updating the application image patches nginx.
+A rollback performed with the fixed CLI retains the running nginx container, even
+when the older Stackport revision pins a vulnerable image. After any rollback,
+verify `nginx -v` again: reinstalling or explicitly recreating nginx from an old
+Compose file can still downgrade it.
+
 ## Do not hide errors
 
 Do not add `2>/dev/null` or `|| true` while diagnosing. During the 1.3.0 outage part of the diagnosis time
@@ -86,7 +111,7 @@ Choose **Separate env files** to enter branch-specific values, or **Shared env f
 
 For GitHub App projects, choose **Post the preview URL on the pull request** to publish the HTTPS link to a matching open PR after deployment. Grant the App **Pull requests: Read and write** if the installation does not already have it. GitHub permission failures appear in the action log.
 
-`npm run test:ingress:docker` exercises this startup path with real nginx, a saved hostname and a locally issued test certificate, then checks that a later startup reuses it. Readiness, challenge serving, certificate detection, config generation, validation and reload use production code; the external CA is substituted. It needs local `stackport:ci`, `nginx:1.29-alpine` and `certbot/certbot` images, uses disposable Docker resources and publishes no host ports.
+`npm run test:ingress:docker` exercises this startup path with real nginx, a saved hostname and a locally issued test certificate, then checks that a later startup reuses it. Readiness, challenge serving, certificate detection, config generation, validation and reload use production code; the external CA is substituted. It needs local `stackport:ci`, `nginx:1.30.7-alpine` and `certbot/certbot` images, uses disposable Docker resources and publishes no host ports.
 
 ```bash
 docker exec stackport-nginx nginx -t      # is the generated config valid?

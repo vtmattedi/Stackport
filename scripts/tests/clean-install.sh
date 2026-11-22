@@ -100,7 +100,7 @@ mkdir -p /var/lib/stackport/data/repos/1-regression
 cat > /var/lib/stackport/data/repos/1-regression/compose.yml <<'EOF'
 services:
   web:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.7-alpine
     expose: ["80"]
   mqtt:
     image: alpine/socat:1.8.0.3

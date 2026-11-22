@@ -30,7 +30,7 @@ function docker(args) {
     const server = `require('node:http').createServer((req,res)=>{let bytes=0;req.on('data',chunk=>bytes+=chunk.length);req.on('end',()=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({bytes,path:req.url}));});}).listen(${config.port},'0.0.0.0')`;
     docker(['run', '--detach', '--pull=never', '--name', backend, '--network', network, '--network-alias', 'stackport', '--entrypoint', 'node', 'stackport:ci', '-e', server]);
     console.log('Starting nginx with the generated config');
-    docker(['create', '--pull=never', '--name', proxy, '--network', network, '--entrypoint', 'nginx', 'nginx:1.29-alpine', '-g', 'daemon off;']);
+    docker(['create', '--pull=never', '--name', proxy, '--network', network, '--entrypoint', 'nginx', 'nginx:1.30.7-alpine', '-g', 'daemon off;']);
     docker(['cp', conf, `${proxy}:/etc/nginx/conf.d/default.conf`]);
     docker(['start', proxy]);
     docker(['exec', proxy, 'nginx', '-t']);
